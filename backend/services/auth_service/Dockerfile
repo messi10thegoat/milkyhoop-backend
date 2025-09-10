@@ -83,6 +83,13 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["tini", "--"]
 
+# Build metadata for traceability
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+LABEL git.commit=${GIT_COMMIT}
+LABEL build.time=${BUILD_TIME}
+LABEL build.version="3.0"
+
 CMD ["python3", "/app/backend/services/auth_service/app/grpc_server.py"]
 
 # ----------------------------------------

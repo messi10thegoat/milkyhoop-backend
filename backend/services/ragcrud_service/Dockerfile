@@ -83,6 +83,13 @@ EXPOSE 5009
 ENTRYPOINT ["tini", "--"]
 
 # ✅ Start gRPC server
+# Build metadata for traceability
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+LABEL git.commit=${GIT_COMMIT}
+LABEL build.time=${BUILD_TIME}
+LABEL build.version="3.0"
+
 CMD ["python3", "/app/backend/services/ragcrud_service/app/grpc_server.py"]
 
 # ----------------------------------------
