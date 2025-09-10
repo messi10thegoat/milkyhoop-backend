@@ -1,0 +1,128 @@
+import grpc
+import logging
+from typing import Optional, Dict, Any
+from fastapi import Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# Import from the actual proto location
+import sys
+import os
+sys.path.append('/app')
+sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+
+# Direct imports from proto files in their location
+try:
+    from backend.api_gateway.libs.milkyhoop_protos import auth_service_pb2
+    from backend.api_gateway.libs.milkyhoop_protos import auth_service_pb2_grpc
+except ImportError:
+    # Fallback to container paths
+    import auth_service_pb2
+    import auth_service_pb2_grpc
+
+logger = logging.getLogger(__name__)
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Authentication middleware for MilkyHoop API Gateway"""
+    
+    def __init__(self, app, auth_service_host: str = "auth_service:5004"):
+        super().__init__(app)
+        self.auth_service_host = auth_service_host
+        # Protected paths (Setup Mode)
+        self.protected_paths = ["/api/chat/", "/api/setup/", "/chat/"]
+        # Public paths (Customer Mode + utilities)
+        self.public_paths = ["/health", "/", "/docs", "/openapi.json", "/redoc", "/api/tenant/"]
+        
+    async def dispatch(self, request: Request, call_next):
+        """Middleware dispatch with authentication logic"""
+        
+        # Allow public paths without authentication
+        if self._is_public_path(request.url.path):
+            logger.info(f"Public path accessed: {request.url.path}")
+            return await call_next(request)
+            
+        # Allow OPTIONS for CORS
+        if request.method == "OPTIONS":
+            return await call_next(request)
+            
+        # Protected endpoint - require authentication
+        logger.info(f"Protected path accessed: {request.url.path}")
+        
+        try:
+            token = self._extract_token(request)
+            if not token:
+                logger.warning(f"Missing token for protected path: {request.url.path}")
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={
+                        "error": "Authentication required", 
+                        "code": "MISSING_TOKEN",
+                        "message": "This endpoint requires authentication. Please provide Bearer token."
+                    }
+                )
+                
+            # Validate token
+            user_context = await self._validate_token(token)
+            if not user_context:
+                logger.warning(f"Invalid token for protected path: {request.url.path}")
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={
+                        "error": "Invalid token", 
+                        "code": "INVALID_TOKEN",
+                        "message": "Token validation failed"
+                    }
+                )
+                
+            # Success - inject user context
+            request.state.user = user_context
+            request.state.authenticated = True
+            
+            logger.info(f"Authenticated: {user_context.get('user_id')} (tenant: {user_context.get('tenant_id')})")
+            
+        except Exception as e:
+            logger.error(f"Auth middleware error: {e}")
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": "Authentication service error"}
+            )
+            
+        return await call_next(request)
+        
+    def _is_public_path(self, path: str) -> bool:
+        """Check if path requires authentication"""
+        return any(path.startswith(pub) for pub in self.public_paths)
+        
+    def _extract_token(self, request: Request) -> Optional[str]:
+        """Extract Bearer token from Authorization header"""
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            return auth_header[7:]
+        return None
+        
+    async def _validate_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Validate token with auth service via gRPC"""
+        try:
+            channel = grpc.aio.insecure_channel(self.auth_service_host)
+            stub = auth_service_pb2_grpc.AuthServiceStub(channel)
+            
+            request_msg = auth_service_pb2.ValidateTokenRequest(access_token=token)
+            response = await stub.ValidateToken(request_msg)
+            
+            await channel.close()
+            
+            if response.success:
+                return {
+                    "user_id": response.user_id,
+                    "tenant_id": response.tenant_id,
+                    "role": response.role,
+                    "email": response.email
+                }
+            return None
+                
+        except Exception as e:
+            logger.error(f"Token validation failed: {e}")
+            return None
+
+# Debug print for middleware loading
+print("🔧 AuthMiddleware class loaded successfully")

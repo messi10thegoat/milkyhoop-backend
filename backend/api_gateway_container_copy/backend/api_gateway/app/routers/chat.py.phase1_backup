@@ -1,0 +1,233 @@
+import asyncio
+import httpx
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backend.api_gateway.app.services.ragcrud_client import RagCrudClient
+from backend.api_gateway.app.services.chatbot_client import ChatbotClient
+from backend.api_gateway.app.services.ragllm_client import RagLLMClient
+from backend.api_gateway.app.services.tenant_client import TenantParserClient
+from backend.api_gateway.app.services.intent_client import IntentParserClient
+from backend.api_gateway.app.services.complaint_client import ComplaintServiceClient
+
+# Level 10 imports - tested and working
+import grpc
+import sys
+sys.path.append('/app/backend/api_gateway/libs')
+from milkyhoop_protos import cust_context_pb2, cust_context_pb2_grpc
+from milkyhoop_protos import cust_reference_pb2, cust_reference_pb2_grpc
+
+router = APIRouter()
+
+class ChatRequest(BaseModel):
+    user_id: str
+    session_id: str
+    message: str
+    tenant_id: str
+
+class ChatResponse(BaseModel):
+    reply: str
+
+class CustomerChatRequest(BaseModel):
+    session_id: str = "anonymous"
+    message: str
+
+# Level 10 Module 1: Context Client (FIXED)
+class Level10ContextClient:
+    """Client for cust_context service (Level 10 Module 1) - Fixed version"""
+    
+    def __init__(self, host: str = "cust_context", port: int = 5008):
+        self.host = host
+        self.port = port
+    
+    async def create_or_update_context(self, session_id: str, tenant_id: str, message: str, entities: list):
+        """Create or update conversation context - using correct proto fields"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            stub = cust_context_pb2_grpc.CustContextServiceStub(channel)
+            
+            # Convert entities to JSON string if needed
+            import json
+            entities_json = json.dumps(entities) if entities else "[]"
+            
+            # Try to update existing context first
+            try:
+                update_request = cust_context_pb2.UpdateContextRequest(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_query=message,  # Use user_query instead of message
+                    entities=entities_json
+                )
+                response = await stub.UpdateContext(update_request)
+                print(f"✅ Context updated for session {session_id}")
+                success = True
+            except Exception as e:
+                print(f"Update failed: {e}, trying create...")
+                # Create new context if update fails
+                create_request = cust_context_pb2.CreateContextRequest(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    ttl_seconds=1800
+                )
+                response = await stub.CreateContext(create_request)
+                print(f"✅ Context created for session {session_id}")
+                success = True
+            
+            await channel.close()
+            return success
+            
+        except Exception as e:
+            print(f"⚠️ Context service error: {e}")
+            return False
+
+# Level 10 Module 2: Reference Client (Working)
+class Level10ReferenceClient:
+    """Client for cust_reference service (Level 10 Module 2)"""
+    
+    def __init__(self, host: str = "cust_reference", port: int = 5013):
+        self.host = host
+        self.port = port
+    
+    async def resolve_reference(self, session_id: str, tenant_id: str, message: str) -> dict:
+        """Resolve Indonesian pronoun references"""
+        try:
+            # Check if message contains reference patterns
+            reference_patterns = [
+                'yang tadi', 'yang itu', 'yang paling', 'semuanya', 
+                'yang pertama', 'yang kedua', 'yang ketiga'
+            ]
+            
+            message_lower = message.lower()
+            has_reference = any(pattern in message_lower for pattern in reference_patterns)
+            
+            if not has_reference:
+                return {'has_reference': False}
+            
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            stub = cust_reference_pb2_grpc.Cust_referenceStub(channel)
+            
+            request = cust_reference_pb2.ReferenceRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                reference_text=message_lower,
+                context_query=message
+            )
+            
+            response = await stub.ResolveReference(request)
+            await channel.close()
+            
+            print(f"🎯 Reference resolution: {response.resolution_method} for '{message_lower}'")
+            
+            return {
+                'has_reference': True,
+                'success': response.success,
+                'resolved_entity': response.resolved_entity,
+                'resolution_method': response.resolution_method,
+                'error_message': response.error_message
+            }
+            
+        except Exception as e:
+            print(f"⚠️ Reference service error: {e}")
+            return {'has_reference': True, 'success': False, 'error': str(e)}
+
+@router.post("/chat/", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    """Setup Mode Chat - Business owner manages chatbot"""
+    chatbot_client = ChatbotClient()
+    intent_client = IntentParserClient()
+    
+    try:
+        parsed = await intent_client.parse(user_id=req.user_id, message=req.message)
+        chatbot_response = await chatbot_client.chat(
+            req.user_id, req.session_id, req.message, req.tenant_id
+        )
+        return ChatResponse(reply=chatbot_response)
+        
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"gRPC or HTTP call failed: {str(e)}")
+
+@router.post("/tenant/{tenant_id}/chat", response_model=ChatResponse)
+async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
+    """Enhanced Customer Mode Chat with Level 10 Integration - Fixed Version"""
+    
+    # Initialize clients
+    rag_crud_client = RagCrudClient()
+    context_client = Level10ContextClient()
+    reference_client = Level10ReferenceClient()
+    
+    def extract_answer_only(faq_content: str) -> str:
+        if "A:" in faq_content:
+            answer_part = faq_content.split("A:", 1)[1].strip()
+            return answer_part
+        return faq_content
+    
+    def extract_entities_from_content(content: str, query: str) -> list:
+        """Extract entities from FAQ content for context storage"""
+        entities = []
+        
+        # Extract product mentions
+        products = ['tahapan xpresi', 'tahapan bca', 'tabunganku', 'tapres', 'simpel']
+        for product in products:
+            if product.lower() in content.lower() or product.lower() in query.lower():
+                entities.append({
+                    'type': 'product',
+                    'name': product.title(),
+                    'details': {'mentioned_in': 'faq_response'}
+                })
+        
+        # Extract intent type
+        if any(word in query.lower() for word in ['harga', 'biaya', 'setoran', 'admin']):
+            entities.append({
+                'type': 'intent', 
+                'name': 'pricing',
+                'details': {'query_type': 'pricing_inquiry'}
+            })
+        elif any(word in query.lower() for word in ['syarat', 'dokumen', 'buka rekening']):
+            entities.append({
+                'type': 'intent',
+                'name': 'requirements', 
+                'details': {'query_type': 'requirements_inquiry'}
+            })
+        
+        return entities
+    
+    try:
+        # Step 1: Check for reference patterns (Level 10 Module 2)
+        reference_result = await reference_client.resolve_reference(
+            session_id=req.session_id,
+            tenant_id=tenant_id,
+            message=req.message
+        )
+        
+        # Step 2: Handle reference resolution
+        if reference_result.get('has_reference') and reference_result.get('success'):
+            resolved_entity = reference_result.get('resolved_entity', '')
+            enhanced_query = f"{req.message} {resolved_entity}".strip()
+            matching_faqs = await rag_crud_client.search_documents(tenant_id, enhanced_query, top_k=3)
+        else:
+            matching_faqs = await rag_crud_client.search_documents(tenant_id, req.message, top_k=3)
+        
+        # Step 3: Generate response
+        if matching_faqs:
+            raw_content = matching_faqs[0].content
+            response = extract_answer_only(raw_content)
+            
+            # Step 4: Extract entities and update context (Level 10 Module 1) - FIXED
+            entities = extract_entities_from_content(raw_content, req.message)
+            
+            await context_client.create_or_update_context(
+                session_id=req.session_id,
+                tenant_id=tenant_id,
+                message=req.message,
+                entities=entities
+            )
+            
+            return ChatResponse(reply=response)
+        else:
+            return ChatResponse(reply="Maaf, saya belum memiliki informasi yang Anda cari. Bisa coba tanyakan dengan kata kunci yang berbeda?")
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Customer chat failed: {str(e)}")

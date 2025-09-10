@@ -1,0 +1,27 @@
+{
+  "name": "Customer Inquiry Handler",
+  "nodes": [
+    {
+      "id": "start",
+      "hoop": "",
+      "next": "search_faq"
+    },
+    {
+      "id": "search_faq",
+      "hoop": "rag_search_faq",
+      "parameters": {
+        "query": "{{message}}",
+        "tenant_id": "{{tenant_id}}"
+      },
+      "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply",
+      "parameters": {
+        "message": "{{search_faq.answer}}"
+      },
+      "next": null
+    }
+  ]
+}

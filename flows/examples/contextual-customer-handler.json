@@ -1,0 +1,40 @@
+{
+  "name": "Contextual Customer Handler",
+  "description": "Customer service with conversation memory",
+  "nodes": [
+    {
+      "id": "get_context",
+      "hoop": "memory_retrieve",
+      "parameters": {
+        "user_id": "{{session_id}}",
+        "tenant_id": "{{tenant_id}}",
+        "key": "last_context"
+      }
+    },
+    {
+      "id": "contextual_search", 
+      "hoop": "rag_search_faq",
+      "parameters": {
+        "query": "{{message}} {{get_context.value.product}}",
+        "tenant_id": "{{tenant_id}}"
+      }
+    },
+    {
+      "id": "store_context",
+      "hoop": "memory_store", 
+      "parameters": {
+        "user_id": "{{session_id}}",
+        "tenant_id": "{{tenant_id}}",
+        "key": "last_context",
+        "value": {
+          "product": "{{message}}",
+          "response": "{{contextual_search.result}}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {"from": "get_context", "to": "contextual_search"},
+    {"from": "contextual_search", "to": "store_context"}
+  ]
+}

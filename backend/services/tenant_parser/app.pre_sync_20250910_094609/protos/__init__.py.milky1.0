@@ -1,0 +1,13 @@
+# Proto imports for tenant_parser service
+from . import intent_parser_pb2
+from . import intent_parser_pb2_grpc
+from . import tenant_parser_pb2
+from . import tenant_parser_pb2_grpc
+
+# Make available for import
+__all__ = [
+    "intent_parser_pb2",
+    "intent_parser_pb2_grpc", 
+    "tenant_parser_pb2",
+    "tenant_parser_pb2_grpc"
+]

@@ -1,0 +1,410 @@
+import asyncio
+import httpx
+import json
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backend.api_gateway.app.services.ragcrud_client import RagCrudClient
+from backend.api_gateway.app.services.chatbot_client import ChatbotClient
+from backend.api_gateway.app.services.ragllm_client import RagLLMClient
+from backend.api_gateway.app.services.tenant_client import TenantParserClient
+from backend.api_gateway.app.services.intent_client import IntentParserClient
+from backend.api_gateway.app.services.complaint_client import ComplaintServiceClient
+
+# Level 13 imports - PROPER PROTO ACCESS
+import grpc
+import sys
+sys.path.append('/app/backend/api_gateway/libs')
+
+router = APIRouter()
+
+class ChatRequest(BaseModel):
+    user_id: str
+    session_id: str
+    message: str
+    tenant_id: str
+
+class ChatResponse(BaseModel):
+    reply: str
+
+class CustomerChatRequest(BaseModel):
+    session_id: str = "anonymous"
+    message: str
+
+# Enhanced Level 13 Context Client - TIER 1 METHODS ADDED
+class Level13ContextClient:
+    """Full Level 13 Customer Context Service Integration - TIER 1 EXPANSION"""
+    
+    def __init__(self, host: str = "cust_context", port: int = 5008):
+        self.host = host
+        self.port = port
+    
+    async def create_context(self, session_id: str, tenant_id: str, ttl_seconds: int = 3600):
+        """Create new conversation context"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+            from cust_context_pb2 import CreateContextRequest
+            from cust_context_pb2_grpc import CustContextServiceStub
+            
+            stub = CustContextServiceStub(channel)
+            request = CreateContextRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                ttl_seconds=ttl_seconds
+            )
+            response = await stub.CreateContext(request)
+            await channel.close()
+            return response.success
+        except Exception as e:
+            print(f"⚠️ CreateContext error: {e}")
+            return False
+    
+    async def update_context(self, session_id: str, tenant_id: str, message: str, entities: list):
+        """Update conversation context with new turn and entities"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+            from cust_context_pb2 import UpdateContextRequest
+            from cust_context_pb2_grpc import CustContextServiceStub
+            
+            stub = CustContextServiceStub(channel)
+            entities_json = json.dumps(entities) if entities else ""
+            
+            request = UpdateContextRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_query=message,
+                entities=entities_json
+            )
+            response = await stub.UpdateContext(request)
+            await channel.close()
+            print(f"✅ Level 13 UpdateContext: success={response.success}")
+            return response.success
+        except Exception as e:
+            print(f"⚠️ UpdateContext error: {e}")
+            return False
+    
+    async def disambiguate_entity(self, session_id: str, tenant_id: str, ambiguous_reference: str):
+        """Resolve ambiguous references like 'yang itu', 'yang tadi'"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+            from cust_context_pb2 import DisambiguateEntityRequest
+            from cust_context_pb2_grpc import CustContextServiceStub
+            
+            stub = CustContextServiceStub(channel)
+            request = DisambiguateEntityRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                ambiguous_entity=ambiguous_reference,
+                context_hint=ambiguous_reference
+            )
+            response = await stub.DisambiguateEntity(request)
+            await channel.close()
+            
+            print(f"🎯 Level 13 DisambiguateEntity: {response.clarified_entity}")
+            return {
+                'success': response.success,
+                'clarified_entity': response.clarified_entity,
+                'entity_type': response.entity_type,
+                'confidence': response.disambiguation_confidence
+            }
+        except Exception as e:
+            print(f"⚠️ DisambiguateEntity error: {e}")
+            return {'success': False, 'clarified_entity': '', 'confidence': 0.0}
+    
+    # 🆕 TIER 1 METHOD 1: SetConversationMood
+    async def set_conversation_mood(self, session_id: str, tenant_id: str, detected_mood: str, reason: str = ""):
+        """Set emotional context based on user message analysis"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+            from cust_context_pb2 import SetConversationMoodRequest
+            from cust_context_pb2_grpc import CustContextServiceStub
+            
+            stub = CustContextServiceStub(channel)
+            request = SetConversationMoodRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                mood=detected_mood,
+                reason=reason,
+                confidence=0.8
+            )
+            response = await stub.SetConversationMood(request)
+            await channel.close()
+            
+            print(f"🎭 Level 13 SetConversationMood: {detected_mood} ({response.success})")
+            return {
+                'success': response.success,
+                'previous_mood': response.previous_mood,
+                'message': response.message
+            }
+        except Exception as e:
+            print(f"⚠️ SetConversationMood error: {e}")
+            return {'success': False, 'previous_mood': '', 'message': ''}
+    
+    # 🆕 TIER 1 METHOD 2: TrackUserIntent
+    async def track_user_intent(self, session_id: str, tenant_id: str, intent: str, confidence: float = 0.8):
+        """Track user intent for conversation history and pattern analysis"""
+        try:
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+            from cust_context_pb2 import TrackUserIntentRequest
+            from cust_context_pb2_grpc import CustContextServiceStub
+            
+            stub = CustContextServiceStub(channel)
+            request = TrackUserIntentRequest(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                intent=intent,
+                confidence=confidence,
+                detected_from="semantic_analysis"
+            )
+            response = await stub.TrackUserIntent(request)
+            await channel.close()
+            
+            print(f"🎯 Level 13 TrackUserIntent: {intent} (confidence: {confidence})")
+            return {
+                'success': response.success,
+                'recommended_response_style': response.recommended_response_style,
+                'intent_history': response.intent_history
+            }
+        except Exception as e:
+            print(f"⚠️ TrackUserIntent error: {e}")
+            return {'success': False, 'recommended_response_style': '', 'intent_history': []}
+
+def detect_message_mood(message: str) -> tuple:
+    """Simple mood detection from user message"""
+    message_lower = message.lower()
+    
+    # Frustrated/angry indicators
+    if any(word in message_lower for word in ['susah', 'ribet', 'lama', 'mahal', 'maaf']):
+        return "frustrated", "negative_keywords_detected"
+    
+    # Happy/satisfied indicators  
+    elif any(word in message_lower for word in ['bagus', 'oke', 'terima kasih', 'makasih', 'mantap']):
+        return "satisfied", "positive_keywords_detected"
+    
+    # Confused/questioning indicators
+    elif any(word in message_lower for word in ['gimana', 'bagaimana', 'bingung', 'tidak tahu']):
+        return "confused", "question_pattern_detected"
+    
+    # Urgent/impatient indicators
+    elif any(word in message_lower for word in ['cepat', 'urgent', 'penting', 'segera']):
+        return "urgent", "urgency_keywords_detected"
+    
+    # Default neutral
+    else:
+        return "neutral", "no_specific_mood_indicators"
+
+def detect_user_intent(message: str, entities: list) -> str:
+    """Enhanced intent detection based on message and entities"""
+    message_lower = message.lower()
+    
+    # Product inquiry intents
+    if any(entity.get('type') == 'product' for entity in entities):
+        if any(word in message_lower for word in ['harga', 'biaya', 'berapa']):
+            return "product_pricing_inquiry"
+        elif any(word in message_lower for word in ['syarat', 'dokumen', 'requirement']):
+            return "product_requirements_inquiry"
+        elif any(word in message_lower for word in ['fitur', 'benefit', 'keuntungan']):
+            return "product_features_inquiry"
+        else:
+            return "general_product_inquiry"
+    
+    # Service-related intents
+    elif any(word in message_lower for word in ['buka rekening', 'daftar', 'apply']):
+        return "account_opening_intent"
+    elif any(word in message_lower for word in ['complaint', 'keluhan', 'masalah']):
+        return "complaint_intent"
+    elif any(word in message_lower for word in ['lokasi', 'cabang', 'atm']):
+        return "location_inquiry"
+    
+    # Reference resolution intents
+    elif any(word in message_lower for word in ['yang itu', 'yang tadi', 'itu']):
+        return "reference_resolution_intent"
+    
+    # Default
+    else:
+        return "general_inquiry"
+
+@router.post("/chat/", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    """Setup Mode Chat - Business owner manages chatbot"""
+    chatbot_client = ChatbotClient()
+    intent_client = IntentParserClient()
+    
+    try:
+        parsed = await intent_client.parse(user_id=req.user_id, message=req.message)
+        intent_type = parsed.get("intent_type", "unknown")
+        entities = parsed.get("entities", {})
+        
+        chatbot_response = await chatbot_client.chat(
+            req.user_id, req.session_id, req.message, req.tenant_id
+        )
+        
+        return ChatResponse(reply=chatbot_response)
+        
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"gRPC or HTTP call failed: {str(e)}")
+
+@router.post("/tenant/{tenant_id}/chat", response_model=ChatResponse)
+async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
+    """🚀 ENHANCED Customer Mode Chat - TIER 1 METHODS INTEGRATED"""
+    
+    # Initialize clients
+    rag_crud_client = RagCrudClient()
+    level13_client = Level13ContextClient()
+    
+    def extract_answer_only(faq_content: str) -> str:
+        """Extract only the answer part from FAQ content"""
+        if "A:" in faq_content:
+            answer_part = faq_content.split("A:", 1)[1].strip()
+            return answer_part
+        return faq_content
+    
+    def extract_entities_from_content(content: str, query: str) -> list:
+        """Extract entities from FAQ content for Level 13 context"""
+        entities = []
+        
+        # Extract product/service mentions
+        products = ['tahapan xpresi', 'tahapan bca', 'tabunganku', 'tapres', 'simpel']
+        for product in products:
+            if product.lower() in content.lower() or product.lower() in query.lower():
+                entities.append({
+                    'type': 'product',
+                    'name': product.title(),
+                    'details': {'mentioned_in': 'faq_response', 'turn': 'current'}
+                })
+        
+        # Extract pricing entities
+        if any(word in query.lower() for word in ['harga', 'biaya', 'setoran', 'admin']):
+            entities.append({
+                'type': 'intent', 
+                'name': 'pricing_inquiry',
+                'details': {'category': 'pricing', 'user_intent': 'price_information'}
+            })
+        
+        return entities
+    
+    try:
+        # 🎯 STEP 1: LEVEL 13 CONTEXT INITIALIZATION
+        print(f"🚀 Level 13 Tier 1 Integration - Session: {req.session_id}")
+        context_created = await level13_client.create_context(
+            session_id=req.session_id,
+            tenant_id=tenant_id,
+            ttl_seconds=3600
+        )
+        print(f"✅ Level 13 Context Created: {context_created}")
+        
+        # 🆕 STEP 2: TIER 1 - MOOD DETECTION & TRACKING
+        detected_mood, mood_reason = detect_message_mood(req.message)
+        mood_result = await level13_client.set_conversation_mood(
+            session_id=req.session_id,
+            tenant_id=tenant_id,
+            detected_mood=detected_mood,
+            reason=mood_reason
+        )
+        print(f"🎭 Mood tracked: {detected_mood} (previous: {mood_result.get('previous_mood', 'none')})")
+        
+        # 🎯 STEP 3: REFERENCE RESOLUTION WITH LEVEL 13
+        reference_patterns = ['yang tadi', 'yang itu', 'yang paling', 'yang pertama', 'yang kedua', 'itu tadi']
+        has_reference = any(pattern in req.message.lower() for pattern in reference_patterns)
+        
+        if has_reference:
+            print(f"🔍 Reference detected: '{req.message}'")
+            disambig_result = await level13_client.disambiguate_entity(
+                session_id=req.session_id,
+                tenant_id=tenant_id,
+                ambiguous_reference=req.message
+            )
+            
+            if disambig_result['success'] and disambig_result['clarified_entity']:
+                print(f"🎯 Level 13 Disambiguation: {disambig_result['clarified_entity']}")
+                enhanced_query = f"{req.message} {disambig_result['clarified_entity']}"
+            else:
+                enhanced_query = req.message
+            
+            matching_faqs = await rag_crud_client.search_documents(tenant_id, enhanced_query, top_k=3)
+        else:
+            matching_faqs = await rag_crud_client.search_documents(tenant_id, req.message, top_k=3)
+        
+        # 🎯 STEP 4: GENERATE RESPONSE
+        if matching_faqs:
+            raw_content = matching_faqs[0].content
+            response = extract_answer_only(raw_content)
+            
+            # Extract entities for context
+            entities = extract_entities_from_content(raw_content, req.message)
+            
+            # 🆕 STEP 5: TIER 1 - INTENT TRACKING
+            detected_intent = detect_user_intent(req.message, entities)
+            intent_result = await level13_client.track_user_intent(
+                session_id=req.session_id,
+                tenant_id=tenant_id,
+                intent=detected_intent,
+                confidence=0.8
+            )
+            print(f"🎯 Intent tracked: {detected_intent}")
+            
+            # 🎯 STEP 6: LEVEL 13 CONTEXT UPDATE
+            update_success = await level13_client.update_context(
+                session_id=req.session_id,
+                tenant_id=tenant_id,
+                message=req.message,
+                entities=entities
+            )
+            print(f"✅ Level 13 Context Updated: {update_success}, Entities: {len(entities)}")
+            
+            return ChatResponse(reply=response)
+        else:
+            # Even no match - still update context for conversation continuity
+            await level13_client.update_context(
+                session_id=req.session_id,
+                tenant_id=tenant_id,
+                message=req.message,
+                entities=[]
+            )
+            
+            return ChatResponse(reply="Maaf, saya belum memiliki informasi yang Anda cari. Bisa coba tanyakan dengan kata kunci yang berbeda?")
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Customer chat failed: {str(e)}")
+
+# 🧠 TIER 1 HELPER FUNCTIONS
+def detect_conversation_flow(message, entities, previous_intent=""):
+    """Detect conversation flow progression"""
+    message_lower = message.lower()
+    
+    if any(word in message_lower for word in ["gimana", "cara", "bagaimana", "langkah"]):
+        if previous_intent == "product_inquiry":
+            return "process_inquiry"
+        return "process_question"
+    
+    if any(word in message_lower for word in ["berapa", "harga", "biaya", "admin"]):
+        return "pricing_flow"
+    
+    if any(word in message_lower for word in ["syarat", "dokumen", "butuh"]):
+        return "requirement_inquiry"
+    
+    if any(word in message_lower for word in ["terus", "lalu", "habis itu"]):
+        return "sequential_follow_up"
+    
+    return "initial_inquiry"
+
+def predict_next_questions(current_intent, conversation_flow, entities):
+    """Predict likely next user questions"""
+    predictions = []
+    
+    if current_intent == "product_pricing_inquiry":
+        predictions = ["Gimana cara buka rekeningnya?", "Dokumen apa aja yang dibutuhkan?"]
+    elif current_intent == "general_product_inquiry":
+        predictions = ["Berapa setoran awalnya?", "Admin bulanannya berapa?"]
+    elif conversation_flow == "process_question":
+        predictions = ["Berapa lama prosesnya?", "Ribet gak sih?"]
+    
+    return predictions[:2]

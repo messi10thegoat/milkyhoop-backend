@@ -1,0 +1,13 @@
+{
+  "flow_id": "sample-dining-v1",
+  "trigger_id": "exec-001",
+  "context": {
+    "user_id": "user-abc",
+    "tenant_id": "tenant-xyz"
+  },
+  "nodes": [
+    { "id": "n1", "hoop": "ShowMenu", "input": {} },
+    { "id": "n2", "hoop": "CreateOrder", "input_from": "n1" },
+    { "id": "n3", "hoop": "SendNotification", "input_from": "n2" }
+  ]
+}

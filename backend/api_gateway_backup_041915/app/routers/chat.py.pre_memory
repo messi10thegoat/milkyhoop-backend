@@ -1,0 +1,182 @@
+import asyncio
+import httpx
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backend.api_gateway.app.services.ragcrud_client import RagCrudClient
+from backend.api_gateway.app.services.chatbot_client import ChatbotClient
+from backend.api_gateway.app.services.ragllm_client import RagLLMClient
+from backend.api_gateway.app.services.tenant_client import TenantParserClient
+from backend.api_gateway.app.services.intent_client import IntentParserClient
+from backend.api_gateway.app.services.complaint_client import ComplaintServiceClient
+
+
+router = APIRouter()
+
+class ChatRequest(BaseModel):
+    user_id: str
+    session_id: str
+    message: str
+    tenant_id: str
+
+class ChatResponse(BaseModel):
+    reply: str
+
+class CustomerChatRequest(BaseModel):
+    session_id: str = "anonymous"
+    message: str
+
+@router.post("/chat/", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    intent_parser = IntentParserClient()
+    complaint_client = ComplaintServiceClient()
+    chatbot_client = ChatbotClient()
+
+    try:
+        # 1️⃣ Parse intent dan entities
+        parsed = await intent_parser.parse(user_id=req.user_id, message=req.message)
+
+        intent = parsed.get("intent", "unknown")
+        entities = parsed.get("entities", {})
+
+        print("=== INTENT DEBUG ===")
+        print("Intent:", intent)
+        print("Entities:", entities)
+        print(f"=== INTENT CHECK ===")
+        print(f"Intent value: '{intent}'")
+        print(f"Is product_inquiry: {intent == 'product_inquiry'}")
+        print(f"In list check: {intent in ['product_inquiry', 'pricing_inquiry', 'service_info']}")
+
+        # 2️⃣ Mapping intent → flow
+        flow_map = {
+            "complaint": "complaint-handler.json",
+            "order_request": "order-menu.json",
+            "faq_query": "faq-handler.json",
+            "product_inquiry": "customer-inquiry-handler.json"
+        }
+
+
+        flow_file = flow_map.get(intent)
+        if flow_file:
+            async with httpx.AsyncClient() as client:
+                flow_response = await client.post(
+                    f"http://flow-executor:8088/run-flow/{flow_file}",
+                    json={
+                        "user_id": req.user_id,
+                        "message": req.message,
+                        "tenant_id": req.tenant_id,
+                        "session_id": req.session_id
+                    }
+                )
+                flow_result = flow_response.text
+
+        elif intent == "complaint":
+            # Tangani komplain jika tidak lewat flow
+            product_data = entities.get("Product / Service Issue (Retur, Komplain)", {})
+            customer_data = entities.get("Customer", {})
+
+            complaint_data = {
+                "user_id": req.user_id,
+                "message": req.message,
+                "product": product_data.get("product") or "",
+                "source": "chatbot",
+                "emotion": customer_data.get("emotion") or ""
+            }
+
+            try:
+                result = await complaint_client.create_complaint(**complaint_data)
+                flow_result = f"✅ Komplain kamu sudah dicatat dengan ID: {result.complaint_id}"
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                flow_result = "❌ Komplain gagal dicatat. Coba lagi nanti."
+        else:
+            # 3️⃣ Fallback ke chatbot
+            flow_result = await chatbot_client.send_message(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                message=req.message,
+                tenant_id=req.tenant_id
+            )
+
+        print("=== CHATBOT FALLBACK DEBUG ===")
+        print("Reply:", flow_result)
+
+        return ChatResponse(reply=flow_result)
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"gRPC or HTTP call failed: {str(e)}")
+
+@router.post("/tenant/{tenant_id}/chat", response_model=ChatResponse)
+async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
+    tenant_parser_client = TenantParserClient()
+    rag_crud_client = RagCrudClient()
+    rag_llm_client = RagLLMClient()
+    
+    try:
+        # 1. Use tenant_parser for customer intent classification
+        parsed = await tenant_parser_client.parse(user_id="customer", message=req.message)
+
+        print("=== RAW TENANT PARSER RESPONSE ===")
+        print("Parsed:", parsed)
+
+        # ✅ FIXED: tenant_client.py returns direct format
+        intent = parsed.get("intent", "general_inquiry")  
+        entities = parsed.get("entities", {})
+        
+        print("=== CUSTOMER INTENT DEBUG ===")
+        print("Intent:", intent)
+        print("Entities:", entities)
+        print("Tenant ID:", tenant_id)
+        
+        # 2. Handle customer intents using ragcrud_client (SAME AS SETUP MODE PATTERN)
+        if intent in ["product_inquiry", "pricing_inquiry", "service_info", "booking_request", "order_request"]:
+            search_query = entities.get('FAQ', {}).get('question', req.message)  # Extract: "ukuran apa aja"
+            # Use ragcrud_client like setup mode does
+            matching_faqs = await rag_crud_client.search_documents(tenant_id, search_query, top_k=3)
+            # ADD THIS DEBUG:
+            print(f"=== SEARCH DEBUG ===")
+            print(f"Search query: '{search_query}'")
+            print(f"Matching FAQs found: {len(matching_faqs)}")
+            if matching_faqs:
+                print(f"First FAQ content: {matching_faqs[0].content[:100]}...")
+            if matching_faqs:
+                response = matching_faqs[0].content
+            else:
+                response = f"Maaf, informasi yang Anda cari belum tersedia. Bisa hubungi admin untuk info lebih lanjut."
+        
+        else:
+            # 3. Fallback to LLM for general chat
+            # Customer fallback for general queries
+            response = "Maaf, informasi yang Anda cari belum tersedia dalam FAQ kami. Untuk bantuan lebih lanjut, silakan hubungi customer service kami."
+        
+        return ChatResponse(reply=response)
+        
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Customer chat failed: {str(e)}")
+
+@router.get("/test-ragcrud")
+async def test_rag_document():
+    client = RagCrudClient()
+    try:
+        result = await client.get_document("24")  # ganti ID sesuai isi DB
+        return {
+            "id": result.id,
+            "title": result.title,
+            "content": result.content,
+        }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"RAG gRPC error: {str(e)}")
+
+@router.post("/chat-direct-rag")
+async def chat_direct_rag(req: ChatRequest):
+    rag_client = RagLLMClient()
+    response = await rag_client.generate_answer(
+        user_id=req.user_id,
+        session_id=req.session_id,
+        tenant_id=req.tenant_id,
+        message=req.message
+    )
+    return {"reply": response}

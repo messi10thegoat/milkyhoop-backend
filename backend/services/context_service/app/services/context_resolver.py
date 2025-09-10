@@ -1,0 +1,501 @@
+"""
+Context Resolver Service - LLM-Based Reference Resolution
+Handles reference resolution for conversational AI using OpenAI
+"""
+
+import asyncio
+from typing import Dict, List, Optional, Any
+import json
+import redis.asyncio as redis
+from datetime import datetime
+from openai import AsyncOpenAI
+from milkyhoop_prisma import Prisma
+import os
+
+class ContextResolver:
+    def __init__(self):
+        self.redis_client = None
+        self.prisma_client = None
+        self.openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+    async def initialize(self):
+        """Initialize Redis and Prisma connections"""
+        self.redis_client = redis.from_url("redis://redis:6379")
+        self.prisma_client = Prisma()
+        await self.prisma_client.connect()
+    
+    async def resolve_reference(self, message: str, session_id: str, tenant_id: str) -> Dict[str, Any]:
+        """
+        Resolve implicit references using LLM-based analysis
+        """
+        
+        # Get conversation context
+        context = await self._get_conversation_context(session_id, tenant_id)
+        
+        # Use LLM to identify and resolve references
+        reference_analysis = await self._llm_analyze_references(message, context)
+        
+        if not reference_analysis.get("has_references", False):
+            return {
+                "resolved_message": message,
+                "references": [],
+                "confidence": 1.0
+            }
+        
+        # Resolve each detected reference
+        resolved_references = []
+        resolved_message = message
+        
+        for ref_data in reference_analysis.get("references", []):
+            resolved_entity = await self._resolve_reference_with_context(ref_data, context, tenant_id)
+            if resolved_entity:
+                resolved_references.append(resolved_entity)
+                # Replace reference with resolved entity
+                resolved_message = resolved_message.replace(
+                    ref_data["reference_text"], 
+                    resolved_entity.get("entity_value", ref_data["reference_text"])
+                )
+        
+        return {
+            "resolved_message": resolved_message,
+            "references": resolved_references,
+            "confidence": reference_analysis.get("confidence", 0.8)
+        }
+    
+    async def _llm_analyze_references(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Use LLM to analyze references in the message"""
+        
+        system_prompt = """
+        Anda adalah ahli analisis referensi dalam percakapan bahasa Indonesia untuk bisnis.
+        Tugas: Identifikasi referensi implisit dalam pesan user dan tentukan apa yang dirujuk.
+
+        Jenis referensi yang harus dideteksi:
+        1. Temporal: "yang tadi", "yang kemarin", "sebelumnya", "yang barusan"
+        2. Demonstrative: "itu", "ini", "yang itu", "yang ini"
+        3. Contextual: "yang kita bahas", "yang disebutkan", "topik tersebut"
+        4. Entity-specific: "harga itu", "menu tersebut", "jam tadi"
+
+        Respons dalam JSON format:
+        {
+            "has_references": boolean,
+            "references": [
+                {
+                    "reference_text": "string yang dirujuk dalam pesan",
+                    "reference_type": "temporal|demonstrative|contextual|entity_specific",
+                    "likely_target": "apa yang kemungkinan dirujuk berdasarkan context",
+                    "confidence": 0.0-1.0
+                }
+            ],
+            "confidence": 0.0-1.0
+        }
+        """
+        
+        user_prompt = f"""
+        Pesan user: "{message}"
+        
+        Context percakapan sebelumnya:
+        - Topik terakhir: {context.get('last_topic', 'tidak ada')}
+        - Entity terakhir: {context.get('last_entity', {}).get('value', 'tidak ada')}
+        - Aksi terakhir: {context.get('last_action', 'tidak ada')}
+        - 3 turn terakhir: {json.dumps(context.get('conversation_turns', [])[-3:], indent=2)}
+        
+        Analisis referensi dalam pesan user dan berikan respons JSON.
+        """
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500
+            )
+            
+            content = response.choices[0].message.content.strip()
+            # Extract JSON from response
+            if content.startswith("```json"):
+                content = content[7:-3]
+            elif content.startswith("```"):
+                content = content[3:-3]
+                
+            return json.loads(content)
+            
+        except Exception as e:
+            print(f"Error in LLM reference analysis: {e}")
+            return {
+                "has_references": False,
+                "references": [],
+                "confidence": 0.0
+            }
+    
+    async def _resolve_reference_with_context(self, ref_data: Dict[str, Any], context: Dict[str, Any], tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve reference using context and business data"""
+        
+        reference_type = ref_data.get("reference_type")
+        likely_target = ref_data.get("likely_target", "")
+        
+        if reference_type == "temporal":
+            # Resolve temporal references (yang tadi, kemarin, etc.)
+            return await self._resolve_temporal_reference(ref_data, context, tenant_id)
+            
+        elif reference_type in ["demonstrative", "contextual", "entity_specific"]:
+            # Resolve to last mentioned entity or context
+            return await self._resolve_contextual_reference(ref_data, context, tenant_id)
+        
+        return None
+    
+
+    async def _resolve_temporal_reference(self, ref_data: Dict[str, Any], context: Dict[str, Any], tenant_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve temporal references with STRICT preservation of temporal words
+        CRITICAL: Pure temporal words must NEVER be replaced with business context
+        """
+        
+        reference_text = ref_data.get("reference_text", "").lower().strip()
+        
+        # CRITICAL: Pure temporal words that should NEVER be replaced
+        PURE_TEMPORAL_WORDS = {
+            'sebelumnya', 'kemarin', 'minggu lalu', 'bulan lalu', 'tahun lalu',
+            'nanti', 'besok', 'minggu depan', 'bulan depan', 'tahun depan', 
+            'dulu', 'lampau', 'yang akan datang', 'ke depan'
+        }
+        
+        # CRITICAL: Contextual references that CAN be replaced
+        CONTEXTUAL_REFERENCES = {
+            'yang tadi', 'yang kemarin', 'yang barusan', 'yang sebelumnya',
+            'yang minggu lalu', 'yang bulan lalu', 'itu tadi', 'tadi itu'
+        }
+        
+        # Step 1: Check for PURE temporal words - NEVER replace these
+        for temporal_word in PURE_TEMPORAL_WORDS:
+            if temporal_word == reference_text or temporal_word in reference_text:
+                # PRESERVE: Return None to indicate NO REPLACEMENT
+                return None
+        
+        # Step 2: Check for CONTEXTUAL references - these CAN be replaced with business context
+        for contextual_ref in CONTEXTUAL_REFERENCES:
+            if contextual_ref in reference_text:
+                last_entity = context.get("last_entity")
+                if last_entity and last_entity.get("value"):
+                    return {
+                        "reference": ref_data.get("reference_text"),
+                        "entity_type": last_entity.get("type", "business_entity"),
+                        "entity_id": last_entity.get("id"),
+                        "entity_value": last_entity.get("value"),
+                        "confidence": 0.9,
+                        "replacement_type": "contextual_reference"
+                    }
+        
+        # Step 3: Handle standalone contextual words (ambiguous cases)
+        if reference_text in ['tadi', 'barusan']:
+            # Only replace if there's strong business context
+            last_entity = context.get("last_entity")
+            if last_entity and last_entity.get("value"):
+                # Check if last entity is recent (within same conversation)
+                last_interaction = context.get("last_interaction_time")
+                if last_interaction:  # Has recent context
+                    return {
+                        "reference": ref_data.get("reference_text"),
+                        "entity_type": last_entity.get("type", "business_entity"),
+                        "entity_id": last_entity.get("id"),
+                        "entity_value": last_entity.get("value"),
+                        "confidence": 0.7,
+                        "replacement_type": "recent_context"
+                    }
+        
+        # Step 4: Historical references - check previous sessions
+        if any(word in reference_text for word in ["kemarin", "sebelum"]) and "yang" in reference_text:
+            return await self._resolve_historical_reference(ref_data, tenant_id)
+        
+        # Default: No replacement needed
+        return None
+    
+    async def _resolve_contextual_reference(self, ref_data: Dict[str, Any], context: Dict[str, Any], tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve contextual references using conversation context"""
+        
+        likely_target = ref_data.get("likely_target", "").lower()
+        
+        # Try to match with last entity based on likely target
+        last_entity = context.get("last_entity")
+        if last_entity and likely_target:
+            entity_value = last_entity.get("value", "").lower()
+            
+            # Simple semantic matching - can be enhanced with embeddings
+            if any(word in entity_value for word in likely_target.split()):
+                return {
+                    "reference": ref_data.get("reference_text"),
+                    "entity_type": last_entity.get("type"),
+                    "entity_id": last_entity.get("id"), 
+                    "entity_value": last_entity.get("value"),
+                    "confidence": 0.8
+                }
+        
+        # Fallback: try to find relevant business data
+        return await self._search_business_context(likely_target, tenant_id)
+    
+    async def _resolve_historical_reference(self, ref_data: Dict[str, Any], tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve references to previous conversations"""
+        
+        history_key = f"conversation:{tenant_id}:history"
+        
+        try:
+            history_data = await self.redis_client.lrange(history_key, 0, 5)  # Last 5 sessions
+            if history_data:
+                # Use LLM to find most relevant historical context
+                relevant_context = await self._llm_find_historical_match(ref_data, history_data)
+                return relevant_context
+                
+        except Exception as e:
+            print(f"Error resolving historical reference: {e}")
+        
+        return None
+    
+    async def _search_business_context(self, target: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Search business data for contextual matches"""
+        
+        if not target:
+            return None
+            
+        try:
+            docs = await self.prisma_client.ragdocument.find_many(
+                where={
+                    "tenantId": tenant_id,
+                    "OR": [
+                        {"content": {"contains": target, "mode": "insensitive"}},
+                        {"title": {"contains": target, "mode": "insensitive"}}
+                    ]
+                },
+                take=3
+            )
+            
+            if docs:
+                return {
+                    "reference": target,
+                    "entity_type": "business_data",
+                    "entity_id": docs[0].id,
+                    "entity_value": docs[0].content,
+                    "confidence": 0.7
+                }
+                
+        except Exception as e:
+            print(f"Error searching business context: {e}")
+        
+        return None
+    
+    async def _llm_find_historical_match(self, ref_data: Dict[str, Any], history_data: List[str]) -> Optional[Dict[str, Any]]:
+        """Use LLM to find the most relevant historical context"""
+        
+        system_prompt = """
+        Temukan konteks historis yang paling relevan untuk referensi user.
+        Berikan respons dalam JSON format dengan informasi yang paling cocok.
+        """
+        
+        user_prompt = f"""
+        Referensi user: {ref_data}
+        History percakapan: {history_data[:3]}  # Limit untuk token
+        
+        Temukan konteks yang paling relevan dan berikan:
+        {{
+            "matched": boolean,
+            "entity_value": "string",
+            "confidence": 0.0-1.0
+        }}
+        """
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=200
+            )
+            
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```json"):
+                content = content[7:-3]
+            elif content.startswith("```"):
+                content = content[3:-3]
+                
+            result = json.loads(content)
+            
+            if result.get("matched", False):
+                return {
+                    "reference": ref_data.get("reference_text"),
+                    "entity_type": "historical_context",
+                    "entity_value": result.get("entity_value"),
+                    "confidence": result.get("confidence", 0.7)
+                }
+                
+        except Exception as e:
+            print(f"Error in LLM historical matching: {e}")
+        
+        return None
+    
+    async def _get_conversation_context(self, session_id: str, tenant_id: str) -> Dict[str, Any]:
+        """Get current conversation context from Redis"""
+        
+        context_key = f"conversation:{tenant_id}:{session_id}:context"
+        
+        try:
+            context_data = await self.redis_client.get(context_key)
+            if context_data:
+                return json.loads(context_data)
+        except Exception as e:
+            print(f"Error getting context: {e}")
+        
+        return {
+            "last_topic": None,
+            "last_entity": None,
+            "last_action": None,
+            "conversation_turns": [],
+            "entities_mentioned": {}
+        }
+    
+    async def store_conversation_turn(self, session_id: str, tenant_id: str, turn_data: Dict[str, Any]):
+        """Store conversation turn for future reference resolution"""
+        
+        context_key = f"conversation:{tenant_id}:{session_id}:context"
+        
+        current_context = await self._get_conversation_context(session_id, tenant_id)
+        
+        # Update with new turn data
+        if "entities" in turn_data:
+            current_context["last_entity"] = turn_data["entities"]
+        
+        if "topic" in turn_data:
+            current_context["last_topic"] = turn_data["topic"]
+            
+        if "action" in turn_data:
+            current_context["last_action"] = turn_data["action"]
+        
+        # Add to conversation turns
+        current_context["conversation_turns"].append({
+            "timestamp": datetime.now().isoformat(),
+            "user_message": turn_data.get("user_message", ""),
+            "system_response": turn_data.get("system_response", ""),
+            "entities": turn_data.get("entities", {}),
+            "resolved_references": turn_data.get("resolved_references", [])
+        })
+        
+        # Keep only last 10 turns
+        current_context["conversation_turns"] = current_context["conversation_turns"][-10:]
+        
+        # Store updated context
+        await self.redis_client.setex(
+            context_key, 
+            7200,  # 2 hours TTL
+            json.dumps(current_context)
+        )
+    
+    async def get_proactive_data(self, topics: List[str], tenant_id: str) -> Dict[str, Any]:
+        """Fetch relevant business data based on detected topics using LLM"""
+        
+        if not topics:
+            return {}
+        
+        # Use LLM to determine what data to fetch
+        data_requirements = await self._llm_determine_data_needs(topics, tenant_id)
+        
+        proactive_data = {}
+        
+        for requirement in data_requirements:
+            data_type = requirement.get("data_type")
+            search_terms = requirement.get("search_terms", [])
+            
+            if data_type and search_terms:
+                fetched_data = await self._fetch_business_data(data_type, search_terms, tenant_id)
+                if fetched_data:
+                    proactive_data[data_type] = fetched_data
+        
+        return proactive_data
+    
+    async def _llm_determine_data_needs(self, topics: List[str], tenant_id: str) -> List[Dict[str, Any]]:
+        """Use LLM to determine what business data to fetch"""
+        
+        system_prompt = """
+        Berdasarkan topik percakapan, tentukan data bisnis apa yang perlu diambil secara proaktif.
+        
+        Jenis data yang tersedia:
+        - pricing: harga, biaya, tarif
+        - operating_hours: jam buka, operasional
+        - location: alamat, lokasi
+        - menu: makanan, produk, layanan
+        - contact: kontak, telepon, WhatsApp
+        
+        Berikan respons JSON:
+        [
+            {
+                "data_type": "pricing|operating_hours|location|menu|contact",
+                "search_terms": ["kata1", "kata2"],
+                "relevance": 0.0-1.0
+            }
+        ]
+        """
+        
+        user_prompt = f"Topik percakapan: {topics}\nTentukan data apa yang perlu diambil."
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=300
+            )
+            
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```json"):
+                content = content[7:-3]
+            elif content.startswith("```"):
+                content = content[3:-3]
+                
+            return json.loads(content)
+            
+        except Exception as e:
+            print(f"Error determining data needs: {e}")
+            return []
+    
+    async def _fetch_business_data(self, data_type: str, search_terms: List[str], tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch specific business data from database"""
+        
+        try:
+            # Build search conditions
+            search_conditions = []
+            for term in search_terms:
+                search_conditions.extend([
+                    {"content": {"contains": term, "mode": "insensitive"}},
+                    {"title": {"contains": term, "mode": "insensitive"}}
+                ])
+            
+            docs = await self.prisma_client.ragdocument.find_many(
+                where={
+                    "tenantId": tenant_id,
+                    "OR": search_conditions
+                },
+                take=3,
+                order_by={"updatedAt": "desc"}
+            )
+            
+            if docs:
+                return {
+                    "data_type": data_type,
+                    "current_value": docs[0].content,
+                    "source": f"FAQ_ID_{docs[0].id}",
+                    "last_updated": docs[0].updatedAt.isoformat(),
+                    "search_terms": search_terms
+                }
+                
+        except Exception as e:
+            print(f"Error fetching business data: {e}")
+        
+        return None
+
+# Global instance
+context_resolver = ContextResolver()

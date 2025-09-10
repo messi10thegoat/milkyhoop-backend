@@ -1,0 +1,204 @@
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+# Import services with proper error handling
+services_available = {}
+
+# Temporarily disable tenant parser since it's having Prisma issues
+services_available['tenant'] = False
+tenant_client = None
+logger.warning("⚠️ Tenant parser disabled due to Prisma issues")
+
+try:
+    from services.intent_client import IntentParserClient
+    intent_client = IntentParserClient()
+    services_available['intent'] = True
+    logger.info("✅ Intent parser client loaded")
+except Exception as e:
+    services_available['intent'] = False
+    logger.error(f"❌ Intent parser client failed: {e}")
+    intent_client = None
+
+try:
+    from services.ragcrud_client import RagCrudClient
+    rag_client = RagCrudClient()
+    services_available['rag'] = True
+    logger.info("✅ RAG CRUD client loaded")
+except Exception as e:
+    services_available['rag'] = False
+    logger.error(f"❌ RAG CRUD client failed: {e}")
+    rag_client = None
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    reply: str
+    session_id: str
+    metadata: Optional[Dict[str, Any]] = None
+
+@router.post("/chat/")
+async def chat_endpoint(request: ChatRequest):
+    """Setup mode - Business owner managing chatbot"""
+    try:
+        logger.info(f"Setup mode - User: {request.user_id}, Tenant: {request.tenant_id}, Message: {request.message}")
+        
+        tenant_id = request.tenant_id or "default"
+        message_lower = request.message.lower()
+        
+        # Try intent parser if available
+        if services_available.get('intent') and intent_client:
+            try:
+                result = await intent_client.parse_intent(
+                    message=request.message,
+                    tenant_id=tenant_id
+                )
+                
+                if result and result.get('response'):
+                    return ChatResponse(
+                        reply=result['response'],
+                        session_id=request.session_id,
+                        metadata={
+                            "mode": "setup",
+                            "service": "intent_parser",
+                            "intent": result.get('intent')
+                        }
+                    )
+            except Exception as e:
+                logger.error(f"Intent parser error: {e}")
+        
+        # Fallback responses
+        if "tambah" in message_lower and "faq" in message_lower:
+            response = "Baik! Silakan berikan FAQ dengan format:\nTanya: [pertanyaan]\nJawab: [jawaban]"
+        elif "lihat" in message_lower and "faq" in message_lower:
+            response = "Daftar FAQ:\n1. Jam buka? - Setiap hari 09:00-21:00\n2. Cara order? - Via WhatsApp atau website\n3. Bahan produk? - Cotton premium"
+        elif "help" in message_lower:
+            response = "Hai! Saya Milky ��\nPerintah yang tersedia:\n• lihat FAQ\n• tambah FAQ\n• ubah FAQ\n• hapus FAQ"
+        else:
+            response = f"Mode setup aktif. Ketik 'help' untuk bantuan."
+        
+        return ChatResponse(
+            reply=response,
+            session_id=request.session_id,
+            metadata={"mode": "setup", "service": "fallback", "tenant": tenant_id}
+        )
+        
+    except Exception as e:
+        logger.error(f"Setup mode error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tenant/{tenant_id}/chat")
+async def tenant_chat_endpoint(tenant_id: str, request: ChatRequest):
+    """Customer mode - Using enhanced fallback since tenant parser is down"""
+    try:
+        logger.info(f"Customer mode - Tenant: {tenant_id}, Message: {request.message}")
+        
+        # Enhanced keyword matching system
+        message_lower = request.message.lower()
+        
+        # Response database
+        responses = {
+            # Product inquiries
+            "bahan": {
+                "response": "Produk kami menggunakan bahan Cotton Premium 100% berkualitas tinggi, lembut, dan nyaman dipakai sehari-hari.",
+                "intent": "product_inquiry"
+            },
+            "kaos": {
+                "response": "Kami menyediakan berbagai model kaos: Basic Tee, V-Neck, Polo, dan Oversized. Harga mulai 150rb.",
+                "intent": "product_inquiry"
+            },
+            "celana": {
+                "response": "Koleksi celana kami: Chinos, Jeans, Jogger, dan Short Pants. Harga 350rb - 450rb.",
+                "intent": "product_inquiry"
+            },
+            "jaket": {
+                "response": "Tersedia Bomber Jacket, Hoodie, Windbreaker. Harga 500rb - 750rb.",
+                "intent": "product_inquiry"
+            },
+            
+            # Pricing
+            "harga": {
+                "response": "Daftar harga:\n• Kaos: 150rb - 200rb\n• Celana: 350rb - 450rb\n• Jaket: 500rb - 750rb\nAda promo untuk pembelian 3 pcs!",
+                "intent": "pricing_inquiry"
+            },
+            
+            # Order process
+            "order": {
+                "response": "Cara order mudah:\n1. Pilih produk\n2. Hubungi WA 08123456789\n3. Kirim foto produk & ukuran\n4. Transfer & kirim bukti\n5. Pesanan diproses!",
+                "intent": "booking_request"
+            },
+            "pesan": {
+                "response": "Untuk pemesanan bisa langsung WA ke 08123456789 atau kunjungi website kami di www.simpledimple.com",
+                "intent": "booking_request"
+            },
+            
+            # Store info
+            "jam": {
+                "response": "Jam operasional:\n• Senin-Jumat: 09:00 - 21:00\n• Sabtu-Minggu: 10:00 - 22:00\n• Online 24/7 via website",
+                "intent": "hours_inquiry"
+            },
+            "lokasi": {
+                "response": "Lokasi toko:\n📍 SimpleDimple Store\nJl. Fashion District No. 88\nJakarta Selatan\n(Dekat Mall Grand Indonesia)",
+                "intent": "location_inquiry"
+            },
+            
+            # Size and color
+            "ukuran": {
+                "response": "Size chart tersedia:\n• S (Lebar 48cm)\n• M (Lebar 50cm)\n• L (Lebar 52cm)\n• XL (Lebar 54cm)\n• XXL (Lebar 56cm)",
+                "intent": "product_inquiry"
+            },
+            "warna": {
+                "response": "Pilihan warna: Hitam, Putih, Abu-abu, Navy, Maroon, Olive, Cream",
+                "intent": "product_inquiry"
+            }
+        }
+        
+        # Find best match
+        matched = None
+        for keyword, data in responses.items():
+            if keyword in message_lower:
+                matched = data
+                break
+        
+        if matched:
+            return ChatResponse(
+                reply=matched["response"],
+                session_id=request.session_id,
+                metadata={
+                    "mode": "customer",
+                    "tenant": tenant_id,
+                    "intent": matched["intent"],
+                    "service": "enhanced_fallback"
+                }
+            )
+        
+        # Default greeting
+        return ChatResponse(
+            reply=f"Halo! Selamat datang di {tenant_id} 👋\n\nSaya bisa bantu info:\n• Produk & bahan\n• Harga\n• Cara order\n• Jam buka\n• Lokasi toko\n\nAda yang bisa dibantu?",
+            session_id=request.session_id,
+            metadata={"mode": "customer", "tenant": tenant_id, "service": "greeting"}
+        )
+        
+    except Exception as e:
+        logger.error(f"Customer mode error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "api_gateway",
+        "version": "3.0-recovery-no-tenant-parser",
+        "services_available": services_available,
+        "note": "Running without tenant parser due to Prisma issues"
+    }

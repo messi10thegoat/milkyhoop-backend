@@ -1,0 +1,17 @@
+import React from 'react';
+
+function App() {
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>MilkyHoop 3.0 - Development Environment</h1>
+      <p>Frontend is operational!</p>
+      <div>
+        <h2>Services Status</h2>
+        <p>API Gateway: <a href="http://localhost:8001/health">http://localhost:8001/health</a></p>
+        <p>Auth Service: <a href="http://localhost:18001/health">http://localhost:18001/health</a></p>
+      </div>
+    </div>
+  );
+}
+
+export default App;

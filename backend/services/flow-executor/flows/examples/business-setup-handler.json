@@ -1,0 +1,27 @@
+{
+  "name": "Generic Business Setup Handler",
+  "nodes": [
+    {
+      "id": "start",
+      "hoop": "",
+      "next": "fetch_answer"
+    },
+    {
+      "id": "fetch_answer",
+      "hoop": "rag_llm",
+      "parameters": {
+        "query": "Business setup successful for {{input.entities.Business.business_type}} business named {{input.entities.Business.business_name}}. Owner: {{input.entities.Customer.customer_name}}. Category: {{input.entities.Business.category}}. Generate congratulations and next steps.",
+        "tenant_id": "{{input.tenant_id}}"
+      },
+      "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply",
+      "parameters": {
+        "message": "{{fetch_answer.answer}}"
+      },
+      "next": null
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "intent": ["order.create"],
+  "entities": {
+    "customer": {"customer_name": "Alice", "location": "Jakarta"},
+    "order_transaction": {
+      "order_id": "order-001",
+      "item_name": ["Nasi Goreng", "Es Teh"],
+      "quantity": [1, 2]
+    },
+    "product_service_issue": {"reason": ""}
+  }
+}

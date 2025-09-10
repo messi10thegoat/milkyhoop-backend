@@ -1,0 +1,14 @@
+grpcio==1.71.0
+grpcio-tools==1.63.0
+grpcio-health-checking==1.63.0
+protobuf==5.29.0
+grpc-interceptor
+structlog
+tenacity
+python-dotenv
+fastapi
+uvicorn[standard]
+prometheus-client
+prisma==0.15.0
+openai>=1.30.0
+requests>=2.31.0redis>=4.0.0

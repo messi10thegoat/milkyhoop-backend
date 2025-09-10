@@ -1,0 +1,51 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.sqlite3
+*.db
+*.log
+
+# Environment & secrets
+.env
+.env.*
+.secret
+*.pem
+
+# Node.js artifacts
+node_modules/
+!node_modules/.prisma/client/query-engine-debian-openssl-3.0.x
+npm-debug.log
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE & tooling
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+dist/
+build/
+
+# Git & CI/CD
+.git/
+.gitignore
+docker-compose.override.yml
+
+
+# Prisma internal (optional)
+.prisma/
+
+
+logs/*
+!logs/auth-service/**
+
+
+
+

@@ -1,0 +1,16 @@
+{
+  "name": "FAQ Read Handler",
+  "nodes": [
+    {
+      "id": "start", "hoop": "", "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply", 
+      "parameters": {
+        "message": "📋 Lihat FAQ di [Dashboard FAQ](/dashboard/faq?tenant={{tenant_id}})\n\n💬 Atau cari spesifik: 'FAQ tentang harga' atau 'FAQ jam buka'"
+      },
+      "next": null
+    }
+  ]
+}

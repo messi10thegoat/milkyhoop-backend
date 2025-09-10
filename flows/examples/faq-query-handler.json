@@ -1,0 +1,27 @@
+{
+  "name": "FAQ Query Handler - With Fuzzy Search",
+  "nodes": [
+    {
+      "id": "start",
+      "hoop": "",
+      "next": "search_documents"
+    },
+    {
+      "id": "search_documents", 
+      "hoop": "rag_llm",
+      "parameters": {
+        "query": "{{input.entities.entities.FAQ.question}}",
+        "tenant_id": "{{tenant_id}}"
+      },
+      "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply",
+      "parameters": {
+        "message": "{{search_documents.answer}}"
+      },
+      "next": null
+    }
+  ]
+}

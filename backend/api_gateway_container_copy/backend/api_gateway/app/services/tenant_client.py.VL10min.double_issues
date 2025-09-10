@@ -1,0 +1,104 @@
+import grpc
+from typing import Dict, Any, Optional
+import asyncio
+
+class TenantParserClient:
+    def __init__(self):
+        self.channel = None
+        self.stub = None
+        self.is_connected = False
+
+    async def _ensure_connection(self):
+        """Ensure gRPC connection is established"""
+        if not self.is_connected:
+            try:
+                self.channel = grpc.aio.insecure_channel('tenant_parser:5012')
+                
+                # Import working proto files - use intent_parser (they're identical)
+                import sys
+                import os
+                sys.path.append('/app')
+                
+                # Use the working import path
+                from backend.services.tenant_parser.app import intent_parser_pb2_grpc
+                from backend.services.tenant_parser.app import intent_parser_pb2
+                
+                self.stub = intent_parser_pb2_grpc.IntentParserServiceStub(self.channel)
+                self.proto = intent_parser_pb2
+                self.is_connected = True
+                print("✅ Tenant parser client connected successfully")
+                
+            except Exception as e:
+                print(f"❌ Tenant parser client failed: {e}")
+                import traceback
+                traceback.print_exc()
+                self.is_connected = False
+                raise
+
+    async def parse_customer_query(self, tenant_id: str, message: str, session_id: str = "default") -> Dict[str, Any]:
+        """
+        FIXED: Use working intent_parser_pb2 import with correct fields
+        """
+        try:
+            print(f"🚀 Intent Parser Request: tenant={tenant_id}, message={message[:50]}...")
+            
+            # Ensure connection
+            await self._ensure_connection()
+            
+            # Create request with correct fields: user_id and input
+            request = self.proto.IntentParserRequest(
+                user_id=tenant_id,  # Pass tenant as user_id
+                input=message       # Use 'input' field for message
+            )
+            
+            print(f"🎯 Calling DoSomething: user_id={tenant_id}, input={message[:30]}...")
+            
+            # Call DoSomething method
+            response = await self.stub.DoSomething(request)
+            
+            print(f"📥 RAW Response: status={response.status}, result={response.result[:100]}...")
+            
+            # Return structured response using 'result' field
+            result = {
+                "response": response.result,  # Use 'result' field from IntentParserResponse
+                "confidence": 0.8,  # Default confidence
+                "metadata": {
+                    "service": "tenant_parser",
+                    "tenant_id": tenant_id,
+                    "source": "intent_parser_service",
+                    "method": "DoSomething",
+                    "status": response.status
+                }
+            }
+            
+            print(f"✅ SUCCESS PATH: status={response.status}, result_length={len(response.result)}")
+            return result
+            
+        except grpc.aio.AioRpcError as e:
+            print(f"❌ gRPC error: {e.code()} - {e.details()}")
+            
+            return {
+                "response": f"Maaf, saya sedang mengalami kendala teknis untuk mengakses informasi {tenant_id}. Tim teknis sedang memperbaiki sistem.",
+                "confidence": 0.3,
+                "metadata": {
+                    "service": "fallback",
+                    "error": f"gRPC {e.code()}: {e.details()}",
+                    "issue": "grpc_error"
+                }
+            }
+        except Exception as e:
+            print(f"❌ Tenant parser error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            return {
+                "response": f"Maaf, saya sedang mengalami kendala teknis untuk mengakses informasi {tenant_id}. Silakan coba lagi atau tanyakan hal lain.",
+                "confidence": 0.3,
+                "metadata": {
+                    "service": "fallback",
+                    "error": str(e)
+                }
+            }
+
+# Global instance
+tenant_client = TenantParserClient()

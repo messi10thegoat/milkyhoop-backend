@@ -1,0 +1,16 @@
+{
+  "name": "FAQ Delete Handler",
+  "nodes": [
+    {
+      "id": "start", "hoop": "", "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply",
+      "parameters": {
+        "message": "📋 Hapus FAQ di [Dashboard FAQ](/dashboard/faq?tenant={{tenant_id}})\n\n💬 Atau edit via chat: 'Edit FAQ [nama] jadi [konten baru]'"
+      },
+      "next": null
+    }
+  ]
+}

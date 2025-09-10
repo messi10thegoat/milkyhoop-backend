@@ -1,0 +1,26 @@
+{
+  "name": "Complaint Handler",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "parameters": {},
+      "next_node_ids": ["log_complaint"]
+    },
+    {
+      "id": "log_complaint",
+      "type": "log",
+      "parameters": {
+        "message": "{{input.message}}",
+        "user_id": "{{input.user_id}}"
+      },
+      "next_node_ids": ["end"]
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "parameters": {},
+      "next_node_ids": []
+    }
+  ]
+}

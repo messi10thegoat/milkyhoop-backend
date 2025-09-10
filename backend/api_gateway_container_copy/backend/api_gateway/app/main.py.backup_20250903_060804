@@ -1,0 +1,91 @@
+import os
+import sys
+import asyncio
+from typing import AsyncGenerator
+from contextlib import asynccontextmanager
+
+import structlog
+from fastapi import FastAPI
+
+from .routers import health
+from .routers import chat
+# from .routers import auth  # DISABLED: auth service removed
+from .routers import customer
+from backend.api_gateway.app.routers import ragcrud_test
+from backend.api_gateway.app.routers import ragllm_test
+from backend.api_gateway.app.routers import raginject_test
+from backend.api_gateway.app.routers import flow
+from backend.api_gateway.app.routers import onboarding 
+
+
+
+
+# ✅ Logging setup
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stdout)
+)
+
+# ✅ Prisma binary path
+os.environ["PRISMA_QUERY_ENGINE_BINARY"] = "/app/libs/milkyhoop_prisma/engine/query-engine-debian-openssl-3.0.x"
+
+# ⛓️ Prisma client (Python)
+from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+
+prisma = Prisma()
+
+# 🔁 Prisma lifecycle (startup & shutdown)
+@asynccontextmanager
+async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    retries = 5
+    for attempt in range(1, retries + 1):
+        try:
+            await prisma.connect()
+            print("✅ Prisma connected.")
+            break
+        except Exception as e:
+            print(f"⚠️ Retry {attempt}/{retries} connecting Prisma failed: {e}")
+            await asyncio.sleep(3)
+    else:
+        raise RuntimeError("❌ Prisma failed to connect after retries.")
+
+    yield
+
+    await prisma.disconnect()
+    print("🛑 Prisma disconnected.")
+
+# 🚀 FastAPI instance
+app = FastAPI(
+    title="MilkyHoop API Gateway",
+    version="0.1.0",
+    lifespan=prisma_lifespan,
+    redirect_slashes=False
+)
+
+# 🧩 Register all routers (aktifkan yang sudah ada)
+app.include_router(health.router)
+app.include_router(chat.router)   # ⬅️ Pastikan baris ini ada!
+app.include_router(customer.router, prefix="/tenant")
+app.include_router(ragcrud_test.router, prefix="/ragcrud")
+app.include_router(ragllm_test.router)
+app.include_router(raginject_test.router)
+app.include_router(flow.router)
+app.include_router(onboarding.router, prefix="/onboarding")
+# app.include_router(auth.router, prefix="/auth", tags=["Authentication"])  # DISABLED: auth service removed
+
+
+
+
+
+
+
+# 📡 Root endpoint
+@app.get("/")
+def root() -> dict:
+    return {"message": "Welcome to MilkyHoop API Gateway"}
+
+
+

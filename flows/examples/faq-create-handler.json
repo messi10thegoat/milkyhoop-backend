@@ -1,0 +1,28 @@
+{
+ "name": "FAQ Create Handler",
+ "nodes": [
+   {
+     "id": "start",
+     "hoop": "",
+     "next": "create_faq"
+   },
+   {
+     "id": "create_faq",
+     "hoop": "rag_crud_create",
+     "parameters": {
+       "tenant_id": "{{tenant_id}}",
+       "title": "{{input.entities.entities.FAQ.question}}",
+       "content": "{{input.entities.entities.FAQ.answer}}"
+     },
+     "next": "respond"
+   },
+   {
+     "id": "respond",
+     "hoop": "SendBotReply",
+     "parameters": {
+       "message": "✅ FAQ {{input.entities.entities.FAQ.question}} berhasil dibuat!"
+     },
+     "next": null
+   }
+ ]
+}

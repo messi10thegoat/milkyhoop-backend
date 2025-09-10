@@ -1,0 +1,6 @@
+app:
+  name: MilkyHoop Business Service
+  environment: development
+  db_pool_size: 10
+  logging_level: info
+

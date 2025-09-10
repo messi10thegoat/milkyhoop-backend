@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+prometheus-client
+prisma==0.15.0
+openai>=1.30.0
+requests>=2.31.0
+redis>=4.0.0
+python-multipart
+pydantic>=2.0.0
+python-dotenv
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+protobuf>=4.21.0

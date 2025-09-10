@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+import asyncio
+import logging
+import signal
+from typing import Optional
+
+import grpc
+import structlog
+from grpc_health.v1 import health_pb2_grpc
+
+# CORRECTED: Import with exact discovered classes
+from app import tenant_parser_pb2_grpc
+
+# OpenTelemetry imports (proven working!)
+from opentelemetry import trace
+from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
+from opentelemetry.sdk.trace import TracerProvider
+
+from app.services.tenant_parser_service import TenantParserService
+from app.services.health_service import HealthService
+from app.config import get_settings
+
+# Configure structured logging
+logger = structlog.get_logger()
+
+class GrpcServer:
+    def __init__(self):
+        self.server = None
+        self.settings = get_settings()
+        
+    async def start_server(self):
+        """Start the ASYNC gRPC server (FIXED)"""
+        try:
+            logger.info("OpenTelemetry instrumentation enabled")
+            
+            # Create ASYNC server (CRITICAL FIX)
+            self.server = grpc.aio.server()
+            
+            # Add services
+            tenant_parser_service = TenantParserService()
+            tenant_parser_pb2_grpc.add_IntentParserServiceServicer_to_server(tenant_parser_service, self.server)
+            logger.info("TenantParserService initialized with ASYNC server", service="tenant_parser")
+            
+            health_service = HealthService()
+            health_pb2_grpc.add_HealthServicer_to_server(health_service, self.server)
+            logger.info("HealthService initialized", service="health")
+            
+            # Optional: Enable reflection
+            try:
+                from grpc_reflection.v1alpha import reflection
+                SERVICE_NAMES = (
+                    "tenant_parser.IntentParserService",
+                    reflection.SERVICE_NAME,
+                )
+                reflection.enable_server_reflection(SERVICE_NAMES, self.server)
+                logger.info("gRPC reflection enabled")
+            except ImportError as e:
+                logger.warning("gRPC reflection disabled", error=str(e))
+            
+            # Listen on port
+            listen_addr = f'[::]:{self.settings.grpc_port}'
+            self.server.add_insecure_port(listen_addr)
+            
+            # Start ASYNC server
+            await self.server.start()
+            logger.info("Starting ASYNC gRPC server", 
+                       port=self.settings.grpc_port,
+                       server_type="grpc.aio.server",
+                       services=['IntentParserService', 'Health'])
+            
+            # Keep server running
+            await self.server.wait_for_termination()
+            
+        except Exception as e:
+            logger.error("Failed to start ASYNC gRPC server", error=str(e))
+            raise
+
+    async def stop_server(self):
+        """Gracefully stop the server"""
+        if self.server:
+            logger.info("Shutting down ASYNC gRPC server")
+            await self.server.stop(grace=5)
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info("Shutdown signal received", signal=signum)
+    asyncio.create_task(server.stop_server())
+
+async def main():
+    """Main server function"""
+    global server
+    server = GrpcServer()
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        await server.start_server()
+    except KeyboardInterrupt:
+        logger.info("Server interrupted")
+    finally:
+        await server.stop_server()
+
+if __name__ == "__main__":
+    asyncio.run(main())

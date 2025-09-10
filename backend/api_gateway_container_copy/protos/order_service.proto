@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package order_service;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/milkyhoop/order-service/internal/delivery/pb/order;order";
+
+service OrderService {
+  // Endpoint create order
+  rpc CreateOrder (CreateOrderRequest) returns (CreateOrderResponse);
+  
+  // Contoh endpoint lain
+  rpc DoSomething (Order_serviceRequest) returns (Order_serviceResponse);
+  
+  // Health check endpoint
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+message CreateOrderRequest {
+  string customer_name = 1;
+  string items = 2;
+  double total_price = 3;
+}
+
+message CreateOrderResponse {
+  string id = 1;
+  string customer_name = 2;
+  string items = 3;
+  double total_price = 4;
+  string status = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message Order_serviceRequest {
+  string user_id = 1;
+  string input = 2;
+}
+
+message Order_serviceResponse {
+  string status = 1;
+  string result = 2;
+}

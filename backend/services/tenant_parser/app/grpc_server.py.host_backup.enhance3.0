@@ -1,0 +1,475 @@
+from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+import asyncio
+import signal
+import logging
+import os
+import json
+import grpc
+from grpc import aio
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from app.config import settings
+from app import tenant_parser_pb2_grpc as pb_grpc
+from app import tenant_parser_pb2 as pb
+from app.services.llm_parser import parse_intent_entities
+
+# RAG CRUD integration
+try:
+    from app import ragcrud_service_pb2 as rag_pb
+    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+    RAG_CRUD_AVAILABLE = True
+except ImportError:
+    RAG_CRUD_AVAILABLE = False
+
+# Level 13 Complete Integration
+try:
+    from app import cust_context_pb2 as context_pb
+    from app import cust_context_pb2_grpc as context_pb_grpc
+    LEVEL13_AVAILABLE = True
+except ImportError:
+    LEVEL13_AVAILABLE = False
+
+try:
+    from app import cust_reference_pb2 as ref_pb
+    from app import cust_reference_pb2_grpc as ref_pb_grpc
+    REFERENCE_AVAILABLE = True
+except ImportError:
+    REFERENCE_AVAILABLE = False
+
+print(f"✅ Services - RAG: {RAG_CRUD_AVAILABLE}, Level 13: {LEVEL13_AVAILABLE}, Reference: {REFERENCE_AVAILABLE}")
+
+prisma = Prisma()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
+    def __init__(self):
+        self.rag_crud_target = "ragcrud_service:5001"
+        self.context_target = "cust_context:5008"
+        self.reference_target = "cust_reference:5013"
+        
+        # OPTIMIZATION 1: Reuse gRPC Channels - Connection Pooling
+        self._context_channel = None
+        self._rag_crud_channel = None
+        self._reference_channel = None
+        self._context_stub = None
+        self._rag_crud_stub = None
+        self._reference_stub = None
+        
+        # Initialize channels
+        asyncio.create_task(self._initialize_channels())
+        
+    async def _initialize_channels(self):
+        """Initialize and cache gRPC channels for reuse"""
+        try:
+            if LEVEL13_AVAILABLE:
+                self._context_channel = aio.insecure_channel(self.context_target)
+                self._context_stub = context_pb_grpc.CustContextServiceStub(self._context_channel)
+                logger.info("✅ Context channel initialized")
+                
+            if RAG_CRUD_AVAILABLE:
+                self._rag_crud_channel = aio.insecure_channel(self.rag_crud_target)
+                self._rag_crud_stub = rag_pb_grpc.RagCrudServiceStub(self._rag_crud_channel)
+                logger.info("✅ RAG CRUD channel initialized")
+                
+            if REFERENCE_AVAILABLE:
+                self._reference_channel = aio.insecure_channel(self.reference_target)
+                self._reference_stub = ref_pb_grpc.Cust_referenceStub(self._reference_channel)
+                logger.info("✅ Reference channel initialized")
+                
+        except Exception as e:
+            logger.error(f"❌ Channel initialization error: {e}")
+
+    async def _cleanup_channels(self):
+        """Cleanup gRPC channels on shutdown"""
+        try:
+            if self._context_channel:
+                await self._context_channel.close()
+            if self._rag_crud_channel:
+                await self._rag_crud_channel.close()
+            if self._reference_channel:
+                await self._reference_channel.close()
+            logger.info("✅ All channels cleaned up")
+        except Exception as e:
+            logger.error(f"❌ Channel cleanup error: {e}")
+    
+    def sanitize_protobuf_for_json(self, data: dict) -> dict:
+        """Convert protobuf objects to JSON-serializable Python types
+        
+        This method handles the conversion of protobuf-specific types like
+        RepeatedScalarContainer to standard Python types that can be serialized to JSON.
+        """
+        if not isinstance(data, dict):
+            return data
+            
+        sanitized = {}
+        for key, value in data.items():
+            if value is None:
+                sanitized[key] = None
+            elif isinstance(value, (str, int, float, bool)):
+                # Primitive types are already JSON-serializable
+                sanitized[key] = value
+            elif isinstance(value, dict):
+                # Recursively sanitize nested dictionaries
+                sanitized[key] = self.sanitize_protobuf_for_json(value)
+            elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                # Convert any iterable (like RepeatedScalarContainer) to list
+                try:
+                    sanitized[key] = list(value)
+                except:
+                    sanitized[key] = str(value)
+            else:
+                # For any other type, convert to string
+                sanitized[key] = str(value)
+                
+        return sanitized
+        
+    def extract_tenant_from_context(self, grpc_context) -> str:
+        """OPTIMIZATION 4: Extract tenant_id from gRPC context metadata"""
+        try:
+            metadata = dict(grpc_context.invocation_metadata())
+            return metadata.get('tenant-id', 'default')
+        except:
+            return 'default'
+
+    async def parse_intent_stage(self, message: str, tenant_id: str) -> dict:
+        """Pipeline Stage 1: Parse customer intent"""
+        try:
+            result = parse_intent_entities(message)
+            logger.info(f"📝 [{tenant_id}] Intent: {result.get('intent')}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ [{tenant_id}] Intent parsing error: {e}")
+            return {"intent": "general_inquiry", "entities": {}}
+
+    async def enrich_with_level13_intelligence(self, session_id: str, tenant_id: str, message: str) -> dict:
+        """Pipeline Stage 2: OPTIMIZED Level 13 Intelligence with Parallelization"""
+        if not LEVEL13_AVAILABLE or not self._context_stub:
+            logger.info(f"ℹ️ [{tenant_id}] Level 13 unavailable - skipping intelligence")
+            return {}
+            
+        # OPTIMIZATION 2: Parallelisasi Non-Dependent Calls
+        async def call_mood_detection():
+            try:
+                mood_req = context_pb.SetConversationMoodRequest()
+                mood_req.tenant_id = tenant_id
+                mood_req.session_id = session_id
+                # Note: message field doesn't exist in proto, using session context
+                
+                # OPTIMIZATION 6: Timeout for reliability
+                mood_resp = await self._context_stub.SetConversationMood(mood_req, timeout=5.0)
+                return {'mood': mood_resp.detected_mood, 'mood_confidence': mood_resp.confidence}
+            except Exception as e:
+                logger.debug(f"Mood detection failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_intent_tracking():
+            try:
+                intent_req = context_pb.TrackUserIntentRequest()
+                intent_req.tenant_id = tenant_id
+                intent_req.session_id = session_id
+                
+                intent_resp = await self._context_stub.TrackUserIntent(intent_req, timeout=5.0)
+                return {
+                    'intent_progression': intent_resp.current_intent,
+                    'intent_stage': intent_resp.intent_stage
+                }
+            except Exception as e:
+                logger.debug(f"Intent tracking failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_product_detection():
+            try:
+                product_req = context_pb.DetectProductMentionedRequest()
+                product_req.tenant_id = tenant_id
+                product_req.session_id = session_id
+                product_req.conversation_turn = message  # Using message as conversation turn
+                
+                product_resp = await self._context_stub.DetectProductMentioned(product_req, timeout=5.0)
+                return {
+                    'products': product_resp.mentioned_products,
+                    'product_categories': product_resp.product_categories
+                }
+            except Exception as e:
+                logger.debug(f"Product detection failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_tone_adaptation():
+            try:
+                tone_req = context_pb.AdaptToneToUserMoodRequest()
+                tone_req.tenant_id = tenant_id
+                tone_req.session_id = session_id
+                tone_req.detected_mood = 'neutral'  # Will be updated after mood detection
+                
+                tone_resp = await self._context_stub.AdaptToneToUserMood(tone_req, timeout=5.0)
+                return {
+                    'recommended_tone': tone_resp.recommended_tone,
+                    'tone_guidelines': tone_resp.tone_guidelines
+                }
+            except Exception as e:
+                logger.debug(f"Tone adaptation failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_lead_scoring():
+            try:
+                lead_req = context_pb.FindLeadSignalsRequest()
+                lead_req.tenant_id = tenant_id
+                lead_req.session_id = session_id
+                
+                lead_resp = await self._context_stub.FindLeadSignals(lead_req, timeout=5.0)
+                return {
+                    'lead_score': lead_resp.lead_score,
+                    'buying_signals': lead_resp.buying_signals
+                }
+            except Exception as e:
+                logger.debug(f"Lead scoring failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_frustration_detection():
+            try:
+                frustration_req = context_pb.DetectFrustrationEventsRequest()
+                frustration_req.tenant_id = tenant_id
+                frustration_req.session_id = session_id
+                
+                frustration_resp = await self._context_stub.DetectFrustrationEvents(frustration_req, timeout=5.0)
+                return {
+                    'frustration_level': frustration_resp.frustration_level,
+                    'recovery_suggestions': frustration_resp.recovery_suggestions
+                }
+            except Exception as e:
+                logger.debug(f"Frustration detection failed for {tenant_id}: {e}")
+                return {}
+        
+        async def call_proactive_prediction():
+            try:
+                predict_req = context_pb.PredictNextUserQuestionRequest()
+                predict_req.tenant_id = tenant_id
+                predict_req.session_id = session_id
+                
+                predict_resp = await self._context_stub.PredictNextUserQuestion(predict_req, timeout=5.0)
+                return {
+                    'predicted_questions': predict_resp.predicted_questions,
+                    'proactive_suggestions': predict_resp.suggestions
+                }
+            except Exception as e:
+                logger.debug(f"Proactive prediction failed for {tenant_id}: {e}")
+                return {}
+        
+        # MASSIVE PERFORMANCE BOOST: Run all calls in parallel
+        try:
+            results = await asyncio.gather(
+                call_mood_detection(),
+                call_intent_tracking(),
+                call_product_detection(),
+                call_tone_adaptation(),
+                call_lead_scoring(),
+                call_frustration_detection(),
+                call_proactive_prediction(),
+                return_exceptions=True
+            )
+            
+            # Merge all results
+            intelligence_data = {}
+            for result in results:
+                if isinstance(result, dict):
+                    intelligence_data.update(result)
+            
+            logger.info(f"🧠 [{tenant_id}] Level 13 parallel intelligence complete ({len(intelligence_data)} signals)")
+            return intelligence_data
+            
+        except Exception as e:
+            logger.error(f"❌ [{tenant_id}] Level 13 parallel intelligence failed: {e}")
+            return {}
+
+    async def fetch_content_stage(self, tenant_id: str, message: str, resolved_message: str) -> str:
+        """Pipeline Stage 3: Fetch FAQ content"""
+        if not RAG_CRUD_AVAILABLE or not self._rag_crud_stub:
+            return f"Informasi untuk {tenant_id} sedang tidak tersedia saat ini."
+            
+        try:
+            request = rag_pb.FuzzySearchRequest()
+            request.tenant_id = tenant_id
+            request.search_content = resolved_message
+            request.similarity_threshold = 0.7
+            
+            response = await self._rag_crud_stub.FuzzySearchDocuments(request, timeout=10.0)
+            
+            if response.documents and len(response.documents) > 0:
+                best_match = response.documents[0]
+                logger.info(f"✅ [{tenant_id}] FAQ match found")
+                return best_match.content
+            else:
+                logger.info(f"ℹ️ [{tenant_id}] No FAQ matches")
+                return f"Maaf, informasi yang Anda cari untuk {tenant_id} belum tersedia."
+                
+        except Exception as e:
+            logger.error(f"❌ [{tenant_id}] FAQ fetch error: {e}")
+            return f"Maaf ada kendala teknis untuk {tenant_id}."
+
+    async def resolve_references_stage(self, session_id: str, tenant_id: str, message: str) -> str:
+        """Pipeline Stage 4: Resolve Indonesian references"""
+        if not REFERENCE_AVAILABLE or not self._reference_stub:
+            return message
+            
+        try:
+            request = ref_pb.ReferenceRequest()
+            request.session_id = session_id
+            request.reference_text = message
+            request.tenant_id = tenant_id
+            request.context_query = message
+            
+            response = await self._reference_stub.ResolveReference(request, timeout=5.0)
+            
+            if hasattr(response, 'resolved_message') and response.resolved_message:
+                logger.info(f"✅ [{tenant_id}] Reference resolved")
+                return response.resolved_message
+            else:
+                return message
+                
+        except Exception as e:
+            logger.error(f"❌ [{tenant_id}] Reference resolution error: {e}")
+            return message
+
+    def enhance_response_stage(self, response: str, intelligence_data: dict, tenant_id: str) -> str:
+        """Pipeline Stage 5: Apply Level 13 intelligence to enhance response"""
+        if not intelligence_data:
+            return response
+            
+        enhanced_response = response
+        
+        # Mood-based enhancement
+        mood = intelligence_data.get('mood', 'neutral')
+        if mood == 'happy':
+            if not any(enhanced_response.lower().startswith(prefix) for prefix in ['wah', 'senang', 'bagus']):
+                enhanced_response = f"Senang bisa membantu! {enhanced_response} 😊"
+        elif mood == 'frustrated':
+            enhanced_response = f"Maaf jika ada kendala sebelumnya. {enhanced_response} Semoga ini membantu! 🙏"
+        elif mood == 'curious':
+            enhanced_response = f"Pertanyaan yang bagus! {enhanced_response}"
+        elif mood == 'urgent':
+            enhanced_response = f"Saya akan bantu dengan cepat. {enhanced_response}"
+        
+        # Intent stage enhancement
+        intent_stage = intelligence_data.get('intent_stage', '')
+        if intent_stage == 'purchase_decision':
+            enhanced_response += "\n\nApakah Anda ingin melanjutkan ke tahap berikutnya? Saya siap membantu! 🚀"
+        elif intent_stage == 'information_gathering':
+            enhanced_response += "\n\nAda informasi lain yang ingin Anda ketahui? 😊"
+        
+        # Lead scoring enhancement
+        lead_score = intelligence_data.get('lead_score', 0)
+        if lead_score > 0.7:
+            enhanced_response += "\n\nTerlihat Anda cukup serius dengan ini. Mau saya hubungkan dengan tim specialist kami? 📞"
+        
+        # Frustration recovery
+        frustration_level = intelligence_data.get('frustration_level', 0)
+        if frustration_level > 0.5:
+            recovery_suggestions = intelligence_data.get('recovery_suggestions', [])
+            if recovery_suggestions:
+                enhanced_response += f"\n\n💡 Saran: {recovery_suggestions[0] if recovery_suggestions else 'Mari kita coba pendekatan yang lebih sederhana.'}"
+        
+        # Proactive suggestions
+        proactive_suggestions = intelligence_data.get('proactive_suggestions', [])
+        if proactive_suggestions:
+            enhanced_response += f"\n\n💡 Mungkin Anda juga tertarik: {proactive_suggestions[0]}"
+        
+        return enhanced_response
+
+    async def DoSomething(self, request, context):
+        """OPTIMIZATION 10: Simplified Pipeline - Level 13 Enhanced Processing"""
+        session_id = request.user_id
+        message = request.input
+        
+        # OPTIMIZATION 4: Extract tenant once, reuse everywhere
+        tenant_id = self.extract_tenant_from_context(context)
+        
+        logger.info(f"🧠 [{tenant_id}] Level 13 pipeline start: {message[:50]}...")
+        
+        try:
+            # Pipeline Stage 1: Parse Intent
+            intent_result = await self.parse_intent_stage(message, tenant_id)
+            
+            # Pipeline Stage 2: Level 13 Intelligence (Parallel)
+            intelligence_data = await self.enrich_with_level13_intelligence(session_id, tenant_id, message)
+            
+            # Pipeline Stage 3: Resolve References
+            resolved_message = await self.resolve_references_stage(session_id, tenant_id, message)
+            
+            # Pipeline Stage 4: Fetch FAQ Content
+            faq_content = await self.fetch_content_stage(tenant_id, message, resolved_message)
+            
+            # Pipeline Stage 5: Enhance Response
+            enhanced_response = self.enhance_response_stage(faq_content, intelligence_data, tenant_id)
+            
+            # CRITICAL FIX: Sanitize protobuf data before JSON serialization
+            sanitized_intelligence = self.sanitize_protobuf_for_json(intelligence_data)
+            
+            # Final Response
+            result = {
+                "tenant_id": tenant_id,
+                "intent": intent_result.get("intent", "general_inquiry"),
+                "entities": intent_result.get("entities", {}),
+                "response": enhanced_response,
+                "reference_resolved": resolved_message != message,
+                "level13_intelligence": sanitized_intelligence,  # Now JSON-safe!
+                "mood": sanitized_intelligence.get('mood', 'neutral'),
+                "lead_score": sanitized_intelligence.get('lead_score', 0),
+                "recommended_tone": sanitized_intelligence.get('recommended_tone', 'professional_friendly')
+            }
+            
+            logger.info(f"🚀 [{tenant_id}] Level 13 pipeline complete")
+            
+            return pb.IntentParserResponse(
+                status="success",
+                result=json.dumps(result, ensure_ascii=False)
+            )
+            
+        except Exception as e:
+            logger.error(f"🔥 [{tenant_id}] Pipeline error: {e}", exc_info=True)
+            return pb.IntentParserResponse(
+                status="error",
+                result=json.dumps({
+                    "tenant_id": tenant_id,
+                    "intent": "general_inquiry",
+                    "entities": {},
+                    "response": f"Maaf ada kendala teknis untuk {tenant_id}, silakan coba lagi.",
+                    "level13_intelligence": {}
+                }, ensure_ascii=False)
+            )
+
+    async def HealthCheck(self, request, context):
+        return request
+
+async def serve() -> None:
+    listen_addr = f"[::]:{settings.GRPC_PORT}"
+    server = aio.server()
+    
+    servicer = TenantParserServicer()
+    pb_grpc.add_IntentParserServiceServicer_to_server(servicer, server)
+    
+    health_servicer = health.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+    health_servicer.set("tenant_parser.IntentParserService", health_pb2.HealthCheckResponse.SERVING)
+    
+    server.add_insecure_port(listen_addr)
+    
+    logger.info("🚀 Level 13 Production-Optimized Tenant Parser listening on port %s", settings.GRPC_PORT)
+    logger.info(f"🧠 Level 13 Intelligence: {'✅ Available' if LEVEL13_AVAILABLE else '❌ Unavailable'}")
+    logger.info("⚡ OPTIMIZED: Channel reuse, parallel calls, timeouts, pipeline")
+    logger.info("🌐 GENERIC: Works with ANY tenant")
+    logger.info("🔧 JSON SERIALIZATION: Fixed with sanitize_protobuf_for_json()")
+    
+    await server.start()
+
+    def handle_shutdown(*_):
+        logger.info("🛑 Shutting down Level 13 Optimized Tenant Parser...")
+        # Cleanup channels
+        asyncio.create_task(servicer._cleanup_channels())
+        asyncio.create_task(server.stop(grace=10.0))
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, handle_shutdown)
+
+    await server.wait_for_termination()
+
+if __name__ == "__main__":
+    asyncio.run(serve())

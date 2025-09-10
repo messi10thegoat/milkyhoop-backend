@@ -1,0 +1,89 @@
+import grpc
+from typing import Dict, Any, Optional
+import asyncio
+
+class TenantParserClient:
+    def __init__(self):
+        self.channel = None
+        self.stub = None
+        self.is_connected = False
+
+    async def _ensure_connection(self):
+        """Ensure gRPC connection is established"""
+        if not self.is_connected:
+            try:
+                self.channel = grpc.aio.insecure_channel('tenant_parser:5012')
+                
+                # Import proto files
+                import sys
+                import os
+                sys.path.append('/app')
+                
+                from protos.rag import rag_pb2_grpc, rag_pb2
+                
+                self.stub = rag_pb2_grpc.RagServiceStub(self.channel)
+                self.is_connected = True
+                print("✅ Tenant parser client connected successfully")
+                
+            except Exception as e:
+                print(f"❌ Tenant parser client failed: {e}")
+                self.is_connected = False
+                raise
+
+    async def parse_customer_query(self, tenant_id: str, message: str, session_id: str = "default") -> Dict[str, Any]:
+        """
+        FIXED: Use EXACT proto schema - user_id and query only
+        """
+        try:
+            print(f"🚀 Tenant Parser Request: tenant={tenant_id}, message={message[:50]}...")
+            
+            # Ensure connection
+            await self._ensure_connection()
+            
+            # Import proto
+            from protos.rag import rag_pb2
+            
+            # Create request with EXACT proto fields
+            request = rag_pb2.RagRequest(
+                user_id=tenant_id,  # Use user_id field for tenant_id
+                query=message       # Use query field for message
+            )
+            
+            print(f"🎯 Calling tenant parser: user_id={tenant_id}, query={message[:30]}...")
+            
+            # Call tenant parser
+            response = await self.stub.ProcessQuery(request)
+            
+            print(f"📥 RAW Response: {response.answer[:100]}...")
+            
+            # Return structured response (response field is 'answer' not 'response')
+            result = {
+                "response": response.answer,  # Proto has 'answer' field
+                "confidence": 0.8,  # Default confidence
+                "metadata": {
+                    "service": "tenant_parser",
+                    "tenant_id": tenant_id,
+                    "source": "semantic_search"
+                }
+            }
+            
+            print(f"✅ SUCCESS PATH: Got response length {len(response.answer)}")
+            return result
+            
+        except Exception as e:
+            print(f"❌ Tenant parser error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Generic fallback
+            return {
+                "response": f"Maaf, saya sedang mengalami kendala teknis untuk mengakses informasi {tenant_id}. Silakan coba lagi atau tanyakan hal lain.",
+                "confidence": 0.3,
+                "metadata": {
+                    "service": "fallback",
+                    "error": str(e)
+                }
+            }
+
+# Global instance
+tenant_client = TenantParserClient()

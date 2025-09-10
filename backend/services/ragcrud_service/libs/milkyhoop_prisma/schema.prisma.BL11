@@ -1,0 +1,231 @@
+generator client_js {
+  provider = "prisma-client-js"
+}
+
+generator client_py {
+  provider      = "prisma-client-py"
+  interface     = "asyncio"
+  output        = "../../backend/api_gateway/libs/milkyhoop_prisma"
+  engine_type   = "binary"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String              @id @default(uuid())
+  email           String              @unique
+  username        String?             @unique
+  name            String?
+  fullname        String?
+  nickname        String?
+  avatarUrl       String?
+  coverPhotoUrl   String?
+  bio             String?
+  emailVerified   DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  isVerified      Boolean             @default(false)
+  role            Role                @default(FREE)
+  lastInteraction DateTime            @default(now())
+  passwordHash    String?
+  oauthProvider   String?
+  oauthId         String?
+  accounts        Account[]
+  sessions        Session[]
+  profile         UserProfile?
+  security        UserSecurity?
+  business        UserBusiness[]
+  locations       UserLocations[]
+  finance         UserFinance[]
+  subscriptions   UserSubscriptions[]
+  aiSettings      UserAISettings[]
+  media           UserMedia[]
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  access_token      String?
+  expires_at        Int?
+  id_token          String?
+  refresh_token     String?
+  scope             String?
+  session_state     String?
+  token_type        String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSecurity {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  passwordHash     String?
+  twoFactorEnabled Boolean @default(false)
+  oauthId          String?
+  oauthProvider    String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserProfile {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  bio              String?
+  phoneNumber      String?
+  tagline          String?
+  publicUrlSlug    String? @unique
+  digitalSignature String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model messages {
+  id         Int       @id @default(autoincrement())
+  user_id    String    @db.VarChar(255)
+  message    String
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model UserBusiness {
+  businessId       String  @id @default(uuid())
+  userId           String
+  businessName     String
+  businessCategory String
+  businessLicense  String
+  taxId            String
+  businessWebsite  String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserLocations {
+  locationId    String  @id @default(uuid())
+  userId        String
+  latitude      Float
+  longitude     Float
+  addressDetail String
+  isPrimary     Boolean @default(false)
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserFinance {
+  financeId      String @id @default(uuid())
+  userId         String
+  balance        Float  @default(0.0)
+  currency       String
+  paymentMethods Json
+  loyaltyPoints  Int    @default(0)
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSubscriptions {
+  subscriptionId    String   @id @default(uuid())
+  userId            String
+  planId            String
+  tokenUsage        Int      @default(0)
+  tokenLimit        Int
+  tokenResetAt      DateTime
+  subscriptionStart DateTime
+  subscriptionEnd   DateTime
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan              Plans    @relation(fields: [planId], references: [planId], onDelete: Cascade)
+}
+
+model Plans {
+  planId        String              @id @default(uuid())
+  planName      String
+  subscriptions UserSubscriptions[]
+}
+
+model UserAISettings {
+  aiSettingsId         String  @id @default(uuid())
+  userId               String
+  botSlug              String  @unique
+  ragEnabled           Boolean @default(false)
+  aiPersonalityProfile Json
+  user                 User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserMedia {
+  mediaId    String    @id @default(uuid())
+  userId     String
+  mediaType  MediaType
+  mediaUrl   String
+  uploadDate DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Tenant {
+  id           String   @id @default(uuid())
+  alias        String   @unique
+  display_name String
+  menu_items   Json
+  address      String?
+  status       String   @default("ACTIVE")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+}
+
+model Order {
+  id            String   @id @default(uuid())
+  customer_name String
+  items         String
+  total_price   Float
+  status        String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+}
+
+model Memory {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RagDocument {
+  id         Int      @id @default(autoincrement())
+  tenantId   String // 👈 Untuk multi-tenant: user_id / tenant_id yang punya document
+  title      String
+  content    String
+  source     String? // 👈 Sumber data (misalnya: website, internal, file, dll.)
+  tags       String? // 👈 Tag (untuk filter / klasifikasi, misalnya: 'menu', 'event', 'faq')
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  embeddings String?  @default("[]")
+}
+
+enum Role {
+  FREE
+  BUSINESS
+  PRO
+  CORPORATE
+  ADMIN
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
