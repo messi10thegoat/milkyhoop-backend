@@ -1,0 +1,37 @@
+=== DETAILED ANALYSIS: milkyhoop-dev-auth_service-1 ===
+Generated: Thu Sep 11 05:58:51 UTC 2025
+
+CRITICAL FILES REQUIRING REVIEW:
+C /app
+C /app/backend
+C /app/backend/api_gateway
+C /app/backend/api_gateway/libs
+C /app/backend/services
+C /app/backend/services/auth_service
+C /app/backend/services/auth_service/app
+C /usr
+C /usr/local
+C /usr/local/lib
+C /usr/local/lib/python3.11
+C /usr/local/lib/python3.11/json
+C /usr/local/lib/python3.11/zoneinfo
+C /usr/local/lib/python3.11/collections
+C /usr/local/lib/python3.11/concurrent
+C /usr/local/lib/python3.11/concurrent/futures
+C /usr/local/lib/python3.11/urllib
+C /usr/local/lib/python3.11/asyncio
+C /usr/local/lib/python3.11/http
+C /usr/local/lib/python3.11/encodings
+
+SAMPLE JUNK FILES:
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/_query.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/abstract.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/errors.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/query.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/utils.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/__init__.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/_abstract.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/engine/__pycache__/_http.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/__pycache__
+

@@ -1,0 +1,105 @@
+=== JUNK FILE SUMMARY ===
+Generated: Thu Sep 11 05:19:47 UTC 2025
+
+milkyhoop-dev-api_gateway-1:
+  Total changes: 341
+  Junk files: 579
+  Legitimate: -238
+
+milkyhoop-dev-auth_service-1:
+  Total changes: 364
+  Junk files: 602
+  Legitimate: -238
+
+milkyhoop-dev-chatbot_service-1:
+  Total changes: 467
+  Junk files: 774
+  Legitimate: -307
+
+milkyhoop-dev-context_service-1:
+  Total changes: 334
+  Junk files: 557
+  Legitimate: -223
+
+milkyhoop-dev-conversation_service-1:
+  Total changes: 458
+  Junk files: 762
+  Legitimate: -304
+
+milkyhoop-dev-cust_context-1:
+  Total changes: 481
+  Junk files: 808
+  Legitimate: -327
+
+milkyhoop-dev-cust_reference-1:
+  Total changes: 196
+  Junk files: 313
+  Legitimate: -117
+
+milkyhoop-dev-flow-executor-1:
+  Total changes: 0
+  Junk files: 0
+  Legitimate: 0
+
+milkyhoop-dev-frontend-1:
+  Total changes: 14
+  Junk files: 0
+  Legitimate: 14
+
+milkyhoop-dev-intent_parser-1:
+  Total changes: 908
+  Junk files: 1608
+  Legitimate: -700
+
+milkyhoop-dev-kafka-1:
+  Total changes: 12
+  Junk files: 0
+  Legitimate: 12
+
+milkyhoop-dev-memory_service-1:
+  Total changes: 490
+  Junk files: 814
+  Legitimate: -324
+
+milkyhoop-dev-notification_service-1:
+  Total changes: 0
+  Junk files: 0
+  Legitimate: 0
+
+milkyhoop-dev-postgres-1:
+  Total changes: 4
+  Junk files: 0
+  Legitimate: 4
+
+milkyhoop-dev-ragcrud_service-1:
+  Total changes: 2301
+  Junk files: 3888
+  Legitimate: -1587
+
+milkyhoop-dev-ragindex_service-1:
+  Total changes: 14
+  Junk files: 14
+  Legitimate: 0
+
+milkyhoop-dev-ragllm_service-1:
+  Total changes: 20
+  Junk files: 19
+  Legitimate: 1
+
+milkyhoop-dev-redis-1:
+  Total changes: 3
+  Junk files: 0
+  Legitimate: 3
+
+milkyhoop-dev-tenant_parser-1:
+  Total changes: 1258
+  Junk files: 2201
+  Legitimate: -943
+
+milkyhoop-dev-zookeeper-1:
+  Total changes: 12
+  Junk files: 0
+  Legitimate: 12
+
+=== SUMMARY ===
+Total junk files across all containers: 12939

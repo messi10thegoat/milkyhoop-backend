@@ -1,0 +1,186 @@
+=== SAFE CLEANUP COMMANDS ===
+# Safe junk removal commands - review before executing
+
+# Cleanup milkyhoop-dev-api_gateway-1
+echo "Cleaning milkyhoop-dev-api_gateway-1..."
+docker exec milkyhoop-dev-api_gateway-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-api_gateway-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-api_gateway-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-api_gateway-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-api_gateway-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-api_gateway-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-auth_service-1
+echo "Cleaning milkyhoop-dev-auth_service-1..."
+docker exec milkyhoop-dev-auth_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-auth_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-auth_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-auth_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-auth_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-auth_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-chatbot_service-1
+echo "Cleaning milkyhoop-dev-chatbot_service-1..."
+docker exec milkyhoop-dev-chatbot_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-chatbot_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-chatbot_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-chatbot_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-chatbot_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-chatbot_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-context_service-1
+echo "Cleaning milkyhoop-dev-context_service-1..."
+docker exec milkyhoop-dev-context_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-context_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-context_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-context_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-context_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-context_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-conversation_service-1
+echo "Cleaning milkyhoop-dev-conversation_service-1..."
+docker exec milkyhoop-dev-conversation_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-conversation_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-conversation_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-conversation_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-conversation_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-conversation_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-cust_context-1
+echo "Cleaning milkyhoop-dev-cust_context-1..."
+docker exec milkyhoop-dev-cust_context-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-cust_context-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_context-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_context-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_context-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-cust_context-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-cust_reference-1
+echo "Cleaning milkyhoop-dev-cust_reference-1..."
+docker exec milkyhoop-dev-cust_reference-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-cust_reference-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_reference-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_reference-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-cust_reference-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-cust_reference-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-flow-executor-1
+echo "Cleaning milkyhoop-dev-flow-executor-1..."
+docker exec milkyhoop-dev-flow-executor-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-flow-executor-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-flow-executor-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-flow-executor-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-flow-executor-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-flow-executor-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-frontend-1
+echo "Cleaning milkyhoop-dev-frontend-1..."
+docker exec milkyhoop-dev-frontend-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-frontend-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-frontend-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-frontend-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-frontend-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-frontend-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-intent_parser-1
+echo "Cleaning milkyhoop-dev-intent_parser-1..."
+docker exec milkyhoop-dev-intent_parser-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-intent_parser-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-intent_parser-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-intent_parser-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-intent_parser-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-intent_parser-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-kafka-1
+echo "Cleaning milkyhoop-dev-kafka-1..."
+docker exec milkyhoop-dev-kafka-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-kafka-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-kafka-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-kafka-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-kafka-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-kafka-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-memory_service-1
+echo "Cleaning milkyhoop-dev-memory_service-1..."
+docker exec milkyhoop-dev-memory_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-memory_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-memory_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-memory_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-memory_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-memory_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-notification_service-1
+echo "Cleaning milkyhoop-dev-notification_service-1..."
+docker exec milkyhoop-dev-notification_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-notification_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-notification_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-notification_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-notification_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-notification_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-postgres-1
+echo "Cleaning milkyhoop-dev-postgres-1..."
+docker exec milkyhoop-dev-postgres-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-postgres-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-postgres-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-postgres-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-postgres-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-postgres-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-ragcrud_service-1
+echo "Cleaning milkyhoop-dev-ragcrud_service-1..."
+docker exec milkyhoop-dev-ragcrud_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-ragcrud_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragcrud_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragcrud_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragcrud_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-ragcrud_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-ragindex_service-1
+echo "Cleaning milkyhoop-dev-ragindex_service-1..."
+docker exec milkyhoop-dev-ragindex_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-ragindex_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragindex_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragindex_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragindex_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-ragindex_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-ragllm_service-1
+echo "Cleaning milkyhoop-dev-ragllm_service-1..."
+docker exec milkyhoop-dev-ragllm_service-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-ragllm_service-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragllm_service-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragllm_service-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-ragllm_service-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-ragllm_service-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-redis-1
+echo "Cleaning milkyhoop-dev-redis-1..."
+docker exec milkyhoop-dev-redis-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-redis-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-redis-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-redis-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-redis-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-redis-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-tenant_parser-1
+echo "Cleaning milkyhoop-dev-tenant_parser-1..."
+docker exec milkyhoop-dev-tenant_parser-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-tenant_parser-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-tenant_parser-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-tenant_parser-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-tenant_parser-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-tenant_parser-1 cleanup complete"
+
+# Cleanup milkyhoop-dev-zookeeper-1
+echo "Cleaning milkyhoop-dev-zookeeper-1..."
+docker exec milkyhoop-dev-zookeeper-1 find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+docker exec milkyhoop-dev-zookeeper-1 find /app -name '*.pyc' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-zookeeper-1 find /app -name '*.backup*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-zookeeper-1 find /app -name '*.phase*' -delete 2>/dev/null || true
+docker exec milkyhoop-dev-zookeeper-1 find /app -name '*.before_*' -delete 2>/dev/null || true
+echo "milkyhoop-dev-zookeeper-1 cleanup complete"
+
+=== VERIFICATION COMMANDS ===
+# Run after cleanup to verify
+./check-container-drift.sh

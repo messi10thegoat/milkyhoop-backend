@@ -1,0 +1,37 @@
+=== DETAILED ANALYSIS: milkyhoop-dev-api_gateway-1 ===
+Generated: Thu Sep 11 05:58:50 UTC 2025
+
+CRITICAL FILES REQUIRING REVIEW:
+C /app
+C /app/backend
+C /app/backend/api_gateway
+C /app/backend/api_gateway/libs
+C /app/backend/api_gateway/libs/milkyhoop_protos
+C /app/backend/api_gateway/app
+C /app/backend/api_gateway/app/middleware
+C /app/backend/api_gateway/app/routers
+C /app/backend/api_gateway/app/services
+C /usr
+C /usr/local
+C /usr/local/lib
+C /usr/local/lib/python3.11
+C /usr/local/lib/python3.11/zoneinfo
+C /usr/local/lib/python3.11/urllib
+C /usr/local/lib/python3.11/json
+C /usr/local/lib/python3.11/multiprocessing
+C /usr/local/lib/python3.11/importlib
+C /usr/local/lib/python3.11/importlib/metadata
+C /usr/local/lib/python3.11/importlib/resources
+
+SAMPLE JUNK FILES:
+A /app/backend/api_gateway/libs/milkyhoop_prisma/_vendor/__pycache__
+A /app/backend/api_gateway/libs/milkyhoop_prisma/_vendor/__pycache__/__init__.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/_vendor/__pycache__/lark_schema_parser.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/_vendor/__pycache__/lark_schema_scan_parser.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__/__init__.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__/filters.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__/models.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__/types.cpython-311.pyc
+A /app/backend/api_gateway/libs/milkyhoop_prisma/generator/__pycache__/utils.cpython-311.pyc
+
