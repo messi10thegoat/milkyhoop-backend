@@ -85,16 +85,16 @@ class TenantParserClient:
                         parsed_result = json.loads(response.result)
                         
                         # Extract confidence metadata from Enhanced Confidence Engine
-                        confidence_metadata = parsed_await result.get("confidence_metadata", {})
-                        route_taken = confidence_metaawait data.get("route_taken", "unknown")
-                        cost_estimate = confidence_metaawait data.get("cost_estimate", 0.0)
+                        confidence_metadata = parsed_result.get("confidence_metadata", {})
+                        route_taken = confidence_metadata.get("route_taken", "unknown")
+                        cost_estimate = confidence_metadata.get("cost_estimate", 0.0)
                         
                         # Return structured response with REAL confidence data
                         result = {
-                            "intent": parsed_await result.get("intent", "general_inquiry"),
-                            "confidence": confidence_metaawait data.get("confidence_score", 0.0),
-                            "entities": parsed_await result.get("entities", {}),
-                            "answer": parsed_await result.get("response", "Informasi tidak tersedia"),
+                            "intent": parsed_result.get("intent", "general_inquiry"),
+                            "confidence": confidence_metadata.get("confidence_score", 0.0),
+                            "entities": parsed_result.get("entities", {}),
+                            "answer": parsed_result.get("response", "Informasi tidak tersedia"),
                             "confidence_metadata": confidence_metadata,
                             "method": "enhanced_confidence_engine"
                         }

@@ -20,7 +20,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/redoc",
             "/api/auth/health"
             "/customer/",  # Customer chat endpoints (public access)
-            "/bca/",
         }
         
         self.protected_paths = {
@@ -39,14 +38,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         tenant_patterns = [
             r'^/tenant/[^/]+/chat/?$',           # /tenant/{tenant_id}/chat
             r'^/tenant/[^/]+/chat/.*$',          # /tenant/{tenant_id}/chat/*
-            r'^/customer/[^/]+/chat/?$',         # /customer/{tenant_id}/chat
-            r'^/customer/[^/]+/chat/.*$',        # /customer/{tenant_id}/chat/*
-            r'^/[^/]+/chat/?$',                  # /{tenant_id}/chat (BCA pattern!)
+            r'^/customer/[^/]+/chat/?$',           # /customer/{tenant_id}/chat
+            r'^/customer/[^/]+/chat/.*$',          # /customer/{tenant_id}/chat/*
         ]
         return any(re.match(pattern, path) for pattern in tenant_patterns)
+
     def _is_public_path(self, path: str) -> bool:
         """Check exact public paths"""
-        return any(path.startswith(public_path) for public_path in self.public_paths)
+        return path in self.public_paths
 
     def _is_protected_path(self, path: str) -> bool:
         """Check exact protected paths"""

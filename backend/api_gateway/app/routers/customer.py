@@ -12,7 +12,7 @@ from backend.api_gateway.app.services.chatbot_client import ChatbotClient
 from backend.api_gateway.app.services.ragcrud_client import RagCrudClient
 from backend.api_gateway.app.services.ragllm_client import RagLLMClient
 from backend.api_gateway.app.services.tenant_client import TenantParserClient
-# from backend.api_gateway.app.services.context_client import ContextClient
+from backend.api_gateway.app.services.context_client import ContextClient
 
 import logging
 
@@ -191,6 +191,15 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
     try:
         # STEP 1: Context Resolution (Multi-turn support)
         resolved_message = data.message
+
+        # Define template_context early for all response paths
+        template_context = {
+            "message": data.message,
+            "query": data.message,
+            "tenant_id": tenant_id,
+            "business_name": tenant_id,
+            "session_id": session_id
+        }
         try:
             async with ContextClient() as context_client:
                 context_result = await context_client.resolve_reference(
@@ -206,6 +215,15 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
         except Exception as e:
             logger.warning(f"[{trace_id}] ⚠️ Context resolution failed: {e}")
             resolved_message = data.message
+
+        # Define template_context early for all response paths
+        template_context = {
+            "message": data.message,
+            "query": data.message,
+            "tenant_id": tenant_id,
+            "business_name": tenant_id,
+            "session_id": session_id
+        }
 
         # STEP 2: Call Tenant Parser - CUSTOMER MODE
         logger.info(f"[{trace_id}] 🧠 Step 2: Calling Tenant Parser")
@@ -247,7 +265,7 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
                 status="success",
                 tenant_id=tenant_id,
                 business_name=business_name,
-                response=tenant_answer,
+                response=resolve_template_variables(tenant_answer, template_context),
             reply=tenant_answer,
                 session_id=session_id,
                 trace_id=trace_id,
@@ -291,14 +309,6 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
         # Extract response from flow result with template resolution
         raw_response = flow_result.get("result", {}).get("answer", "") or flow_result.get("result", {}).get("message", "")
         
-        # Resolve template variables
-        template_context = {
-            "message": data.message,
-            "query": data.message,
-            "tenant_id": tenant_id,
-            "business_name": tenant_id,
-            "session_id": session_id
-        }
         response_text = resolve_template_variables(raw_response, template_context)
         if not response_text:
             logger.warning(f"[{trace_id}] Empty response from flow executor")

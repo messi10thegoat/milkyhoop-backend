@@ -116,7 +116,7 @@ class ContextClient:
         try:
             # Convert resolved references to protobuf
             resolved_refs = []
-            for ref in turn_await data.get("resolved_references", []):
+            for ref in turn_data.get("resolved_references", []):
                 resolved_refs.append(pb.ResolvedReference(
                     reference=ref.get("reference", ""),
                     entity_type=ref.get("entity_type", ""),
@@ -128,12 +128,12 @@ class ContextClient:
             request = pb.ConversationTurnRequest(
                 session_id=session_id,
                 tenant_id=tenant_id,
-                user_message=turn_await data.get("user_message", ""),
-                system_response=turn_await data.get("system_response", ""),
-                entities=turn_await data.get("entities", {}),
+                user_message=turn_data.get("user_message", ""),
+                system_response=turn_data.get("system_response", ""),
+                entities=turn_data.get("entities", {}),
                 resolved_references=resolved_refs,
-                topic=turn_await data.get("topic", ""),
-                action=turn_await data.get("action", "")
+                topic=turn_data.get("topic", ""),
+                action=turn_data.get("action", "")
             )
             
             response = await self.stub.StoreConversationTurn(request)
