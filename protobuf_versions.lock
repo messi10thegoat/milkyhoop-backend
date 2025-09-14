@@ -1,8 +1,8 @@
 # Protobuf Version Lock File
 # All services MUST use these exact versions
-protobuf==6.32.0
-grpcio==1.74.0
-grpcio-tools==1.71.2
+protobuf==5.29.5
+grpcio==1.71.0
+grpcio-tools==1.63.0
 grpc-interceptor==0.15.4
 
 # Generation Commands (must be identical across services)
