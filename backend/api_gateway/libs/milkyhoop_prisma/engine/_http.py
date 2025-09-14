@@ -82,7 +82,7 @@ class BaseHTTPEngine:
         if not is_dict(data):
             raise TypeError(f'Expected deserialised engine response to be a dictionary, got {type(data)} - {data}')
 
-        errors_data = await data.get('errors')
+        errors_data = data.get('errors')
         if errors_data:
             return utils.handle_response_errors(response, errors_data)
 

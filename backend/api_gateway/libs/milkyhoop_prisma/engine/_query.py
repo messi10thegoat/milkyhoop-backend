@@ -219,7 +219,7 @@ class SyncQueryEngine(BaseQueryEngine, SyncHTTPEngine):
                 time.sleep(0.1)
                 continue
 
-            if await data.get('Errors') is not None:
+            if data.get('Errors') is not None:
                 log.debug('Could not connect due to gql errors; retrying...')
                 time.sleep(0.1)
                 continue
@@ -379,7 +379,7 @@ class AsyncQueryEngine(BaseQueryEngine, AsyncHTTPEngine):
                 await asyncio.sleep(0.1)
                 continue
 
-            if await data.get('Errors') is not None:
+            if data.get('Errors') is not None:
                 log.debug('Could not connect due to gql errors; retrying...')
                 await asyncio.sleep(0.1)
                 continue

@@ -720,8 +720,8 @@ class UserActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -1758,8 +1758,8 @@ class AccountActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -2791,8 +2791,8 @@ class SessionActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -3814,8 +3814,8 @@ class UserSecurityActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -4837,8 +4837,8 @@ class UserProfileActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -5868,8 +5868,8 @@ class VerificationTokenActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -6896,8 +6896,8 @@ class messagesActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -7939,8 +7939,8 @@ class UserBusinessActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -8977,8 +8977,8 @@ class UserLocationsActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -10010,8 +10010,8 @@ class UserFinanceActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -11058,8 +11058,8 @@ class UserSubscriptionsActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -12081,8 +12081,8 @@ class PlansActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -13114,8 +13114,8 @@ class UserAISettingsActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -14147,8 +14147,8 @@ class UserMediaActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -15180,8 +15180,8 @@ class TenantActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -16218,8 +16218,8 @@ class OrderActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -17246,8 +17246,8 @@ class MemoryActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])
@@ -18279,8 +18279,8 @@ class RagDocumentActions(Generic[_PrismaModelT]):
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
         return model_parse(self._model, resp['data']['result'])

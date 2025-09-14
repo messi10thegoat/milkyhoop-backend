@@ -504,8 +504,8 @@ class UserBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -615,8 +615,8 @@ class AccountBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -726,8 +726,8 @@ class SessionBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -837,8 +837,8 @@ class UserSecurityBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -948,8 +948,8 @@ class UserProfileBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1059,8 +1059,8 @@ class VerificationTokenBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1170,8 +1170,8 @@ class messagesBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1281,8 +1281,8 @@ class UserBusinessBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1392,8 +1392,8 @@ class UserLocationsBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1503,8 +1503,8 @@ class UserFinanceBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1614,8 +1614,8 @@ class UserSubscriptionsBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1725,8 +1725,8 @@ class PlansBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1836,8 +1836,8 @@ class UserAISettingsBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -1947,8 +1947,8 @@ class UserMediaBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -2058,8 +2058,8 @@ class TenantBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -2169,8 +2169,8 @@ class OrderBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -2280,8 +2280,8 @@ class MemoryBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 
@@ -2391,8 +2391,8 @@ class RagDocumentBatchActions:
             arguments={
                 'where': where,
                 'include': include,
-                'create': await data.get('create'),
-                'update': await data.get('update'),
+                'create': data.get('create'),
+                'update': data.get('update'),
             },
         )
 

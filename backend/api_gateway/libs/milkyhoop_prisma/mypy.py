@@ -197,7 +197,7 @@ class PrismaPlugin(Plugin):
         node: SymbolTableNode,
         data: Dict[Any, Any],
     ) -> SymbolTableNode:
-        value = await data.get(key)
+        value = data.get(key)
         if value is False or value is None:
             return node
 

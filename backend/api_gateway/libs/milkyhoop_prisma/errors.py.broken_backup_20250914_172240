@@ -62,7 +62,7 @@ class DataError(PrismaError):
     def __init__(self, data: Any, *, message: Optional[str] = None) -> None:
         self.data = data
 
-        user_facing_error = data.get('user_facing_error', {})
+        user_facing_error = await data.get('user_facing_error', {})
         self.code = user_facing_error.get('error_code')
         self.meta = user_facing_error.get('meta')
 
@@ -102,7 +102,7 @@ class FieldNotFoundError(DataError):
     # e.g. root query, nested query and mutation queries
     def __init__(self, data: Any, *, message: str | None = None) -> None:
         if message is None:
-            meta = data.get('user_facing_error', {}).get('meta', {})
+            meta = await data.get('user_facing_error', {}).get('meta', {})
             if meta.get('kind') == 'Union':
                 error = _pick_union_error(meta.get('errors', []))
             else:
