@@ -62,6 +62,9 @@ COPY protos /app/protos
 
 # Copy health probe
 COPY grpc_health_probe /usr/local/bin/grpc_health_probe
+# Validate generated Python code syntax
+RUN find /app/backend/api_gateway -name "*.py" -exec python3 -m py_compile {} \; || { echo "Python syntax validation failed"; exit 1; }
+
 RUN chmod +x /usr/local/bin/grpc_health_probe
 
 # Set Python path EXACTLY like working container
