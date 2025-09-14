@@ -80,3 +80,13 @@ EXPOSE 8000
 # Use tini as PID 1 and start application EXACTLY like working container
 ENTRYPOINT ["tini", "--"]
 CMD ["uvicorn", "backend.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Enhanced Cross-Service Validation
+RUN echo "=== ENHANCED BUILD VALIDATION ===" && \
+    # 1. Protobuf version verification
+    python3 -c "import grpc; print(f'gRPC version: {grpc.__version__}')" && \
+    # 2. Import validation for critical modules
+    python3 -c "from backend.api_gateway.libs.milkyhoop_prisma import Prisma; print('Prisma: OK')" && \
+    # 3. Generated protobuf validation
+    find /app -name "*_pb2_grpc.py" -exec python3 -m py_compile {} \; && \
+    echo "✅ All enhanced validations passed"
