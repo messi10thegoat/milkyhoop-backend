@@ -1,38 +1,158 @@
-# Docker
-*.log
-logs/
-.env
-.env.*
+# ===== MILKYHOOP 3.0 ENHANCED .gitignore =====
+# Prevent binary files and build artifacts from being tracked
 
-# Python
+# ===== BINARY EXECUTABLES & ENGINES =====
+**/test-binary
+**/query-engine-*
+**/schema-engine-*
+**/migration-engine-*
+**/prisma-fmt-*
+**/*.so
+**/*.so.*
+**/*.dylib
+**/*.dll
+**/*.exe
+
+# ===== NODE MODULES & DEPENDENCIES =====
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+.npm
+.eslintcache
+
+# ===== PYTHON DEPENDENCIES & CACHE =====
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 venv/
+env/
+ENV/
 .venv/
+.env
 
-# IDE
+# ===== DATABASE & PRISMA =====
+*.db
+*.sqlite
+*.sqlite3
+prisma/migrations/
+.prisma/
+
+# ===== DOCKER & CONTAINERS =====
+*.log
+*.pid
+*.seed
+*.pid.lock
+.dockerignore
+
+# ===== ENVIRONMENT FILES =====
+.env*
+!.env.example
+*.local
+
+# ===== BACKUP FILES =====
+*.backup
+*.bak
+*.backup.*
+*.bk
+*~
+*.tmp
+*.temp
+*.swp
+*.swo
+*_backup_*
+*.pre_*
+*.host_backup_*
+*.broken_backup_*
+*.container_copy*
+*.BL*
+
+# ===== LOGS & MONITORING =====
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ===== IDE & EDITOR FILES =====
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
+*~
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-dist/
+# ===== BUILD OUTPUTS =====
 build/
-*.egg-info/
+dist/
+out/
+.next/
+.nuxt/
+.vuepress/dist/
+.serverless/
+target/
 
-# Database
-*.db
-*.sqlite
+# ===== TEST COVERAGE =====
+coverage/
+.nyc_output/
+.coverage
+.pytest_cache/
+htmlcov/
 
-# Backup files
-*.backup.*
-*.bak
+# ===== SYSTEM FILES =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== GOLANG =====
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# ===== SPECIFIC TO MILKYHOOP =====
+# Container copied directories
+backend/api_gateway_container_copy/
+**/site-packages/
+**/libs/engine/
+atlas.tar.gz
+grpc_health_probe
+grpcurl_*.tar.gz
+go*.tar.gz
+prisma-query-engine-*
+
