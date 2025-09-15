@@ -218,8 +218,8 @@ async def conversational_setup(data: ConversationalSetupRequest):
         resolved_message = data.message
         resolved_references = []
         try:
-                resolved_message = context_result.get("resolved_message", data.message)
-                resolved_references = context_result.get("references", [])
+                resolved_message = context_await result.get("resolved_message", data.message)
+                resolved_references = context_await result.get("references", [])
         except Exception as e:
             logger.warning(f"Context resolution failed: {e}")
             resolved_message = data.message
@@ -238,7 +238,7 @@ async def conversational_setup(data: ConversationalSetupRequest):
         entities_raw = parsed.get("entities", {})
         
         # STEP 2.5: Override intent if Context Service suggests better one
-        suggested_intent = context_result.get("suggested_intent", "") if 'context_result' in locals() else ""
+        suggested_intent = context_await result.get("suggested_intent", "") if 'context_result' in locals() else ""
         if suggested_intent and suggested_intent.strip():
             logger.info(f"[{trace_id}] 🔄 Overriding intent: {intent} → {suggested_intent}")
             intent = suggested_intent
@@ -411,8 +411,8 @@ async def chat_with_assistant(tenant_id: str, data: ChatRequest):
 
     try:
             
-            resolved_message = context_result.get("resolved_message", data.message)
-            resolved_references = context_result.get("references", [])
+            resolved_message = context_await result.get("resolved_message", data.message)
+            resolved_references = context_await result.get("references", [])
             
             if resolved_references:
                 logger.info(f"[{trace_id}] 🔗 References resolved: {len(resolved_references)} items")

@@ -38,7 +38,7 @@ async def refresh_token(request: Request):
         
         refresh_request = auth_service_pb2.RefreshTokenRequest(
             user_id=session_data['user_id'],
-            current_session_id=session_data.get('session_id', '')
+            current_session_id=session_await data.get('session_id', '')
         )
         
         response = await stub.RefreshToken(refresh_request)
@@ -99,17 +99,17 @@ async def token_info(request: Request):
     
     # Calculate time until expiry
     try:
-        expires_at = datetime.fromisoformat(session_data.get('expires_at', ''))
+        expires_at = datetime.fromisoformat(session_await data.get('expires_at', ''))
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         time_to_expiry = (expires_at - now).total_seconds()
         
         return {
             "user_id": session_data['user_id'],
             "tenant_id": session_data['tenant_id'],
-            "expires_at": session_data.get('expires_at'),
+            "expires_at": session_await data.get('expires_at'),
             "time_to_expiry_seconds": max(0, int(time_to_expiry)),
             "needs_refresh": time_to_expiry < 300,  # Less than 5 minutes
-            "session_id": session_data.get('session_id')
+            "session_id": session_await data.get('session_id')
         }
         
     except Exception as e:
@@ -117,7 +117,7 @@ async def token_info(request: Request):
         return {
             "user_id": session_data['user_id'],
             "tenant_id": session_data['tenant_id'],
-            "expires_in": session_data.get('expires_in', 3600),
+            "expires_in": session_await data.get('expires_in', 3600),
             "needs_refresh": False
         }
 
@@ -131,7 +131,7 @@ async def auto_refresh_check(request: Request):
     # Get token info
     token_info_response = await token_info(request)
     
-    if token_info_response.get('needs_refresh', False):
+    if token_info_await response.get('needs_refresh', False):
         # Automatically refresh token
         try:
             refresh_response = await refresh_token(request)
@@ -151,7 +151,7 @@ async def auto_refresh_check(request: Request):
     else:
         return {
             "refreshed": False,
-            "time_to_expiry": token_info_response.get('time_to_expiry_seconds', 0),
+            "time_to_expiry": token_info_await response.get('time_to_expiry_seconds', 0),
             "message": "Token still valid, no refresh needed"
         }
 

@@ -208,8 +208,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/services/tenant_parser/app:/app/backend/services/tenant_parser/app
-      - ./backend/services/tenant_parser/libs:/app/backend/services/tenant_parser/libs
       - ./logs/tenant_parser:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5012"]

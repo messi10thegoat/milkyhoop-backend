@@ -773,5 +773,3 @@ async def serve() -> None:
     await server.wait_for_termination()
 
 if __name__ == "__main__":
-    asyncio.run(serve())
-# Test sync - Mon Sep 15 07:52:31 UTC 2025

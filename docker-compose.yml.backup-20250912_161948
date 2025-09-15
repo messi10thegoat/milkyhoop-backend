@@ -112,7 +112,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
       - ./logs/api_gateway:/var/log
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
@@ -145,7 +144,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
       - ./logs/chatbot_service:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5002"]
@@ -208,8 +206,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/services/tenant_parser/app:/app/backend/services/tenant_parser/app
-      - ./backend/services/tenant_parser/libs:/app/backend/services/tenant_parser/libs
       - ./logs/tenant_parser:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5012"]
@@ -270,7 +266,6 @@ services:
       - .env
     volumes:
       - ./logs/ragcrud_service:/var/log
-      - ./backend/services/ragcrud_service:/app/backend/services/ragcrud_service
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5001"]
       interval: 30s
@@ -345,6 +340,7 @@ services:
   notification_service:
     build:
       context: ./backend/services/notification-service
+      dockerfile: Dockerfile
     ports:
       - "7005:5005"
       - "7082:8080"
@@ -564,7 +560,8 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./frontend/web
+      dockerfile: Dockerfile
     container_name: milkyhoop-dev-frontend-1
     ports:
       - "3001:80"

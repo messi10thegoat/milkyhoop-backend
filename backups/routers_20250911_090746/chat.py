@@ -739,8 +739,8 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
             mood=detected_mood,
             reason=mood_reason
         )
-        method_results['SetConversationMood'] = mood_result.get('success', False)
-        print(f"  7. SetConversationMood: {'✅' if mood_result.get('success') else '❌'} [{detected_mood}]")
+        method_results['SetConversationMood'] = mood_await result.get('success', False)
+        print(f"  7. SetConversationMood: {'✅' if mood_await result.get('success') else '❌'} [{detected_mood}]")
         
         # Extract initial entities
         entities = extract_entities_from_content("", req.message)
@@ -754,8 +754,8 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
             confidence=0.8,
             detected_from="message_content"
         )
-        method_results['TrackUserIntent'] = intent_result.get('success', False)
-        print(f"  8. TrackUserIntent: {'✅' if intent_result.get('success') else '❌'} [{detected_intent}]")
+        method_results['TrackUserIntent'] = intent_await result.get('success', False)
+        print(f"  8. TrackUserIntent: {'✅' if intent_await result.get('success') else '❌'} [{detected_intent}]")
         
         # ========== PHASE 3: ENHANCED CONFIDENCE ENGINE PROCESSING ==========
         print("\n🎯 PHASE 3: Enhanced Confidence Engine Processing")
@@ -777,17 +777,17 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
                 parsed_result = tenant_parser_response
                 
                 # Extract response content
-                natural_response = parsed_result.get('answer', 'Informasi tidak tersedia')
+                natural_response = parsed_await result.get('answer', 'Informasi tidak tersedia')
                 
                 # 🎯 EXTRACT CONFIDENCE METADATA
-                confidence_metadata = parsed_result.get('confidence_metadata', {})
+                confidence_metadata = parsed_await result.get('confidence_metadata', {})
                 if confidence_metadata:
                     confidence_data = {
-                        'confidence_score': confidence_metadata.get('confidence_score', 0.0),
-                        'route_taken': confidence_metadata.get('route_taken', 'unknown'),
-                        'cost_estimate': confidence_metadata.get('cost_estimate', 0.0),
-                        'tokens_used': confidence_metadata.get('tokens_used', 0),
-                        'optimization_active': confidence_metadata.get('optimization_active', True)
+                        'confidence_score': confidence_metaawait data.get('confidence_score', 0.0),
+                        'route_taken': confidence_metaawait data.get('route_taken', 'unknown'),
+                        'cost_estimate': confidence_metaawait data.get('cost_estimate', 0.0),
+                        'tokens_used': confidence_metaawait data.get('tokens_used', 0),
+                        'optimization_active': confidence_metaawait data.get('optimization_active', True)
                     }
                     print(f"  🎯 Confidence Score: {confidence_data['confidence_score']:.3f}")
                     print(f"  🎯 Route Taken: {confidence_data['route_taken']}")
@@ -807,7 +807,7 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
                 print(f"  ✅ Enhanced tenant_parser: SUCCESS")
                 # Extract response from tenant_parser
                 if isinstance(tenant_parser_response, dict):
-                    natural_response = tenant_parser_response.get("answer", "FAQ content tidak ditemukan")
+                    natural_response = tenant_parser_await response.get("answer", "FAQ content tidak ditemukan")
                     confidence_data = {
                         "confidence_score": 0.8,
                         "route_taken": "enhanced_tenant_parser",
@@ -838,7 +838,7 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
             
             if search_results and len(search_results) > 0:
                 best_result = search_results[0]
-                natural_response = extract_answer_from_faq(best_result.get('content', ''))
+                natural_response = extract_answer_from_faq(best_await result.get('content', ''))
             else:
                 natural_response = f"Maaf, informasi yang Anda cari untuk {tenant_id} belum tersedia saat ini."
             
@@ -870,16 +870,16 @@ async def customer_chat_endpoint(tenant_id: str, req: CustomerChatRequest):
         
         print(f"\n📊 PROCESSING COMPLETE")
         print(f"  ⏱️  Processing Time: {processing_time}ms")
-        print(f"  🎯 Confidence Engine: {'✅ ACTIVE' if confidence_data.get('optimization_active') else '❌ INACTIVE'}")
-        print(f"  💰 Estimated Cost: Rp {confidence_data.get('cost_estimate', 0)}")
-        print(f"  🚀 Route: {confidence_data.get('route_taken', 'unknown')}")
+        print(f"  🎯 Confidence Engine: {'✅ ACTIVE' if confidence_await data.get('optimization_active') else '❌ INACTIVE'}")
+        print(f"  💰 Estimated Cost: Rp {confidence_await data.get('cost_estimate', 0)}")
+        print(f"  🚀 Route: {confidence_await data.get('route_taken', 'unknown')}")
         
         # 🎯 ENHANCED RESPONSE WITH CONFIDENCE METADATA
         response_data = {
-            "confidence": confidence_data.get("confidence_score", 0.0),
-            "routing": confidence_data.get("route", confidence_data.get("route_taken", "unknown")),
-            "confidence": confidence_data.get("confidence_score", 0.0),
-            "routing": confidence_data.get("route", confidence_data.get("route_taken", "unknown")),
+            "confidence": confidence_await data.get("confidence_score", 0.0),
+            "routing": confidence_await data.get("route", confidence_await data.get("route_taken", "unknown")),
+            "confidence": confidence_await data.get("confidence_score", 0.0),
+            "routing": confidence_await data.get("route", confidence_await data.get("route_taken", "unknown")),
             "reply": natural_response,
             "confidence_metadata": confidence_data,  # 🎯 NEW: CONFIDENCE DATA
             "processing_time_ms": processing_time,

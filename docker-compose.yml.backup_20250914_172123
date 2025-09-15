@@ -112,7 +112,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
       - ./logs/api_gateway:/var/log
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
@@ -145,7 +144,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
       - ./logs/chatbot_service:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5002"]
@@ -208,8 +206,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./backend/services/tenant_parser/app:/app/backend/services/tenant_parser/app
-      - ./backend/services/tenant_parser/libs:/app/backend/services/tenant_parser/libs
       - ./logs/tenant_parser:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5012"]
