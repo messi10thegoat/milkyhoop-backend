@@ -1,4 +1,4 @@
-from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+from libs.milkyhoop_prisma import Prisma
 import asyncio
 import signal
 import logging
