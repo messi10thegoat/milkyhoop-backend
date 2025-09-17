@@ -283,7 +283,7 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             return self.confidence_engine.cache[cache_key]
         
         # Circuit breaker
-        if False:  # Circuit breaker disabled - method not available in SuperIntelligentConfidenceEngine
+        if self.confidence_engine.check_circuit_breaker(tenant_id):
             return {
                 "response": f"Maaf, layanan untuk {tenant_id} sedang dibatasi sementara.",
                 "route_taken": "circuit_breaker",
@@ -312,16 +312,16 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
                 logger.error(f"❌ [{tenant_id}] FAQ fetch error: {e}")
         
         # OPTIMIZED: Calculate confidence with personalization awareness
-        confidence = self.confidence_engine.calculate_super_confidence(resolved_message, faq_results)
+        confidence = self.confidence_engine.calculate_universal_confidence(resolved_message, faq_results)
         logger.info(f"📊 [{tenant_id}] Optimized confidence: {confidence:.3f} for: {resolved_message[:40]}...")
         
         # Decision routing with optimized thresholds
-        decision = self.confidence_engine.super_decision_engine(confidence)
+        decision = self.confidence_engine.enhanced_decision_engine(confidence)
         
         # Route execution with strict FAQ constraints
-        if decision["route"] == "direct_faq_fallback":
+        if decision["route"] == "direct_faq_only":
             if faq_results and len(faq_results) > 0:
-                response = self.confidence_engine.extract_faq_answer(faq_results[0].content)
+                response = self.confidence_engine.extract_answer_only(faq_results[0].content)
                 logger.info(f"💰 [{tenant_id}] Direct FAQ route - Zero cost")
             else:
                 response = f"Maaf, informasi untuk {tenant_id} sedang tidak tersedia saat ini."
@@ -331,22 +331,22 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             response = f"Maaf, pertanyaan tersebut di luar cakupan layanan {tenant_id}."
             cost_estimate = 0.0
             
-        elif decision["route"] in ["gpt_synthesis", "gpt_3.5_deep_analysis"]:
+        elif decision["route"] in ["gpt_3.5_synthesis", "gpt_3.5_deep_analysis"]:
             # LLM synthesis with strict FAQ-only constraints
             try:
-                prompt = self.confidence_engine.get_polite_deflection(resolved_message, faq_results, decision["context_level"], tenant_id)
+                prompt = self.confidence_engine.build_medium_prompt(resolved_message, faq_results, decision["context_level"], tenant_id)
                 
-                response = await self.confidence_engine.call_gpt_super_synthesis(
-                    query=resolved_message,
-                    faq_results=faq_results,
-                    intelligence_level=decision.get("intelligence_level", "medium"),
-                    tenant_id=tenant_id
-                )   
+                response = await self.confidence_engine.call_gpt_3_5(
+                    prompt, 
+                    max_tokens=decision["tokens_output"]
+                )
+                cost_estimate = decision["cost_per_query"]
+                
             except Exception as e:
                 logger.error(f"❌ [{tenant_id}] Synthesis failed: {e}")
                 # Fallback to direct FAQ
                 if faq_results:
-                    response = self.confidence_engine.extract_faq_answer(faq_results[0].content)
+                    response = self.confidence_engine.extract_answer_only(faq_results[0].content)
                 else:
                     response = f"Maaf ada kendala teknis untuk {tenant_id}."
                 cost_estimate = 0.0
@@ -355,7 +355,7 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             cost_estimate = 0.0
         
         # Track costs and cache result
-        self.confidence_engine.track_intelligence_cost(tenant_id, cost_estimate)
+        self.confidence_engine.track_cost(tenant_id, cost_estimate)
         
         result = {
             "response": response,

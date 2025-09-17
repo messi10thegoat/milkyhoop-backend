@@ -254,7 +254,7 @@ async def fuzzy_search_rag_documents(
     else:
         logger.info(f"❌ No fuzzy matches found for: '{search_content}'")
     
-    return [doc for doc, score, match_type in top_matches]
+    return [(doc, score) for doc, score, match_type in top_matches]
 
 def calculate_word_overlap(search_words: List[str], doc_text: str) -> float:
     """Calculate word overlap score between search terms and document"""

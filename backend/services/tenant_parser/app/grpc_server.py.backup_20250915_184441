@@ -13,7 +13,6 @@ from app.config import settings
 from app import tenant_parser_pb2_grpc as pb_grpc
 from app import tenant_parser_pb2 as pb
 from app.services.llm_parser import parse_intent_entities
-from app.services.enhanced_confidence_engine import create_enhanced_confidence_engine
 from openai import OpenAI
 
 # RAG CRUD integration
@@ -49,8 +48,208 @@ logger = logging.getLogger(__name__)
 # 🎯 OPTIMIZED CONFIDENCE ENGINE - TARGETED FIXES
 # ========================================
 
-# SURGICAL INTEGRATION: Use enhanced confidence engine from services
-# UnifiedConfidenceEngine replaced with EnhancedConfidenceEngine
+class UnifiedConfidenceEngine:
+    """
+    Optimized Confidence Engine with Targeted Fixes
+    - Fix personalization query detection
+    - Universal business patterns
+    - Improved semantic consistency
+    - Preserved working architecture
+    """
+    
+    def __init__(self):
+        self.daily_cost_tracker = {}
+        self.cache = {}
+        
+        # Initialize OpenAI client
+        try:
+            self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        except:
+            self.openai_client = None
+            logger.warning("⚠️ OpenAI client not available - LLM synthesis disabled")
+    
+    def calculate_universal_confidence(self, query: str, faq_results: list = None) -> float:
+        """
+        OPTIMIZED: Targeted confidence calculation with personalization detection
+        """
+        
+        # Pre-LLM scope filtering for non-business topics
+        query_lower = query.lower().strip()
+        non_business_keywords = ['cuaca', 'weather', 'politik', 'political', 'resep', 'recipe', 
+                               'olahraga', 'sport', 'berita', 'news', 'film', 'movie', 
+                               'musik', 'music', 'game']
+        
+        if any(word in query_lower for word in non_business_keywords):
+            logger.info(f"🚫 Scope filter: Non-business query detected")
+            return 0.05  # Force deflection
+        
+        confidence = 0.0
+        
+        # OPTIMIZATION 1: Detect personalization needs (CRITICAL FIX)
+        personalization_indicators = [
+            'cocok', 'sesuai', 'bagus', 'terbaik', 'rekomendasi', 'saran', 
+            'pilih', 'mana', 'sebaiknya', 'istri', 'suami', 'anak', 'keluarga'
+        ]
+        has_personalization = any(indicator in query_lower for indicator in personalization_indicators)
+        
+        if has_personalization:
+            logger.info(f"🎯 Personalization detected: limiting confidence for synthesis routing")
+            confidence_cap = 0.55  # Cap at medium confidence for synthesis
+        else:
+            confidence_cap = 1.0
+        
+        # Base scoring from FAQ similarity
+        if faq_results and len(faq_results) > 0:
+            best_faq = faq_results[0]
+            logger.info(f"🔍 RAG response type: {type(best_faq)}")
+            attrs = [attr for attr in dir(best_faq) if not attr.startswith('_')]
+            logger.info(f"🔍 RAG response attributes: {attrs}")
+            base_score = 0.5  # Reduced from 0.6 for better routing
+            confidence = base_score
+            
+            # Keyword overlap boost (reduced)
+            query_keywords = self.extract_keywords(query_lower)
+            faq_keywords = self.extract_keywords(best_faq.content.lower())
+            keyword_overlap = len(set(query_keywords) & set(faq_keywords))
+            confidence += min(keyword_overlap * 0.04, 0.12)  # Reduced from 0.05, 0.15
+        
+        # OPTIMIZATION 2: Universal business patterns (not banking-specific)
+        universal_patterns = {
+            'pricing': ['berapa', 'harga', 'biaya', 'tarif', 'mahal', 'murah'],
+            'products': ['jenis', 'macam', 'produk', 'layanan', 'service'],  # Removed banking terms
+            'process': ['cara', 'bagaimana', 'gimana', 'langkah', 'proses'],
+            'location': ['dimana', 'lokasi', 'alamat', 'cabang', 'kantor'],
+            'requirements': ['syarat', 'persyaratan', 'dokumen', 'butuh', 'perlu']
+        }
+        
+        # Apply universal pattern boosts (reduced)
+        for pattern_type, keywords in universal_patterns.items():
+            if any(keyword in query_lower for keyword in keywords):
+                if pattern_type == 'pricing':
+                    confidence += 0.15  # Reduced from 0.20
+                elif pattern_type == 'requirements':
+                    confidence += 0.15  # For WNA consistency
+                else:
+                    confidence += 0.10  # Reduced from 0.15
+                break  # Only one boost per query
+        
+        # Universal question patterns (reduced)
+        question_patterns = ['berapa', 'apa', 'bagaimana', 'gimana', 'kapan', 'dimana', 'siapa']
+        if any(pattern in query_lower for pattern in question_patterns):
+            confidence += 0.08  # Reduced from 0.10
+        
+        # Action-oriented queries (reduced)
+        action_patterns = ['bisa', 'boleh', 'mau', 'ingin', 'pengen', 'butuh', 'perlu']
+        if any(pattern in query_lower for pattern in action_patterns):
+            confidence += 0.08  # Reduced from 0.10
+        
+        # OPTIMIZATION 3: Apply personalization cap
+        final_confidence = min(confidence, confidence_cap)
+        
+        logger.info(f"📊 Confidence calculation: base={confidence:.3f}, cap={confidence_cap:.3f}, final={final_confidence:.3f}")
+        
+        return final_confidence
+    
+    def enhanced_decision_engine(self, confidence: float) -> dict:
+        """
+        OPTIMIZED: Adjusted thresholds for better routing
+        """
+        
+        # OPTIMIZATION 4: Adjusted thresholds for better synthesis routing
+        if confidence >= 0.65:  # Raised from 0.60 to reduce direct routing
+            return {
+                "route": "direct_faq_only",
+                "model": None,
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "cost_per_query": 0.0,
+                "faq_count": 1,
+                "context_level": "none"
+            }
+        elif confidence >= 0.30:  # Lowered from 0.35 for more synthesis
+            return {
+                "route": "gpt_3.5_synthesis", 
+                "model": "gpt-3.5-turbo",
+                "tokens_input": 300,
+                "tokens_output": 150,
+                "cost_per_query": 7.0,
+                "faq_count": 2,
+                "context_level": "medium"
+            }
+        elif confidence >= 0.15:
+            return {
+                "route": "gpt_3.5_deep_analysis",
+                "model": "gpt-3.5-turbo",
+                "tokens_input": 600,
+                "tokens_output": 200,
+                "cost_per_query": 12.4,
+                "faq_count": 3,
+                "context_level": "full"
+            }
+        else:
+            return {
+                "route": "polite_deflection",
+                "model": None,
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "cost_per_query": 0.0,
+                "faq_count": 0,
+                "context_level": "none"
+            }
+    
+    def extract_keywords(self, text: str) -> list:
+        """Extract meaningful keywords"""
+        stop_words = {'yang', 'adalah', 'dan', 'atau', 'untuk', 'dengan', 'dari', 'ke', 'di', 'pada', 'ini', 'itu'}
+        words = re.findall(r'\b\w+\b', text.lower())
+        return [word for word in words if word not in stop_words and len(word) > 2]
+    
+    def extract_answer_only(self, faq_content: str) -> str:
+        """Extract clean answer from FAQ"""
+        if faq_content.startswith("Q:") and "\nA:" in faq_content:
+            return faq_content.split("\nA:", 1)[1].strip()
+        return faq_content.strip()
+    
+    def get_cache_key(self, tenant_id: str, query: str) -> str:
+        """Generate cache key"""
+        return hashlib.md5(f"{tenant_id}:{query.lower()}".encode()).hexdigest()
+    
+    def check_circuit_breaker(self, tenant_id: str) -> bool:
+        """Circuit breaker protection"""
+        daily_budget = 50000  # Rp 50,000 daily limit
+        current_cost = self.daily_cost_tracker.get(tenant_id, 0)
+        
+        if current_cost > daily_budget:
+            logger.warning(f"🚨 Circuit breaker: {tenant_id} exceeded daily budget")
+            return True
+        return False
+    
+    def track_cost(self, tenant_id: str, cost: float):
+        """Track daily costs"""
+        if tenant_id not in self.daily_cost_tracker:
+            self.daily_cost_tracker[tenant_id] = 0
+        self.daily_cost_tracker[tenant_id] += cost
+    
+    async def call_gpt_3_5(self, prompt: str, max_tokens: int = 150) -> str:
+        """Call GPT-3.5 with strict FAQ constraints"""
+        if not self.openai_client:
+            raise Exception("OpenAI client not available")
+            
+        try:
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.7
+                )
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"❌ OpenAI API error: {e}")
+            raise
 
 class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
 
@@ -84,7 +283,7 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
         self.reference_target = "cust_reference:5013"
         
         # Initialize Optimized Confidence Engine
-        self.confidence_engine = create_enhanced_confidence_engine()
+        self.confidence_engine = UnifiedConfidenceEngine()
         
         # Connection pooling
         self._context_channel = None
@@ -283,7 +482,7 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             return self.confidence_engine.cache[cache_key]
         
         # Circuit breaker
-        if False:  # Circuit breaker disabled - method not available in SuperIntelligentConfidenceEngine
+        if self.confidence_engine.check_circuit_breaker(tenant_id):
             return {
                 "response": f"Maaf, layanan untuk {tenant_id} sedang dibatasi sementara.",
                 "route_taken": "circuit_breaker",
@@ -312,16 +511,16 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
                 logger.error(f"❌ [{tenant_id}] FAQ fetch error: {e}")
         
         # OPTIMIZED: Calculate confidence with personalization awareness
-        confidence = self.confidence_engine.calculate_super_confidence(resolved_message, faq_results)
+        confidence = self.confidence_engine.calculate_universal_confidence(resolved_message, faq_results)
         logger.info(f"📊 [{tenant_id}] Optimized confidence: {confidence:.3f} for: {resolved_message[:40]}...")
         
         # Decision routing with optimized thresholds
-        decision = self.confidence_engine.super_decision_engine(confidence)
+        decision = self.confidence_engine.enhanced_decision_engine(confidence)
         
         # Route execution with strict FAQ constraints
-        if decision["route"] == "direct_faq_fallback":
+        if decision["route"] == "direct_faq_only":
             if faq_results and len(faq_results) > 0:
-                response = self.confidence_engine.extract_faq_answer(faq_results[0].content)
+                response = self.confidence_engine.extract_answer_only(faq_results[0].content)
                 logger.info(f"💰 [{tenant_id}] Direct FAQ route - Zero cost")
             else:
                 response = f"Maaf, informasi untuk {tenant_id} sedang tidak tersedia saat ini."
@@ -331,22 +530,22 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             response = f"Maaf, pertanyaan tersebut di luar cakupan layanan {tenant_id}."
             cost_estimate = 0.0
             
-        elif decision["route"] in ["gpt_synthesis", "gpt_3.5_deep_analysis"]:
+        elif decision["route"] in ["gpt_3.5_synthesis", "gpt_3.5_deep_analysis"]:
             # LLM synthesis with strict FAQ-only constraints
             try:
-                prompt = self.confidence_engine.get_polite_deflection(resolved_message, faq_results, decision["context_level"], tenant_id)
+                prompt = self.build_synthesis_prompt(resolved_message, faq_results, decision["context_level"], tenant_id)
                 
-                response = await self.confidence_engine.call_gpt_super_synthesis(
-                    query=resolved_message,
-                    faq_results=faq_results,
-                    intelligence_level=decision.get("intelligence_level", "medium"),
-                    tenant_id=tenant_id
-                )   
+                response = await self.confidence_engine.call_gpt_3_5(
+                    prompt, 
+                    max_tokens=decision["tokens_output"]
+                )
+                cost_estimate = decision["cost_per_query"]
+                
             except Exception as e:
                 logger.error(f"❌ [{tenant_id}] Synthesis failed: {e}")
                 # Fallback to direct FAQ
                 if faq_results:
-                    response = self.confidence_engine.extract_faq_answer(faq_results[0].content)
+                    response = self.confidence_engine.extract_answer_only(faq_results[0].content)
                 else:
                     response = f"Maaf ada kendala teknis untuk {tenant_id}."
                 cost_estimate = 0.0
@@ -355,7 +554,7 @@ class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
             cost_estimate = 0.0
         
         # Track costs and cache result
-        self.confidence_engine.track_intelligence_cost(tenant_id, cost_estimate)
+        self.confidence_engine.track_cost(tenant_id, cost_estimate)
         
         result = {
             "response": response,

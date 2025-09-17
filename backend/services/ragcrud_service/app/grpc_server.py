@@ -59,7 +59,8 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
             )
             
             logger.info(f"✅ Document created: ID={doc.id}, tenant={request.tenant_id}")
-            return pb.RagDocumentResponse(id=doc.id, title=doc.title, content=doc.content)
+            return pb.RagDocumentResponse(id=doc_tuple[0].id, title=doc_tuple[0].title, content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1])
             
         except Exception as e:
             logger.error(f"❌ CreateRagDocument failed: {e}")
@@ -79,7 +80,8 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
                 return pb.RagDocumentResponse()
                 
             logger.info(f"✅ Document retrieved: ID={doc.id}, title='{doc.title[:30]}...'")
-            return pb.RagDocumentResponse(id=doc.id, title=doc.title, content=doc.content)
+            return pb.RagDocumentResponse(id=doc_tuple[0].id, title=doc_tuple[0].title, content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1])
             
         except Exception as e:
             logger.error(f"❌ GetRagDocument failed: {e}")
@@ -125,7 +127,8 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
                 return pb.RagDocumentResponse()
                 
             logger.info(f"✅ Document updated: ID={doc.id}")
-            return pb.RagDocumentResponse(id=doc.id, title=doc.title, content=doc.content)
+            return pb.RagDocumentResponse(id=doc_tuple[0].id, title=doc_tuple[0].title, content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1])
             
         except Exception as e:
             logger.error(f"❌ UpdateRagDocument failed: {e}")
@@ -150,7 +153,8 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
                 return pb.RagDocumentResponse()
                 
             logger.info(f"✅ Document updated by search: ID={doc.id}")
-            return pb.RagDocumentResponse(id=doc.id, title=doc.title, content=doc.content)
+            return pb.RagDocumentResponse(id=doc_tuple[0].id, title=doc_tuple[0].title, content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1])
             
         except Exception as e:
             logger.error(f"❌ UpdateRagDocumentBySearch failed: {e}")
@@ -171,7 +175,8 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
                 return pb.RagDocumentResponse()
                 
             logger.info(f"✅ Document deleted: ID={doc.id}")
-            return pb.RagDocumentResponse(id=doc.id, title=doc.title, content=doc.content)
+            return pb.RagDocumentResponse(id=doc_tuple[0].id, title=doc_tuple[0].title, content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1])
             
         except Exception as e:
             logger.error(f"❌ DeleteRagDocument failed: {e}")
@@ -198,11 +203,12 @@ class RagCrudServiceServicer(pb_grpc.RagCrudServiceServicer):
             
             # Convert to gRPC response format
             doc_responses = []
-            for doc in docs:
+            for doc_tuple in docs:
                 doc_responses.append(pb.RagDocumentResponse(
-                    id=doc.id,
-                    title=doc.title,
-                    content=doc.content
+                    id=doc_tuple[0].id,
+                    title=doc_tuple[0].title,
+                    content=doc_tuple[0].content,
+                    similarity_score=doc_tuple[1]
                 ))
             
             logger.info(f"✅ FuzzySearch completed: {len(doc_responses)} documents found (0 API calls used)")

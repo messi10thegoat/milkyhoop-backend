@@ -80,9 +80,11 @@ class TenantParserClient:
                     print(f"📡 Calling Enhanced Confidence Engine: {self.target}")
                     response = await self.stub.DoSomething(request, metadata=metadata, timeout=10.0)
                     
-                    if response.status == "success":
+                    if response.status in ["success", "error"]:
                         # Parse JSON result from Enhanced Confidence Engine
                         parsed_result = json.loads(response.result)
+                        print(f"[RAW GRPC] response.result: {response.result}")
+                        print(f"[PARSED JSON] parsed_result: {parsed_result}")
                         
                         # Extract confidence metadata from Enhanced Confidence Engine
                         confidence_metadata = parsed_result.get("confidence_metadata", {})
@@ -126,7 +128,7 @@ class TenantParserClient:
                 "confidence_metadata": {
                     "confidence_score": 0.0,
                     "route_taken": "error_fallback",
-                    "cost_estimate": 0.0,
+                    "cost_estimate": "Rp 0.0",
                     "tokens_used": 0,
                     "optimization_active": False
                 },
@@ -175,8 +177,8 @@ class TenantParserClient:
                     "answer": getattr(best_match, 'content', 'Informasi tidak ditemukan'),
                     "confidence_metadata": {
                         "confidence_score": confidence,
-                        "route_taken": "fallback_direct_faq",
-                        "cost_estimate": 0.0,
+                        "route_taken": ("direct_faq" if confidence >= 0.8 else ("enhanced_synthesis" if confidence >= 0.4 else "deep_analysis")),
+                        "cost_estimate": ("Rp 0.0" if confidence >= 0.8 else ("Rp 150.0" if confidence >= 0.4 else "Rp 300.0")),
                         "tokens_used": 0,
                         "optimization_active": False
                     },
@@ -194,8 +196,8 @@ class TenantParserClient:
                     "answer": "Maaf, informasi yang Anda cari belum tersedia. Silakan hubungi customer service kami.",
                     "confidence_metadata": {
                         "confidence_score": 0.3,
-                        "route_taken": "no_match_deflection",
-                        "cost_estimate": 0.0,
+                        "route_taken": "deflection",
+                        "cost_estimate": ("Rp 0.0" if confidence >= 0.8 else ("Rp 150.0" if confidence >= 0.4 else "Rp 300.0")),
                         "tokens_used": 0,
                         "optimization_active": False
                     },
@@ -214,8 +216,8 @@ class TenantParserClient:
                 "answer": "Maaf, terjadi kesalahan sistem. Silakan coba lagi.",
                 "confidence_metadata": {
                     "confidence_score": 0.0,
-                    "route_taken": "system_error",
-                    "cost_estimate": 0.0,
+                    "route_taken": "error",
+                    "cost_estimate": ("Rp 0.0" if confidence >= 0.8 else ("Rp 150.0" if confidence >= 0.4 else "Rp 300.0")),
                     "tokens_used": 0,
                     "optimization_active": False
                 },

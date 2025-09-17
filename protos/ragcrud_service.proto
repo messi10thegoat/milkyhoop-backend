@@ -65,6 +65,7 @@ message RagDocumentResponse {
   int32 id = 1;
   string title = 2;
   string content = 3;
+  float similarity_score = 4;
 }
 
 message ListRagDocumentsRequest {

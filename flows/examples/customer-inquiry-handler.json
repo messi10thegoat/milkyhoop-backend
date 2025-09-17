@@ -10,7 +10,7 @@
       "id": "search_faq",
       "hoop": "rag_search_faq",
       "parameters": {
-        "query": "{{message}}",
+        "query": "{{input.customer_query}}",
         "tenant_id": "{{tenant_id}}"
       },
       "next": "respond"

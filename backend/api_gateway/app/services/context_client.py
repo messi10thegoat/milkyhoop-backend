@@ -11,7 +11,7 @@ import logging
 # Import generated protobuf
 import sys
 sys.path.append('/app/backend/api_gateway/libs')
-from milkyhoop_protos import context_service_pb2 as pb
+from milkyhoop_protos import cust_context_pb2 as pb
 #from milkyhoop_protos import context_service_pb2_grpc as pb_grpc
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class ContextClient:
         }
         """
         try:
-            request = pb.ReferenceRequest(
+            request = pb.GetContextRequest(
                 message=message,
                 session_id=session_id,
                 tenant_id=tenant_id

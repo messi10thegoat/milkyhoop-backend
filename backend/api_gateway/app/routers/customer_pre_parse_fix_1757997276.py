@@ -67,9 +67,6 @@ class ChatResponse(BaseModel):
     session_id: str
     trace_id: str
     intent: Optional[str] = None
-    confidence: Optional[float] = None
-    route_taken: Optional[str] = None
-    cost_estimate: Optional[str] = None
 
 # 🔧 UTILITY FUNCTIONS
 def generate_trace_id() -> str:
@@ -139,8 +136,6 @@ async def call_flow_executor(profile_id: str, query: str, trace_id: str, entitie
     except Exception as e:
         logger.error(f"[FLOW-{trace_id}] Unexpected error in flow execution: {str(e)}")
         return fallback_direct_processing(profile_id, query, trace_id)
-        print(f"[PRINT DEBUG] parsed keys: {list(parsed.keys()) if parsed else None}")
-        logger.info(f"[DEBUG] FULL parsed response: {parsed}")
 
 async def fallback_direct_processing(profile_id: str, query: str, trace_id: str) -> Dict:
     """
@@ -205,21 +200,21 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
             "business_name": tenant_id,
             "session_id": session_id
         }
-        # try:
-        #    async with ContextClient() as context_client:
-        #        context_result = await context_client.resolve_reference(
-        #            message=data.message,
-        #            session_id=session_id,
-        #            tenant_id=tenant_id
-        #        )
-        #        resolved_message = context_result.get("resolved_message", data.message)
-        #        resolved_references = context_result.get("references", [])
-        #        
-        #        if resolved_references:
-        #            logger.info(f"[{trace_id}] 🔗 References resolved: {len(resolved_references)} items")
-        # except Exception as e:
-        #    logger.warning(f"[{trace_id}] ⚠️ Context resolution failed: {e}")
-        #    resolved_message = data.message
+        try:
+            async with ContextClient() as context_client:
+                context_result = await context_client.resolve_reference(
+                    message=data.message,
+                    session_id=session_id,
+                    tenant_id=tenant_id
+                )
+                resolved_message = context_result.get("resolved_message", data.message)
+                resolved_references = context_result.get("references", [])
+                
+                if resolved_references:
+                    logger.info(f"[{trace_id}] 🔗 References resolved: {len(resolved_references)} items")
+        except Exception as e:
+            logger.warning(f"[{trace_id}] ⚠️ Context resolution failed: {e}")
+            resolved_message = data.message
 
         # Define template_context early for all response paths
         template_context = {
@@ -237,8 +232,6 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
             tenant_id=tenant_id, 
             message=resolved_message, session_id=session_id
         )
-        print(f"[DEBUG LINE 250] parsed object keys: {list(parsed.keys()) if parsed else 'None'}")
-        print(f"[DEBUG LINE 250] parsed full content: {parsed}")
         
         intent = parsed.get("intent", "customer_inquiry")
         entities_raw = parsed.get("entities", {})
@@ -249,14 +242,35 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
         # CRITICAL FIX: Use tenant_parser answer directly if available
         tenant_answer = parsed.get("answer", "")
         tenant_confidence = parsed.get("confidence", 0.0)
-        logger.info(f"[DEBUG] FULL parsed response: {parsed}")
-        tenant_route = parsed.get("confidence_metadata", {}).get("route_taken", "unknown")
-        tenant_cost = str(parsed.get("cost_estimate", 0.0)) if "confidence_metadata" in parsed else "Rp 0.0"
         
         logger.info(f"[{trace_id}] 🎯 Tenant Parser Response: intent={intent}, confidence={tenant_confidence:.3f}")
         
-        # ALWAYS use tenant_parser response - it contains proper route metadata
-        logger.info(f"[{trace_id}] ✅ Using tenant_parser response (route: {tenant_route})")
+        # Use tenant_parser answer directly for high confidence responses
+        if tenant_answer and tenant_confidence > 0.1:
+            logger.info(f"[{trace_id}] ✅ Using tenant_parser answer directly (confidence: {tenant_confidence:.3f})")
+            
+            # Load business profile for context
+            profile_path = f"data/tenant_profiles/{tenant_id}.json"
+            business_name = tenant_id
+            
+            if os.path.exists(profile_path):
+                try:
+                    with open(profile_path, "r") as f:
+                        profile = json.load(f)
+                        business_name = profile.get("business_name", tenant_id)
+                except:
+                    pass
+            
+            return ChatResponse(
+                status="success",
+                tenant_id=tenant_id,
+                business_name=business_name,
+                response=resolve_template_variables(tenant_answer, template_context),
+            reply=tenant_answer,
+                session_id=session_id,
+                trace_id=trace_id,
+                intent=intent
+            )
         
         
         logger.info(f"[{trace_id}] 🎯 Customer Intent: {intent}, Entities: {len(entities)} items")
@@ -281,12 +295,11 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
             logger.error(f"[{trace_id}] Flow error: {error_message}")
             
             # Return helpful error response
-            print(f"[FINAL RESPONSE DEBUG] tenant_route: {tenant_route}, tenant_confidence: {tenant_confidence}")
             return ChatResponse(
                 status="error",
                 tenant_id=tenant_id,
                 response="Maaf, sistem sedang mengalami gangguan. Silakan coba lagi dalam beberapa menit. 🙏",
-                reply="Maaf, sistem sedang mengalami gangguan. Silakan coba lagi dalam beberapa menit. 🙏",
+            reply="Maaf, sistem sedang mengalami gangguan. Silakan coba lagi dalam beberapa menit. 🙏",
                 session_id=session_id,
                 trace_id=trace_id,
                 intent="system_error"
@@ -315,7 +328,6 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
         
         logger.info(f"[{trace_id}] ✅ Customer response generated successfully")
         
-        print(f"[FINAL RESPONSE DEBUG] tenant_route: {tenant_route}, tenant_confidence: {tenant_confidence}")
         return ChatResponse(
             status="success",
             tenant_id=tenant_id,
@@ -324,14 +336,11 @@ async def customer_chat(tenant_id: str, data: ChatRequest):
             reply=response_text,  # Direct from flow result, not RAG LLM processing
             session_id=session_id,
             trace_id=trace_id,
-            intent=intent,
-            confidence=tenant_confidence,
-            route_taken=tenant_route
+            intent=intent
         )
         
     except Exception as e:
         logger.error(f"[{trace_id}] ❌ Customer chat error: {e}")
-        print(f"[FINAL RESPONSE DEBUG] tenant_route: {tenant_route}, tenant_confidence: {tenant_confidence}")
         return ChatResponse(
             status="error",
             tenant_id=tenant_id,
