@@ -1,0 +1,311 @@
+"""
+Tenant Parser gRPC Client - Complete Implementation
+Handles confidence scoring, decision making, and all SuperIntelligent engine functions via gRPC
+FIXED: Aligned with actual proto message definitions
+"""
+import grpc
+from grpc import aio
+import logging
+from typing import Dict, Any, Optional, List
+import sys
+import os
+
+# Import proto files
+sys.path.append('/app/protos')
+import tenant_parser_pb2 as pb
+import tenant_parser_pb2_grpc as pb_grpc
+
+logger = logging.getLogger(__name__)
+
+
+class TenantParserClient:
+    """
+    Complete gRPC client for Tenant Parser service
+    Implements all SuperIntelligent engine functions via gRPC calls
+    """
+    
+    def __init__(self, host: str = "milkyhoop-dev-tenant_parser-1", port: int = 5012):
+        """Initialize tenant parser gRPC client"""
+        self.endpoint = f"{host}:{port}"
+        self.channel = None
+        self.stub = None
+        logger.info(f"TenantParserClient initialized with endpoint: {self.endpoint}")
+    
+    async def _ensure_connection(self):
+        """Ensure gRPC channel and stub are initialized"""
+        if self.channel is None or self.stub is None:
+            self.channel = aio.insecure_channel(self.endpoint)
+            self.stub = pb_grpc.IntentParserServiceStub(self.channel)
+            logger.debug(f"gRPC channel established to {self.endpoint}")
+    
+    async def calculate_confidence(
+        self,
+        query: str,
+        tenant_id: str,
+        faq_results: List[Any]
+    ) -> Dict[str, Any]:
+        """
+        Calculate SuperIntelligent confidence score via gRPC
+        
+        Args:
+            query: Customer query text
+            tenant_id: Tenant identifier
+            faq_results: List of FAQ search results with similarity scores
+            
+        Returns:
+            Dict with confidence score and metadata
+        """
+        try:
+            await self._ensure_connection()
+            
+            # Convert FAQ results to proto format
+            proto_faq_results = []
+            for faq in faq_results:
+                # BENAR - handle both dict dan object:
+                faq_proto = pb.FaqResult(
+                    question=faq.get('question', '') if isinstance(faq, dict) else getattr(faq, 'question', ''),
+                    answer=faq.get('answer', '') if isinstance(faq, dict) else getattr(faq, 'answer', ''),
+                    content=faq.get('content', '') if isinstance(faq, dict) else getattr(faq, 'content', ''),
+                    similarity_score=faq.get('score', 0.0) if isinstance(faq, dict) else getattr(faq, 'score', 0.0)
+                )
+                proto_faq_results.append(faq_proto)
+            
+            # Create request - matches actual proto
+            request = pb.ConfidenceRequest(
+                query=query,
+                tenant_id=tenant_id,
+                faq_results=proto_faq_results
+            )
+            
+            # Make gRPC call
+            response = await self.stub.CalculateConfidence(request)
+            
+            return {
+                "confidence": response.confidence,
+                "tier_name": response.tier_name,
+                "route": response.route,
+                "cost_per_query": response.cost_per_query,
+                "intelligence_level": response.intelligence_level
+            }
+            
+        except grpc.RpcError as e:
+            logger.error(f"gRPC CalculateConfidence failed: {e.code()} - {e.details()}")
+            # Fallback response
+            return {
+                "confidence": 0.0,
+                "tier_name": "tier_4",
+                "route": "error_fallback",
+                "cost_per_query": 0.0,
+                "intelligence_level": "none"
+            }
+        except Exception as e:
+            logger.error(f"Calculate confidence error: {str(e)}")
+            return {
+                "confidence": 0.0,
+                "tier_name": "tier_4",
+                "route": "error_fallback",
+                "cost_per_query": 0.0,
+                "intelligence_level": "none"
+            }
+    
+    async def make_decision(
+        self,
+        confidence: float,
+        tenant_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get routing decision based on confidence score via gRPC
+        
+        Args:
+            confidence: Confidence score (0.0-1.0)
+            tenant_id: Tenant identifier (not used in proto but kept for interface)
+            
+        Returns:
+            Dict with tier, route, cost, and other decision metadata
+        """
+        try:
+            await self._ensure_connection()
+            
+            # FIXED: DecisionRequest only has confidence field
+            request = pb.DecisionRequest(
+                confidence=confidence
+            )
+            
+            response = await self.stub.MakeDecision(request)
+            
+            # FIXED: Map actual proto response fields
+            return {
+                "tier": response.tier,  # Proto field is tier_number
+                "route": response.route,
+                "cost_per_query": response.cost_per_query,
+                "api_call": response.api_call_required,  # Proto field is api_call
+                "faq_count": response.faq_count,
+                "model": getattr(response, 'model', 'none'),  # Safe access
+                "intelligence_level": response.intelligence_level
+            }
+            
+        except grpc.RpcError as e:
+            logger.error(f"gRPC MakeDecision failed: {e.code()} - {e.details()}")
+            # Fallback to Tier 4
+            return {
+                "tier": 4,
+                "route": "polite_deflection",
+                "cost_per_query": 0.0,
+                "api_call": False,
+                "faq_count": 0,
+                "model": "none",
+                "intelligence_level": "fallback"
+            }
+        except Exception as e:
+            logger.error(f"Make decision error: {str(e)}")
+            return {
+                "tier": 4,
+                "route": "polite_deflection",
+                "cost_per_query": 0.0,
+                "api_call": False,
+                "faq_count": 0,
+                "model": "none",
+                "intelligence_level": "fallback"
+            }
+    
+    async def extract_faq_answer(
+        self,
+        faq_content: str,
+        tenant_id: str
+    ) -> str:
+        """
+        Extract clean answer from FAQ content via gRPC
+        
+        Args:
+            faq_content: Raw FAQ content
+            tenant_id: Tenant identifier
+            
+        Returns:
+            Clean, formatted answer text
+        """
+        try:
+            await self._ensure_connection()
+            
+            request = pb.FaqExtractionRequest(
+                faq_content=faq_content
+            )
+            
+            response = await self.stub.ExtractFaqAnswer(request)
+            return response.answer
+            
+        except grpc.RpcError as e:
+            logger.error(f"gRPC ExtractFaqAnswer failed: {e.code()} - {e.details()}")
+            # Simple fallback extraction
+            return faq_content if faq_content else "Informasi tidak tersedia."
+        except Exception as e:
+            logger.error(f"Extract FAQ answer error: {str(e)}")
+            return faq_content if faq_content else "Informasi tidak tersedia."
+    
+    async def get_polite_deflection(
+        self,
+        tenant_id: str,
+        context: Optional[str] = None
+    ) -> str:
+        """
+        Get polite deflection response for out-of-scope queries via gRPC
+        
+        Args:
+            tenant_id: Tenant identifier
+            context: Optional context for personalized deflection
+            
+        Returns:
+            Polite deflection message
+        """
+        try:
+            await self._ensure_connection()
+            
+            request = pb.DeflectionRequest(
+                tenant_id=tenant_id,
+                context=context or ""
+            )
+            
+            response = await self.stub.GetPoliteDeflection(request)
+            return response.message
+            
+        except grpc.RpcError as e:
+            logger.error(f"gRPC GetPoliteDeflection failed: {e.code()} - {e.details()}")
+            # Generic fallback
+            return f"Maaf, pertanyaan Anda di luar cakupan layanan {tenant_id} saat ini. Silakan hubungi customer service untuk bantuan lebih lanjut."
+        except Exception as e:
+            logger.error(f"Get polite deflection error: {str(e)}")
+            return f"Maaf, pertanyaan Anda di luar cakupan layanan {tenant_id} saat ini."
+    
+    async def classify_intent(
+        self,
+        query: str,
+        tenant_id: str,
+        session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Classify customer intent (legacy method - kept for compatibility)
+        
+        Args:
+            query: Customer query text
+            tenant_id: Tenant identifier
+            session_id: Optional session identifier
+            
+        Returns:
+            Dict with intent classification results
+        """
+        try:
+            await self._ensure_connection()
+            
+            request = pb.IntentParserRequest(
+                user_id=session_id or "anonymous",
+                tenant_id=tenant_id,
+                message=query
+            )
+            
+            response = await self.stub.ParseIntent(request)
+            
+            return {
+                "intent": response.intent,
+                "confidence": response.confidence,
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "enhanced_query": query
+            }
+            
+        except grpc.RpcError as e:
+            logger.error(f"gRPC ParseIntent failed: {e.code()} - {e.details()}")
+            return {
+                "intent": "customer_inquiry",
+                "confidence": 0.5,
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "error": str(e)
+            }
+        except Exception as e:
+            logger.error(f"Classify intent error: {str(e)}")
+            return {
+                "intent": "general_inquiry",
+                "confidence": 0.5,
+                "error": str(e)
+            }
+    
+    async def health_check(self) -> bool:
+        """
+        Check if tenant parser service is healthy
+        
+        Returns:
+            True if service is reachable and healthy
+        """
+        try:
+            await self._ensure_connection()
+            # Simple channel state check
+            state = self.channel.get_state(try_to_connect=True)
+            return state == grpc.ChannelConnectivity.READY
+        except Exception as e:
+            logger.error(f"Health check failed: {str(e)}")
+            return False
+    
+    async def close(self):
+        """Close gRPC channel"""
+        if self.channel:
+            await self.channel.close()
+            logger.info("TenantParserClient channel closed")
