@@ -79,7 +79,7 @@ USER appuser
 EXPOSE 5009
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
-  CMD grpc_health_probe -addr=localhost:5009 || exit 1
+  CMD grpc_health_probe -addr=localhost:5013 || exit 1
 
 ENTRYPOINT ["tini", "--"]
 

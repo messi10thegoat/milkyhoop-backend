@@ -1,0 +1,52 @@
+# Development volume mounts for live coding
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev-volumes.yml up
+
+services:
+  api_gateway:
+    volumes:
+      - ./backend/api_gateway:/app/backend/api_gateway
+      - ./logs/api_gateway:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  cust_orchestrator:
+    volumes:
+      - ./backend/services/cust_orchestrator:/app/backend/services/cust_orchestrator
+      - ./logs/cust_orchestrator:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  ragllm_service:
+    volumes:
+      - ./backend/services/ragllm_service:/app
+      - ./logs/ragllm_service:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  ragcrud_service:
+    volumes:
+      - ./backend/services/ragcrud_service:/app
+      - ./logs/ragcrud_service:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  tenant_parser:
+    volumes:
+      - ./backend/services/tenant_parser:/app
+      - ./logs/tenant_parser:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  intent_parser:
+    volumes:
+      - ./backend/services/intent_parser:/app
+      - ./logs/intent_parser:/var/log
+    environment:
+      - ENVIRONMENT=development
+      
+  auth_service:
+    volumes:
+      - ./backend/services/auth_service:/app
+      - ./logs/auth_service:/var/log
+    environment:
+      - ENVIRONMENT=development

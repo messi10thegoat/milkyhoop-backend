@@ -1,0 +1,172 @@
+import asyncio
+import logging
+
+import grpc
+from grpc_reflection.v1alpha import reflection
+from prisma import Prisma
+
+from app import tenant_parser_pb2 as pb
+from app import tenant_parser_pb2_grpc as pb_grpc
+
+# Import available services
+try:
+    from app import ragcrud_service_pb2 as rag_pb
+    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+    RAG_CRUD_AVAILABLE = True
+except ImportError:
+    RAG_CRUD_AVAILABLE = False
+
+# Level 10 integrations
+try:
+    from app import cust_context_pb2 as context_pb
+    from app import cust_context_pb2_grpc as context_pb_grpc
+    CONTEXT_AVAILABLE = True
+except ImportError:
+    CONTEXT_AVAILABLE = False
+
+try:
+    from app import cust_reference_pb2 as ref_pb
+    from app import cust_reference_pb2_grpc as ref_pb_grpc
+    REFERENCE_AVAILABLE = True
+except ImportError:
+    REFERENCE_AVAILABLE = False
+
+print(f"✅ RAG CRUD: {RAG_CRUD_AVAILABLE}, Context: {CONTEXT_AVAILABLE}, Reference: {REFERENCE_AVAILABLE}")
+
+prisma = Prisma()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__main__)
+
+class TenantParserServicer(pb_grpc.IntentParserServiceServicer):
+    def __init__(self):
+        self.rag_crud_target = "ragcrud_service:5001"
+        self.context_target = "cust_context:5008"
+        self.reference_target = "cust_reference:5013"
+        
+    async def call_context_service(self, session_id: str, tenant_id: str, message: str):
+        """Update conversation context - FIXED FIELD NAMES"""
+        if not CONTEXT_AVAILABLE:
+            return None
+            
+        try:
+            async with grpc.aio.insecure_channel(self.context_target) as channel:
+                stub = context_pb_grpc.CustContextServiceStub(channel)
+                
+                # ✅ FIXED: Use correct proto field names
+                request = context_pb.UpdateContextRequest(
+                    session_id=session_id,
+                    tenant_id=tenant_id,           # ✅ Added missing tenant_id
+                    user_query=message,            # ✅ FIXED: message → user_query
+                    entities=f"tenant:{tenant_id}" # ✅ Keep entities field
+                )
+                
+                response = await stub.UpdateContext(request)
+                logger.info(f"✅ Context updated for session {session_id}")
+                return response
+                
+        except Exception as e:
+            logger.error(f"❌ Context service error: {e}")
+            return None
+
+    async def call_reference_service(self, session_id: str, tenant_id: str, message: str):
+        """Resolve Indonesian references - FIXED FIELD NAMES"""
+        if not REFERENCE_AVAILABLE:
+            return message
+            
+        try:
+            async with grpc.aio.insecure_channel(self.reference_target) as channel:
+                stub = ref_pb_grpc.Cust_referenceStub(channel)  # ✅ Note: service name from proto
+                
+                # ✅ FIXED: Use correct proto field names
+                request = ref_pb.ReferenceRequest(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    reference_text=message,        # ✅ FIXED: message → reference_text
+                    context_query=message          # ✅ ADDED: context_query field
+                )
+                
+                response = await stub.ResolveReference(request)
+                
+                # ✅ FIXED: Use correct response field name
+                if hasattr(response, 'resolved_entity') and response.resolved_entity:
+                    logger.info(f"✅ Reference resolved: '{message}' → '{response.resolved_entity}'")
+                    return response.resolved_entity
+                else:
+                    return message
+                    
+        except Exception as e:
+            logger.error(f"❌ Reference service error: {e}")
+            return message
+
+    async def call_rag_crud(self, tenant_id: str, message: str):
+        """Get FAQ content from RAG CRUD"""
+        if not RAG_CRUD_AVAILABLE:
+            return "RAG CRUD service tidak tersedia."
+            
+        try:
+            async with grpc.aio.insecure_channel(self.rag_crud_target) as channel:
+                stub = rag_pb_grpc.RagcrudServiceServicer(channel)
+                
+                request = rag_pb.SearchRequest(
+                    tenant_id=tenant_id,
+                    message=message
+                )
+                
+                response = await stub.Search(request)
+                
+                if hasattr(response, 'reply') and response.reply:
+                    return response.reply
+                else:
+                    return "FAQ tidak ditemukan."
+                    
+        except Exception as e:
+            logger.error(f"❌ RAG CRUD service error: {e}")
+            return "Error mengakses FAQ."
+
+    async def ParseIntent(self, request, context):
+        """Level 10 Enhanced Intent Parser with Context & Reference Resolution"""
+        tenant_id = request.tenant_id
+        session_id = request.session_id
+        message = request.message
+
+        logger.info(f"📥 Level 10 customer query: {message}")
+        
+        # Level 10 Step 1: Update conversation context
+        await self.call_context_service(session_id, tenant_id, message)
+        
+        # Level 10 Step 2: Resolve Indonesian references  
+        resolved_message = await self.call_reference_service(session_id, tenant_id, message)
+        if resolved_message != message:
+            logger.info(f"🔄 Message resolved: '{message}' → '{resolved_message}'")
+            message = resolved_message
+        
+        # Level 10 Step 3: Get FAQ response
+        rag_response = await self.call_rag_crud(tenant_id, message)
+        
+        logger.info(f"📤 Level 10 enhanced response prepared")
+        
+        return pb.ParseIntentResponse(
+            intent="customer_inquiry", 
+            entities=f"{{'tenant_id': '{tenant_id}', 'session_id': '{session_id}'}}",
+            enhanced_message=rag_response
+        )
+
+async def serve():
+    server = grpc.aio.server()
+    pb_grpc.add_IntentParserServiceServicer_to_server(TenantParserServicer(), server)
+    
+    # Add reflection
+    SERVICE_NAMES = (
+        pb.DESCRIPTOR.services_by_name['IntentParserService'].full_name,
+        reflection.SERVICE_NAME,
+    )
+    reflection.enable_server_reflection(SERVICE_NAMES, server)
+    
+    listen_addr = '[::]:5012'
+    server.add_insecure_port(listen_addr)
+    logging.info(f"🚀 Level 10 Tenant Parser starting on {listen_addr}")
+    await server.start()
+    await server.wait_for_termination()
+
+if __name__ == '__main__':
+    asyncio.run(serve())

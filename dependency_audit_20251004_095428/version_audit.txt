@@ -1,0 +1,33 @@
+=== CRITICAL PACKAGE VERSION AUDIT ===
+Date: Sat Oct  4 09:54:53 UTC 2025
+
+=== openai VERSION ANALYSIS ===
+cust_orchestrator: NOT FOUND
+ragllm_service: openai==1.97.0
+ragcrud_service: openai==1.107.0
+auth_service: NOT FOUND
+
+=== prisma VERSION ANALYSIS ===
+cust_orchestrator: prisma==0.15.0
+ragllm_service: prisma==0.15.0
+ragcrud_service: prisma==0.15.0
+auth_service: prisma==0.15.0
+
+=== grpcio VERSION ANALYSIS ===
+cust_orchestrator: grpcio==1.74.0
+ragllm_service: grpcio==1.73.1
+ragcrud_service: grpcio==1.74.0
+auth_service: grpcio==1.74.0
+
+=== fastapi VERSION ANALYSIS ===
+cust_orchestrator: fastapi==0.110.3
+ragllm_service: fastapi==0.110.3
+ragcrud_service: fastapi==0.110.3
+auth_service: fastapi==0.110.3
+
+=== pydantic VERSION ANALYSIS ===
+cust_orchestrator: pydantic==2.11.7
+ragllm_service: pydantic==2.11.7
+ragcrud_service: pydantic==2.11.7
+auth_service: pydantic==2.11.7
+

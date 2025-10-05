@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package payment_service;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/milkyhoop/template-service-golang/internal/delivery/pb/template;template";
+// option python_package = "app.protos";
+
+service PaymentService {
+  rpc DoSomething (Payment_serviceRequest) returns (Payment_serviceResponse);
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+message Payment_serviceRequest {
+  string user_id = 1;
+  string input = 2;
+}
+
+message Payment_serviceResponse {
+  string status = 1;
+  string result = 2;
+}

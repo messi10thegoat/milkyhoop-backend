@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package rag;
+
+service RagService {
+  rpc GetAnswer (RagRequest) returns (RagResponse);
+}
+
+message RagRequest {
+  string user_id = 1;
+  string query = 2;
+}
+
+message RagResponse {
+  string answer = 1;
+}
+

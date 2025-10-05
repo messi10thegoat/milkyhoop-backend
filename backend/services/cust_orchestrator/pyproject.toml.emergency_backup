@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "cust_orchestrator"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+grpcio = "^1.60.0"
+protobuf = "^4.25.0"
+grpcio-tools = "^1.60.0"
+redis = "^4.6.0"
+openai = "^0.28.1"
+prisma = "^0.15.0"
+PyJWT = "^2.8.0"
+pydantic = "^2.4.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

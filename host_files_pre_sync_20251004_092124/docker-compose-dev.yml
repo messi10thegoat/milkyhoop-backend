@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: milkyhoop-dev-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: milkyhoop_dev
+    ports:
+      - "6432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    networks:
+      - milkyhoop_dev_network
+
+  redis:
+    image: redis:7
+    container_name: milkyhoop-dev-redis
+    ports:
+      - "7379:6379"
+    networks:
+      - milkyhoop_dev_network
+
+  api_gateway:
+    build:
+      context: .
+      dockerfile: backend/api_gateway/Dockerfile
+    container_name: milkyhoop-dev-api_gateway
+    ports:
+      - "9000:8000"
+    environment:
+      - NODE_ENV=development
+      - POSTGRES_HOST=postgres
+      - REDIS_HOST=redis
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - milkyhoop_dev_network
+
+networks:
+  milkyhoop_dev_network:
+    driver: bridge
+
+volumes:
+  postgres_dev_data:

@@ -1,0 +1,171 @@
+backend/services/tenant_parser/app/grpc_server.py.before_final_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_final_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_final_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.with_prisma:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.with_prisma:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.with_prisma:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_scope_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_scope_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_scope_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/services/tenant_parser_service.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/services/tenant_parser_service.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/services/tenant_parser_service.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/services/tenant_parser_service_enhanced.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/services/tenant_parser_service_enhanced.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/services/tenant_parser_service_enhanced.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/services/tenant_parser_service_original_1757990718.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/services/tenant_parser_service_original_1757990718.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/services/tenant_parser_service_original_1757990718.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/services/rag_crud_client.py:    """RagCrudService client for tenant_parser to call ragcrud_service via gRPC"""
+backend/services/tenant_parser/app/services/rag_crud_client.py:        """Initialize gRPC connection to ragcrud_service"""
+backend/services/tenant_parser/app/services/rag_crud_client.py:                    # Try ragcrud_service proto files
+backend/services/tenant_parser/app/services/rag_crud_client.py:                    import ragcrud_service_pb2_grpc as rag_pb2_grpc
+backend/services/tenant_parser/app/services/rag_crud_client.py:                    import ragcrud_service_pb2 as rag_pb2
+backend/services/tenant_parser/app/services/rag_crud_client.py:                    logger.info("✅ Imported ragcrud_service_pb2_grpc from app directory")
+backend/services/tenant_parser/app/services/rag_crud_client.py:            # Create gRPC channel to ragcrud_service (port 5001)
+backend/services/tenant_parser/app/services/rag_crud_client.py:            channel = grpc.insecure_channel('ragcrud_service:5001')
+backend/services/tenant_parser/app/services/rag_crud_client.py:                import ragcrud_service_pb2 as rag_pb2
+backend/services/tenant_parser/app/grpc_server.py.before_channel_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_channel_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_channel_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix_host:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix_host:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix_host:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_syntax_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_syntax_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_syntax_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018974:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018974:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018974:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.pre_surgical_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.malformed_0700:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.malformed_0700:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.malformed_0700:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.syntax_error_backup:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.syntax_error_backup:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.syntax_error_backup:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.backup_circuit_breaker_fix_20250916_075742:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.backup_circuit_breaker_fix_20250916_075742:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.backup_circuit_breaker_fix_20250916_075742:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.debug_backup:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.debug_backup:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.debug_backup:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server_pre_integration_1757990718.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server_pre_integration_1757990718.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server_pre_integration_1757990718.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_final:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_final:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_final:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_absolute_fix:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.backup_20250915_184441:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.backup_20250915_184441:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.backup_20250915_184441:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/ragcrud_service_pb2.py:# source: ragcrud_service.proto
+backend/services/tenant_parser/app/ragcrud_service_pb2.py:DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15ragcrud_service.proto\x12\x0fragcrud_service\x1a\x1bgoogle/protobuf/empty.proto\"8\n\x16Ragcrud_serviceRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\r\n\x05input\x18\x02 \x01(\t\"9\n\x17Ragcrud_serviceResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06result\x18\x02 \x01(\t\"k\n\x18\x43reateRagDocumentRequest\x12\x11\n\ttenant_id\x18\x01 \x01(\t\x12\r\n\x05title\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x0e\n\x06source\x18\x04 \x01(\t\x12\x0c\n\x04tags\x18\x05 \x03(\t\"#\n\x15GetRagDocumentRequest\x12\n\n\x02id\x18\x01 \x01(\x05\"F\n\x18UpdateRagDocumentRequest\x12\n\n\x02id\x18\x01 \x01(\x05\x12\r\n\x05title\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\"b\n UpdateRagDocumentBySearchRequest\x12\x11\n\ttenant_id\x18\x01 \x01(\t\x12\x16\n\x0esearch_content\x18\x02 \x01(\t\x12\x13\n\x0bnew_content\x18\x03 \x01(\t\"&\n\x18\x44\x65leteRagDocumentRequest\x12\n\n\x02id\x18\x01 \x01(\x05\"[\n\x13RagDocumentResponse\x12\n\n\x02id\x18\x01 \x01(\x05\x12\r\n\x05title\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x18\n\x10similarity_score\x18\x04 \x01(\x02\",\n\x17ListRagDocumentsRequest\x12\x11\n\ttenant_id\x18\x01 \x01(\t\"S\n\x18ListRagDocumentsResponse\x12\x37\n\tdocuments\x18\x01 \x03(\x0b\x32$.ragcrud_service.RagDocumentResponse\"]\n\x12\x46uzzySearchRequest\x12\x11\n\ttenant_id\x18\x01 \x01(\t\x12\x16\n\x0esearch_content\x18\x02 \x01(\t\x12\x1c\n\x14similarity_threshold\x18\x03 \x01(\x02\"N\n\x13\x46uzzySearchResponse\x12\x37\n\tdocuments\x18\x01 \x03(\x0b\x32$.ragcrud_service.RagDocumentResponse2\x85\x07\n\x0eRagCrudService\x12`\n\x0b\x44oSomething\x12\'.ragcrud_service.Ragcrud_serviceRequest\x1a(.ragcrud_service.Ragcrud_serviceResponse\x12=\n\x0bHealthCheck\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12\x64\n\x11\x43reateRagDocument\x12).ragcrud_service.CreateRagDocumentRequest\x1a$.ragcrud_service.RagDocumentResponse\x12g\n\x10ListRagDocuments\x12(.ragcrud_service.ListRagDocumentsRequest\x1a).ragcrud_service.ListRagDocumentsResponse\x12^\n\x0eGetRagDocument\x12&.ragcrud_service.GetRagDocumentRequest\x1a$.ragcrud_service.RagDocumentResponse\x12\x64\n\x11UpdateRagDocument\x12).ragcrud_service.UpdateRagDocumentRequest\x1a$.ragcrud_service.RagDocumentResponse\x12t\n\x19UpdateRagDocumentBySearch\x12\x31.ragcrud_service.UpdateRagDocumentBySearchRequest\x1a$.ragcrud_service.RagDocumentResponse\x12\x64\n\x11\x44\x65leteRagDocument\x12).ragcrud_service.DeleteRagDocumentRequest\x1a$.ragcrud_service.RagDocumentResponse\x12\x61\n\x14\x46uzzySearchDocuments\x12#.ragcrud_service.FuzzySearchRequest\x1a$.ragcrud_service.FuzzySearchResponseBCZAgithub.com/milkyhoop/flow-executor/internal/proto;ragcrud_serviceb\x06proto3')
+backend/services/tenant_parser/app/ragcrud_service_pb2.py:_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'ragcrud_service_pb2', _globals)
+backend/services/tenant_parser/app/ragcrud_service_pb2.py:  _globals['DESCRIPTOR']._serialized_options = b'ZAgithub.com/milkyhoop/flow-executor/internal/proto;ragcrud_service'
+backend/services/tenant_parser/app/grpc_server.py.before_early_return:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_early_return:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_early_return:        self.rag_crud_target = "milkyhoop-ragcrud_service-1:5001"
+backend/services/tenant_parser/app/grpc_server.py.level10_final:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.level10_final:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.level10_final:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018282:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018282:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.backup.1758018282:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.host_backup_20250915_150304:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.host_backup_20250915_150304:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.host_backup_20250915_150304:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server_original.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server_original.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server_original.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.line304_error:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.line304_error:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.line304_error:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_targeted_fix:from ragcrud_service_pb2_grpc import RAGCRUDStub
+backend/services/tenant_parser/app/grpc_server.py.before_targeted_fix:from ragcrud_service_pb2 import SearchRequest
+backend/services/tenant_parser/app/grpc_server.py.before_targeted_fix:    ragcrud_host: str = "ragcrud_service"
+backend/services/tenant_parser/app/grpc_server.py.before_targeted_fix:    ragcrud_port: int = 5001
+backend/services/tenant_parser/app/grpc_server.py.before_targeted_fix:            self.rag_channel = grpc.aio.insecure_channel(f"{self.config.ragcrud_host}:{self.config.ragcrud_port}")
+backend/services/tenant_parser/app/grpc_server.py.level13_with_json_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.level13_with_json_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.level13_with_json_fix:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/grpc_server.py.before_semantic_fix:    from app import ragcrud_service_pb2 as rag_pb
+backend/services/tenant_parser/app/grpc_server.py.before_semantic_fix:    from app import ragcrud_service_pb2_grpc as rag_pb_grpc
+backend/services/tenant_parser/app/grpc_server.py.before_semantic_fix:        self.rag_crud_target = "ragcrud_service:5001"
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:import ragcrud_service_pb2 as ragcrud__service__pb2
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:        + f' but the generated code in ragcrud_service_pb2_grpc.py depends on'
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/DoSomething',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.Ragcrud_serviceRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.Ragcrud_serviceResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/HealthCheck',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/CreateRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.CreateRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/ListRagDocuments',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.ListRagDocumentsRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.ListRagDocumentsResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/GetRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.GetRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/UpdateRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.UpdateRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/UpdateRagDocumentBySearch',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.UpdateRagDocumentBySearchRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/DeleteRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.DeleteRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                '/ragcrud_service.RagCrudService/FuzzySearchDocuments',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                request_serializer=ragcrud__service__pb2.FuzzySearchRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                response_deserializer=ragcrud__service__pb2.FuzzySearchResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.Ragcrud_serviceRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.Ragcrud_serviceResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.CreateRagDocumentRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.RagDocumentResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.ListRagDocumentsRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.ListRagDocumentsResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.GetRagDocumentRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.RagDocumentResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.UpdateRagDocumentRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.RagDocumentResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.UpdateRagDocumentBySearchRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.RagDocumentResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.DeleteRagDocumentRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.RagDocumentResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    request_deserializer=ragcrud__service__pb2.FuzzySearchRequest.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:                    response_serializer=ragcrud__service__pb2.FuzzySearchResponse.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            'ragcrud_service.RagCrudService', rpc_method_handlers)
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/DoSomething',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.Ragcrud_serviceRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.Ragcrud_serviceResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/HealthCheck',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/CreateRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.CreateRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/ListRagDocuments',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.ListRagDocumentsRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.ListRagDocumentsResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/GetRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.GetRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/UpdateRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.UpdateRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/UpdateRagDocumentBySearch',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.UpdateRagDocumentBySearchRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/DeleteRagDocument',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.DeleteRagDocumentRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.RagDocumentResponse.FromString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            '/ragcrud_service.RagCrudService/FuzzySearchDocuments',
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.FuzzySearchRequest.SerializeToString,
+backend/services/tenant_parser/app/ragcrud_service_pb2_grpc.py:            ragcrud__service__pb2.FuzzySearchResponse.FromString,

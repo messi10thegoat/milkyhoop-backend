@@ -1,31 +1,4 @@
-# ===== MILKYHOOP 3.0 ENHANCED .gitignore =====
-# Prevent binary files and build artifacts from being tracked
-
-# ===== BINARY EXECUTABLES & ENGINES =====
-**/test-binary
-**/query-engine-*
-**/schema-engine-*
-**/migration-engine-*
-**/prisma-fmt-*
-**/*.so
-**/*.so.*
-**/*.dylib
-**/*.dll
-**/*.exe
-
-# ===== NODE MODULES & DEPENDENCIES =====
-node_modules/
-**/node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-package-lock.json
-yarn.lock
-.npm
-.eslintcache
-
-# ===== PYTHON DEPENDENCIES & CACHE =====
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -43,116 +16,49 @@ parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+
+# Virtual environments
 venv/
 env/
 ENV/
-.venv/
-.env
 
-# ===== DATABASE & PRISMA =====
-*.db
-*.sqlite
-*.sqlite3
-prisma/migrations/
-.prisma/
-
-# ===== DOCKER & CONTAINERS =====
-*.log
-*.pid
-*.seed
-*.pid.lock
-.dockerignore
-
-# ===== ENVIRONMENT FILES =====
-.env*
-!.env.example
-*.local
-
-# ===== BACKUP FILES =====
-*.backup
-*.bak
-*.backup.*
-*.bk
-*~
-*.tmp
-*.temp
-*.swp
-*.swo
-*_backup_*
-*.pre_*
-*.host_backup_*
-*.broken_backup_*
-*.container_copy*
-*.BL*
-
-# ===== LOGS & MONITORING =====
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-.pnpm-debug.log*
-
-# ===== IDE & EDITOR FILES =====
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# OS
 .DS_Store
 Thumbs.db
 
-# ===== BUILD OUTPUTS =====
-build/
-dist/
-out/
-.next/
-.nuxt/
-.vuepress/dist/
-.serverless/
-target/
+# Docker
+.dockerignore
 
-# ===== TEST COVERAGE =====
-coverage/
-.nyc_output/
-.coverage
-.pytest_cache/
-htmlcov/
+# Logs
+*.log
+logs/
 
-# ===== SYSTEM FILES =====
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Backup files
+*.backup*
+*.bak
 
-# ===== GOLANG =====
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-go.work
-go.work.sum
+# Environment files
+.env
+.env.local
+.env.production
+.env.development
 
-# ===== SPECIFIC TO MILKYHOOP =====
-# Container copied directories
-backend/api_gateway_container_copy/
-**/site-packages/
-**/libs/engine/
-atlas.tar.gz
-grpc_health_probe
-grpcurl_*.tar.gz
-go*.tar.gz
-prisma-query-engine-*
+# Poetry
+poetry.lock
 
+# Database
+*.db
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/

@@ -1,0 +1,27 @@
+{
+  "name": "FAQ Create Handler",
+  "nodes": [
+    {
+      "id": "start",
+      "hoop": "",
+      "next": "create_faq"
+    },
+    {
+      "id": "create_faq",
+      "hoop": "rag_llm",
+      "parameters": {
+        "query": "User kasih info FAQ baru",
+        "tenant_id": "system_onboarding"
+      },
+      "next": "respond"
+    },
+    {
+      "id": "respond",
+      "hoop": "SendBotReply",
+      "parameters": {
+        "message": "{{create_faq.answer}}"
+      },
+      "next": null
+    }
+  ]
+}

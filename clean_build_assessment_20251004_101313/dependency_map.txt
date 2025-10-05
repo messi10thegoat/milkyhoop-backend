@@ -1,0 +1,23 @@
+=== MODULE DEPENDENCY ANALYSIS ===
+
+DEPENDENCY HIERARCHY:
+
+TIER 1 - Infrastructure (Build First):
+  - postgres (database)
+  - redis (cache/session)
+
+TIER 2 - Core Services (No external service deps):
+  - auth_service (JWT tokens)
+  - ragcrud_service (FAQ database)
+  - ragllm_service (AI generation)
+
+TIER 3 - Orchestration (Depends on Tier 2):
+  - tenant_parser (classification)
+  - intent_parser (NLU)
+  - cust_orchestrator (depends on ragcrud, ragllm, tenant_parser)
+
+TIER 4 - Gateway (Depends on all others):
+  - api_gateway (depends on orchestrator, auth)
+
+TIER 5 - Supporting Services:
+  - memory_service, complaint_service, etc.

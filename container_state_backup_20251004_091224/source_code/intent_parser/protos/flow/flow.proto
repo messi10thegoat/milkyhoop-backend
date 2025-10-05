@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+option go_package = "github.com/milkyhoop/flow-executor/internal/proto/flow";
+package proto;
+
+message Flow {
+  string id = 1;
+  repeated Node nodes = 2;
+}
+
+message Node {
+  string id = 1;
+  string hoop = 2;
+  string input_from = 3;
+}

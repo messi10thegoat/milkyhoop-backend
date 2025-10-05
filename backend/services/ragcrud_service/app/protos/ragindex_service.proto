@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package ragindex_service;
+
+import "google/protobuf/empty.proto";
+
+service RagIndexService {
+  rpc DoSomething (Ragindex_serviceRequest) returns (Ragindex_serviceResponse);
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  rpc IndexDocument (IndexDocumentRequest) returns (IndexDocumentResponse);
+  rpc SearchDocument (SearchDocumentRequest) returns (SearchDocumentResponse);
+}
+
+message Ragindex_serviceRequest {
+  string user_id = 1;
+  string input = 2;
+}
+
+message Ragindex_serviceResponse {
+  string status = 1;
+  string result = 2;
+}
+
+message IndexDocumentRequest {
+  int32 doc_id = 1;
+  repeated float embedding = 2;
+}
+
+message IndexDocumentResponse {
+  string status = 1;
+}
+
+message SearchDocumentRequest {
+  repeated float embedding = 1;
+  int32 top_k = 2;
+  string tenant_id = 3;
+}
+
+message SearchDocumentResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  int32 doc_id = 1;
+  float score = 2;
+}

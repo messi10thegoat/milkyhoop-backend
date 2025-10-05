@@ -1,0 +1,29 @@
+=== MILKYHOOP 3.0 COMPLETE MODULE INVENTORY ===
+Date: Sat Oct  4 10:13:13 UTC 2025
+
+BACKEND SERVICES:
+backend/services/api_gateway
+backend/services/auth_service
+backend/services/business-service
+backend/services/chatbot_service
+backend/services/complaint_service
+backend/services/context_service
+backend/services/conversation_service
+backend/services/cust_context
+backend/services/cust_orchestrator
+backend/services/cust_reference.FULL_BACKUP_20250920_100129
+backend/services/cust_reference.backup-20250918_175935
+backend/services/flow-executor
+backend/services/hoop-registry
+backend/services/intent_parser
+backend/services/memory_service
+backend/services/notification-service
+backend/services/order_service
+backend/services/payment-adapter
+backend/services/payment_service
+backend/services/ragcrud_service
+backend/services/ragindex_service
+backend/services/ragllm_service
+backend/services/tenant_manager
+backend/services/tenant_parser
+backend/services/visualhoop-compiler

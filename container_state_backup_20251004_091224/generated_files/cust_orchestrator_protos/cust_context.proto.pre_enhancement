@@ -1,0 +1,393 @@
+syntax = "proto3";
+
+package cust_context;
+
+// Customer Context Service - Level 10 Module 1
+service CustContextService {
+    rpc CreateContext(CreateContextRequest) returns (CreateContextResponse);
+    rpc UpdateContext(UpdateContextRequest) returns (UpdateContextResponse);
+    rpc GetContext(GetContextRequest) returns (GetContextResponse);
+    rpc DeleteContext(DeleteContextRequest) returns (DeleteContextResponse);
+    rpc GetFocusedEntity(GetFocusedEntityRequest) returns (GetFocusedEntityResponse);
+    // Tier 1: Emotional & Intent Intelligence
+    rpc SetConversationMood(SetConversationMoodRequest) returns (SetConversationMoodResponse);
+    rpc TrackUserIntent(TrackUserIntentRequest) returns (TrackUserIntentResponse);
+    rpc GetConversationFlow(GetConversationFlowRequest) returns (GetConversationFlowResponse);
+    rpc PredictNextUserQuestion(PredictNextUserQuestionRequest) returns (PredictNextUserQuestionResponse);
+    
+    // Tier 2: Advanced Context Management
+    rpc DisambiguateEntity(DisambiguateEntityRequest) returns (DisambiguateEntityResponse);
+    rpc PrioritizeImportantTurns(PrioritizeImportantTurnsRequest) returns (PrioritizeImportantTurnsResponse);
+    rpc SummarizeContext(SummarizeContextRequest) returns (SummarizeContextResponse);
+    rpc RecoverConversationFlow(RecoverConversationFlowRequest) returns (RecoverConversationFlowResponse);
+    
+    // Tier 3: Persona & Dynamic Response Engine
+    rpc AdaptToneToUserMood(AdaptToneToUserMoodRequest) returns (AdaptToneToUserMoodResponse);
+    rpc TriggerResponseByPersona(TriggerResponseByPersonaRequest) returns (TriggerResponseByPersonaResponse);
+    rpc SimulatedChainOfThought(SimulatedChainOfThoughtRequest) returns (SimulatedChainOfThoughtResponse);
+    rpc AutoIntentCorrection(AutoIntentCorrectionRequest) returns (AutoIntentCorrectionResponse);
+    
+    // Tier 4: Fine-Grained Intelligence
+    rpc DetectProductMentioned(DetectProductMentionedRequest) returns (DetectProductMentionedResponse);
+    rpc DetectFrustrationEvents(DetectFrustrationEventsRequest) returns (DetectFrustrationEventsResponse);
+    rpc FindLeadSignals(FindLeadSignalsRequest) returns (FindLeadSignalsResponse);
+    
+    // Tier 5: SELF-IMPROVING INTELLIGENCE
+    rpc CaptureFeedbackFromConversation(CaptureFeedbackFromConversationRequest) returns (CaptureFeedbackFromConversationResponse);
+    rpc ImproveResponseTemplateBasedOnFailure(ImproveResponseTemplateBasedOnFailureRequest) returns (ImproveResponseTemplateBasedOnFailureResponse);
+}
+
+// Create new conversation context
+message CreateContextRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    int32 ttl_seconds = 3;
+}
+
+message CreateContextResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Update existing conversation context - COMPLETE FIELD SET
+message UpdateContextRequest {
+    string session_id = 1;
+    string tenant_id = 2;        // ADDED: API Gateway uses tenant_id
+    string user_query = 3;       // VERIFIED: API Gateway uses user_query
+    string entities = 4;         // VERIFIED: API Gateway uses entities as string
+}
+
+message UpdateContextResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Get conversation context
+message GetContextRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message GetContextResponse {
+    bool success = 1;
+    string context_data = 2;
+}
+
+message ConversationContext {
+    string session_id = 1;
+    string user_id = 2;
+    string tenant_id = 3;
+    repeated ConversationEntity entities = 4;
+    repeated ConversationTurn turns = 5;
+    int64 created_at = 6;
+    int64 updated_at = 7;
+}
+
+message ConversationEntity {
+    string entity_type = 1;
+    string entity_value = 2;
+    string entity_text = 3;
+    double confidence = 4;
+}
+
+message ConversationTurn {
+    string user_message = 1;
+    string bot_response = 2;
+    int64 timestamp = 3;
+    repeated ConversationEntity extracted_entities = 4;
+}
+
+// Delete context
+message DeleteContextRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message DeleteContextResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Focused entity management
+message GetFocusedEntityRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message GetFocusedEntityResponse {
+    bool success = 1;
+    string entity_type = 2;
+    string entity_value = 3;
+    double confidence = 4;
+}
+
+// Session statistics
+message GetSessionStatsRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message GetSessionStatsResponse {
+    bool success = 1;
+    int32 total_interactions = 2;
+    int64 last_activity = 3;
+    int32 context_size = 4;
+}
+
+// Health check
+message HealthCheckRequest {
+}
+
+message HealthCheckResponse {
+    string status = 1;
+    int64 timestamp = 2;
+}
+
+// ========================================
+// TIER 1: EMOTIONAL & INTENT INTELLIGENCE
+// ========================================
+
+message SetConversationMoodRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string mood = 3;  // happy, confused, frustrated, excited, neutral
+    string reason = 4;
+    double confidence = 5;
+}
+
+message SetConversationMoodResponse {
+    bool success = 1;
+    string message = 2;
+    string previous_mood = 3;
+}
+
+message TrackUserIntentRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string intent = 3;  // browsing, buying, asking, complaining, comparing
+    double confidence = 4;
+    string detected_from = 5;
+}
+
+message TrackUserIntentResponse {
+    bool success = 1;
+    string message = 2;
+    string recommended_response_style = 3;
+    repeated string intent_history = 4;
+}
+
+message GetConversationFlowRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message GetConversationFlowResponse {
+    bool success = 1;
+    repeated string topic_progression = 2;
+    string current_topic = 3;
+    string suggested_next_topic = 4;
+    double flow_quality_score = 5;
+}
+
+message PredictNextUserQuestionRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message PredictNextUserQuestionResponse {
+    bool success = 1;
+    repeated string likely_questions = 2;
+    repeated string suggested_proactive_responses = 3;
+    double prediction_confidence = 4;
+}
+
+// ========================================
+// TIER 2: ADVANCED CONTEXT MANAGEMENT
+// ========================================
+
+message DisambiguateEntityRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string ambiguous_entity = 3;
+    string context_hint = 4;
+}
+
+message DisambiguateEntityResponse {
+    bool success = 1;
+    string clarified_entity = 2;
+    string entity_type = 3;
+    double disambiguation_confidence = 4;
+    repeated string alternative_interpretations = 5;
+}
+
+message PrioritizeImportantTurnsRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    int32 max_turns_to_keep = 3;
+}
+
+message PrioritizeImportantTurnsResponse {
+    bool success = 1;
+    string message = 2;
+    int32 turns_compressed = 3;
+    int32 turns_retained = 4;
+}
+
+message SummarizeContextRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string summary_type = 3;  // brief, detailed, entity_focused, intent_focused
+}
+
+message SummarizeContextResponse {
+    bool success = 1;
+    string summary = 2;
+    repeated string key_entities = 3;
+    repeated string key_intents = 4;
+    string dominant_mood = 5;
+}
+
+message RecoverConversationFlowRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string disruption_point = 3;
+}
+
+message RecoverConversationFlowResponse {
+    bool success = 1;
+    string recovery_strategy = 2;
+    string suggested_transition = 3;
+    string context_bridge = 4;
+}
+
+// ========================================
+// TIER 3: PERSONA & DYNAMIC RESPONSE ENGINE
+// ========================================
+
+message AdaptToneToUserMoodRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string current_mood = 3;
+    string desired_outcome = 4;
+}
+
+message AdaptToneToUserMoodResponse {
+    bool success = 1;
+    string recommended_tone = 2;  // friendly, formal, empathetic, assertive, casual
+    string tone_justification = 3;
+    repeated string tone_guidelines = 4;
+}
+
+message TriggerResponseByPersonaRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string brand_persona = 3;  // professional, friendly, expert, casual, premium
+    string context_situation = 4;
+}
+
+message TriggerResponseByPersonaResponse {
+    bool success = 1;
+    string persona_response_style = 2;
+    repeated string persona_phrases = 3;
+    string response_template = 4;
+}
+
+message SimulatedChainOfThoughtRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string user_query = 3;
+}
+
+message SimulatedChainOfThoughtResponse {
+    bool success = 1;
+    repeated string reasoning_steps = 2;
+    string final_conclusion = 3;
+    double confidence_score = 4;
+}
+
+message AutoIntentCorrectionRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string misunderstood_intent = 3;
+    string correction_signal = 4;
+}
+
+message AutoIntentCorrectionResponse {
+    bool success = 1;
+    string corrected_intent = 2;
+    string clarification_question = 3;
+    string apology_message = 4;
+}
+
+// ========================================
+// TIER 4: FINE-GRAINED INTELLIGENCE
+// ========================================
+
+message DetectProductMentionedRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string conversation_turn = 3;
+}
+
+message DetectProductMentionedResponse {
+    bool success = 1;
+    repeated string products_mentioned = 2;
+    repeated string product_categories = 3;
+    repeated double mention_confidence = 4;
+}
+
+message DetectFrustrationEventsRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message DetectFrustrationEventsResponse {
+    bool success = 1;
+    repeated string frustration_indicators = 2;
+    string frustration_level = 3;  // low, medium, high, critical
+    repeated string recommended_actions = 4;
+}
+
+message FindLeadSignalsRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message FindLeadSignalsResponse {
+    bool success = 1;
+    repeated string buying_signals = 2;
+    double lead_score = 3;
+    string lead_stage = 4;  // awareness, consideration, decision, post_purchase
+    repeated string recommended_follow_ups = 5;
+}
+
+// ========================================
+// TIER 5: SELF-IMPROVING INTELLIGENCE
+// ========================================
+
+message CaptureFeedbackFromConversationRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+}
+
+message CaptureFeedbackFromConversationResponse {
+    bool success = 1;
+    repeated string failure_patterns = 2;
+    repeated string confusion_indicators = 3;
+    repeated string improvement_opportunities = 4;
+    double conversation_success_score = 5;
+}
+
+message ImproveResponseTemplateBasedOnFailureRequest {
+    string session_id = 1;
+    string tenant_id = 2;
+    string failure_pattern = 3;
+    string original_response = 4;
+}
+
+message ImproveResponseTemplateBasedOnFailureResponse {
+    bool success = 1;
+    string improved_response = 2;
+    repeated string improvement_reasons = 3;
+    string template_update_applied = 4;
+}

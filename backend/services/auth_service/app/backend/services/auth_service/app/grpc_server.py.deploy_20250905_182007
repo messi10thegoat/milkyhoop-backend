@@ -1,0 +1,429 @@
+import asyncio
+import signal
+import logging
+import os
+import grpc
+from grpc import aio
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from app.config import settings
+from app import auth_service_pb2_grpc as pb_grpc
+from app import auth_service_pb2 as pb
+from app.prisma_client import prisma
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(settings.SERVICE_NAME)
+
+# Google OAuth dependencies (added after logger definition)
+try:
+    from google.auth.transport import requests
+    from google.oauth2 import id_token
+    from google_auth_oauthlib.flow import Flow
+    import secrets
+    GOOGLE_OAUTH_AVAILABLE = True
+    logger.info("Google OAuth libraries loaded successfully")
+except ImportError as e:
+    GOOGLE_OAUTH_AVAILABLE = False
+    logger.warning(f"Google OAuth libraries not available: {e}")
+
+class AuthServiceServicer(pb_grpc.AuthServiceServicer):
+    """Enterprise Authentication Service Implementation"""
+    
+    async def Register(self, request, context):
+        """User registration with tenant isolation"""
+        logger.info(f"Register request for email: {request.email}, tenant: {request.tenant_id}")
+        try:
+            # TODO: Implement user registration logic
+            # - Validate email format and uniqueness
+            # - Hash password with bcrypt
+            # - Create user record with tenant_id
+            # - Generate JWT tokens
+            # - Log audit event
+            
+            return pb.RegisterResponse(
+                success=True,
+                message="User registered successfully",
+                user_id="temp_user_id",
+                tenant_id=request.tenant_id,
+                access_token="temp_access_token",
+                refresh_token="temp_refresh_token",
+                session_id="temp_session_id",
+                expires_in=3600,
+                role="USER"
+            )
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.RegisterResponse(success=False, message="Registration failed")
+
+    async def Login(self, request, context):
+        """User authentication with session management"""
+        logger.info(f"Login request for email: {request.email}")
+        try:
+            # TODO: Implement login logic
+            # - Validate credentials
+            # - Check user status and tenant isolation
+            # - Generate new tokens with rotation
+            # - Update last_login timestamp
+            # - Log audit event
+            
+            return pb.LoginResponse(
+                success=True,
+                message="Login successful",
+                user_id="temp_user_id",
+                tenant_id="temp_tenant_id",
+                access_token="temp_access_token",
+                refresh_token="temp_refresh_token",
+                session_id="temp_session_id",
+                expires_in=3600,
+                role="USER"
+            )
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+            return pb.LoginResponse(success=False, message="Authentication failed")
+
+    async def RefreshToken(self, request, context):
+        """Token rotation with security validation"""
+        logger.info(f"Token refresh for session: {request.session_id}")
+        try:
+            # TODO: Implement token refresh with rotation
+            # - Validate refresh token
+            # - Check session validity
+            # - Generate new token pair
+            # - Invalidate previous tokens
+            # - Log audit event
+            
+            return pb.RefreshTokenResponse(
+                success=True,
+                message="Token refreshed",
+                access_token="new_access_token",
+                refresh_token="new_refresh_token",
+                tenant_id="temp_tenant_id",
+                user_id="temp_user_id",
+                role="USER",
+                session_id=request.session_id,
+                expires_in=3600,
+                token_rotated=True
+            )
+        except Exception as e:
+            logger.error(f"Token refresh error: {e}")
+            context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+            return pb.RefreshTokenResponse(success=False, message="Token refresh failed")
+
+    async def ValidateToken(self, request, context):
+        """JWT token validation for API Gateway"""
+        logger.info("Token validation request")
+        try:
+            # TODO: Implement token validation
+            # - Decode and verify JWT signature
+            # - Check token expiration
+            # - Validate tenant isolation
+            # - Check required roles/permissions
+            
+            return pb.ValidateTokenResponse(
+                valid=True,
+                user_id="temp_user_id",
+                tenant_id="temp_tenant_id",
+                role="USER",
+                session_id="temp_session_id",
+                expires_in=1800,
+                requires_refresh=False,
+                permissions=["read", "write"]
+            )
+        except Exception as e:
+            logger.error(f"Token validation error: {e}")
+            return pb.ValidateTokenResponse(valid=False, message="Invalid token")
+
+    async def RevokeToken(self, request, context):
+        """Token revocation for logout/security"""
+        logger.info(f"Token revocation for session: {request.session_id}")
+        try:
+            # TODO: Implement token revocation
+            # - Invalidate refresh token
+            # - Add to blacklist
+            # - Log audit event
+            
+            return pb.RevokeTokenResponse(
+                success=True,
+                message="Token revoked successfully",
+                revoked_sessions=1,
+                audit_id="temp_audit_id"
+            )
+        except Exception as e:
+            logger.error(f"Token revocation error: {e}")
+            return pb.RevokeTokenResponse(success=False, message="Revocation failed")
+
+    async def GetUserProfile(self, request, context):
+        """User profile retrieval with tenant isolation"""
+        logger.info(f"Profile request for user: {request.user_id}")
+        try:
+            # TODO: Implement profile retrieval
+            # - Validate requesting user permissions
+            # - Enforce tenant isolation
+            # - Return user profile data
+            
+            return pb.UserProfileResponse(
+                success=True,
+                user_id=request.user_id,
+                tenant_id="temp_tenant_id",
+                email="user@example.com",
+                name="Test User",
+                username="testuser",
+                role="USER",
+                is_active=True,
+                email_verified=True
+            )
+        except Exception as e:
+            logger.error(f"Profile retrieval error: {e}")
+            return pb.UserProfileResponse(success=False)
+
+    async def IntrospectToken(self, request, context):
+        """Token introspection for service-to-service auth"""
+        logger.info(f"Token introspection from service: {request.requesting_service}")
+        try:
+            # TODO: Implement token introspection
+            # - Decode token without validation for inspection
+            # - Return token metadata and claims
+            
+            return pb.IntrospectTokenResponse(
+                active=True,
+                user_id="temp_user_id",
+                tenant_id="temp_tenant_id",
+                role="USER",
+                session_id="temp_session_id",
+                token_type="ACCESS"
+            )
+        except Exception as e:
+            logger.error(f"Token introspection error: {e}")
+            return pb.IntrospectTokenResponse(active=False)
+
+    async def ListActiveSessions(self, request, context):
+        """List user active sessions for security management"""
+        logger.info(f"List sessions for user: {request.user_id}")
+        try:
+            # TODO: Implement session listing
+            # - Validate requesting user
+            # - Return active sessions with metadata
+            
+            return pb.ListActiveSessionsResponse(
+                success=True,
+                sessions=[],  # TODO: Populate with actual sessions
+                total_sessions=0,
+                message="No active sessions found"
+            )
+        except Exception as e:
+            logger.error(f"Session listing error: {e}")
+            return pb.ListActiveSessionsResponse(success=False, message="Failed to list sessions")
+
+    async def RevokeSession(self, request, context):
+        """Revoke specific user session"""
+        logger.info(f"Revoke session: {request.session_id}")
+        try:
+            # TODO: Implement session revocation
+            return pb.RevokeSessionResponse(
+                success=True,
+                message="Session revoked",
+                audit_id="temp_audit_id"
+            )
+        except Exception as e:
+            logger.error(f"Session revocation error: {e}")
+            return pb.RevokeSessionResponse(success=False, message="Revocation failed")
+
+    async def RevokeAllSessions(self, request, context):
+        """Revoke all user sessions (security reset)"""
+        logger.info(f"Revoke all sessions for user: {request.user_id}")
+        try:
+            # TODO: Implement bulk session revocation
+            return pb.RevokeAllSessionsResponse(
+                success=True,
+                message="All sessions revoked",
+                revoked_sessions=0,
+                audit_id="temp_audit_id"
+            )
+        except Exception as e:
+            logger.error(f"Bulk session revocation error: {e}")
+            return pb.RevokeAllSessionsResponse(success=False, message="Bulk revocation failed")
+
+    async def LogAuditEvent(self, request, context):
+        """Log security and compliance events"""
+        logger.info(f"Audit event: {request.action} by user {request.user_id}")
+        try:
+            # TODO: Implement audit logging
+            # - Store audit event in database
+            # - Include all security-relevant metadata
+            
+            return pb.AuditEventResponse(
+                success=True,
+                audit_id="temp_audit_id",
+                message="Audit event logged"
+            )
+        except Exception as e:
+            logger.error(f"Audit logging error: {e}")
+            return pb.AuditEventResponse(success=False, message="Audit logging failed")
+
+    async def GetAuditTrail(self, request, context):
+        """Retrieve audit trail for compliance"""
+        logger.info(f"Audit trail request for user: {request.user_id}")
+        try:
+            # TODO: Implement audit trail retrieval
+            return pb.AuditTrailResponse(
+                success=True,
+                entries=[],  # TODO: Populate with audit entries
+                total_count=0
+            )
+        except Exception as e:
+            logger.error(f"Audit trail error: {e}")
+            return pb.AuditTrailResponse(success=False)
+
+    async def GetServiceInfo(self, request, context):
+        """Service metadata and capabilities"""
+        logger.info("Service info request")
+        return pb.ServiceInfoResponse(
+            service_name="MilkyHoop Auth Service",
+            version="1.0.0",
+            environment=os.getenv("ENVIRONMENT", "development"),
+            tenant_isolation_enabled=True,
+            audit_logging_enabled=True,
+            token_rotation_enabled=True,
+            session_management_enabled=True
+        )
+
+    async def GoogleOAuthLogin(self, request, context):
+        """Google OAuth Login initiation - Method #15"""
+        logger.info(f"GoogleOAuth login request for redirect_uri: {request.redirect_uri}")
+        try:
+            if not GOOGLE_OAUTH_AVAILABLE:
+                context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+                return pb.GoogleOAuthLoginResponse(
+                    success=False,
+                    message="Google OAuth libraries not available",
+                    authorization_url="",
+                    state=""
+                )
+            
+            # Generate secure state for CSRF protection
+            state = request.state if request.state else secrets.token_urlsafe(32)
+            
+            # Basic Google OAuth URL (simplified for initial implementation)
+            client_id = os.getenv('GOOGLE_CLIENT_ID', 'not-configured')
+            authorization_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={request.redirect_uri}&scope=openid email profile&response_type=code&state={state}"
+            
+            logger.info(f"Google OAuth authorization URL generated for state: {state}")
+            return pb.GoogleOAuthLoginResponse(
+                success=True,
+                message="Authorization URL generated",
+                authorization_url=authorization_url,
+                state=state
+            )
+        except Exception as e:
+            logger.error(f"GoogleOAuth login error: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.GoogleOAuthLoginResponse(success=False, message="OAuth initialization failed")
+
+    async def GoogleOAuthCallback(self, request, context):
+        """Google OAuth Callback processing - Method #16"""
+        logger.info(f"GoogleOAuth callback for code: {request.code[:10]}...")
+        try:
+            if not GOOGLE_OAUTH_AVAILABLE:
+                context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+                return pb.GoogleOAuthCallbackResponse(
+                    success=False,
+                    message="Google OAuth libraries not available",
+                    access_token="",
+                    refresh_token="",
+                    user_id="",
+                    email="",
+                    name="",
+                    tenant_id="",
+                    expires_in=0
+                )
+            
+            # Validate state for CSRF protection
+            if not request.state:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                return pb.GoogleOAuthCallbackResponse(success=False, message="Missing state parameter")
+            
+            # TODO: Implement full OAuth flow
+            # - Exchange code for tokens
+            # - Verify ID token
+            # - Extract user info
+            # - Create or link user account
+            # - Generate session tokens
+            
+            logger.info(f"Google OAuth callback processed for state: {request.state}")
+            return pb.GoogleOAuthCallbackResponse(
+                success=True,
+                message="OAuth callback processed (implementation pending)",
+                access_token="temp_oauth_token",
+                refresh_token="temp_oauth_refresh",
+                user_id="temp_oauth_user",
+                email="temp@oauth.com",
+                name="OAuth User",
+                tenant_id="temp_tenant",
+                expires_in=3600
+            )
+        except Exception as e:
+            logger.error(f"GoogleOAuth callback error: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.GoogleOAuthCallbackResponse(success=False, message="OAuth callback failed")
+
+    async def HealthCheck(self, request, context):
+        """Health check for monitoring"""
+        logger.debug("Health check request")
+        return pb.Empty()
+
+async def serve() -> None:
+    """Start enterprise auth service with comprehensive features"""
+    logger.info("Starting MilkyHoop Enterprise Auth Service...")
+    
+    # Database connection
+    if "DATABASE_URL" in os.environ:
+        logger.info("Connecting to Prisma...")
+        await prisma.connect()
+        logger.info("Prisma connected")
+    
+    # gRPC server setup
+    server = aio.server()
+    pb_grpc.add_AuthServiceServicer_to_server(AuthServiceServicer(), server)
+    
+    # Health check service
+    health_servicer = health.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+    health_servicer.set('', health_pb2.HealthCheckResponse.SERVING)
+    
+    # Server configuration
+    listen_addr = f"[::]:{settings.GRPC_PORT}"
+    server.add_insecure_port(listen_addr)
+    logger.info(f"Enterprise Auth Service listening on port {settings.GRPC_PORT}")
+    logger.info("Available methods: Register, Login, RefreshToken, ValidateToken, RevokeToken, GetUserProfile, IntrospectToken, ListActiveSessions, RevokeSession, RevokeAllSessions, LogAuditEvent, GetAuditTrail, GetServiceInfo, GoogleOAuthLogin, GoogleOAuthCallback, HealthCheck")
+    
+    # Graceful shutdown handling
+    stop_event = asyncio.Event()
+    
+    def handle_shutdown(*_):
+        logger.info("Shutdown signal received. Initiating graceful shutdown...")
+        stop_event.set()
+    
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    
+    try:
+        await server.start()
+        logger.info("AUTH SERVICE READY - Enterprise authentication enabled")
+        await stop_event.wait()
+    finally:
+        logger.info("Shutting down gRPC server...")
+        await server.stop(5)
+        
+        if "DATABASE_URL" in os.environ:
+            logger.info("Disconnecting Prisma...")
+            await prisma.disconnect()
+            logger.info("Prisma disconnected")
+        
+        logger.info("Enterprise Auth Service shut down cleanly")
+
+if __name__ == "__main__":
+    asyncio.run(serve())

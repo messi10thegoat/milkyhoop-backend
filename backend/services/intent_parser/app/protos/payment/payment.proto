@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+option go_package = "github.com/milkyhoop/payment-service/internal/delivery/pb/payment";
+
+package payment;
+
+service PaymentService {
+  rpc CreateInvoice (CreateInvoiceRequest) returns (CreateInvoiceResponse);
+  rpc ConfirmPayment (ConfirmPaymentRequest) returns (ConfirmPaymentResponse);
+}
+
+message CreateInvoiceRequest {
+  string user_id = 1;
+  double amount = 2;
+}
+
+message CreateInvoiceResponse {
+  string invoice_id = 1;
+  string status = 2;
+}
+
+message ConfirmPaymentRequest {
+  string invoice_id = 1;
+  string payment_method = 2;
+}
+
+message ConfirmPaymentResponse {
+  string confirmation_id = 1;
+  string status = 2;
+}

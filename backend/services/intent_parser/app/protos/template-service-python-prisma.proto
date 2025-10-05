@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package template_service_python_prisma_python_prisma;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/milkyhoop/template-service-golang/internal/delivery/pb/template;template";
+// option python_package = "app.protos";
+
+service TemplateServicePythonPrisma {
+  rpc DoSomething (TemplateServicePythonPrismaRequest) returns (TemplateServicePythonPrismaResponse);
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+message TemplateServicePythonPrismaRequest {
+  string user_id = 1;
+  string input = 2;
+}
+
+message TemplateServicePythonPrismaResponse {
+  string status = 1;
+  string result = 2;
+}

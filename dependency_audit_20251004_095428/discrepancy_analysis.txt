@@ -1,0 +1,44 @@
+=== DEPENDENCY DISCREPANCY ANALYSIS ===
+Date: Sat Oct  4 09:54:53 UTC 2025
+
+=== cust_orchestrator ANALYSIS ===
+Actual packages: 83
+Declared dependencies: 25
+Critical packages check:
+  OpenAI: NOT FOUND
+  Prisma: prisma==0.15.0
+  gRPC: grpcio==1.74.0
+grpcio-health-checking==1.71.2
+grpcio-tools==1.71.2
+
+=== ragllm_service ANALYSIS ===
+Actual packages: 105
+Declared dependencies: 23
+Critical packages check:
+  OpenAI: openai==1.97.0
+  Prisma: prisma==0.15.0
+  gRPC: grpcio==1.73.1
+grpcio-health-checking==1.71.2
+grpcio-tools==1.71.2
+
+=== ragcrud_service ANALYSIS ===
+Actual packages: 106
+Declared dependencies: 38
+Critical packages check:
+  OpenAI: openai==1.107.0
+  Prisma: prisma==0.15.0
+  gRPC: grpcio==1.74.0
+grpcio-health-checking==1.71.2
+grpcio-tools==1.71.2
+
+=== auth_service ANALYSIS ===
+Actual packages: 72
+Declared dependencies: 22
+Critical packages check:
+  OpenAI: NOT FOUND
+  Prisma: prisma==0.15.0
+  gRPC: grpcio==1.74.0
+grpcio-health-checking==1.71.2
+grpcio-reflection==1.71.2
+grpcio-tools==1.71.2
+

@@ -1,0 +1,105 @@
+version: '3.8'
+name: milkyhoop-dev
+
+services:
+  api_gateway:
+    build:
+      context: ../backend/api_gateway
+      dockerfile: Dockerfile
+    container_name: milkyhoop-dev-api_gateway-1
+    ports:
+      - "8001:8000"
+    volumes:
+      - ../backend/api_gateway/app:/app
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: milkyhoop-dev-frontend-1
+    ports:
+      - "3001:80"
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.3'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+
+  auth_service:
+    build:
+      context: ../backend/services/auth-service
+      dockerfile: Dockerfile
+    container_name: milkyhoop-dev-auth_service-1
+    ports:
+      - "7004:5004"
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.3'
+
+  ragcrud_service:
+    build:
+      context: ../backend/services/ragcrud_service
+      dockerfile: Dockerfile
+    container_name: milkyhoop-dev-ragcrud_service-1
+    ports:
+      - "7001:5001"
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.3'
+
+  ragllm_service:
+    build:
+      context: ../backend/services/ragllm_service
+      dockerfile: Dockerfile
+    container_name: milkyhoop-dev-ragllm_service-1
+    ports:
+      - "7002:5002"
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.4'
+
+  # Additional services with conservative limits...
+  redis:
+    image: redis:7-alpine
+    container_name: milkyhoop-dev-redis-1
+    ports:
+      - "6380:6379"
+    networks:
+      - milkyhoop_dev_network
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.2'
+
+networks:
+  milkyhoop_dev_network:
+    name: milkyhoop_dev_network
+    driver: bridge

@@ -1,0 +1,110 @@
+=== SYNCHRONIZATION VALIDATION REPORT ===
+Date: Sat Oct  4 09:21:34 UTC 2025
+
+HOST vs CONTAINER FILE COUNTS:
+api_gateway: Host=0, Container=595
+auth_service: Host=788, Container=686
+business-service: Host=7, Container=N/A (not running)
+chatbot_service: Host=41, Container=892
+complaint_service: Host=20, Container=N/A (not running)
+context_service: Host=38, Container=555
+conversation_service: Host=36, Container=609
+cust_context: Host=103, Container=684
+cust_orchestrator: Host=60, Container=577
+cust_reference.FULL_BACKUP_20250920_100129: Host=29, Container=N/A (not running)
+cust_reference.backup-20250918_175935: Host=23, Container=N/A (not running)
+flow-executor: Host=68, Container=0
+hoop-registry: Host=35, Container=N/A (not running)
+intent_parser: Host=1205, Container=1719
+memory_service: Host=655, Container=617
+notification-service: Host=28, Container=N/A (not running)
+order_service: Host=21, Container=N/A (not running)
+payment-adapter: Host=26, Container=N/A (not running)
+payment_service: Host=19, Container=N/A (not running)
+ragcrud_service: Host=2261, Container=2832
+ragindex_service: Host=72, Container=590
+ragllm_service: Host=617, Container=574
+tenant_manager: Host=13, Container=N/A (not running)
+tenant_parser: Host=856, Container=1375
+visualhoop-compiler: Host=185, Container=N/A (not running)
+
+CRITICAL FILES VALIDATION:
+✅ CRITICAL: ragllm_client.py with FAQ context fix present
+
+DEPENDENCY FILES VALIDATION:
+api_gateway: pyproject.toml=No, requirements.txt=No
+auth_service: pyproject.toml=Yes, requirements.txt=Yes
+business-service: pyproject.toml=Yes, requirements.txt=Yes
+chatbot_service: pyproject.toml=Yes, requirements.txt=Yes
+complaint_service: pyproject.toml=Yes, requirements.txt=Yes
+context_service: pyproject.toml=Yes, requirements.txt=Yes
+conversation_service: pyproject.toml=Yes, requirements.txt=Yes
+cust_context: pyproject.toml=Yes, requirements.txt=Yes
+cust_orchestrator: pyproject.toml=Yes, requirements.txt=Yes
+cust_reference.FULL_BACKUP_20250920_100129: pyproject.toml=Yes, requirements.txt=Yes
+cust_reference.backup-20250918_175935: pyproject.toml=Yes, requirements.txt=Yes
+flow-executor: pyproject.toml=No, requirements.txt=No
+hoop-registry: pyproject.toml=Yes, requirements.txt=Yes
+intent_parser: pyproject.toml=Yes, requirements.txt=Yes
+memory_service: pyproject.toml=Yes, requirements.txt=Yes
+notification-service: pyproject.toml=No, requirements.txt=No
+order_service: pyproject.toml=Yes, requirements.txt=Yes
+payment-adapter: pyproject.toml=Yes, requirements.txt=Yes
+payment_service: pyproject.toml=Yes, requirements.txt=Yes
+ragcrud_service: pyproject.toml=Yes, requirements.txt=Yes
+ragindex_service: pyproject.toml=Yes, requirements.txt=Yes
+ragllm_service: pyproject.toml=Yes, requirements.txt=Yes
+tenant_manager: pyproject.toml=Yes, requirements.txt=Yes
+tenant_parser: pyproject.toml=Yes, requirements.txt=Yes
+visualhoop-compiler: pyproject.toml=No, requirements.txt=No
+
+GENERATED FILES VALIDATION:
+api_gateway: Prisma files=0, Protobuf files=0
+auth_service: Prisma files=21, Protobuf files=116
+business-service: Prisma files=0, Protobuf files=0
+chatbot_service: Prisma files=2, Protobuf files=1
+complaint_service: Prisma files=1, Protobuf files=1
+context_service: Prisma files=2, Protobuf files=1
+conversation_service: Prisma files=2, Protobuf files=1
+cust_context: Prisma files=3, Protobuf files=2
+cust_orchestrator: Prisma files=1, Protobuf files=4
+cust_reference.FULL_BACKUP_20250920_100129: Prisma files=1, Protobuf files=1
+cust_reference.backup-20250918_175935: Prisma files=1, Protobuf files=1
+flow-executor: Prisma files=0, Protobuf files=1
+hoop-registry: Prisma files=1, Protobuf files=9
+intent_parser: Prisma files=26, Protobuf files=80
+memory_service: Prisma files=17, Protobuf files=55
+notification-service: Prisma files=0, Protobuf files=1
+order_service: Prisma files=1, Protobuf files=1
+payment-adapter: Prisma files=1, Protobuf files=8
+payment_service: Prisma files=1, Protobuf files=1
+ragcrud_service: Prisma files=58, Protobuf files=124
+ragindex_service: Prisma files=4, Protobuf files=2
+ragllm_service: Prisma files=11, Protobuf files=57
+tenant_manager: Prisma files=2, Protobuf files=1
+tenant_parser: Prisma files=20, Protobuf files=85
+visualhoop-compiler: Prisma files=0, Protobuf files=0
+
+BACKUP INTEGRITY:
+✅ Primary backup: container_state_backup_20251004_091224 (preserved)
+✅ Additional backup: host_files_pre_sync_20251004_092124 (created)
+✅ Both backups available for rollback
+
+=== FINAL SUMMARY ===
+Total files synchronized to host: 7668
+Synchronization date: Sat Oct  4 09:21:38 UTC 2025
+Backup safety: Double-backed up
+Validation status: See above checks
+
+=== ROLLBACK INSTRUCTIONS ===
+If synchronization caused issues:
+1. Stop all containers: docker compose down
+2. Restore from backup: rm -rf backend/ && cp -r host_files_pre_sync_20251004_092124/backend/ ./
+3. Alternative: Use primary backup: cp -r container_state_backup_20251004_091224/source_code/* backend/
+4. Restart: docker compose up -d
+
+=== NEXT STEPS ===
+1. Review validation report carefully
+2. Test critical functionality (FAQ context)
+3. Setup volume mounts for development workflow
+4. Update .gitignore for proper source control

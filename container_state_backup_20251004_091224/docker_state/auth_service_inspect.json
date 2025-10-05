@@ -1,0 +1,372 @@
+[
+    {
+        "Id": "4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f",
+        "Created": "2025-09-17T17:46:53.039537069Z",
+        "Path": "tini",
+        "Args": [
+            "--",
+            "python3",
+            "/app/backend/services/auth_service/app/grpc_server.py"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 3666,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2025-09-29T07:25:31.601571119Z",
+            "FinishedAt": "2025-09-29T07:25:24.207728035Z",
+            "Health": {
+                "Status": "healthy",
+                "FailingStreak": 0,
+                "Log": [
+                    {
+                        "Start": "2025-10-04T09:10:44.708892912Z",
+                        "End": "2025-10-04T09:10:44.774206788Z",
+                        "ExitCode": 0,
+                        "Output": "status: SERVING\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:11:14.775085055Z",
+                        "End": "2025-10-04T09:11:14.859244584Z",
+                        "ExitCode": 0,
+                        "Output": "status: SERVING\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:11:44.860508644Z",
+                        "End": "2025-10-04T09:11:44.93496367Z",
+                        "ExitCode": 0,
+                        "Output": "status: SERVING\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:14.936018174Z",
+                        "End": "2025-10-04T09:12:15.050208637Z",
+                        "ExitCode": 0,
+                        "Output": "status: SERVING\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:45.051691892Z",
+                        "End": "2025-10-04T09:12:45.134396025Z",
+                        "ExitCode": 0,
+                        "Output": "status: SERVING\n"
+                    }
+                ]
+            }
+        },
+        "Image": "sha256:e392e46e58327f5db1b30b912ea1efd89c8d66ceee35cfe0207f7322d35d09bd",
+        "ResolvConfPath": "/var/lib/docker/containers/4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f/hostname",
+        "HostsPath": "/var/lib/docker/containers/4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f/hosts",
+        "LogPath": "/var/lib/docker/containers/4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f/4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f-json.log",
+        "Name": "/milkyhoop-dev-auth_service-1",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": [
+                "/root/milkyhoop-dev/logs/auth_service:/var/log:rw"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {
+                    "max-file": "3",
+                    "max-size": "10m"
+                }
+            },
+            "NetworkMode": "milkyhoop_dev_network",
+            "PortBindings": {
+                "5004/tcp": [
+                    {
+                        "HostIp": "",
+                        "HostPort": "7004"
+                    }
+                ]
+            },
+            "RestartPolicy": {
+                "Name": "always",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": [],
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": [],
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": null,
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": null,
+            "BlkioDeviceReadBps": null,
+            "BlkioDeviceWriteBps": null,
+            "BlkioDeviceReadIOps": null,
+            "BlkioDeviceWriteIOps": null,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": null,
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/asound",
+                "/proc/acpi",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/sys/firmware",
+                "/sys/devices/virtual/powercap"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "4254ad9336fec709a70c0370c65336e32f95f713bc71a95266168a8d9949c77f",
+                "LowerDir": "/var/lib/docker/overlay2/363fa723a94cc0d00dd4600e648a77a63041c42fcb71353d0f8ae3983bc01abf-init/diff:/var/lib/docker/overlay2/vgmhvohs8zpbufbee9rrpu5ay/diff:/var/lib/docker/overlay2/ltffi2hf3ki1ft5znzblcrl9c/diff:/var/lib/docker/overlay2/mzn7fx1owtjj6n6sxv3rzq0an/diff:/var/lib/docker/overlay2/vnhibcudk2qd7izkvxy9o93sd/diff:/var/lib/docker/overlay2/pc5z81y7pvw4pt2ajc9gv7828/diff:/var/lib/docker/overlay2/bc2774888eb26430ff81c08a6e48d009a1d5c706b62d88309872bbc583dea18e/diff:/var/lib/docker/overlay2/23263f67b5903005e323d56a592273b2291a5a5b5a1e1d73b65bdcaa35de6a2c/diff:/var/lib/docker/overlay2/35e41c3caec66cc0f24c548e9d2793d4fefdd1aafda34e6be7406f16364e2cc2/diff:/var/lib/docker/overlay2/9afb659a31c2633d932127ddc97ee67b6aac837e22f3b2cf4a87dd372d1cb6fc/diff",
+                "MergedDir": "/var/lib/docker/overlay2/363fa723a94cc0d00dd4600e648a77a63041c42fcb71353d0f8ae3983bc01abf/merged",
+                "UpperDir": "/var/lib/docker/overlay2/363fa723a94cc0d00dd4600e648a77a63041c42fcb71353d0f8ae3983bc01abf/diff",
+                "WorkDir": "/var/lib/docker/overlay2/363fa723a94cc0d00dd4600e648a77a63041c42fcb71353d0f8ae3983bc01abf/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/root/milkyhoop-dev/logs/auth_service",
+                "Destination": "/var/log",
+                "Mode": "rw",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+        "Config": {
+            "Hostname": "4254ad9336fe",
+            "Domainname": "",
+            "User": "root",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "ExposedPorts": {
+                "5004/tcp": {},
+                "5009/tcp": {}
+            },
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "RATE_LIMIT_RATE=10",
+                "POSTGRES_DB=postgres",
+                "POSTGRES_USER=postgres",
+                "TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA",
+                "DEV_POSTGRES_PORT=5433",
+                "GOOGLE_CLIENT_SECRET=DEV-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",
+                "DEBUG=true",
+                "RAGINDEX_GRPC_HOST=ragindex_service",
+                "RATE_LIMIT_PREFIX=rate:dev:user:",
+                "RATE_LIMIT_CAPACITY=100",
+                "GOOGLE_CLIENT_ID=dev-413226142239-1al05m8suek008ghtbnd94gnhbu1hls5.apps.googleusercontent.com",
+                "NEXTAUTH_URL=http://localhost:3001",
+                "RAGINDEX_SERVICE_PORT=7006",
+                "OPENAI_API_KEY=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",
+                "CONVERSATION_SERVICE_PORT=7002",
+                "DEV_REDIS_PORT=6380",
+                "TEMPERATURE=0.7",
+                "SECRET_KEY=DEV-f125991cd7e50343e46ac46ccmilkyhoopb7e8337596393f28d1c59d7a801cec1b276acb7",
+                "GRPC_TOKEN=DEV-KlHTLFq8jdS-2Or4kT4Qmilkyhoop.com58fGR5d2oXShExwzENLNs",
+                "MEMORY_SERVICE_PORT=7000",
+                "RAGINDEX_GRPC_PORT=5006",
+                "RAGLLM_GRPC_HOST=ragllm_service",
+                "LOG_LEVEL=debug",
+                "CHATBOT_SERVICE_PORT=7003",
+                "REDIS_PORT=6379",
+                "RAGCRUD_GRPC_HOST=milkyhoop-dev-ragcrud_service-1",
+                "NEXTAUTH_SECRET=DEV-Q/A98MHTSYKqN17HejkicuQE2/BSwiTBprhCZJol1Ew=",
+                "AUTH_SERVICE_PORT=7004",
+                "NEXT_PUBLIC_API_URL=https://api.openai.com/v1/chat/completions",
+                "HTTP_PORT=8000",
+                "POSTGRES_PORT=6432",
+                "PROMETHEUS_PORT=8001",
+                "GRPC_PORT=5004",
+                "KAFKA_BROKER=kafka:9092",
+                "CHATBOT_GRPC_PORT=5002",
+                "RAGCRUD_GRPC_PORT=5001",
+                "REDIS_URL=redis://redis:6379",
+                "TENANT_PARSER_PORT=7012",
+                "RAGCRUD_SERVICE_PORT=7001",
+                "POSTGRES_PASSWORD=Proyek771977",
+                "RAGLLM_GRPC_PORT=5000",
+                "API_GATEWAY_PORT=9000",
+                "MAX_TOKENS=1000",
+                "RAGLLM_SERVICE_PORT=7011",
+                "CUST_CONTEXT_PORT=7008",
+                "DATABASE_URL=postgresql://postgres:Proyek771977@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require",
+                "NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA",
+                "REDIS_HOST=redis",
+                "CHATBOT_GRPC_HOST=chatbot_service",
+                "NODE_ENV=development",
+                "INTENT_PARSER_PORT=7009",
+                "POSTGRES_HOST=localhost",
+                "MODEL=gpt-4o",
+                "CONTEXT_SERVICE_PORT=7007",
+                "JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40",
+                "INTERNAL_API_KEY=8478b56fc67e841ecc0d88a7ed6138dff212b984547d7b0dea66efdbd0734074",
+                "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D",
+                "PYTHON_VERSION=3.11.13",
+                "PYTHON_SHA256=8fb5f9fbc7609fa822cb31549884575db7fd9657cbffb89510b5d7975963a83a",
+                "PYTHONPATH=/app:/app/backend/api_gateway/libs:/app/backend/services/auth_service:/app/backend/services/auth_service/app",
+                "PRISMA_QUERY_ENGINE_BINARY=/app/prisma-query-engine-debian-openssl-3.0.x",
+                "PYTHONUNBUFFERED=1"
+            ],
+            "Cmd": [
+                "python3",
+                "/app/backend/services/auth_service/app/grpc_server.py"
+            ],
+            "Healthcheck": {
+                "Test": [
+                    "CMD",
+                    "grpc_health_probe",
+                    "-addr=localhost:5004"
+                ],
+                "Interval": 30000000000,
+                "Timeout": 3000000000,
+                "StartPeriod": 10000000000,
+                "Retries": 3
+            },
+            "Image": "milkyhoop-dev-auth_service",
+            "Volumes": null,
+            "WorkingDir": "/app",
+            "Entrypoint": [
+                "tini",
+                "--"
+            ],
+            "OnBuild": null,
+            "Labels": {
+                "com.docker.compose.config-hash": "4d9544bd2ea3e01bf0673cf33aa38c9a911b9a66c836fcc8a57204031d416b00",
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.depends_on": "postgres:service_started:false,redis:service_started:false",
+                "com.docker.compose.image": "sha256:e392e46e58327f5db1b30b912ea1efd89c8d66ceee35cfe0207f7322d35d09bd",
+                "com.docker.compose.oneoff": "False",
+                "com.docker.compose.project": "milkyhoop-dev",
+                "com.docker.compose.project.config_files": "/root/milkyhoop-dev/docker-compose.yml",
+                "com.docker.compose.project.working_dir": "/root/milkyhoop-dev",
+                "com.docker.compose.service": "auth_service",
+                "com.docker.compose.version": "2.33.0"
+            }
+        },
+        "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "be0bc4562c45651f943add7f02e9f1847e453390047bbdd1ca8355cb25ec1251",
+            "SandboxKey": "/var/run/docker/netns/be0bc4562c45",
+            "Ports": {
+                "5004/tcp": [
+                    {
+                        "HostIp": "0.0.0.0",
+                        "HostPort": "7004"
+                    },
+                    {
+                        "HostIp": "::",
+                        "HostPort": "7004"
+                    }
+                ],
+                "5009/tcp": null
+            },
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "",
+            "Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "MacAddress": "",
+            "Networks": {
+                "milkyhoop_dev_network": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": [
+                        "milkyhoop-dev-auth_service-1",
+                        "auth_service"
+                    ],
+                    "MacAddress": "5a:5a:7a:18:af:3f",
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "e79ad32c9707169ab36aa1f5eec7dc789452e6bcb785ef5b49305011521eb586",
+                    "EndpointID": "88c78f9c2d23028c6bf3de13f0de9ba174db5ab898d2d992c2ee9e5c7819269e",
+                    "Gateway": "172.19.0.1",
+                    "IPAddress": "172.19.0.16",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": [
+                        "milkyhoop-dev-auth_service-1",
+                        "auth_service",
+                        "4254ad9336fe"
+                    ]
+                }
+            }
+        }
+    }
+]

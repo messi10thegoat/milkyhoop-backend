@@ -1,0 +1,16 @@
+# === Core gRPC & Protobuf ===
+grpcio==1.71.0
+grpcio-tools==1.63.0
+grpcio-health-checking==1.63.0
+protobuf==5.29.0
+grpc-interceptor
+
+# === Logging, Retry, Config ===
+structlog
+tenacity
+python-dotenv
+
+# === Observability & REST Support ===
+fastapi
+uvicorn[standard]
+prometheus-client

@@ -1,0 +1,328 @@
+[
+    {
+        "Id": "faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04",
+        "Created": "2025-09-18T18:18:58.335358869Z",
+        "Path": "docker-entrypoint.sh",
+        "Args": [
+            "redis-server",
+            "--requirepass",
+            "MilkyRedis2025Secure"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 2711,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2025-09-29T07:25:31.13202119Z",
+            "FinishedAt": "2025-09-29T07:25:24.1754312Z",
+            "Health": {
+                "Status": "healthy",
+                "FailingStreak": 0,
+                "Log": [
+                    {
+                        "Start": "2025-10-04T09:12:09.414731655Z",
+                        "End": "2025-10-04T09:12:09.488060483Z",
+                        "ExitCode": 0,
+                        "Output": "NOAUTH Authentication required.\n\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:19.489719621Z",
+                        "End": "2025-10-04T09:12:19.549050107Z",
+                        "ExitCode": 0,
+                        "Output": "NOAUTH Authentication required.\n\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:29.549928907Z",
+                        "End": "2025-10-04T09:12:29.671017906Z",
+                        "ExitCode": 0,
+                        "Output": "NOAUTH Authentication required.\n\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:39.673280144Z",
+                        "End": "2025-10-04T09:12:39.744437396Z",
+                        "ExitCode": 0,
+                        "Output": "NOAUTH Authentication required.\n\n"
+                    },
+                    {
+                        "Start": "2025-10-04T09:12:49.745987336Z",
+                        "End": "2025-10-04T09:12:50.005459248Z",
+                        "ExitCode": 0,
+                        "Output": "NOAUTH Authentication required.\n\n"
+                    }
+                ]
+            }
+        },
+        "Image": "sha256:f2cd22713a18238b9343c3428c8b4edef867c0f2318424cd741939056b75454a",
+        "ResolvConfPath": "/var/lib/docker/containers/faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04/hostname",
+        "HostsPath": "/var/lib/docker/containers/faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04/hosts",
+        "LogPath": "/var/lib/docker/containers/faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04/faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04-json.log",
+        "Name": "/milkyhoop-dev-redis-1",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": [
+                "/root/milkyhoop-dev/logs/redis:/var/log/redis:rw"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {
+                    "max-file": "3",
+                    "max-size": "10m"
+                }
+            },
+            "NetworkMode": "milkyhoop_dev_network",
+            "PortBindings": {
+                "6379/tcp": [
+                    {
+                        "HostIp": "",
+                        "HostPort": "6380"
+                    }
+                ]
+            },
+            "RestartPolicy": {
+                "Name": "always",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": [],
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": [],
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": null,
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": null,
+            "BlkioDeviceReadBps": null,
+            "BlkioDeviceWriteBps": null,
+            "BlkioDeviceReadIOps": null,
+            "BlkioDeviceWriteIOps": null,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": null,
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "Mounts": [
+                {
+                    "Type": "volume",
+                    "Source": "milkyhoop-dev_redis_data",
+                    "Target": "/data",
+                    "VolumeOptions": {}
+                }
+            ],
+            "MaskedPaths": [
+                "/proc/asound",
+                "/proc/acpi",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/sys/firmware",
+                "/sys/devices/virtual/powercap"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "faa8eb35ee05b7c4b392fe40db7a5925de748942dec0a0589e111abfcf087e04",
+                "LowerDir": "/var/lib/docker/overlay2/444fcc917c6bb33e1b0b89b5b805b928c479f5829e97ca9978fbf6d98a3bc013-init/diff:/var/lib/docker/overlay2/353063eb45494b2bf234c959b20018ded9ff84e6320f4ce672558cfc9aa0b1dd/diff:/var/lib/docker/overlay2/1b395b9fa40fea0e1d4a53deb970b99387e4a3bc70579033998b425b97ac0993/diff:/var/lib/docker/overlay2/07b887ed8395f85fc5a296e20d3eb22b817ff86a11701acab8773b633e50e4c2/diff:/var/lib/docker/overlay2/5c49a467294f010b629c533bbea68e07af539d5e05fdb9c0e8821632b5420bbc/diff:/var/lib/docker/overlay2/cf647a81788b246740fe392480859434ac5006a327b136fbe026532f981b03d8/diff:/var/lib/docker/overlay2/a737cd2828d902072aec8ce784538b30c6011023f1c3a94be5cb33d2c4354d5a/diff:/var/lib/docker/overlay2/f56ca33e2011ad917c01db9d09b908120d10968bdde19c437430e02c1d35cd9f/diff",
+                "MergedDir": "/var/lib/docker/overlay2/444fcc917c6bb33e1b0b89b5b805b928c479f5829e97ca9978fbf6d98a3bc013/merged",
+                "UpperDir": "/var/lib/docker/overlay2/444fcc917c6bb33e1b0b89b5b805b928c479f5829e97ca9978fbf6d98a3bc013/diff",
+                "WorkDir": "/var/lib/docker/overlay2/444fcc917c6bb33e1b0b89b5b805b928c479f5829e97ca9978fbf6d98a3bc013/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [
+            {
+                "Type": "volume",
+                "Name": "milkyhoop-dev_redis_data",
+                "Source": "/var/lib/docker/volumes/milkyhoop-dev_redis_data/_data",
+                "Destination": "/data",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            },
+            {
+                "Type": "bind",
+                "Source": "/root/milkyhoop-dev/logs/redis",
+                "Destination": "/var/log/redis",
+                "Mode": "rw",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+        "Config": {
+            "Hostname": "faa8eb35ee05",
+            "Domainname": "",
+            "User": "",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "ExposedPorts": {
+                "6379/tcp": {}
+            },
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "REDIS_DOWNLOAD_URL=https://github.com/redis/redis/archive/refs/tags/8.0.3.tar.gz",
+                "REDIS_DOWNLOAD_SHA=2467b9608ecbcc2c0d27397c0c2406b499b6f68bc08ac9f6380b1faf2113ae6f"
+            ],
+            "Cmd": [
+                "redis-server",
+                "--requirepass",
+                "MilkyRedis2025Secure"
+            ],
+            "Healthcheck": {
+                "Test": [
+                    "CMD",
+                    "redis-cli",
+                    "ping"
+                ],
+                "Interval": 10000000000,
+                "Timeout": 5000000000,
+                "Retries": 5
+            },
+            "Image": "redis:latest",
+            "Volumes": {
+                "/data": {}
+            },
+            "WorkingDir": "/data",
+            "Entrypoint": [
+                "docker-entrypoint.sh"
+            ],
+            "OnBuild": null,
+            "Labels": {
+                "com.docker.compose.config-hash": "c38eeab925eb5a4cf7a2d7f2ee82e054de021d1eec695bfb4ec99c4417dca26a",
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.depends_on": "",
+                "com.docker.compose.image": "sha256:f2cd22713a18238b9343c3428c8b4edef867c0f2318424cd741939056b75454a",
+                "com.docker.compose.oneoff": "False",
+                "com.docker.compose.project": "milkyhoop-dev",
+                "com.docker.compose.project.config_files": "/root/milkyhoop-dev/docker-compose.yml",
+                "com.docker.compose.project.working_dir": "/root/milkyhoop-dev",
+                "com.docker.compose.service": "redis",
+                "com.docker.compose.version": "2.33.0"
+            }
+        },
+        "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "c93a46cacb578bf213321fa6c76c1030e5e06d8208fbad4968f37ca4bf6f1ced",
+            "SandboxKey": "/var/run/docker/netns/c93a46cacb57",
+            "Ports": {
+                "6379/tcp": [
+                    {
+                        "HostIp": "0.0.0.0",
+                        "HostPort": "6380"
+                    },
+                    {
+                        "HostIp": "::",
+                        "HostPort": "6380"
+                    }
+                ]
+            },
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "",
+            "Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "MacAddress": "",
+            "Networks": {
+                "milkyhoop_dev_network": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": [
+                        "milkyhoop-dev-redis-1",
+                        "redis"
+                    ],
+                    "MacAddress": "fe:2c:e1:6a:e4:44",
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "e79ad32c9707169ab36aa1f5eec7dc789452e6bcb785ef5b49305011521eb586",
+                    "EndpointID": "120a59f1b94dc722121800e368bb38ec0d772a2c9e36da16edc3592d4e153a16",
+                    "Gateway": "172.19.0.1",
+                    "IPAddress": "172.19.0.4",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": [
+                        "milkyhoop-dev-redis-1",
+                        "redis",
+                        "faa8eb35ee05"
+                    ]
+                }
+            }
+        }
+    }
+]

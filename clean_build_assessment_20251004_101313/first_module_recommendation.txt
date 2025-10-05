@@ -1,0 +1,30 @@
+# First Module Recommendation
+
+## RECOMMENDED STARTING MODULE: auth_service
+
+### Rationale:
+1. **Low Complexity**: Simple JWT token management service
+2. **Minimal Dependencies**: Only needs postgres (already running)
+3. **Well-Defined Interface**: Clear gRPC API for token operations
+4. **Low Risk**: Failure doesn't break core FAQ functionality
+5. **Good Test Case**: Validates clean build process
+
+### Pre-Build Assessment Focus:
+- pyproject.toml dependency alignment
+- JWT configuration validation  
+- Database connection testing
+- gRPC endpoint verification
+
+### Success Criteria:
+- JWT token generation works
+- Token validation works
+- Health check endpoint responds
+- No impact on current FAQ functionality
+
+### Alternative Starting Options:
+1. **ragcrud_service** - If you want to test FAQ-critical service first
+2. **tenant_parser** - If you want to test ML/classification service
+3. **ragllm_service** - If you want to test OpenAI integration
+
+### Recommendation:
+Start with **auth_service** for lowest risk validation of clean build process.

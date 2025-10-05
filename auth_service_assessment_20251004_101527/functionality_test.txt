@@ -1,0 +1,6 @@
+=== CURRENT FUNCTIONALITY TEST ===
+Health endpoint test:
+FAILED: Health endpoint not responding
+gRPC endpoint test:
+INCONCLUSIVE: gRPC health probe not available
+Recent logs check:

@@ -1,0 +1,28 @@
+{
+  "flow_id": "order-menu-v1",
+  "trigger_id": "exec-001234",
+  "context": {
+    "user_id": "user123",
+    "tenant_id": "tenantABC"
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "hoop": "ShowMenu",
+      "input": {}
+    },
+    {
+      "id": "n2",
+      "hoop": "CreateOrder",
+      "input": {
+        "menu_id": "coffee-1",
+        "quantity": 2
+      }
+    },
+    {
+      "id": "n3",
+      "hoop": "SendNotification",
+      "input_from": "n2"
+    }
+  ]
+}

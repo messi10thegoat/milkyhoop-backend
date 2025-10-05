@@ -1,0 +1,102 @@
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+# Try to import services, but don't fail if they're not available
+services_available = {}
+
+try:
+    from app.services.intent_client import IntentParserClient
+    intent_client = IntentParserClient()
+    services_available['intent'] = True
+    logger.info("✅ Intent service loaded")
+except Exception as e:
+    services_available['intent'] = False
+    logger.warning(f"Intent service not available: {e}")
+    intent_client = None
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    reply: str
+    session_id: str
+    metadata: Optional[Dict[str, Any]] = None
+
+@router.post("/chat/")
+async def chat_endpoint(request: ChatRequest):
+    """Setup mode with gradual service integration"""
+    logger.info(f"Setup mode request: {request.message}")
+    
+    # Try to use intent service if available
+    if services_available.get('intent') and intent_client:
+        try:
+            result = await intent_client.parse_intent(
+                message=request.message,
+                tenant_id=request.tenant_id or "default"
+            )
+            return ChatResponse(
+                reply=result.get('response', 'Processing...'),
+                session_id=request.session_id,
+                metadata={"mode": "setup", "service": "intent", "intent": result.get('intent')}
+            )
+        except Exception as e:
+            logger.error(f"Intent service error: {e}")
+    
+    # Fallback to hardcoded responses
+    if "faq" in request.message.lower():
+        response = "FAQ Management: List, Create, Update, Delete FAQ entries"
+    else:
+        response = f"Setup mode (fallback). You said: {request.message}"
+    
+    return ChatResponse(
+        reply=response,
+        session_id=request.session_id,
+        metadata={"mode": "setup", "service": "fallback"}
+    )
+
+@router.post("/tenant/{tenant_id}/chat")
+async def tenant_chat_endpoint(tenant_id: str, request: ChatRequest):
+    """Customer mode - still using fallback for now"""
+    logger.info(f"Customer mode for {tenant_id}: {request.message}")
+    
+    # Hardcoded responses for now
+    responses = {
+        "bahan": "Cotton premium berkualitas tinggi",
+        "harga": "Mulai dari 150rb - 450rb",
+        "order": "Bisa order via WhatsApp atau website",
+        "produk": "Kami ada kaos, celana, dan jaket"
+    }
+    
+    message_lower = request.message.lower()
+    for keyword, response in responses.items():
+        if keyword in message_lower:
+            return ChatResponse(
+                reply=response,
+                session_id=request.session_id,
+                metadata={"mode": "customer", "tenant": tenant_id, "matched": keyword}
+            )
+    
+    return ChatResponse(
+        reply=f"Halo! Ada yang bisa saya bantu?",
+        session_id=request.session_id,
+        metadata={"mode": "customer", "tenant": tenant_id}
+    )
+
+@router.get("/health")
+async def health_check():
+    """Health check with service status"""
+    return {
+        "status": "healthy",
+        "service": "api_gateway",
+        "mode": "gradual_integration",
+        "services": services_available
+    }

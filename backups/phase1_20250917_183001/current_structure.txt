@@ -1,0 +1,143 @@
+backend/services/tenant_parser
+├── Dockerfile
+├── __init__.py
+├── app
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-310.pyc
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── config.cpython-311.pyc
+│   │   ├── grpc_server.cpython-310.pyc
+│   │   ├── grpc_server.cpython-311.pyc
+│   │   ├── ragcrud_service_pb2.cpython-311.pyc
+│   │   ├── ragcrud_service_pb2_grpc.cpython-311.pyc
+│   │   ├── tenant_parser_pb2.cpython-311.pyc
+│   │   └── tenant_parser_pb2_grpc.cpython-311.pyc
+│   ├── confidence_engine_optimized.py
+│   ├── config.py
+│   ├── grpc_server.py
+│   ├── grpc_server.py.backup.1758018282
+│   ├── grpc_server.py.backup.1758018974
+│   ├── grpc_server.py.backup_20250915_184441
+│   ├── grpc_server.py.backup_circuit_breaker_fix_20250916_075742
+│   ├── grpc_server.py.before_absolute_final
+│   ├── grpc_server.py.before_absolute_fix
+│   ├── grpc_server.py.before_channel_fix
+│   ├── grpc_server.py.before_early_return
+│   ├── grpc_server.py.before_final_fix
+│   ├── grpc_server.py.before_scope_fix
+│   ├── grpc_server.py.before_semantic_fix
+│   ├── grpc_server.py.before_syntax_fix
+│   ├── grpc_server.py.before_targeted_fix
+│   ├── grpc_server.py.debug_backup
+│   ├── grpc_server.py.host_backup_20250915_150304
+│   ├── grpc_server.py.level10_final
+│   ├── grpc_server.py.level13_with_json_fix
+│   ├── grpc_server.py.line304_error
+│   ├── grpc_server.py.malformed_0700
+│   ├── grpc_server.py.pre_surgical_fix
+│   ├── grpc_server.py.pre_surgical_fix_host
+│   ├── grpc_server.py.syntax_error_backup
+│   ├── grpc_server.py.with_prisma
+│   ├── grpc_server_original.py
+│   ├── grpc_server_pre_integration_1757990718.py
+│   ├── integration_patch.py
+│   ├── integration_patch_grpc.py
+│   ├── intent_parser_pb2.py
+│   ├── intent_parser_pb2_grpc.py
+│   ├── intent_schema.json
+│   ├── models
+│   │   ├── __init__.py
+│   │   └── intent_output.py
+│   ├── prisma_client.py
+│   ├── protos
+│   │   ├── __init__.py
+│   │   └── google
+│   │       └── __init__.py
+│   ├── ragcrud_service_pb2.py
+│   ├── ragcrud_service_pb2_grpc.py
+│   ├── routes
+│   │   └── __init__.py
+│   ├── services
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-310.pyc
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── enhanced_confidence_engine.cpython-310.pyc
+│   │   │   ├── enhanced_confidence_engine.cpython-311.pyc
+│   │   │   ├── enhanced_confidence_engine.py.cpython-310.pyc
+│   │   │   ├── llm_parser.cpython-310.pyc
+│   │   │   └── llm_parser.cpython-311.pyc
+│   │   ├── embedding_fix.py
+│   │   ├── enhanced_confidence_engine.py
+│   │   ├── enhanced_confidence_engine.py.backup.1758018584
+│   │   ├── enhanced_confidence_engine.py.backup.1758094409
+│   │   ├── enhanced_confidence_engine.py.backup.diagnosis.1758020037
+│   │   ├── enhanced_confidence_engine.py.backup.syntax_fix.1758020543
+│   │   ├── enhanced_confidence_engine.py.backup.topic_fix.1758020093
+│   │   ├── enhanced_confidence_engine.py.backup_20250916_074559
+│   │   ├── enhanced_confidence_engine.py.backup_indent_fix_20250916_081317
+│   │   ├── enhanced_confidence_engine.py.backup_method_aliases_20250916_080327
+│   │   ├── enhanced_confidence_engine.py.backup_syntax_fix_1758090342
+│   │   ├── enhanced_confidence_engine.py.empty_backup_1758033072
+│   │   ├── grpc_integration_fix.py
+│   │   ├── health_service.py
+│   │   ├── import_fix.py
+│   │   ├── line_306_fix.py
+│   │   ├── llm_parser.py
+│   │   ├── method_addition.py
+│   │   ├── missing_methods.py
+│   │   ├── rag_crud.py
+│   │   ├── rag_crud_client.py
+│   │   ├── string_fix.py
+│   │   ├── tenant_parser_service.py
+│   │   ├── tenant_parser_service_enhanced.py
+│   │   └── tenant_parser_service_original_1757990718.py
+│   ├── surgical_fixes.py
+│   ├── tenant_parser_pb2.py
+│   ├── tenant_parser_pb2_grpc.py
+│   ├── test_client.py
+│   └── utils
+│       └── validate_output.py
+├── backend
+│   ├── api_gateway
+│   │   └── libs
+│   │       ├── milkyhoop_prisma
+│   │       │   ├── _vendor
+│   │       │   ├── binaries
+│   │       │   ├── cli
+│   │       │   │   └── commands
+│   │       │   ├── engine
+│   │       │   └── generator
+│   │       │       └── _dsl_parser
+│   │       └── milkyhoop_protos
+│   └── services
+│       └── tenant_parser
+│           ├── app
+│           │   ├── models
+│           │   ├── protos
+│           │   │   └── google
+│           │   ├── routes
+│           │   ├── services
+│           │   └── utils
+│           └── tests
+├── libs
+├── poetry.lock
+├── protos
+│   ├── auth
+│   ├── flow
+│   ├── google
+│   ├── notification
+│   ├── payment
+│   └── rag
+├── pyproject.toml
+├── requirements.txt
+├── requirements.txt.pre_sync_20250910_094609
+├── scripts
+├── test_llm_parser.py
+├── test_proto_classes.py
+└── tests
+    ├── __init__.py
+    └── test_healthcheck.py
+
+42 directories, 99 files

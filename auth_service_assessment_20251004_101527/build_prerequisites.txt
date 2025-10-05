@@ -1,0 +1,98 @@
+=== BUILD PREREQUISITES CHECK ===
+Current container status:
+4254ad9336fe   milkyhoop-dev-auth_service           "tini -- python3 /ap…"   2 weeks ago    Up 5 days (healthy)                5009/tcp, 0.0.0.0:7004->5004/tcp, [::]:7004->5004/tcp                                                  milkyhoop-dev-auth_service-1
+26f86fd52bd1   57f02858d53f                         "tini -- python3 /ap…"   3 weeks ago    Up 5 days (healthy)                0.0.0.0:5004->5004/tcp, [::]:5004->5004/tcp, 5009/tcp, 0.0.0.0:18000->8000/tcp, [::]:18000->8000/tcp   milkyhoop-auth_service-1
+Current image info:
+"milkyhoop-dev-auth_service"
+Docker compose config:
+docker-compose.dev-volumes.yml:  auth_service:
+docker-compose.dev-volumes.yml-    volumes:
+docker-compose.dev-volumes.yml:      - ./backend/services/auth_service:/app
+docker-compose.dev-volumes.yml:      - ./logs/auth_service:/var/log
+docker-compose.dev-volumes.yml-    environment:
+docker-compose.dev-volumes.yml-      - ENVIRONMENT=development
+--
+docker-compose.resource-limited.yml:  auth_service:
+docker-compose.resource-limited.yml-    build:
+docker-compose.resource-limited.yml-      context: ../backend/services/auth-service
+docker-compose.resource-limited.yml-      dockerfile: Dockerfile
+docker-compose.resource-limited.yml-    container_name: milkyhoop-dev-auth_service-1
+docker-compose.resource-limited.yml-    ports:
+docker-compose.resource-limited.yml-      - "7004:5004"
+docker-compose.resource-limited.yml-    networks:
+docker-compose.resource-limited.yml-      - milkyhoop_dev_network
+docker-compose.resource-limited.yml-    deploy:
+docker-compose.resource-limited.yml-      resources:
+docker-compose.resource-limited.yml-        limits:
+docker-compose.resource-limited.yml-          memory: 128M
+docker-compose.resource-limited.yml-          cpus: '0.3'
+docker-compose.resource-limited.yml-
+docker-compose.resource-limited.yml-  ragcrud_service:
+--
+docker-compose.staging.yml:  auth_service:
+docker-compose.staging.yml-
+docker-compose.staging.yml-    build:
+docker-compose.staging.yml-      context: .
+docker-compose.staging.yml-      dockerfile: backend/services/auth_service/Dockerfile
+docker-compose.staging.yml-    ports:
+docker-compose.staging.yml-      - "7004:5004"  # gRPC port
+docker-compose.staging.yml-    networks:
+docker-compose.staging.yml-      - internal
+docker-compose.staging.yml-    environment:
+docker-compose.staging.yml-      - GRPC_PORT=5004
+docker-compose.staging.yml-      - HTTP_PORT=8000
+docker-compose.staging.yml-      - DATABASE_URL=${DATABASE_URL}
+docker-compose.staging.yml-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+docker-compose.staging.yml-      - REDIS_URL=redis://redis:6379
+docker-compose.staging.yml-    env_file:
+--
+docker-compose.staging.yml:      - ./logs/auth_service:/var/log
+docker-compose.staging.yml-    healthcheck:
+docker-compose.staging.yml-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5004"]
+docker-compose.staging.yml-      interval: 30s
+docker-compose.staging.yml-      timeout: 3s
+docker-compose.staging.yml-      retries: 3
+docker-compose.staging.yml-    restart: always
+docker-compose.staging.yml-    depends_on:
+docker-compose.staging.yml-      - postgres
+docker-compose.staging.yml-      - redis
+docker-compose.staging.yml-    logging:
+docker-compose.staging.yml-      driver: "json-file"
+docker-compose.staging.yml-      options:
+docker-compose.staging.yml-        max-size: "10m"
+docker-compose.staging.yml-        max-file: "3"
+docker-compose.staging.yml-
+--
+docker-compose.yml:  auth_service:
+docker-compose.yml-
+docker-compose.yml-    build:
+docker-compose.yml-      context: .
+docker-compose.yml-      dockerfile: backend/services/auth_service/Dockerfile
+docker-compose.yml-    ports:
+docker-compose.yml-      - "7004:5004"  # gRPC port
+docker-compose.yml-    networks:
+docker-compose.yml-      - internal
+docker-compose.yml-    environment:
+docker-compose.yml-      - GRPC_PORT=5004
+docker-compose.yml-      - HTTP_PORT=8000
+docker-compose.yml-      - DATABASE_URL=${DATABASE_URL}
+docker-compose.yml-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+docker-compose.yml-      - REDIS_URL=redis://redis:6379
+docker-compose.yml-    env_file:
+--
+docker-compose.yml:      - ./logs/auth_service:/var/log
+docker-compose.yml-    healthcheck:
+docker-compose.yml-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5004"]
+docker-compose.yml-      interval: 30s
+docker-compose.yml-      timeout: 3s
+docker-compose.yml-      retries: 3
+docker-compose.yml-    restart: always
+docker-compose.yml-    depends_on:
+docker-compose.yml-      - postgres
+docker-compose.yml-      - redis
+docker-compose.yml-    logging:
+docker-compose.yml-      driver: "json-file"
+docker-compose.yml-      options:
+docker-compose.yml-        max-size: "10m"
+docker-compose.yml-        max-file: "3"
+docker-compose.yml-

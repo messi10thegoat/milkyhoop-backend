@@ -1,0 +1,6 @@
+NETWORK ID     NAME                    DRIVER    SCOPE
+be41341220df   bridge                  bridge    local
+955f6298d920   host                    host      local
+e79ad32c9707   milkyhoop_dev_network   bridge    local
+659dcb72e816   milkyhoop_internal      bridge    local
+2c87bdca37fc   none                    null      local

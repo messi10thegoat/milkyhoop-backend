@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package chatbot_service;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/milkyhoop/template-service-golang/internal/delivery/pb/template;template";
+
+service ChatbotService {
+  rpc DoSomething (ChatbotServiceRequest) returns (ChatbotServiceResponse);
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+message ChatbotServiceRequest {
+  string user_id = 1;
+  string input = 2;
+  string tenant_id = 3;
+}
+
+message ChatbotServiceResponse {
+  string status = 1;
+  string result = 2;
+}
