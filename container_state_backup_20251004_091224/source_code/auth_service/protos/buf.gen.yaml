@@ -1,9 +1,0 @@
-version: v1
-plugins:
-  - plugin: go
-    out: ../backend/services/notification-service/internal/delivery/pb
-    opt: paths=source_relative
-
-  - plugin: python
-    out: ../backend/services/notification-service/internal/delivery/pb_python
-    opt: paths=source_relative

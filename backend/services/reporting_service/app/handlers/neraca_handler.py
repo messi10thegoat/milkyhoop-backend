@@ -1,0 +1,138 @@
+"""
+Neraca Handler
+Handles Balance Sheet (Laporan Neraca) generation
+
+Extracted from grpc_server.py - IDENTIK, no logic changes
+"""
+
+import logging
+from datetime import datetime
+import grpc
+
+from app.prisma_rls_extension import RLSPrismaClient
+from queries.financial_queries import build_where_clause
+
+logger = logging.getLogger(__name__)
+
+
+class NeracaHandler:
+    """Handler for Neraca (Balance Sheet) operations"""
+    
+    @staticmethod
+    async def query_neraca(rls_client: RLSPrismaClient, where: dict, pb) -> any:
+        """
+        Query and compute Laporan Neraca (Balance Sheet).
+        
+        Formula:
+        - Total Aset = Aset Lancar + Aset Tidak Lancar
+        - Total Ekuitas = Total Aset - Total Liabilitas
+        """
+        
+        all_transactions = await rls_client.transaksiharian.find_many(where=where)
+        
+        # ASET LANCAR (Current Assets)
+        kas = sum(tx.totalNominal or 0 for tx in all_transactions if tx.metodePembayaran == 'cash')
+        bank = sum(tx.totalNominal or 0 for tx in all_transactions if tx.metodePembayaran in ['transfer', 'bank'])
+        piutang_usaha = sum(
+            tx.sisaPiutangHutang or 0 for tx in all_transactions 
+            if (tx.sisaPiutangHutang or 0) > 0 and tx.pihakType == 'customer'
+        )
+        persediaan = 0  # TODO: Calculate from InventoryImpact
+        total_aset_lancar = kas + bank + piutang_usaha + persediaan
+        
+        # ASET TIDAK LANCAR (Non-Current Assets)
+        peralatan = sum(tx.totalNominal or 0 for tx in all_transactions if tx.jenisAset and 'peralatan' in tx.jenisAset)
+        kendaraan = sum(tx.totalNominal or 0 for tx in all_transactions if tx.jenisAset and 'kendaraan' in tx.jenisAset)
+        bangunan = sum(tx.totalNominal or 0 for tx in all_transactions if tx.jenisAset and 'bangunan' in tx.jenisAset)
+        
+        # Akumulasi penyusutan (negative value)
+        akumulasi_penyusutan = -sum(
+            (tx.penyusutanPerTahun or 0) * (tx.umurManfaat or 0) // 12 
+            for tx in all_transactions if tx.penyusutanPerTahun
+        )
+        
+        total_aset_tidak_lancar = peralatan + kendaraan + bangunan + akumulasi_penyusutan
+        total_aset = total_aset_lancar + total_aset_tidak_lancar
+        
+        # LIABILITAS (Liabilities)
+        hutang_usaha = sum(
+            tx.sisaPiutangHutang or 0 for tx in all_transactions 
+            if (tx.sisaPiutangHutang or 0) > 0 and tx.pihakType == 'supplier'
+        )
+        hutang_bank_jangka_pendek = 0  # TODO: Add logic for short-term loans
+        total_liabilitas_jangka_pendek = hutang_usaha + hutang_bank_jangka_pendek
+        
+        hutang_bank_jangka_panjang = 0  # TODO: Add logic for long-term loans
+        total_liabilitas_jangka_panjang = hutang_bank_jangka_panjang
+        
+        total_liabilitas = total_liabilitas_jangka_pendek + total_liabilitas_jangka_panjang
+        
+        # EKUITAS (Equity)
+        modal_awal = sum(tx.totalNominal or 0 for tx in all_transactions if tx.isModal)
+        laba_ditahan = 0  # TODO: Calculate from accumulated profits
+        prive = -sum(tx.totalNominal or 0 for tx in all_transactions if tx.isPrive)
+        total_ekuitas = modal_awal + laba_ditahan + prive
+        
+        # BALANCE CHECK
+        total_liabilitas_dan_ekuitas = total_liabilitas + total_ekuitas
+        is_balanced = abs(total_aset - total_liabilitas_dan_ekuitas) < 100  # Allow small rounding errors
+        
+        return pb.LaporanNeraca(
+            tenant_id=where['tenantId'],
+            periode_pelaporan=where.get('periodePelaporan', ''),
+            generated_at=int(datetime.utcnow().timestamp() * 1000),
+            kas=kas,
+            bank=bank,
+            piutang_usaha=piutang_usaha,
+            persediaan=persediaan,
+            total_aset_lancar=total_aset_lancar,
+            peralatan=peralatan,
+            kendaraan=kendaraan,
+            bangunan=bangunan,
+            akumulasi_penyusutan=akumulasi_penyusutan,
+            total_aset_tidak_lancar=total_aset_tidak_lancar,
+            total_aset=total_aset,
+            hutang_usaha=hutang_usaha,
+            hutang_bank_jangka_pendek=hutang_bank_jangka_pendek,
+            total_liabilitas_jangka_pendek=total_liabilitas_jangka_pendek,
+            hutang_bank_jangka_panjang=hutang_bank_jangka_panjang,
+            total_liabilitas_jangka_panjang=total_liabilitas_jangka_panjang,
+            total_liabilitas=total_liabilitas,
+            modal_awal=modal_awal,
+            laba_ditahan=laba_ditahan,
+            prive=prive,
+            total_ekuitas=total_ekuitas,
+            total_liabilitas_dan_ekuitas=total_liabilitas_dan_ekuitas,
+            is_balanced=is_balanced
+        )
+    
+    @staticmethod
+    async def handle_get_neraca(
+        request,
+        context: grpc.aio.ServicerContext,
+        pb
+    ):
+        """Generate Laporan Neraca (Balance Sheet)"""
+        logger.info(f"📊 GetNeraca: tenant={request.tenant_id}, periode={request.periode_pelaporan}")
+        
+        rls_client = RLSPrismaClient(tenant_id=request.tenant_id, bypass_rls=True)
+        
+        try:
+            await rls_client.connect()
+            
+            where = build_where_clause(
+                request.tenant_id,
+                request.periode_pelaporan,
+                request.start_date,
+                request.end_date
+            )
+            
+            result = await NeracaHandler.query_neraca(rls_client, where, pb)
+            logger.info(f"✅ Neraca generated: total_aset={result.total_aset}, balanced={result.is_balanced}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ GetNeraca failed: {str(e)}")
+            await context.abort(grpc.StatusCode.INTERNAL, f"Failed to generate report: {str(e)}")
+        finally:
+            await rls_client.disconnect()

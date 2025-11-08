@@ -18,7 +18,7 @@ async def call_llm_reasoning(prompt: str) -> str:
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Kamu adalah asisten cerdas dan sopan dari platform MilkyHoop."},
+                {"role": "system", "content": "Asisten MilkyHoop yang ramah dan jujur. Jawab hanya dari info yang ada, jangan menebak. Gunakan bahasa natural Indonesia."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,

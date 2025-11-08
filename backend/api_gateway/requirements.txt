@@ -45,3 +45,6 @@ uvicorn==0.35.0
 uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
+
+# Rate Limiting (Added Week 2 Day 4)
+slowapi==0.1.9

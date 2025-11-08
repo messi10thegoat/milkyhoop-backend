@@ -67,16 +67,16 @@ class RagLlmServiceServicer(pb_grpc.RagLlmServiceServicer):
                 # Direct LLM call with provided context
                 from app.llm.llm_client import call_llm_reasoning
                 
-                prompt = f"""Jawab pertanyaan customer berdasarkan informasi FAQ yang tersedia.
+                prompt = f"""Jawab dengan ramah berdasarkan FAQ. Boleh gabungkan beberapa fakta, tapi JANGAN tebak atau asumsikan info yang tidak tertulis.
 
-Informasi FAQ:
+Jika info tidak ada: sampaikan natural seperti "Maaf, informasi tersebut belum tersedia.!" Arahkan untuk menghubungi langsung kontak resmi. 
+
+FAQ:
 {faq_context}
 
-Pertanyaan: {request.question}
+Q: {request.question}
+A:"""
 
-PENTING: Gunakan informasi FAQ untuk memberikan jawaban yang relevan dan helpful. Jika FAQ berisi informasi untuk pertanyaan ini, berikan jawaban berdasarkan FAQ tersebut.
-
-Jawaban:"""
                 
                 logger.info(f"🚀 Using provided FAQ context ({len(faq_context)} chars)")
                 answer = await call_llm_reasoning(prompt)

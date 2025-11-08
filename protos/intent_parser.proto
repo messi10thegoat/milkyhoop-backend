@@ -5,19 +5,416 @@ package intent_parser;
 import "google/protobuf/empty.proto";
 
 option go_package = "github.com/milkyhoop/intent_parser/internal/delivery/pb;intentparser";
-// option python_package = "app.protos";
+
+// ============================================
+// Intent Parser Service - Dual Domain
+// ============================================
+// Classifies user intent across two domains:
+// 1. Chatbot Setup (FAQ management, business config)
+// 2. Financial Management (transactions, reports, inventory)
+// 
+// Uses GPT-4o for natural language understanding
+// Supports conversational Indonesian input
+// Field mapping: 100% aligned with transaction_service.proto, 
+//                inventory_service.proto, reporting_service.proto
+// ============================================
 
 service IntentParserService {
-  rpc DoSomething (IntentParserRequest) returns (IntentParserResponse);
+  // Main RPC for intent classification
+  rpc ClassifyIntent (ClassifyIntentRequest) returns (ClassifyIntentResponse);
+  
+  // Health check endpoint
   rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
 }
 
-message IntentParserRequest {
-  string user_id = 1;
-  string input = 2;
+// ============================================
+// Request Messages
+// ============================================
+
+message ClassifyIntentRequest {
+  string message = 1;           // User input message (Indonesian conversational)
+  string context = 2;           // Optional: business context (JSON string)
 }
 
-message IntentParserResponse {
-  string status = 1;
-  string result = 2;
+// ============================================
+// Response Messages
+// ============================================
+
+message ClassifyIntentResponse {
+  string status = 1;            // "success" or "error"
+  string intent = 2;            // Classified intent (see supported intents below)
+  string entities_json = 3;     // JSON string of extracted entities
+  float confidence = 4;         // Confidence score (0.0 to 1.0)
 }
+
+// ============================================
+// DOMAIN 1: CHATBOT SETUP INTENTS
+// ============================================
+//
+// Intent: "business_setup"
+//   Purpose: Business information gathering
+//   Example: "gue punya cafe namanya Kopi Santai"
+//   Entities: business_name, business_type, target_customers, 
+//             products_services, pricing, hours, location
+//
+// Intent: "confirm_setup"
+//   Purpose: User confirmation (yes/ok/proceed)
+//   Example: "ya", "oke", "lanjut"
+//   Entities: confirmation_type
+//
+// Intent: "faq_create"
+//   Purpose: Create new FAQ entry
+//   Example: "tambah FAQ jam operasional"
+//   Entities: faq_question, faq_answer, faq_category
+//
+// Intent: "faq_read"
+//   Purpose: Read/query FAQ entry
+//   Example: "lihat FAQ harga"
+//   Entities: faq_query, faq_category
+//
+// Intent: "faq_update"
+//   Purpose: Update existing FAQ entry
+//   Example: "ubah FAQ jam operasional"
+//   Entities: faq_id, faq_question, faq_answer
+//
+// Intent: "faq_delete"
+//   Purpose: Delete FAQ entry
+//   Example: "hapus FAQ promo"
+//   Entities: faq_id, faq_question
+//
+// Intent: "faq_query"
+//   Purpose: Search FAQ entries
+//   Example: "cek FAQ jam buka"
+//   Entities: search_query, faq_category
+//
+// ============================================
+// DOMAIN 2: FINANCIAL MANAGEMENT INTENTS
+// ============================================
+//
+// ────────────────────────────────────────────
+// Intent: "transaction_record"
+// ────────────────────────────────────────────
+//   Purpose: Record financial transaction (sales, purchases, expenses)
+//   Examples: 
+//     - "jual 100 kaos @45rb ke Bu Sari DP 60%"
+//     - "bayar listrik 500rb cash"
+//     - "terima modal 10 juta dari investor"
+//     - "beli kain 2 juta dari supplier tempo 30 hari"
+//
+//   Entity Mapping (ALIGNED with transaction_service.proto):
+//   {
+//     // Core fields (CreateTransactionRequest)
+//     "jenis_transaksi": "penjualan" | "pembelian" | "beban",
+//     
+//     // Field 14: Total nominal (in cents)
+//     "total_nominal": 450000000,  // 4.5 juta in cents
+//     
+//     // Fields 15-19: Payment & Cash Flow
+//     "metode_pembayaran": "cash" | "transfer" | "tempo" | "giro" | "cicilan",
+//     "status_pembayaran": "lunas" | "dp" | "tempo" | "cicilan" | "dibayar_sebagian",
+//     "nominal_dibayar": 270000000,  // Amount paid (optional, in cents)
+//     "sisa_piutang_hutang": 180000000,  // Remaining (auto: total - dibayar)
+//     "jatuh_tempo": 1730419200,  // Unix timestamp seconds (optional)
+//     
+//     // Fields 20-22: Counter-party
+//     "nama_pihak": "Bu Sari",
+//     "kontak_pihak": "08123456789",  // Optional
+//     "pihak_type": "customer" | "supplier" | "karyawan" | "owner" | "bank",
+//     
+//     // Field 23: Items (aligned with ItemTransaksi message)
+//     "items": [
+//       {
+//         "nama_produk": "Kaos Polos Hitam Size M",
+//         "kategori_path": "Pakaian > Kaos > Kaos Polos",  // AI auto-assign
+//         "level1": "Pakaian",  // AI auto-assign
+//         "level2": "Kaos",  // AI auto-assign
+//         "level3": "Kaos Polos",  // AI auto-assign
+//         "level4": "Size M",  // AI auto-assign (optional)
+//         "jumlah": 100.0,  // Quantity (supports decimals)
+//         "satuan": "pcs",  // Unit: pcs, kg, meter, jam, porsi, lusin, set
+//         "harga_satuan": 45000,  // Unit price in cents
+//         "subtotal": 4500000,  // jumlah * harga_satuan
+//         "produk_id": "KAOS-001",  // Optional: link to master
+//         "keterangan": "Warna hitam custom logo"  // Optional
+//       }
+//     ],
+//     
+//     // Field 24: HPP Breakdown (optional)
+//     "hpp": {
+//       "biaya_bahan_baku": 1750000,  // In cents
+//       "biaya_tenaga_kerja": 500000,
+//       "biaya_lainnya": 250000,
+//       "total_hpp": 2500000,
+//       "detail_json": "{\"kain\":1750000,\"benang\":100000}"
+//     },
+//     
+//     // Fields 25-26: Inventory Impact (aligned with inventory_service.proto)
+//     "inventory_impact": {
+//       "is_tracked": true,
+//       "jenis_movement": "keluar",  // 'masuk' | 'keluar' | 'none'
+//       "lokasi_gudang": "gudang_bandung",
+//       "items_inventory": [
+//         {
+//           "produk_id": "KAOS-001",
+//           "jumlah_movement": -100.0,  // Negative for keluar
+//           "stok_setelah": 150.0,
+//           "nilai_per_unit": 25000.0  // Cost per unit
+//         }
+//       ]
+//     },
+//     "lokasi_gudang": "gudang_bandung",
+//     
+//     // Fields 27-32: SAK EMKM Classification
+//     "jenis_aset": "none" | "aset_lancar" | "aset_tidak_lancar",
+//     "kategori_beban": "beban_gaji" | "beban_sewa" | "beban_utilitas" | 
+//                       "beban_transportasi" | "beban_operasional_lainnya" | "none",
+//     "kategori_arus_kas": "operasi" | "investasi" | "pendanaan",  // REQUIRED
+//     "is_prive": false,  // Owner withdrawal
+//     "is_modal": false,  // Capital injection
+//     "pajak_amount": 0,  // Tax in cents (PPh/PPN)
+//     
+//     // Field 33: Chart of Accounts
+//     "akun_perkiraan_id": "1-1100",  // Optional, AI auto-assign
+//     
+//     // Fields 34-35: Depreciation (fixed assets only)
+//     "penyusutan_per_tahun": 1200000,  // Annual depreciation (cents)
+//     "umur_manfaat": 60,  // Useful life in months
+//     
+//     // Field 36: Accounting Period
+//     "periode_pelaporan": "2025-11",  // Format: YYYY-MM or YYYY
+//     
+//     // Field 37: Notes
+//     "keterangan": "Penjualan kaos custom logo untuk Bu Sari, DP 60%"
+//   }
+//
+// ────────────────────────────────────────────
+// Intent: "financial_report"
+// ────────────────────────────────────────────
+//   Purpose: Request financial reports (SAK EMKM compliant)
+//   Examples:
+//     - "untung bulan ini berapa?"
+//     - "lihat neraca Oktober"
+//     - "kas masuk bulan lalu?"
+//     - "total aset apa?"
+//
+//   Entity Mapping (ALIGNED with reporting_service.proto):
+//   {
+//     // report_type maps to RPC methods:
+//     "report_type": "laba_rugi" | "neraca" | "arus_kas" | "perubahan_ekuitas",
+//     
+//     // periode_pelaporan maps to ReportRequest.periode_pelaporan
+//     "periode_pelaporan": "2025-11",  // Format: YYYY-MM, YYYY-QN, YYYY
+//     
+//     // time_reference for natural language
+//     "time_reference": "bulan_ini" | "bulan_lalu" | "tahun_ini" | "custom",
+//     
+//     // Optional: specific metric queries
+//     "specific_metric": "laba_bersih" | "total_aset" | "kas_akhir" | "ekuitas"
+//   }
+//
+//   Report Type Mapping:
+//   - "laba_rugi" → ReportingService.GetLabaRugi
+//     Returns: LaporanLabaRugi (pendapatan, hpp, beban, laba_bersih)
+//   
+//   - "neraca" → ReportingService.GetNeraca
+//     Returns: LaporanNeraca (aset, liabilitas, ekuitas, is_balanced)
+//   
+//   - "arus_kas" → ReportingService.GetArusKas
+//     Returns: LaporanArusKas (operasi, investasi, pendanaan, kas_akhir)
+//   
+//   - "perubahan_ekuitas" → ReportingService.GetPerubahanEkuitas
+//     Returns: LaporanPerubahanEkuitas (modal, laba, prive, ekuitas_akhir)
+//
+// ────────────────────────────────────────────
+// Intent: "inventory_query"
+// ────────────────────────────────────────────
+//   Purpose: Check stock levels and inventory status
+//   Examples:
+//     - "cek stok kaos hitam"
+//     - "berapa stok di gudang Bandung?"
+//     - "produk apa yang stocknya hampir habis?"
+//
+//   Entity Mapping (ALIGNED with inventory_service.proto):
+//   {
+//     // Maps to GetStockLevelRequest or GetLowStockAlertsRequest
+//     "produk_id": "KAOS-001",  // Optional: SKU or product ID
+//     "product_name": "kaos hitam",  // Human-readable name
+//     "lokasi_gudang": "gudang_bandung",  // Optional: specific warehouse
+//     
+//     // query_type determines which RPC to call:
+//     "query_type": "stock_level" | "low_stock_alert" | "movement_history",
+//     
+//     // Optional: time range for movement_history
+//     "start_date": 1730419200,  // Unix timestamp
+//     "end_date": 1733011200
+//   }
+//
+//   Query Type Mapping:
+//   - "stock_level" → InventoryService.GetStockLevel
+//     Returns: current_stock, satuan, nilai_per_unit, is_low_stock
+//   
+//   - "low_stock_alert" → InventoryService.GetLowStockAlerts
+//     Returns: list of products below minimum threshold
+//   
+//   - "movement_history" → InventoryService.GetStockMovementHistory
+//     Returns: historical stock movements with transactions
+//
+// ────────────────────────────────────────────
+// Intent: "inventory_update"
+// ────────────────────────────────────────────
+//   Purpose: Manual stock adjustment (stock opname)
+//   Examples:
+//     - "tambah stok 50 kaos di gudang Bandung"
+//     - "kurangi stok 20 karena rusak"
+//     - "set stok kaos hitam jadi 100"
+//
+//   Entity Mapping (ALIGNED with inventory_service.proto):
+//   {
+//     // Maps to AdjustStockRequest
+//     "produk_id": "KAOS-001",
+//     "product_name": "kaos hitam",
+//     "lokasi_gudang": "gudang_bandung",
+//     
+//     // new_quantity for absolute value, jumlah_movement for relative
+//     "new_quantity": 100.0,  // Set stock to this exact value
+//     "jumlah_movement": 50.0,  // Or add/subtract this amount
+//     
+//     "jenis_movement": "masuk" | "keluar" | "adjustment",
+//     
+//     // reason is REQUIRED for audit trail
+//     "reason": "opname" | "correction" | "damage" | "loss",
+//     "keterangan": "Stock opname bulanan - ada yang rusak 5pcs"
+//   }
+//
+// ────────────────────────────────────────────
+// Intent: "accounting_query"
+// ────────────────────────────────────────────
+//   Purpose: Check accounting entries and journal
+//   Examples:
+//     - "lihat jurnal bulan ini"
+//     - "cek bagan akun"
+//     - "total debit kredit balance gak?"
+//
+//   Entity Mapping (aligned with accounting_service.proto):
+//   {
+//     "query_type": "journal_entries" | "chart_of_accounts" | "balance_check",
+//     "periode_pelaporan": "2025-11"  // YYYY-MM format
+//   }
+//
+// ============================================
+// GENERAL INTENTS
+// ============================================
+//
+// Intent: "general_chat"
+//   Purpose: General conversation, greetings, unclear queries
+//   Example: "halo", "terima kasih", "gimana kabarnya?"
+//   Entities: {"greeting_type": "casual", "sentiment": "positive"}
+//
+// Intent: "others"
+//   Purpose: Unclear/unknown intent (low confidence)
+//   Example: ambiguous or off-topic messages
+//   Entities: {}
+//
+// ============================================
+// ENTITY JSON SCHEMA EXAMPLES
+// ============================================
+//
+// Example 1: Transaction Recording (Penjualan with DP)
+// {
+//   "jenis_transaksi": "penjualan",
+//   "total_nominal": 450000000,
+//   "metode_pembayaran": "transfer",
+//   "status_pembayaran": "dp",
+//   "nominal_dibayar": 270000000,
+//   "sisa_piutang_hutang": 180000000,
+//   "nama_pihak": "Bu Sari",
+//   "kontak_pihak": "081234567890",
+//   "pihak_type": "customer",
+//   "kategori_arus_kas": "operasi",
+//   "items": [
+//     {
+//       "nama_produk": "Kaos Polos Hitam",
+//       "jumlah": 100.0,
+//       "satuan": "pcs",
+//       "harga_satuan": 45000,
+//       "subtotal": 4500000
+//     }
+//   ],
+//   "inventory_impact": {
+//     "is_tracked": true,
+//     "jenis_movement": "keluar",
+//     "lokasi_gudang": "gudang_bandung",
+//     "items_inventory": [
+//       {
+//         "produk_id": "KAOS-001",
+//         "jumlah_movement": -100.0,
+//         "stok_setelah": 150.0
+//       }
+//     ]
+//   },
+//   "periode_pelaporan": "2025-11",
+//   "keterangan": "Penjualan kaos ke Bu Sari, DP 60%"
+// }
+//
+// Example 2: Financial Report Request (Laba Rugi)
+// {
+//   "report_type": "laba_rugi",
+//   "periode_pelaporan": "2025-11",
+//   "time_reference": "bulan_ini"
+// }
+//
+// Example 3: Inventory Query (Stock Level)
+// {
+//   "produk_id": "KAOS-001",
+//   "product_name": "kaos hitam",
+//   "lokasi_gudang": "gudang_bandung",
+//   "query_type": "stock_level"
+// }
+//
+// Example 4: Inventory Update (Stock Opname)
+// {
+//   "produk_id": "KAOS-001",
+//   "product_name": "kaos hitam",
+//   "lokasi_gudang": "gudang_bandung",
+//   "new_quantity": 95.0,
+//   "reason": "opname",
+//   "keterangan": "Stock opname - found 5pcs damaged"
+// }
+//
+// Example 5: Business Setup (Unchanged)
+// {
+//   "Business": {
+//     "business_name": "Kopi Santai",
+//     "business_type": "cafe",
+//     "products_services": ["kopi", "snack"],
+//     "target_customers": "mahasiswa dan pekerja kantoran"
+//   }
+// }
+//
+// ============================================
+// FIELD MAPPING REFERENCE
+// ============================================
+//
+// Transaction Service Fields (68 total):
+//   Proto fields 1-37 in CreateTransactionRequest
+//   All financial transaction fields aligned
+//
+// Inventory Service Fields (5 nested):
+//   inventory_impact.is_tracked
+//   inventory_impact.jenis_movement
+//   inventory_impact.lokasi_gudang
+//   inventory_impact.items_inventory[]
+//     - produk_id, jumlah_movement, stok_setelah, nilai_per_unit
+//
+// Reporting Service Fields (read-only):
+//   report_type → RPC method selection
+//   periode_pelaporan → ReportRequest.periode_pelaporan
+//   Returns: LaporanLabaRugi | LaporanNeraca | LaporanArusKas | LaporanPerubahanEkuitas
+//
+// Accounting Service Fields (10 consumed):
+//   akun_perkiraan_id, kategori_arus_kas, kategori_beban,
+//   jenis_aset, penyusutan_per_tahun, umur_manfaat,
+//   total_nominal, periode_pelaporan, jenis_transaksi,
+//   is_prive, is_modal
+//
+// ============================================

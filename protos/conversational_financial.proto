@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package conversational_financial;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "transaction_service.proto";
+
+option go_package = "github.com/milkyhoop/conversational-financial/internal/delivery/pb/conversational;conversational";
+
+// Conversational Financial Service - User Interaction Layer
+// Handles: GPT-4 extraction, multi-turn conversation, draft management
+service ConversationalFinancialService {
+  // Core Conversation
+  rpc ProcessMessage (UserMessage) returns (ConversationalResponse);
+  rpc ConfirmTransaction (ConfirmRequest) returns (ConfirmResponse);
+  rpc CancelDraft (CancelDraftRequest) returns (google.protobuf.Empty);
+  rpc GetDraft (GetDraftRequest) returns (PendingTransaksi);
+  
+  // Health Check
+  rpc HealthCheck (google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// ========== CONVERSATIONAL MESSAGES ==========
+
+message UserMessage {
+  string session_id = 1;              // Redis key
+  string tenant_id = 2;
+  string user_id = 3;
+  string message = 4;                 // User's chat input
+  map<string,string> context = 5;     // Additional context
+}
+
+message ConversationalResponse {
+  string session_id = 1;
+  string response_text = 2;           // Milky's reply to user
+  ResponseType type = 3;              // What kind of response
+  PendingTransaksi draft = 4;         // Current draft state
+  repeated string missing_fields = 5; // What's still needed
+  bool ready_to_commit = 6;           // Can save to DB now?
+  float confidence_score = 7;         // GPT extraction confidence
+}
+
+enum ResponseType {
+  ACKNOWLEDGMENT = 0;                 // "Ok tersimpan!"
+  CLARIFICATION = 1;                  // "Pelanggannya siapa?"
+  CONFIRMATION = 2;                   // "Siap disimpan: ... Bener ya?"
+  ERROR = 3;                          // "Maaf, ada error..."
+}
+
+// ========== DRAFT STORAGE (Redis) ==========
+
+message PendingTransaksi {
+  string session_id = 1;              // Redis key
+  string tenant_id = 2;
+  string user_id = 3;
+  
+  // Draft Transaction (Incomplete)
+  transaction_service.TransaksiHarian draft = 4;
+  repeated string missing_fields = 5;  // ["payment_method", "customer_name"]
+  float confidence_score = 6;         // GPT-4 extraction confidence (0.0-1.0)
+  
+  // Conversation History
+  repeated ConversationTurn turns = 7;
+  
+  // State Management
+  int32 version = 8;                  // Optimistic locking
+  int64 created_at = 9;
+  int64 last_updated_at = 10;
+  int32 ttl_seconds = 11;             // Redis TTL (1800 = 30 min)
+  
+  // Validation
+  repeated string validation_errors = 12;
+  bool ready_to_commit = 13;
+}
+
+message ConversationTurn {
+  string speaker = 1;                 // "user" or "assistant"
+  string message = 2;                 // Actual text
+  int64 timestamp = 3;
+  map<string,string> extracted_entities = 4;
+}
+
+// ========== REQUEST/RESPONSE ==========
+
+message ConfirmRequest {
+  string session_id = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+  bool confirmed = 4;                 // true = commit, false = cancel
+}
+
+message ConfirmResponse {
+  bool success = 1;
+  string message = 2;
+  string transaction_id = 3;          // If committed successfully
+}
+
+message CancelDraftRequest {
+  string session_id = 1;
+  string tenant_id = 2;
+}
+
+message GetDraftRequest {
+  string session_id = 1;
+  string tenant_id = 2;
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+}

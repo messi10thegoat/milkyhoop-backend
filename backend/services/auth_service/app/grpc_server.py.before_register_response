@@ -1,0 +1,348 @@
+import asyncio
+import signal
+import logging
+import os
+import uuid
+import grpc
+from grpc import aio
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from app.config import settings
+from app import auth_service_pb2_grpc as pb_grpc
+from app import auth_service_pb2 as pb
+from app.prisma_client import prisma, connect_prisma, disconnect_prisma
+from app.utils.jwt_handler import JWTHandler
+from app.utils.password_handler import PasswordHandler
+from datetime import datetime, timedelta
+import re
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(settings.SERVICE_NAME)
+
+class AuthServiceServicer(pb_grpc.AuthServiceServicer):
+    """Enterprise Authentication Service Implementation"""
+    
+    def _validate_email(self, email: str) -> bool:
+        """Validate email format"""
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return re.match(pattern, email) is not None
+    
+    async def Register(self, request, context):
+        """Register new user - Let database handle defaults"""
+        try:
+            # Validate email format
+            if not request.email or '@' not in request.email:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Invalid email format")
+                return pb.AuthResponse(success=False, message="Invalid email format")
+
+            # Check if user exists
+            existing_user = await prisma.user.find_unique(where={"email": request.email})
+            if existing_user:
+                context.set_code(grpc.StatusCode.ALREADY_EXISTS)
+                context.set_details("User already exists")
+                return pb.AuthResponse(success=False, message="User already exists")
+
+            # Hash password
+            password_hash = bcrypt.hashpw(request.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+            # Generate user ID
+            user_id = str(uuid.uuid4())
+
+            # Create user - only set required + provided fields
+            # Database defaults: role='FREE', isVerified=false, timestamps
+            new_user = await prisma.user.create(
+                data={
+                    "id": user_id,
+                    "email": request.email,
+                    "passwordHash": password_hash,
+                    "username": request.username if request.username else None,
+                    "name": request.name if request.name else None,
+                }
+            )
+
+            logger.info(f"User registered successfully: {new_user.email}")
+
+            return pb.AuthResponse(
+                success=True,
+                message="User registered successfully",
+                userId=new_user.id
+            )
+
+        except Exception as e:
+            logger.error(f"Registration error: {str(e)}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return pb.AuthResponse(success=False, message=f"Registration failed: {str(e)}")
+
+    async def Login(self, request, context):
+        """User authentication with session management"""
+        logger.info(f"Login request for email: {request.email}")
+        
+        try:
+            # Validate email format
+            if not self._validate_email(request.email):
+                logger.warning(f"Invalid email format: {request.email}")
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                return pb.LoginResponse(
+                    success=False,
+                    message="Invalid email format"
+                )
+            
+            # Find user by email
+            user = await prisma.user.find_unique(
+                where={"email": request.email}
+            )
+            
+            if not user:
+                logger.warning(f"User not found: {request.email}")
+                context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+                return pb.LoginResponse(
+                    success=False,
+                    message="Invalid email or password"
+                )
+            
+            # Verify password
+            if not user.passwordHash:
+                logger.error(f"User has no password hash: {request.email}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                return pb.LoginResponse(
+                    success=False,
+                    message="Authentication error"
+                )
+            
+            is_valid = PasswordHandler.verify_password(
+                request.password,
+                user.passwordHash
+            )
+            
+            if not is_valid:
+                logger.warning(f"Invalid password for user: {request.email}")
+                context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+                return pb.LoginResponse(
+                    success=False,
+                    message="Invalid email or password"
+                )
+            
+            logger.info(f"Password verified for user: {user.id}")
+            
+            # Generate session ID
+            session_id = str(uuid.uuid4())
+            
+            # Create session record
+            session_expires = datetime.utcnow() + timedelta(days=7)
+            session_token = str(uuid.uuid4())
+            
+            await prisma.session.create(
+                data={
+                    "id": session_id,
+                    "sessionToken": session_token,
+                    "userId": user.id,
+                    "expires": session_expires
+                }
+            )
+            
+            logger.info(f"Session created: {session_id}")
+            
+            # Update last login timestamp
+            try:
+                await prisma.user.update(
+                    where={"id": user.id},
+                    data={"lastInteraction": datetime.utcnow()}
+                )
+            except Exception as update_error:
+                logger.warning(f"Could not update last interaction: {update_error}")
+            
+            # Generate JWT tokens
+            access_token = JWTHandler.create_access_token(
+                user_id=user.id,
+                tenant_id=user.tenantId if user.tenantId else "default",
+                role=user.role if user.role else "USER",
+                email=user.email,
+                username=user.username if user.username else user.email
+            )
+            
+            refresh_token = JWTHandler.create_refresh_token(
+                user_id=user.id,
+                session_id=session_id,
+                tenant_id=user.tenantId if user.tenantId else "default"
+            )
+            
+            logger.info(f"JWT tokens generated for user: {user.id}")
+            
+            # Return success response
+            return pb.LoginResponse(
+                success=True,
+                message="Login successful",
+                user_id=user.id,
+                tenant_id=user.tenantId if user.tenantId else "default",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                session_id=session_id,
+                expires_in=3600,
+                role=user.role if user.role else "USER",
+                requires_password_change=False
+            )
+            
+        except Exception as e:
+            logger.error(f"Login error: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.LoginResponse(
+                success=False,
+                message=f"Authentication failed: {str(e)}"
+            )
+
+
+    async def RefreshToken(self, request, context):
+        """Token rotation with security validation"""
+        logger.info(f"Token refresh for session: {request.session_id}")
+        try:
+            # TODO: Implement token refresh with rotation
+            return pb.RefreshTokenResponse(
+                success=True,
+                message="Token refreshed",
+                access_token="new_access_token",
+                refresh_token="new_refresh_token",
+                tenant_id="temp_tenant_id",
+                user_id="temp_user_id",
+                role="USER",
+                session_id=request.session_id,
+                expires_in=3600,
+                token_rotated=True
+            )
+        except Exception as e:
+            logger.error(f"Token refresh error: {e}")
+            context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+            return pb.RefreshTokenResponse(success=False, message="Token refresh failed")
+
+    async def ValidateToken(self, request, context):
+        """JWT token validation"""
+        logger.info("Token validation request")
+        try:
+            # TODO: Implement token validation
+            return pb.ValidateTokenResponse(
+                valid=True,
+                user_id="temp_user_id",
+                tenant_id="temp_tenant_id",
+                role="USER",
+                expires_in=3600
+            )
+        except Exception as e:
+            logger.error(f"Token validation error: {e}")
+            return pb.ValidateTokenResponse(valid=False, message="Invalid token")
+
+    async def RevokeToken(self, request, context):
+        """Revoke specific token"""
+        logger.info("Token revocation request")
+        try:
+            # TODO: Implement token revocation
+            return pb.RevokeTokenResponse(
+                success=True,
+                message="Token revoked successfully"
+            )
+        except Exception as e:
+            logger.error(f"Token revocation error: {e}")
+            return pb.RevokeTokenResponse(success=False, message="Revocation failed")
+
+    # Additional service methods remain as TODO stubs
+    async def GetUserProfile(self, request, context):
+        """Get user profile information"""
+        return pb.GetUserProfileResponse(success=False, message="Not implemented")
+
+    async def IntrospectToken(self, request, context):
+        """Token introspection for detailed info"""
+        return pb.IntrospectTokenResponse(active=False)
+
+    async def ListActiveSessions(self, request, context):
+        """List all active sessions for user"""
+        return pb.ListActiveSessionsResponse(success=False, message="Not implemented")
+
+    async def RevokeSession(self, request, context):
+        """Revoke specific session"""
+        return pb.RevokeSessionResponse(success=False, message="Not implemented")
+
+    async def RevokeAllSessions(self, request, context):
+        """Revoke all user sessions"""
+        return pb.RevokeAllSessionsResponse(success=False, message="Not implemented")
+
+    async def LogAuditEvent(self, request, context):
+        """Log security audit event"""
+        return pb.LogAuditEventResponse(success=False, message="Not implemented")
+
+    async def GetAuditTrail(self, request, context):
+        """Retrieve audit trail"""
+        return pb.GetAuditTrailResponse(success=False, message="Not implemented")
+
+    async def GetServiceInfo(self, request, context):
+        """Get service information"""
+        return pb.GetServiceInfoResponse(
+            service_name=settings.SERVICE_NAME,
+            version="1.0.0",
+            status="operational"
+        )
+
+    async def HealthCheck(self, request, context):
+        """Health check endpoint"""
+        return pb.HealthCheckResponse(
+            status="healthy",
+            message="Auth service operational"
+        )
+
+
+class HealthServicer(health.HealthServicer):
+    """gRPC Health Check Implementation"""
+    async def Check(self, request, context):
+        return health_pb2.HealthCheckResponse(
+            status=health_pb2.HealthCheckResponse.SERVING
+        )
+
+
+async def serve():
+    """Start gRPC server"""
+    server = aio.server()
+    
+    # Add auth service
+    pb_grpc.add_AuthServiceServicer_to_server(AuthServiceServicer(), server)
+    
+    # Add health check
+    health_pb2_grpc.add_HealthServicer_to_server(HealthServicer(), server)
+    
+    # Bind to port
+    listen_addr = f'[::]:{settings.SERVICE_PORT}'
+    server.add_insecure_port(listen_addr)
+    
+    logger.info(f"Starting {settings.SERVICE_NAME}...")
+    
+    # Connect to Prisma
+    logger.info("Connecting to Prisma...")
+    await connect_prisma()
+    logger.info("Prisma connected")
+    
+    # Start server
+    await server.start()
+    logger.info(f"Enterprise Auth Service listening on port {settings.SERVICE_PORT}")
+    logger.info(f"Available methods: Register, Login, RefreshToken, ValidateToken, RevokeToken, GetUserProfile, IntrospectToken, ListActiveSessions, RevokeSession, RevokeAllSessions, LogAuditEvent, GetAuditTrail, GetServiceInfo, HealthCheck")
+    logger.info("AUTH SERVICE READY - Enterprise authentication enabled")
+    
+    # Graceful shutdown handler
+    async def shutdown():
+        logger.info("Shutdown signal received. Initiating graceful shutdown...")
+        await server.stop(5)
+        logger.info("Shutting down gRPC server...")
+        logger.info("Disconnecting Prisma...")
+        await disconnect_prisma()
+        logger.info(f"{settings.SERVICE_NAME} shut down cleanly")
+    
+    # Handle shutdown signals
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+    
+    # Keep server running
+    await server.wait_for_termination()
+
+
+if __name__ == '__main__':
+    asyncio.run(serve())

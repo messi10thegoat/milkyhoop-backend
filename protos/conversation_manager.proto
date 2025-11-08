@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package conversation_manager;
+
+import "google/protobuf/empty.proto";
+
+// ============================================
+// ConversationManager Service
+// Purpose: Redis-backed state machine for setup workflow
+// ============================================
+
+service ConversationManager {
+  // Get current conversation context
+  rpc GetContext (GetContextRequest) returns (GetContextResponse);
+  
+  // Update conversation state
+  rpc UpdateState (UpdateStateRequest) returns (UpdateStateResponse);
+  
+  // Store extracted business data
+  rpc StoreExtractedData (StoreExtractedDataRequest) returns (StoreExtractedDataResponse);
+  
+  // Get next question to ask user
+  rpc GetNextQuestion (GetNextQuestionRequest) returns (GetNextQuestionResponse);
+  
+  // Clear session (for testing or explicit cleanup)
+  rpc ClearSession (ClearSessionRequest) returns (ClearSessionResponse);
+  
+  // Health check
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// ===== GetContext RPC =====
+
+message GetContextRequest {
+  string session_id = 1;           // Session identifier
+  string user_id = 2;              // Optional user context
+}
+
+message GetContextResponse {
+  string status = 1;               // success or error
+  string session_id = 2;
+  string current_state = 3;        // e.g. "collecting_info"
+  string extracted_data_json = 4;  // JSON string of extracted business data
+  repeated ConversationTurn conversation_history = 5;
+  string created_at = 6;           // ISO timestamp
+  string updated_at = 7;           // ISO timestamp
+  int32 ttl_remaining = 8;         // Seconds until session expires
+  int32 progress_percentage = 9;   // NEW: Progress tracking (0-100)
+}
+
+message ConversationTurn {
+  string role = 1;                 // "user" or "assistant"
+  string message = 2;
+  string timestamp = 3;            // ISO timestamp
+}
+
+// ===== UpdateState RPC =====
+
+message UpdateStateRequest {
+  string session_id = 1;
+  string user_id = 2;              // Optional
+  string tenant_id = 3;            // Optional
+  string new_state = 4;            // Target state
+  string data_json = 5;            // Optional: additional data to store
+  string message = 6;              // Optional: conversation message to log
+  int32 progress_percentage = 7;   // NEW: Progress tracking (0-100)
+}
+
+message UpdateStateResponse {
+  string status = 1;               // success or error
+  string previous_state = 2;
+  string current_state = 3;
+  string message = 4;              // Confirmation or error message
+  bool transition_allowed = 5;     // Was state transition valid?
+}
+
+// ===== StoreExtractedData RPC =====
+
+message StoreExtractedDataRequest {
+  string session_id = 1;
+  string data_json = 2;            // JSON string of business data
+  bool merge = 3;                  // Merge with existing or replace?
+}
+
+message StoreExtractedDataResponse {
+  string status = 1;
+  string message = 2;
+  string updated_data_json = 3;    // Full data after storage
+}
+
+// ===== GetNextQuestion RPC =====
+
+message GetNextQuestionRequest {
+  string session_id = 1;
+  string current_state = 2;        // Optional: if not provided, will be fetched
+}
+
+message GetNextQuestionResponse {
+  string status = 1;
+  string next_question = 2;        // What to ask user next
+  repeated string missing_fields = 3;  // What data is still needed
+  string suggestion = 4;           // Hint for orchestrator
+}
+
+// ===== ClearSession RPC =====
+
+message ClearSessionRequest {
+  string session_id = 1;
+}
+
+message ClearSessionResponse {
+  string status = 1;
+  string message = 2;
+}

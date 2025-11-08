@@ -1,0 +1,325 @@
+syntax = "proto3";
+
+package inventory_service;
+
+import "google/protobuf/empty.proto";
+
+// ========================================
+// Inventory Service - Stock Management & Validation
+// ========================================
+// Purpose: Process inventory movements and maintain current stock ledger
+// Architecture: Event-driven processor + Query service
+// Port: 7040
+// Dependencies: transaction_service (7020), PostgreSQL
+// SAK EMKM: Persediaan (Laporan Posisi Keuangan - Aset Lancar)
+// ========================================
+
+service InventoryService {
+  // ========================================
+  // STOCK QUERIES
+  // ========================================
+  
+  // Get current stock level for a product at specific warehouse
+  rpc GetStockLevel (GetStockLevelRequest) returns (StockLevelResponse);
+  
+  // Get stock levels for multiple products (batch query)
+  rpc GetStockLevelsBatch (GetStockLevelsBatchRequest) returns (StockLevelsBatchResponse);
+  
+  // Get all products with low stock (below minimum threshold)
+  rpc GetLowStockAlerts (GetLowStockAlertsRequest) returns (LowStockAlertsResponse);
+  
+  // Get stock movement history for a product
+  rpc GetStockMovementHistory (GetStockMovementHistoryRequest) returns (StockMovementHistoryResponse);
+  
+  // Get inventory valuation (total value for Neraca)
+  rpc GetInventoryValuation (GetInventoryValuationRequest) returns (InventoryValuationResponse);
+  
+  // ========================================
+  // STOCK OPERATIONS
+  // ========================================
+  
+  // Validate stock availability before creating transaction
+  rpc ValidateStockAvailability (ValidateStockRequest) returns (ValidateStockResponse);
+  
+  // Process inventory impact from transaction (called by transaction_service)
+  rpc ProcessInventoryImpact (ProcessInventoryImpactRequest) returns (ProcessInventoryImpactResponse);
+  
+  // Update stock levels manually (stock opname/adjustment)
+  rpc AdjustStock (AdjustStockRequest) returns (AdjustStockResponse);
+  
+  // Set minimum stock threshold for alerts
+  rpc SetMinimumStock (SetMinimumStockRequest) returns (SetMinimumStockResponse);
+  
+  // ========================================
+  // HEALTH CHECK
+  // ========================================
+  
+  rpc HealthCheck (google.protobuf.Empty) returns (HealthResponse);
+}
+
+// ========================================
+// STOCK QUERY MESSAGES
+// ========================================
+
+message GetStockLevelRequest {
+  string tenant_id = 1;               // Required: Multi-tenant isolation
+  string produk_id = 2;               // Required: Product identifier
+  string lokasi_gudang = 3;           // Optional: Specific warehouse (default: all)
+}
+
+message StockLevelResponse {
+  string produk_id = 1;
+  string lokasi_gudang = 2;
+  double current_stock = 3;           // Current quantity available
+  string satuan = 4;                  // Unit of measure (pcs, kg, meter)
+  double nilai_per_unit = 5;          // Value per unit (for valuation)
+  double total_nilai = 6;             // Total value (current_stock * nilai_per_unit)
+  int64 last_movement_at = 7;         // Unix timestamp of last movement
+  double minimum_stock = 8;           // Threshold for alerts
+  bool is_low_stock = 9;              // True if below minimum
+}
+
+message GetStockLevelsBatchRequest {
+  string tenant_id = 1;
+  repeated string produk_ids = 2;    // List of product IDs
+  string lokasi_gudang = 3;           // Optional: Filter by warehouse
+}
+
+message StockLevelsBatchResponse {
+  repeated StockLevelResponse stocks = 1;
+}
+
+message GetLowStockAlertsRequest {
+  string tenant_id = 1;               // Required
+  string lokasi_gudang = 2;           // Optional: Filter by warehouse
+  int32 limit = 3;                    // Optional: Max results (default: 50)
+}
+
+message LowStockAlertsResponse {
+  repeated LowStockAlert alerts = 1;
+  int32 total_count = 2;              // Total products below threshold
+}
+
+message LowStockAlert {
+  string produk_id = 1;
+  string lokasi_gudang = 2;
+  double current_stock = 3;
+  double minimum_stock = 4;
+  double shortfall = 5;               // minimum_stock - current_stock
+  string satuan = 6;
+  int64 last_movement_at = 7;
+  int32 days_since_movement = 8;      // Days without movement
+}
+
+message GetStockMovementHistoryRequest {
+  string tenant_id = 1;               // Required
+  string produk_id = 2;               // Required
+  string lokasi_gudang = 3;           // Optional: Filter by warehouse
+  int64 start_date = 4;               // Optional: Unix timestamp (ms)
+  int64 end_date = 5;                 // Optional: Unix timestamp (ms)
+  int32 limit = 6;                    // Optional: Max results (default: 100)
+}
+
+message StockMovementHistoryResponse {
+  repeated StockMovement movements = 1;
+  int32 total_count = 2;
+}
+
+message StockMovement {
+  string movement_id = 1;             // ItemInventory.id
+  string transaksi_id = 2;            // Link to TransaksiHarian
+  string jenis_movement = 3;          // 'masuk', 'keluar', 'adjustment'
+  double jumlah_movement = 4;         // +100 (masuk), -100 (keluar)
+  double stok_sebelum = 5;            // Stock before movement
+  double stok_setelah = 6;            // Stock after movement
+  int64 movement_at = 7;              // Unix timestamp (ms)
+  string keterangan = 8;              // Optional notes
+}
+
+message GetInventoryValuationRequest {
+  string tenant_id = 1;               // Required
+  string lokasi_gudang = 2;           // Optional: Filter by warehouse
+  int64 valuation_date = 3;           // Optional: Point-in-time valuation
+}
+
+message InventoryValuationResponse {
+  int64 total_nilai = 1;              // Total inventory value (in cents)
+  int32 total_products = 2;           // Number of products
+  repeated ProductValuation products = 3;
+}
+
+message ProductValuation {
+  string produk_id = 1;
+  string lokasi_gudang = 2;
+  double jumlah = 3;
+  string satuan = 4;
+  double nilai_per_unit = 5;
+  int64 total_nilai = 6;              // jumlah * nilai_per_unit (in cents)
+}
+
+// ========================================
+// STOCK OPERATION MESSAGES
+// ========================================
+
+message ValidateStockRequest {
+  string tenant_id = 1;               // Required
+  string produk_id = 2;               // Required
+  string lokasi_gudang = 3;           // Required
+  double quantity_needed = 4;         // Required: How much to check
+}
+
+message ValidateStockResponse {
+  bool is_available = 1;              // True if sufficient stock
+  double current_stock = 2;           // Current available stock
+  double quantity_needed = 3;         // Requested quantity
+  double shortfall = 4;               // 0 if available, else deficit
+  string message = 5;                 // Human-readable message
+}
+
+message ProcessInventoryImpactRequest {
+  string tenant_id = 1;               // Required
+  string transaksi_id = 2;            // Required: Link to TransaksiHarian
+  InventoryImpact inventory_impact = 3; // Required: Impact data
+}
+
+message InventoryImpact {
+  bool is_tracked = 1;                // Does this affect inventory?
+  string jenis_movement = 2;          // 'masuk', 'keluar', 'none'
+  string lokasi_gudang = 3;           // Warehouse location
+  repeated ItemInventory items_inventory = 4; // Per-item movements
+}
+
+message ItemInventory {
+  string produk_id = 1;               // Product identifier
+  double jumlah_movement = 2;         // +100 (in), -100 (out)
+  double stok_setelah = 3;            // Stock after movement
+  double nilai_per_unit = 4;          // Optional: Cost per unit
+}
+
+message ProcessInventoryImpactResponse {
+  bool success = 1;
+  string message = 2;
+  repeated StockUpdateResult updates = 3;
+}
+
+message StockUpdateResult {
+  string produk_id = 1;
+  string lokasi_gudang = 2;
+  double stok_sebelum = 3;
+  double stok_setelah = 4;
+  double total_nilai = 5;
+  bool low_stock_alert = 6;           // True if below minimum
+}
+
+message AdjustStockRequest {
+  string tenant_id = 1;               // Required
+  string produk_id = 2;               // Required
+  string lokasi_gudang = 3;           // Required
+  double new_quantity = 4;            // Required: Set stock to this value
+  string reason = 5;                  // Required: 'opname', 'correction', 'damage', 'loss'
+  string keterangan = 6;              // Optional: Additional notes
+  string created_by = 7;              // Required: User ID performing adjustment
+}
+
+message AdjustStockResponse {
+  bool success = 1;
+  string message = 2;
+  double stok_sebelum = 3;
+  double stok_setelah = 4;
+  double adjustment_amount = 5;       // stok_setelah - stok_sebelum
+}
+
+message SetMinimumStockRequest {
+  string tenant_id = 1;               // Required
+  string produk_id = 2;               // Required
+  string lokasi_gudang = 3;           // Required
+  double minimum_stock = 4;           // Required: Alert threshold
+}
+
+message SetMinimumStockResponse {
+  bool success = 1;
+  string message = 2;
+  double minimum_stock = 3;
+  double current_stock = 4;
+  bool is_low_stock = 5;              // Immediate alert if true
+}
+
+// ========================================
+// HEALTH CHECK
+// ========================================
+
+message HealthResponse {
+  string status = 1;                  // "SERVING" | "NOT_SERVING"
+  string service_name = 2;            // "InventoryService"
+  int64 timestamp = 3;                // Current Unix timestamp
+  string version = 4;                 // Service version
+  DatabaseStatus database = 5;        // Database connection status
+}
+
+message DatabaseStatus {
+  bool connected = 1;
+  int32 total_products = 2;           // Count of products in Persediaan
+  int64 total_inventory_value = 3;    // Sum of all inventory values
+}
+
+// ========================================
+// NOTES & BUSINESS RULES
+// ========================================
+//
+// STOCK UPDATE LOGIC:
+// 1. Penjualan (jenis_movement='keluar'):
+//    - Subtract jumlah_movement from Persediaan.jumlah
+//    - Validate stock availability before transaction
+//    - Trigger low stock alert if below minimum
+//
+// 2. Pembelian (jenis_movement='masuk'):
+//    - Add jumlah_movement to Persediaan.jumlah
+//    - Update nilai_per_unit with purchase cost (FIFO/Average)
+//    - Recalculate total_nilai
+//
+// 3. Stock Adjustment (manual):
+//    - Set Persediaan.jumlah to exact value
+//    - Create audit trail in ItemInventory
+//    - Reason: stock opname, damage, loss, correction
+//
+// INVENTORY VALUATION (SAK EMKM):
+// - Method: FIFO (First In First Out) or Average Cost
+// - Formula: Persediaan.jumlah * Persediaan.nilai_per_unit
+// - Used in: Laporan Posisi Keuangan (Aset Lancar)
+//
+// MULTI-WAREHOUSE SUPPORT:
+// - Each product can have different stock per warehouse
+// - Unique constraint: (tenant_id, produk_id, lokasi_gudang)
+// - Query specific warehouse or aggregate all
+//
+// LOW STOCK ALERTS:
+// - Trigger: Persediaan.jumlah < Persediaan.minimum_stock
+// - Configurable per product per warehouse
+// - Real-time check during ProcessInventoryImpact
+//
+// TRANSACTION FLOW:
+// 1. User: "Mil, terima order 200pcs kaos"
+// 2. setup_orchestrator → inventory_service.ValidateStockAvailability
+// 3. IF available → transaction_service.CreateTransaction
+// 4. transaction_service → inventory_service.ProcessInventoryImpact
+// 5. inventory_service updates Persediaan table
+// 6. IF low stock → Return alert in response
+//
+// PERFORMANCE CONSIDERATIONS:
+// - Index on (tenant_id, produk_id, lokasi_gudang) for fast lookups
+// - Index on jumlah for low stock queries
+// - Use batch queries for multiple products
+// - Cache frequently accessed stock levels
+//
+// DATA INTEGRITY:
+// - Foreign key: tenant_id → Tenant (ON DELETE CASCADE)
+// - Unique constraint prevents duplicate stock records
+// - Negative stock validation (must be >= 0)
+// - Atomic updates using database transactions
+//
+// AUDIT TRAIL:
+// - ItemInventory table: immutable log of all movements
+// - Persediaan table: current state (mutable)
+// - Separation enables both real-time queries and historical analysis
+//
+// ========================================

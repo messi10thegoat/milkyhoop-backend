@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package business_extractor;
+
+option go_package = "github.com/milkyhoop/business-extractor/pb;business_extractor";
+
+// Business Extractor Service - Phase 1 Implementation
+// Extract structured business info from natural language using GPT-3.5
+service BusinessExtractor {
+  // Extract business information from user message
+  rpc ExtractBusinessInfo (ExtractBusinessInfoRequest) returns (ExtractBusinessInfoResponse);
+  
+  // Generate FAQ suggestions based on business type
+  rpc GenerateFAQSuggestions (GenerateFAQSuggestionsRequest) returns (GenerateFAQSuggestionsResponse);
+  
+  // Validate extracted business data for completeness
+  rpc ValidateBusinessData (ValidateBusinessDataRequest) returns (ValidateBusinessDataResponse);
+}
+
+// ===== ExtractBusinessInfo RPC =====
+
+message ExtractBusinessInfoRequest {
+  string message = 1;                    // User's natural language input
+  string context = 2;                    // Optional conversation context
+  string session_id = 3;                 // Optional session tracking
+}
+
+message ExtractBusinessInfoResponse {
+  string status = 1;                     // success or error
+  string business_name = 2;              // Extracted business name
+  string business_type = 3;              // cafe, retail, service, etc
+  string target_customers = 4;           // Target customer segment
+  repeated string products_services = 5; // List of products/services
+  repeated string common_questions = 6;  // Common customer questions
+  string pricing_info = 7;               // Pricing information
+  string operating_hours = 8;            // Operating hours
+  string location_delivery = 9;          // Location or delivery info
+  string additional_info = 10;           // Any other relevant details
+  float confidence_score = 11;           // Extraction confidence (0.0-1.0)
+}
+
+// ===== GenerateFAQSuggestions RPC =====
+
+message GenerateFAQSuggestionsRequest {
+  string business_type = 1;              // Type of business
+  string business_name = 2;              // Business name
+  repeated string products_services = 3; // Known products/services
+  repeated string common_questions = 4;  // Questions already mentioned
+  string article_text = 5;               // Full article for bulk FAQ extraction
+}
+
+message FAQSuggestion {
+  string question = 1;                   // Suggested FAQ question
+  string suggested_answer = 2;           // Template answer
+  string category = 3;                   // pricing, products, hours, etc
+  string priority = 4;                   // high, medium, low
+}
+
+message GenerateFAQSuggestionsResponse {
+  string status = 1;                     // success or error
+  repeated FAQSuggestion suggested_faqs = 2;
+}
+
+// ===== ValidateBusinessData RPC =====
+
+message ValidateBusinessDataRequest {
+  string business_name = 1;
+  string business_type = 2;
+  repeated string products_services = 3;
+  repeated string common_questions = 4;
+}
+
+message ValidateBusinessDataResponse {
+  bool is_complete = 1;                  // All critical fields present
+  repeated string missing_fields = 2;    // List of missing fields
+  repeated string suggestions = 3;       // What to ask next
+  float completeness_score = 4;          // 0.0 to 1.0
+}

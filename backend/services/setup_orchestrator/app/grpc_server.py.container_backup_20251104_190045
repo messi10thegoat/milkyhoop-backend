@@ -1,0 +1,1562 @@
+"""
+Setup Orchestrator gRPC Server
+Coordinates multi-service setup workflow for business chatbot setup
+"""
+
+import asyncio
+import grpc
+import logging
+import json
+import uuid
+import hashlib
+from datetime import datetime
+from concurrent import futures
+from typing import Optional, Dict, Any
+
+# Health check imports
+from google.protobuf import empty_pb2
+try:
+    from google import health_pb2
+    from google import health_pb2_grpc
+    HEALTH_AVAILABLE = True
+except ImportError:
+    HEALTH_AVAILABLE = False
+    logger.warning("Health proto not available, healthcheck will not work")
+
+# Proto imports
+import setup_orchestrator_pb2
+import setup_orchestrator_pb2_grpc
+import transaction_service_pb2
+import transaction_service_pb2_grpc
+import inventory_service_pb2
+import reporting_service_pb2
+import reporting_service_pb2_grpc
+import inventory_service_pb2
+from google.protobuf import empty_pb2
+
+# Configuration
+from config import settings
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def format_rupiah(rupiah_amount):
+    """
+    Format rupiah to Indonesian Rupiah (PUEBI + SAK EMKM compliant)
+    
+    Args:
+        rupiah_amount: Amount in rupiah (integer)
+        
+    Returns:
+        Formatted string: "Rp300.000" (titik sebagai pemisah ribuan)
+    """
+    formatted = f"{int(rupiah_amount):,}".replace(",", ".")
+    return f"Rp{formatted}"
+
+
+
+import sys
+import os
+
+# ============================================
+# CRITICAL: Prioritize local directory for stub imports
+# ============================================
+# This ensures we import stubs from THIS directory:
+#   /app/backend/services/setup_orchestrator/app/
+# NOT from the global protos directory:
+#   /app/protos/
+#
+# Industry Standard: Each service uses its own generated stubs
+# ============================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# ============================================
+# PHASE 1: Import new service modules
+# ============================================
+from services import SessionManager, AdaptiveResponseGenerator, ProgressCalculator, DataCleaner, QualityChecker
+
+
+class GrpcClientManager:
+    """Manages gRPC client connections to all dependent services"""
+    
+    def __init__(self):
+        self.channels = {}
+        self.stubs = {}
+        
+    async def initialize(self):
+        """Initialize all gRPC client connections"""
+        try:
+            # Intent Parser (Port 7009)
+            await self._create_channel('intent_parser', settings.intent_parser_address)
+            
+            # Business Extractor (Port 7015)
+            await self._create_channel('business_extractor', settings.business_extractor_address)
+            
+            # Conversation Manager (Port 7016)
+            await self._create_channel('conversation_manager', settings.conversation_manager_address)
+            
+            # RAG CRUD (Port 7001)
+            await self._create_channel('ragcrud', settings.ragcrud_address)
+            
+            # RAG LLM (Port 7011)
+            await self._create_channel('ragllm', settings.ragllm_address)
+
+            # Transaction Service (Port 7020)                          
+            await self._create_channel('transaction', settings.transaction_address)
+
+            # Reporting Service (Port 7030)
+            await self._create_channel('reporting', settings.reporting_address)
+
+            # Inventory Service (Port 7040)
+            await self._create_channel('inventory', settings.inventory_address)
+
+            logger.info("All gRPC clients initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize gRPC clients: {e}")
+            raise
+    
+    async def _create_channel(self, service_name: str, address: str):
+        """Create gRPC channel and stub for a service"""
+        try:
+            channel = grpc.aio.insecure_channel(address)
+            self.channels[service_name] = channel
+            
+            # Import and create appropriate stub based on service
+            if service_name == 'intent_parser':
+                from intent_parser_pb2_grpc import IntentParserServiceStub
+                self.stubs[service_name] = IntentParserServiceStub(channel)
+            elif service_name == 'business_extractor':
+                from business_extractor_pb2_grpc import BusinessExtractorStub
+                self.stubs[service_name] = BusinessExtractorStub(channel)
+            elif service_name == 'conversation_manager':
+                from conversation_manager_pb2_grpc import ConversationManagerStub
+                self.stubs[service_name] = ConversationManagerStub(channel)
+            elif service_name == 'ragcrud':
+                from ragcrud_service_pb2_grpc import RagCrudServiceStub
+                self.stubs[service_name] = RagCrudServiceStub(channel)
+            elif service_name == 'ragllm':
+                from ragllm_service_pb2_grpc import RagLlmServiceStub
+                self.stubs[service_name] = RagLlmServiceStub(channel)
+            elif service_name == 'transaction':                                      
+                from transaction_service_pb2_grpc import TransactionServiceStub  
+                self.stubs[service_name] = TransactionServiceStub(channel)   
+
+            elif service_name == 'reporting':
+                from reporting_service_pb2_grpc import ReportingServiceStub
+                self.stubs[service_name] = ReportingServiceStub(channel)
+
+            elif service_name == 'inventory':
+                from inventory_service_pb2_grpc import InventoryServiceStub
+                self.stubs[service_name] = InventoryServiceStub(channel)
+                
+            logger.info(f"Connected to {service_name} at {address}")
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to {service_name}: {e}")
+            raise
+    
+    async def close_all(self):
+        """Close all gRPC channels"""
+        for service_name, channel in self.channels.items():
+            await channel.close()
+            logger.info(f"Closed connection to {service_name}")
+
+class HealthServicer:
+    """
+    Implements grpc.health.v1.Health service for container healthchecks
+    Complete implementation with Check, Watch, and List methods
+    """
+    
+    def __init__(self):
+        """Initialize with service status tracking"""
+        self._status = {}
+        # Register our main service as SERVING
+        self._status[""] = health_pb2.HealthCheckResponse.SERVING
+        self._status["setup_orchestrator.SetupOrchestrator"] = health_pb2.HealthCheckResponse.SERVING
+    
+    async def Check(self, request, context):
+        """
+        Health check endpoint - returns SERVING if service is healthy
+        """
+        if not HEALTH_AVAILABLE:
+            context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+            context.set_details("Health service not available")
+            return health_pb2.HealthCheckResponse()
+        
+        # Get service name from request (empty string means check overall health)
+        service = request.service if hasattr(request, 'service') else ""
+        
+        # Return status for requested service
+        status = self._status.get(service, health_pb2.HealthCheckResponse.UNKNOWN)
+        
+        return health_pb2.HealthCheckResponse(status=status)
+    
+    async def Watch(self, request, context):
+        """
+        Streaming health check - sends updates when health status changes
+        For now, just send current status and complete
+        """
+        if not HEALTH_AVAILABLE:
+            context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+            context.set_details("Watch not implemented")
+            return
+        
+        # Get service name
+        service = request.service if hasattr(request, 'service') else ""
+        
+        # Send current status
+        status = self._status.get(service, health_pb2.HealthCheckResponse.UNKNOWN)
+        yield health_pb2.HealthCheckResponse(status=status)
+    
+    async def List(self, request, context):
+        """
+        List all registered services
+        Required by gRPC health protocol but not commonly used
+        """
+        if not HEALTH_AVAILABLE:
+            context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+            context.set_details("List not implemented")
+            return health_pb2.ListResponse()
+        
+        # Return list of all registered service names
+        return health_pb2.ListResponse(
+            services=[
+                health_pb2.ServiceStatus(service=svc)
+                for svc in self._status.keys()
+            ]
+        )
+
+class SetupOrchestratorServicer(setup_orchestrator_pb2_grpc.SetupOrchestratorServicer):
+    """Setup Orchestrator Service Implementation"""
+    
+    def __init__(self):
+        self.client_manager = GrpcClientManager()
+        self.session_manager = SessionManager()
+        logger.info("SetupOrchestratorServicer initialized")
+    
+    async def initialize_clients(self):
+        """Initialize all gRPC clients and session manager"""
+        await self.client_manager.initialize()
+        await self.session_manager.initialize()
+        logger.info("All clients and session manager initialized")
+    
+    async def ProcessSetupChat(
+        self, 
+        request: setup_orchestrator_pb2.ProcessSetupChatRequest,
+        context: grpc.aio.ServicerContext
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """
+        Main orchestration logic for setup chat
+        Coordinates multiple services to handle conversational setup
+        """
+        start_time = datetime.now()
+        trace_id = str(uuid.uuid4())[:8]
+        service_calls = []
+        
+        logger.info(
+            f"[{trace_id}] ProcessSetupChat started | "
+            f"user={request.user_id} | tenant={request.tenant_id} | "
+            f"session={request.session_id}"
+        )
+        
+        # Generate lock key to prevent duplicate processing
+        message_hash = hashlib.md5(request.message.encode()).hexdigest()[:8]
+        lock_key = f"request_lock:{request.session_id}:{message_hash}"
+        
+        # Try to acquire lock
+        lock_acquired = await self.session_manager.acquire_lock(lock_key, ttl=60)
+        
+        if not lock_acquired:
+            logger.warning(
+                f"[{trace_id}] ⚠️ Duplicate request detected | "
+                f"session={request.session_id} | message_hash={message_hash}"
+            )
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="processing",
+                milky_response="Permintaan sedang diproses, mohon tunggu...",
+                current_state="processing",
+                session_id=request.session_id,
+                progress_percentage=0,
+                next_action="wait"
+            )
+        
+        logger.info(f"[{trace_id}] 🔒 Lock acquired: {lock_key}")
+        
+        try:
+            # Step 1: Get conversation context
+            logger.info(f"[{trace_id}] Step 1: Getting conversation context")
+            ctx_start = datetime.now()
+            
+            from conversation_manager_pb2 import GetContextRequest
+            ctx_request = GetContextRequest(session_id=request.session_id)
+            
+            ctx_response = await self.client_manager.stubs['conversation_manager'].GetContext(
+                ctx_request
+            )
+            progress = getattr(ctx_response, "progress_percentage", 0)
+            
+            ctx_duration = (datetime.now() - ctx_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "conversation_manager",
+                "method": "GetContext",
+                "duration_ms": int(ctx_duration),
+                "status": "success"
+            })
+            
+            logger.info(
+                f"[{trace_id}] Context retrieved | state={ctx_response.current_state} | "
+                f"duration={ctx_duration:.0f}ms"
+            )
+            
+            # Step 2: Classify intent
+            logger.info(f"[{trace_id}] Step 2: Classifying intent")
+            intent_start = datetime.now()
+            
+            from intent_parser_pb2 import ClassifyIntentRequest
+            intent_request = ClassifyIntentRequest(
+                message=request.message,
+                context=ctx_response.extracted_data_json
+            )
+            
+            intent_response = await self.client_manager.stubs['intent_parser'].ClassifyIntent(
+                intent_request
+            )
+            
+            intent_duration = (datetime.now() - intent_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "intent_parser",
+                "method": "ClassifyIntent",
+                "duration_ms": int(intent_duration),
+                "status": "success"
+            })
+            
+            logger.info(
+                f"[{trace_id}] Intent classified | intent={intent_response.intent} | "
+                f"confidence={intent_response.confidence:.2f} | "
+                f"duration={intent_duration:.0f}ms"
+            )
+            
+            # Step 2.5: Handle welcome trigger
+            if request.message == "__WELCOME__":
+                response = await self._handle_welcome(
+                    request, ctx_response, trace_id, service_calls, progress
+                )
+                # Add metadata and return
+                processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                metadata = setup_orchestrator_pb2.ResponseMetadata(
+                    trace_id=trace_id,
+                    processing_time_ms=int(processing_time),
+                    timestamp=datetime.now().isoformat(),
+                    service_version=settings.service_version,
+                    service_calls=[
+                        setup_orchestrator_pb2.ServiceCall(**call) 
+                        for call in service_calls
+                    ]
+                )
+                response.metadata.CopyFrom(metadata)
+                return response
+            
+            # Step 3: Route based on intent
+            if intent_response.intent == "business_setup":
+                response = await self._handle_business_setup(
+                    request, ctx_response, intent_response, 
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "faq_create":
+                response = await self._handle_faq_create(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "confirm_setup":
+                response = await self._handle_confirm_setup(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            
+            # === FINANCIAL MANAGEMENT INTENTS ===
+            elif intent_response.intent == "transaction_record":
+                response = await self._handle_transaction_record(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "financial_report":
+                response = await self._handle_financial_report(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "inventory_query":
+                response = await self._handle_inventory_query(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "inventory_update":
+                response = await self._handle_inventory_update(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            elif intent_response.intent == "accounting_query":
+                response = await self._handle_accounting_query(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            
+            # === GENERAL FALLBACK ===
+            else:
+                response = await self._handle_general(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls, progress
+                )
+            
+            # Add metadata
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            metadata = setup_orchestrator_pb2.ResponseMetadata(
+                trace_id=trace_id,
+                processing_time_ms=int(processing_time),
+                timestamp=datetime.now().isoformat(),
+                service_version=settings.service_version,
+                service_calls=[
+                    setup_orchestrator_pb2.ServiceCall(**call) 
+                    for call in service_calls
+                ]
+            )
+            response.metadata.CopyFrom(metadata)
+
+            
+            logger.info(
+                f"[{trace_id}] ProcessSetupChat completed | "
+                f"status={response.status} | "
+                f"total_time={processing_time:.0f}ms"
+            )
+            return response       
+                 
+        except Exception as e:
+            logger.error(f"[{trace_id}] ProcessSetupChat failed: {e}", exc_info=True)
+            
+            error = setup_orchestrator_pb2.ErrorDetails(
+                code="ORCHESTRATION_ERROR",
+                message=str(e),
+                service="setup_orchestrator",
+                details="See logs for full stack trace"
+            )
+            
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="error",
+                milky_response="Maaf, ada masalah teknis. Coba lagi ya!",
+                session_id=request.session_id,
+                progress_percentage=0,
+                error=error
+            )
+        
+        finally:
+            # Always release lock after processing
+            await self.session_manager.release_lock(lock_key)
+            logger.info(f"[{trace_id}] 🔓 Lock released: {lock_key}")
+    
+    async def _handle_business_setup(
+        self, 
+        request, 
+        ctx_response, 
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """
+        PHASE 1 ENHANCED: Handle business information collection with continuous extraction
+        """
+        logger.info(f"[{trace_id}] Handling business_setup intent (PHASE 1 ENHANCED)")
+        
+        # ============================================
+        # PHASE 1: Get existing context from Redis
+        # ============================================
+        session_context = await self.session_manager.get_context(request.session_id)
+        existing_business_data = session_context.get("business_data", {})
+        
+        logger.info(f"[{trace_id}] Existing business data: {existing_business_data}")
+        
+        # ============================================
+        # PHASE 1: Extract NEW info from current message
+        # ============================================
+        extract_start = datetime.now()
+        
+        from business_extractor_pb2 import ExtractBusinessInfoRequest
+        extract_request = ExtractBusinessInfoRequest(
+            message=request.message,
+            context=json.dumps(existing_business_data)  # Pass existing for merge
+        )
+        
+        extract_response = await self.client_manager.stubs['business_extractor'].ExtractBusinessInfo(
+            extract_request
+        )
+        
+        extract_duration = (datetime.now() - extract_start).total_seconds() * 1000
+        service_calls.append({
+            "service_name": "business_extractor",
+            "method": "ExtractBusinessInfo",
+            "duration_ms": int(extract_duration),
+            "status": "success"
+        })
+        
+        logger.info(
+            f"[{trace_id}] Extraction completed | "
+            f"type={extract_response.business_type} | "
+            f"name={extract_response.business_name} | "
+            f"duration={extract_duration:.0f}ms"
+        )
+        
+        # ============================================
+        # Clean extracted data before merge
+        # ============================================
+        raw_data = {
+            'business_name': extract_response.business_name,
+            'pricing_info': extract_response.pricing_info,
+            'products_services': list(extract_response.products_services) if extract_response.products_services else [],
+            'location': extract_response.location_delivery,
+            'target_customers': extract_response.target_customers,
+            'operating_hours': extract_response.operating_hours
+        }
+        cleaned_data = DataCleaner.clean_all_fields(raw_data)
+        logger.info(f"[{trace_id}] Data cleaned: {cleaned_data}")
+
+        # ============================================
+        # PHASE 1: MERGE extracted data (incremental, not replace)
+        # ============================================
+        merged_data = existing_business_data.copy()
+
+        # Build extracted_new dict for adaptive response
+        extracted_new = {}
+
+
+        if extract_response.business_type:
+            if not existing_business_data.get("business_type"):
+                extracted_new["business_type"] = extract_response.business_type
+            merged_data["business_type"] = extract_response.business_type
+            
+        if extract_response.business_name:
+            if not existing_business_data.get("business_name"):
+                extracted_new["business_name"] = extract_response.business_name
+            merged_data["business_name"] = cleaned_data.get('business_name', extract_response.business_name)
+            
+        if extract_response.products_services:
+            if not existing_business_data.get("products_services"):
+                extracted_new["products_services"] = list(extract_response.products_services)
+            merged_data["products_services"] = cleaned_data.get('products_services', list(extract_response.products_services))
+            
+        if extract_response.operating_hours:
+            if not existing_business_data.get("operating_hours"):
+                extracted_new["operating_hours"] = extract_response.operating_hours
+            merged_data["hours"] = extract_response.operating_hours
+            
+        if extract_response.location_delivery:
+            if not existing_business_data.get("location"):
+                extracted_new["location_delivery"] = extract_response.location_delivery
+            merged_data["location"] = cleaned_data.get('location', extract_response.location_delivery)
+            
+        if extract_response.pricing_info:
+            if not existing_business_data.get("pricing"):
+                extracted_new["pricing_info"] = extract_response.pricing_info
+            merged_data["pricing"] = cleaned_data.get('pricing_info', extract_response.pricing_info)
+
+        # Merge target_customers
+        if cleaned_data.get('target_customers'):
+            if not existing_business_data.get("target_customers"):
+                extracted_new["target_customers"] = cleaned_data['target_customers']
+            merged_data["target_customers"] = cleaned_data['target_customers']
+
+        # Merge operating_hours  
+        if cleaned_data.get('operating_hours'):
+            if not existing_business_data.get("operating_hours"):
+                extracted_new["operating_hours"] = cleaned_data['operating_hours']
+            merged_data["hours"] = cleaned_data['operating_hours']
+
+
+
+
+        
+        logger.info(f"[{trace_id}] Merged business data: {merged_data}")
+        
+        # ============================================
+        # PHASE 1: Calculate progress using ProgressCalculator
+        # ============================================
+        calculated_progress = ProgressCalculator.calculate_progress(merged_data)
+        
+        logger.info(
+            f"[{trace_id}] Progress calculation | "
+            f"progress={calculated_progress}%"
+        )
+        
+        # ============================================
+        # PHASE 1: Save to Redis session
+        # ============================================
+        session_context["business_data"] = merged_data
+        session_context["progress"] = calculated_progress
+        await self.session_manager.save_context(request.session_id, session_context)
+        
+        # ============================================
+        # Also update conversation_manager (for compatibility)
+        # ============================================
+        from conversation_manager_pb2 import UpdateStateRequest
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="collecting_info",
+            data_json=json.dumps(merged_data),
+            message=request.message
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get fresh context with updated progress
+        from conversation_manager_pb2 import GetContextRequest
+        fresh_ctx = await self.client_manager.stubs['conversation_manager'].GetContext(
+            GetContextRequest(session_id=request.session_id)
+        )
+        updated_progress = getattr(fresh_ctx, "progress_percentage", calculated_progress)
+        
+        # ============================================
+        # PHASE 1: Generate adaptive response using AdaptiveResponseGenerator
+        # ============================================
+        milky_response = await AdaptiveResponseGenerator.generate_response(
+            extracted_new=extracted_new,
+            existing_data=existing_business_data,
+            merged_data=merged_data
+        )
+        
+        # ============================================
+        # PHASE 1: Save conversation turn
+        # ============================================
+        await self.session_manager.add_turn(
+            request.session_id,
+            request.message,
+            milky_response
+        )
+        
+        # Build business data from merged data
+        business_data = setup_orchestrator_pb2.BusinessData(
+            business_type=merged_data.get("business_type", ""),
+            business_name=merged_data.get("business_name", ""),
+            products_services=", ".join(merged_data.get("products_services", [])) if merged_data.get("products_services") else "",
+            pricing=merged_data.get("pricing", ""),
+            hours=merged_data.get("hours", ""),
+            location=merged_data.get("location", ""),
+            target_customers=merged_data.get("target_customers", "")
+        )
+
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="collecting_info",
+            session_id=request.session_id,
+            business_data=business_data,
+            progress_percentage=calculated_progress,
+            next_action="continue_collecting_info"
+        )
+    
+    async def _handle_faq_create(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle FAQ creation request"""
+        logger.info(f"[{trace_id}] Handling faq_create intent")
+        
+        # Parse business data from context
+        try:
+            business_data = json.loads(ctx_response.extracted_data_json)
+        except:
+            business_data = {}
+        
+        if not business_data.get("business_type"):
+            milky_response = "Hmm, kayaknya info bisnis kamu belum lengkap. Mau cerita dulu tentang bisnisnya?"
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="success",
+                milky_response=milky_response,
+                current_state=ctx_response.current_state,
+                session_id=request.session_id,
+                progress_percentage=progress,
+                next_action="collect_business_info"
+            )
+        
+        # Generate FAQ suggestions based on business info
+        faq_start = datetime.now()
+        
+        from ragllm_service_pb2 import GenerateFAQRequest
+        faq_request = GenerateFAQRequest(
+            tenant_id=request.tenant_id,
+            business_context=json.dumps(business_data),
+            user_message=request.message
+        )
+        
+        faq_response = await self.client_manager.stubs['ragllm'].GenerateFAQ(
+            faq_request
+        )
+        
+        faq_duration = (datetime.now() - faq_start).total_seconds() * 1000
+        service_calls.append({
+            "service_name": "ragllm",
+            "method": "GenerateFAQ",
+            "duration_ms": int(faq_duration),
+            "status": "success"
+        })
+        
+        # Create FAQs in database
+        created_faq_ids = []
+        for faq in faq_response.suggested_faqs:
+            from ragcrud_service_pb2 import CreateFAQRequest
+            create_req = CreateFAQRequest(
+                tenant_id=request.tenant_id,
+                question=faq.question,
+                answer=faq.answer,
+                category="auto_generated"
+            )
+            
+            create_resp = await self.client_manager.stubs['ragcrud'].CreateFAQ(create_req)
+            if create_resp.faq_id:
+                created_faq_ids.append(create_resp.faq_id)
+        
+        # Update state
+        from conversation_manager_pb2 import UpdateStateRequest
+        
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="faqs_created",
+            data_json=json.dumps({
+                **business_data,
+                "faq_ids": created_faq_ids
+            }),
+            message=request.message
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get fresh progress after state update
+        from conversation_manager_pb2 import GetContextRequest
+        fresh_ctx = await self.client_manager.stubs['conversation_manager'].GetContext(
+            GetContextRequest(session_id=request.session_id)
+        )
+        updated_progress = getattr(fresh_ctx, "progress_percentage", 0)
+        
+        # Generate chatbot URL
+        chatbot_url = f"https://milkyhoop.com/{request.tenant_id}"
+        
+        milky_response = f"Done! ✅ Aku udah bikin {len(created_faq_ids)} FAQs untuk bisnis kamu.\n\n"
+        milky_response += f"🎉 Chatbot kamu udah siap di: {chatbot_url}\n\n"
+        milky_response += "Pasang link ini di Instagram bio atau share ke customer ya!"
+        
+        # Format suggested FAQs for response
+        suggested_faqs = [
+            setup_orchestrator_pb2.SuggestedFAQ(
+                question=faq.question,
+                answer=faq.answer
+            )
+            for faq in faq_response.suggested_faqs
+        ]
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="faqs_created",
+            session_id=request.session_id,
+            suggested_faqs=suggested_faqs,
+            next_action="setup_complete",
+            progress_percentage=updated_progress
+        )
+
+    async def _handle_confirm_setup(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle setup confirmation"""
+        logger.info(f"[{trace_id}] Handling confirm_setup intent")
+        
+        # Generate chatbot URL
+        chatbot_url = f"https://milkyhoop.com/{request.tenant_id}"
+        
+        milky_response = "Mantap! Setup chatbot kamu udah selesai! 🎉\n\n"
+        milky_response += f"Chatbot kamu bisa diakses di: {chatbot_url}\n\n"
+        milky_response += "Sekarang customer bisa langsung chat dan dapet jawaban otomatis dari FAQ yang udah kita bikin."
+        
+        # Update state to setup_complete
+        from conversation_manager_pb2 import UpdateStateRequest
+        
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="setup_complete",
+            data_json=ctx_response.extracted_data_json,
+            message=request.message
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get fresh progress after state update
+        from conversation_manager_pb2 import GetContextRequest
+        fresh_ctx = await self.client_manager.stubs['conversation_manager'].GetContext(
+            GetContextRequest(session_id=request.session_id)
+        )
+        updated_progress = getattr(fresh_ctx, "progress_percentage", 0)
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="setup_complete",
+            session_id=request.session_id,
+            next_action="setup_complete",
+            progress_percentage=updated_progress
+        )
+    
+    async def _handle_general(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle general queries"""
+        logger.info(f"[{trace_id}] Handling general intent")
+        
+        milky_response = "Halo! Aku Milky, assistant kamu untuk setup chatbot bisnis. "
+        milky_response += "Cerita dong tentang bisnis kamu? Misalnya: jenis bisnis, produk/jasa yang dijual, dll."
+        
+        # Update state to initial
+        from conversation_manager_pb2 import UpdateStateRequest
+        
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="initial",
+            data_json="{}",
+            message=request.message
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get fresh progress after state update
+        from conversation_manager_pb2 import GetContextRequest
+        fresh_ctx = await self.client_manager.stubs['conversation_manager'].GetContext(
+            GetContextRequest(session_id=request.session_id)
+        )
+        updated_progress = getattr(fresh_ctx, "progress_percentage", 0)
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="initial",
+            session_id=request.session_id,
+            next_action="start_business_info_collection",
+            progress_percentage=updated_progress
+        )
+    
+    async def _handle_welcome(
+        self,
+        request,
+        ctx_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle welcome message for first-time users"""
+        logger.info(f"[{trace_id}] Handling welcome trigger")
+        
+        # Update state to welcome
+        from conversation_manager_pb2 import UpdateStateRequest
+        
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="welcome",
+            data_json="{}",
+            message="__WELCOME__"
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get fresh progress after state update
+        from conversation_manager_pb2 import GetContextRequest
+        fresh_ctx = await self.client_manager.stubs['conversation_manager'].GetContext(
+            GetContextRequest(session_id=request.session_id)
+        )
+        updated_progress = getattr(fresh_ctx, "progress_percentage", 0)
+        
+        milky_response = "Halo! 👋 Aku Milky, assistant kamu untuk setup chatbot bisnis dalam 10 menit.\n\n"
+        milky_response += "Gampang kok! Kita ngobrol biasa aja. Cerita dong tentang bisnis kamu? "
+        milky_response += "Misalnya: jenis bisnis, produk/jasa yang dijual, dll."
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="welcome",
+            session_id=request.session_id,
+            next_action="start_business_info_collection",
+            progress_percentage=updated_progress
+        )
+    
+    async def _handle_transaction_record(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """
+        Handle financial transaction recording
+        Route to transaction_service for SAK EMKM compliant transaction creation
+        """
+        logger.info(f"[{trace_id}] Handling transaction_record intent")
+        
+        # Parse entities from intent_response
+        try:
+            entities = json.loads(intent_response.entities_json)
+            transaction_entities = entities.get("entities", {})
+        except:
+            transaction_entities = {}
+        
+        logger.info(f"[{trace_id}] Transaction entities: {transaction_entities}")
+        
+        # Validate required fields
+        jenis_transaksi = transaction_entities.get("jenis_transaksi")
+        total_nominal = transaction_entities.get("total_nominal")
+        
+        if not jenis_transaksi:
+            milky_response = "Hmm, transaksinya jenis apa nih? Penjualan, pembelian, atau beban?"
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="success",
+                milky_response=milky_response,
+                current_state="awaiting_transaction_type",
+                session_id=request.session_id,
+                progress_percentage=progress,
+                next_action="clarify_transaction_type"
+            )
+        
+        if not total_nominal or total_nominal == 0:
+            milky_response = "Nominalnya berapa nih? Biar aku catat dengan benar."
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="success",
+                milky_response=milky_response,
+                current_state="awaiting_nominal",
+                session_id=request.session_id,
+                progress_percentage=progress,
+                next_action="clarify_nominal"
+            )
+        
+        # Build confirmation message
+        jenis_display = {
+            "penjualan": "jual",
+            "pembelian": "beli",
+            "beban": "bayar"
+        }.get(jenis_transaksi, jenis_transaksi)
+        
+        nominal_display = format_rupiah(int(total_nominal))
+        pihak = transaction_entities.get("nama_pihak", "")
+        metode = transaction_entities.get("metode_pembayaran", "cash")
+        status_bayar = transaction_entities.get("status_pembayaran", "lunas")
+        
+        # Build natural language confirmation
+        milky_response = f"Ok {jenis_display} "
+        
+
+
+        # Add items if present
+        items = transaction_entities.get("items", [])
+        if items and len(items) > 0:
+            first_item = items[0]
+            jumlah = int(first_item.get("jumlah", 0))  # Remove .0
+            satuan = first_item.get("satuan", "pcs")
+            nama_produk = first_item.get("nama_produk", "item").lower()
+            milky_response += f"{jumlah} {satuan} {nama_produk} "
+
+
+
+        
+        # Add pihak
+        if pihak:
+            if jenis_transaksi == "penjualan":
+                milky_response += f"ke {pihak} "
+            elif jenis_transaksi == "pembelian":
+                milky_response += f"dari {pihak} "
+        
+        # Add payment info
+        if status_bayar == "dp":
+            nominal_dibayar = transaction_entities.get("nominal_dibayar", 0)
+            if nominal_dibayar > 0:
+                bayar_display = format_rupiah(int(nominal_dibayar))
+                milky_response += f"DP {bayar_display} "
+        
+        # Indonesian payment method
+        metode_display = {
+            "cash": "secara tunai",
+            "transfer": "secara transfer",
+            "tempo": "secara tempo"
+        }.get(metode.lower(), metode)
+        
+        milky_response += f"{metode_display}. "
+        milky_response += f"Total {nominal_display}, Bilang ya kak kalau ada koreksi 😊"
+
+        # Call transaction_service to create transaction
+        trans_start = datetime.now()
+        
+        try:
+            # Extract items from transaction entities
+            items = transaction_entities.get("items", [])
+            
+            # ============================================================
+            # BUILD TRANSACTION PAYLOAD BASED ON TYPE
+            # ============================================================
+            transaction_payload = None
+            
+            if jenis_transaksi == "penjualan":
+                # Build ItemPenjualan array
+                items_penjualan = []
+                for item in items:
+                    item_proto = transaction_service_pb2.ItemPenjualan(
+                        name=item.get("nama_produk", ""),
+                        quantity=int(item.get("jumlah", 0)),
+                        unit=item.get("satuan", "pcs"),
+                        unit_price=int(item.get("harga_satuan", 0)),
+                        subtotal=int(item.get("subtotal", 0))
+                    )
+                    items_penjualan.append(item_proto)
+                
+                # Build TransaksiPenjualan
+                transaction_payload = transaction_service_pb2.TransaksiPenjualan(
+                    customer_name=transaction_entities.get("nama_pihak", ""),
+                    items=items_penjualan,
+                    subtotal=int(total_nominal),
+                    discount=0,
+                    tax=0,
+                    total_nominal=int(total_nominal),
+                    payment_method=metode,
+                    payment_status=status_bayar,
+                    amount_paid=int(transaction_entities.get("nominal_dibayar", total_nominal)),
+                    amount_due=int(transaction_entities.get("sisa_piutang_hutang", 0)),
+                    notes=transaction_entities.get("keterangan", request.message)
+                )
+                logger.info(f"[{trace_id}] 📦 Built penjualan payload with {len(items_penjualan)} items")
+            
+            elif jenis_transaksi == "pembelian":
+                # Build ItemPembelian array
+                items_pembelian = []
+                for item in items:
+                    item_proto = transaction_service_pb2.ItemPembelian(
+                        name=item.get("nama_produk", ""),
+                        quantity=int(item.get("jumlah", 0)),
+                        unit=item.get("satuan", "pcs"),
+                        unit_price=int(item.get("harga_satuan", 0)),
+                        subtotal=int(item.get("subtotal", 0))
+                    )
+                    items_pembelian.append(item_proto)
+                
+                # Build TransaksiPembelian
+                transaction_payload = transaction_service_pb2.TransaksiPembelian(
+                    vendor_name=transaction_entities.get("nama_pihak", "supplier"),
+                    items=items_pembelian,
+                    subtotal=int(total_nominal),
+                    discount=0,
+                    tax=0,
+                    total_nominal=int(total_nominal),
+                    payment_method=metode,
+                    payment_status=status_bayar,
+                    amount_paid=int(transaction_entities.get("nominal_dibayar", total_nominal)),
+                    amount_due=int(transaction_entities.get("sisa_piutang_hutang", 0)),
+                    notes=transaction_entities.get("keterangan", request.message)
+                )
+                logger.info(f"[{trace_id}] 📦 Built pembelian payload with {len(items_pembelian)} items")
+            
+            elif jenis_transaksi == "beban":
+                # Build TransaksiBeban (no items)
+                transaction_payload = transaction_service_pb2.TransaksiBeban(
+                    expense_type=transaction_entities.get("kategori_beban", "operasional"),
+                    description=transaction_entities.get("keterangan", request.message),
+                    total_nominal=int(total_nominal),
+                    payment_method=metode,
+                    payment_status=status_bayar,
+                    notes=request.message
+                )
+                logger.info(f"[{trace_id}] 📦 Built beban payload")
+
+            # ============================================================
+            # BUILD INVENTORY IMPACT PROTO (KEEP EXISTING LOGIC)
+            # ============================================================
+            inventory_impact_proto = None
+            inventory_impact_data = transaction_entities.get("inventory_impact")
+            logger.info(f"[{trace_id}] DEBUG: inventory_impact_data = {inventory_impact_data}")
+            
+            # Force inventory tracking for pembelian/penjualan
+            if inventory_impact_data and isinstance(inventory_impact_data, dict) and inventory_impact_data.get("is_tracked") and jenis_transaksi in ["pembelian", "penjualan"]:
+                # Build items_inventory list
+                items_inventory_proto = []
+                for item_inv in inventory_impact_data.get("items_inventory", []):
+                    item_inv_proto = inventory_service_pb2.ItemInventory(
+                        produk_id=item_inv.get("produk_id", ""),
+                        jumlah_movement=float(item_inv.get("jumlah_movement", 0)),
+                        stok_setelah=float(item_inv.get("stok_setelah", 0)),
+                        nilai_per_unit=float(item_inv.get("nilai_per_unit", 0))
+                    )
+                    items_inventory_proto.append(item_inv_proto)
+                    logger.info(f"[{trace_id}] DEBUG: ItemInventory created - produk_id={item_inv.get('produk_id')}, jumlah_movement={item_inv.get('jumlah_movement')}")
+                
+                # Build InventoryImpact proto
+                inventory_impact_proto = inventory_service_pb2.InventoryImpact(
+                    is_tracked=True,
+                    jenis_movement=inventory_impact_data.get("jenis_movement", ""),
+                    lokasi_gudang=inventory_impact_data.get("lokasi_gudang", "gudang-utama"),
+                    items_inventory=items_inventory_proto
+                )
+
+            # ============================================================
+            # BUILD CREATE TRANSACTION REQUEST (CORRECT ONEOF)
+            # ============================================================
+            if jenis_transaksi == "penjualan":
+                create_request = transaction_service_pb2.CreateTransactionRequest(
+                    tenant_id=request.tenant_id,
+                    created_by=request.user_id,
+                    actor_role="owner",
+                    jenis_transaksi=jenis_transaksi,
+                    penjualan=transaction_payload,
+                    raw_text=request.message,
+                    idempotency_key=f"{request.session_id}_{trace_id}",
+                    inventory_impact=inventory_impact_proto,
+                )
+            elif jenis_transaksi == "pembelian":
+                create_request = transaction_service_pb2.CreateTransactionRequest(
+                    tenant_id=request.tenant_id,
+                    created_by=request.user_id,
+                    actor_role="owner",
+                    jenis_transaksi=jenis_transaksi,
+                    pembelian=transaction_payload,
+                    raw_text=request.message,
+                    idempotency_key=f"{request.session_id}_{trace_id}",
+                    inventory_impact=inventory_impact_proto,
+                )
+            elif jenis_transaksi == "beban":
+                create_request = transaction_service_pb2.CreateTransactionRequest(
+                    tenant_id=request.tenant_id,
+                    created_by=request.user_id,
+                    actor_role="owner",
+                    jenis_transaksi=jenis_transaksi,
+                    beban=transaction_payload,
+                    raw_text=request.message,
+                    idempotency_key=f"{request.session_id}_{trace_id}",
+                    inventory_impact=inventory_impact_proto,
+                )
+            
+            logger.info(f"[{trace_id}] DEBUG: CreateTransactionRequest built - inventory_impact={'SET' if inventory_impact_proto else 'NULL'}")
+            
+            # ============================================================
+            # CALL TRANSACTION SERVICE
+            # ============================================================
+            trans_response = await self.client_manager.stubs['transaction'].CreateTransaction(
+                create_request
+            )
+            
+            trans_duration = (datetime.now() - trans_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "transaction",
+                "method": "CreateTransaction",
+                "duration_ms": int(trans_duration),
+                "status": "success"
+            })
+
+            # ============================================================
+            # BUILD SUCCESS RESPONSE
+            # ============================================================
+            if trans_response.success:
+                milky_response = f"✅ Transaksi dicatat! {milky_response}"
+                milky_response += f"\n\nID: {trans_response.transaction.id[:8]}..."
+                
+                # Get updated stock info if inventory was tracked
+                stock_info = ""
+                if inventory_impact_proto and inventory_impact_proto.items_inventory:
+                    for item in inventory_impact_proto.items_inventory:
+                        try:
+                            # Query current stock after update
+                            stock_req = inventory_service_pb2.GetStockLevelRequest(
+                                tenant_id=request.tenant_id,
+                                produk_id=item.produk_id,
+                                lokasi_gudang=inventory_impact_proto.lokasi_gudang
+                            )
+                            stock_resp = await self.client_manager.stubs['inventory'].GetStockLevel(stock_req)
+                            
+                            stok_sebelum = stock_resp.current_stock - item.jumlah_movement
+                            stock_info += f"\n\n📦 Stok {item.produk_id} sekarang: {int(stock_resp.current_stock)} {stock_resp.satuan}"
+                            if stok_sebelum != 0:
+                                stock_info += f" (sebelumnya {int(stok_sebelum)} {stock_resp.satuan})"
+                        except:
+                            pass  # Skip if stock query fails
+                
+                # Append stock info to milky_response
+                if stock_info:
+                    milky_response += stock_info
+                
+                current_state = "transaction_recorded"
+            else:
+                milky_response = f"⚠️ Gagal catat transaksi: {trans_response.message}"
+                current_state = "transaction_failed"
+            
+        except Exception as e:
+            logger.error(f"[{trace_id}] Transaction creation failed: {e}")
+            milky_response = f"Maaf, ada kendala catat transaksi. Error: {str(e)[:100]}"
+            current_state = "transaction_error"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state=current_state,
+            session_id=request.session_id,
+            progress_percentage=progress,
+            next_action="continue"
+        )
+    
+    async def _handle_financial_report(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """
+        Handle financial report requests
+        Route to reporting_service for SAK EMKM compliant reports
+        """
+        logger.info(f"[{trace_id}] Handling financial_report intent")
+        
+        # Parse entities
+        try:
+            entities = json.loads(intent_response.entities_json)
+            report_entities = entities.get("entities", {})
+        except:
+            report_entities = {}
+        
+        logger.info(f"[{trace_id}] Report entities: {report_entities}")
+        
+        report_type = report_entities.get("report_type", "laba_rugi")
+        from datetime import datetime
+        periode = report_entities.get("periode_pelaporan", datetime.now().strftime("%Y-%m"))
+        
+        # Call reporting_service
+        report_start = datetime.now()
+        
+        try:
+            report_request = reporting_service_pb2.ReportRequest(
+                tenant_id=request.tenant_id,
+                periode_pelaporan=periode,
+                created_by=request.user_id
+            )
+            
+            # Route to appropriate report method
+            if report_type == "laba_rugi":
+                report_response = await self.client_manager.stubs['reporting'].GetLabaRugi(
+                    report_request
+                )
+                
+                # Format response
+                laba_bersih = report_response.laba_bersih // 100
+                total_pendapatan = report_response.total_pendapatan // 100
+                total_beban = report_response.total_beban_operasional // 100
+                
+                if laba_bersih >= 0:
+                    milky_response = f"✅ Laba bersih periode {periode}: {format_rupiah(laba_bersih * 100)}\n\n"
+                else:
+                    milky_response = f"⚠️ Rugi periode {periode}: Rp {abs(laba_bersih):,}\n\n"
+                
+                milky_response += f"Pendapatan: {format_rupiah(total_pendapatan * 100)}\n"
+                milky_response += f"Beban: {format_rupiah(total_beban * 100)}\n"
+                milky_response += f"Dari {report_response.jumlah_transaksi} transaksi"
+                
+            elif report_type == "neraca":
+                report_response = await self.client_manager.stubs['reporting'].GetNeraca(
+                    report_request
+                )
+                
+                total_aset = report_response.total_aset // 100
+                total_liabilitas = report_response.total_liabilitas // 100
+                total_ekuitas = report_response.total_ekuitas // 100
+                
+                milky_response = f"📊 Neraca per {periode}:\n\n"
+                milky_response += f"Total Aset: {format_rupiah(total_aset)}\n"
+                milky_response += f"Total Liabilitas: {format_rupiah(total_liabilitas)}\n"
+                milky_response += f"Total Ekuitas: {format_rupiah(total_ekuitas)}\n\n"
+                
+                if report_response.is_balanced:
+                    milky_response += "✅ Neraca balance!"
+                else:
+                    milky_response += "⚠️ Neraca tidak balance, perlu dicek"
+            
+            elif report_type == "arus_kas":
+                report_response = await self.client_manager.stubs['reporting'].GetArusKas(
+                    report_request
+                )
+                
+                kas_akhir = report_response.kas_akhir_periode // 100
+                arus_operasi = report_response.arus_kas_operasi // 100
+                
+                milky_response = f"💰 Arus Kas periode {periode}:\n\n"
+                milky_response += f"Kas Akhir: {format_rupiah(kas_akhir * 100)}\n"
+                milky_response += f"Arus Kas Operasi: {format_rupiah(arus_operasi * 100)}"
+            
+            elif report_type == "perubahan_ekuitas":
+                report_response = await self.client_manager.stubs['reporting'].GetPerubahanEkuitas(
+                    report_request
+                )
+                
+                # Extract values (in cents, convert to rupiah)
+                ekuitas_awal = report_response.ekuitas_awal_periode // 100
+                modal_akhir = report_response.modal_akhir // 100
+                laba_bersih = report_response.laba_bersih_periode_berjalan // 100
+                prive = report_response.prive_periode_berjalan // 100
+                ekuitas_akhir = report_response.ekuitas_akhir_periode // 100
+                
+                milky_response = f"📊 Perubahan Ekuitas periode {periode}:\n\n"
+                milky_response += f"Ekuitas Awal: {format_rupiah(ekuitas_awal * 100)}\n"
+                milky_response += f"Modal Akhir: {format_rupiah(modal_akhir * 100)}\n"
+                milky_response += f"Laba Bersih: {format_rupiah(laba_bersih * 100)}\n"
+                milky_response += f"Prive: {format_rupiah(prive * 100)}\n\n"
+                milky_response += f"✅ Ekuitas Akhir: {format_rupiah(ekuitas_akhir * 100)}"
+
+            else:
+                milky_response = f"Report {report_type} belum didukung. Coba laba_rugi, neraca, atau arus_kas?"
+            
+            report_duration = (datetime.now() - report_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "reporting",
+                "method": f"Get{report_type.title()}",
+                "duration_ms": int(report_duration),
+                "status": "success"
+            })
+            
+        except Exception as e:
+            logger.error(f"[{trace_id}] Reporting service error: {e}")
+            milky_response = f"Maaf, lagi ada kendala ambil laporan. Error: {str(e)[:100]}"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="report_displayed",
+            session_id=request.session_id,
+            progress_percentage=progress,
+            next_action="continue"
+        )
+    
+    async def _handle_inventory_query(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle inventory stock query"""
+        logger.info(f"[{trace_id}] Handling inventory_query intent")
+        
+        # Parse entities
+        try:
+            entities = json.loads(intent_response.entities_json)
+            inventory_entities = entities.get("entities", {})
+        except:
+            inventory_entities = {}
+        
+        logger.info(f"[{trace_id}] Inventory entities: {inventory_entities}")
+        
+        # Extract product name (assume product_name == produk_id for MVP)
+        product_name = inventory_entities.get("product_name") or inventory_entities.get("produk_id")
+        
+        
+        
+        if not product_name:
+            milky_response = "Produk apa yang mau dicek stoknya?"
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="success",
+                milky_response=milky_response,
+                current_state="awaiting_product_name",
+                session_id=request.session_id,
+                progress_percentage=progress,
+                next_action="clarify_product"
+            )
+        
+        # Call inventory_service.GetStockLevel
+        try:
+            stock_request = inventory_service_pb2.GetStockLevelRequest(
+                tenant_id=request.tenant_id,
+                produk_id=product_name,
+                lokasi_gudang="gudang-utama"  # Default warehouse
+            )
+            
+            stock_response = await self.client_manager.stubs['inventory'].GetStockLevel(
+                stock_request
+            )
+            
+            # Format response
+            stok = int(stock_response.current_stock)
+            satuan = stock_response.satuan or "pcs"
+            
+            milky_response = f"Stok {product_name} ada {stok} {satuan} 📦"
+            
+            if stock_response.is_low_stock:
+                milky_response += f"\n\n⚠️ Stok menipis! Minimum: {int(stock_response.minimum_stock)} {satuan}"
+            
+        except grpc.RpcError as e:
+            logger.error(f"[{trace_id}] Inventory service error: {e}")
+            if e.code() == grpc.StatusCode.NOT_FOUND:
+                milky_response = f"Produk {product_name} belum terdaftar di inventory"
+            else:
+                milky_response = f"Maaf, gagal cek stok. Error: {e.details()[:100]}"
+        except Exception as e:
+            logger.error(f"[{trace_id}] Unexpected error: {e}")
+            milky_response = f"Ada kendala cek stok. Error: {str(e)[:100]}"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="inventory_queried",
+            session_id=request.session_id,
+            progress_percentage=progress,
+            next_action="continue"
+        )
+    
+    async def _handle_inventory_update(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle inventory stock update"""
+        logger.info(f"[{trace_id}] Handling inventory_update intent")
+        
+        # Parse entities
+        try:
+            entities = json.loads(intent_response.entities_json)
+            inventory_entities = entities.get("entities", {})
+        except:
+            inventory_entities = {}
+        
+        logger.info(f"[{trace_id}] Inventory update entities: {inventory_entities}")
+        
+        # TODO: Call inventory_service.AdjustStock
+        # For now, return placeholder
+        product_name = inventory_entities.get("product_name", "produk")
+        
+        milky_response = f"Fitur update stok untuk {product_name} sedang dalam pengembangan. "
+        milky_response += "Nanti bisa update langsung dari sini!"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="inventory_updated",
+            session_id=request.session_id,
+            progress_percentage=progress,
+            next_action="continue"
+        )
+    
+    async def _handle_accounting_query(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list,
+        progress: int
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle accounting journal query"""
+        logger.info(f"[{trace_id}] Handling accounting_query intent")
+        
+        # Parse entities
+        try:
+            entities = json.loads(intent_response.entities_json)
+            accounting_entities = entities.get("entities", {})
+        except:
+            accounting_entities = {}
+        
+        logger.info(f"[{trace_id}] Accounting entities: {accounting_entities}")
+        
+        # TODO: Call accounting_service methods
+        # For now, return placeholder
+        query_type = accounting_entities.get("query_type", "journal_entries")
+        
+        milky_response = f"Fitur lihat {query_type} sedang dalam pengembangan. "
+        milky_response += "Nanti bisa cek jurnal dan bagan akun dari sini!"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="accounting_queried",
+            session_id=request.session_id,
+            progress_percentage=progress,
+            next_action="continue"
+        )
+    
+    async def HealthCheck(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext
+    ) -> empty_pb2.Empty:
+        """Health check endpoint"""
+        return empty_pb2.Empty()
+
+async def serve():
+    """Start gRPC server"""
+    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    
+    servicer = SetupOrchestratorServicer()
+    await servicer.initialize_clients()
+    
+    setup_orchestrator_pb2_grpc.add_SetupOrchestratorServicer_to_server(
+        servicer, server
+    )
+    
+    # Register health service for healthcheck
+    if HEALTH_AVAILABLE:
+        health_servicer = HealthServicer()
+        health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+        logger.info("Health service registered for healthcheck")
+    else:
+        logger.warning("Health service not available - healthcheck will fail")
+
+    listen_addr = f'0.0.0.0:{settings.grpc_port}'
+    server.add_insecure_port(listen_addr)
+    
+    logger.info(f"Starting Setup Orchestrator gRPC server on {listen_addr}")
+    await server.start()
+    
+    try:
+        await server.wait_for_termination()
+    except KeyboardInterrupt:
+        logger.info("Shutting down gracefully...")
+        await servicer.client_manager.close_all()
+        await server.stop(grace=5)
+
+if __name__ == '__main__':
+    asyncio.run(serve())

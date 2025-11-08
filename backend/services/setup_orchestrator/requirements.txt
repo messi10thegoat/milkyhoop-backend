@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-dotenv
+pydantic
+grpcio>=1.60.0
+protobuf>=4.25.0
+grpcio-tools>=1.60.0
+grpcio-health-checking>=1.60.0
+redis[asyncio]>=4.6.0
+openai>=0.28.1
+prisma>=0.15.0
+PyJWT>=2.8.0
+pydantic>=2.4.2
+pydantic-settings>=2.0.0

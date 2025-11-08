@@ -84,6 +84,9 @@ message LoginResponse {
   google.protobuf.Timestamp issued_at = 10;
   google.protobuf.Timestamp last_login = 11;
   bool requires_password_change = 12;
+  string email = 13;     
+  string name = 14;      
+  string username = 15;
 }
 
 // ========================================
@@ -129,6 +132,8 @@ message ValidateTokenResponse {
   int64 expires_in = 7; // seconds until expiration
   bool requires_refresh = 8; // token near expiry
   repeated string permissions = 9; // user permissions
+  string email = 10;
+  string username = 11;
 }
 
 message RevokeTokenRequest {

@@ -24,10 +24,23 @@ PRISMA_MODELS: set[str] = {
     'Order',
     'Memory',
     'RagDocument',
+    'AuditLog',
+    'TransaksiHarian',
+    'ItemTransaksi',
+    'HppBreakdown',
+    'InventoryImpact',
+    'ItemInventory',
+    'Persediaan',
+    'Outbox',
+    'TaxInfo',
+    'BaganAkun',
+    'JurnalEntry',
+    'JurnalDetail',
 }
 
 RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
     'User': {
+        'tenant': 'Tenant',
         'accounts': 'Account',
         'sessions': 'Session',
         'profile': 'UserProfile',
@@ -38,6 +51,9 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
         'subscriptions': 'UserSubscriptions',
         'aiSettings': 'UserAISettings',
         'media': 'UserMedia',
+        'auditLogs': 'AuditLog',
+        'transaksiCreated': 'TransaksiHarian',
+        'transaksiApproved': 'TransaksiHarian',
     },
     'Account': {
         'user': 'User',
@@ -78,12 +94,68 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
         'user': 'User',
     },
     'Tenant': {
+        'users': 'User',
+        'transaksiHarian': 'TransaksiHarian',
+        'taxInfo': 'TaxInfo',
+        'persediaan': 'Persediaan',
+        'baganAkun': 'BaganAkun',
+        'jurnalEntries': 'JurnalEntry',
     },
     'Order': {
     },
     'Memory': {
     },
     'RagDocument': {
+    },
+    'AuditLog': {
+        'user': 'User',
+    },
+    'TransaksiHarian': {
+        'tenant': 'Tenant',
+        'creator': 'User',
+        'approver': 'User',
+        'outbox': 'Outbox',
+        'items': 'ItemTransaksi',
+        'hpp': 'HppBreakdown',
+        'inventoryImpact': 'InventoryImpact',
+        'jurnalEntries': 'JurnalEntry',
+    },
+    'ItemTransaksi': {
+        'transaksi': 'TransaksiHarian',
+    },
+    'HppBreakdown': {
+        'transaksi': 'TransaksiHarian',
+    },
+    'InventoryImpact': {
+        'transaksi': 'TransaksiHarian',
+        'itemsInventory': 'ItemInventory',
+    },
+    'ItemInventory': {
+        'inventoryImpact': 'InventoryImpact',
+    },
+    'Persediaan': {
+        'tenant': 'Tenant',
+    },
+    'Outbox': {
+        'transaksi': 'TransaksiHarian',
+    },
+    'TaxInfo': {
+        'tenant': 'Tenant',
+    },
+    'BaganAkun': {
+        'tenant': 'Tenant',
+        'parent': 'BaganAkun',
+        'children': 'BaganAkun',
+        'jurnalDetails': 'JurnalDetail',
+    },
+    'JurnalEntry': {
+        'tenant': 'Tenant',
+        'transaksi': 'TransaksiHarian',
+        'details': 'JurnalDetail',
+    },
+    'JurnalDetail': {
+        'jurnalEntry': 'JurnalEntry',
+        'akun': 'BaganAkun',
     },
 }
 

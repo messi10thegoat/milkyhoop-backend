@@ -85,10 +85,10 @@ __all__ = (
 
 log: logging.Logger = logging.getLogger(__name__)
 
-SCHEMA_PATH = Path('/root/milkyhoop/database/schemas/global_schema.prisma')
+SCHEMA_PATH = Path('/root/milkyhoop-dev/database/schemas/global_schema.prisma')
 PACKAGED_SCHEMA_PATH = Path(__file__).parent.joinpath('schema.prisma')
 ENGINE_TYPE: EngineType = EngineType.binary
-BINARY_PATHS = model_parse(BinaryPaths, {'queryEngine': {'debian-openssl-3.0.x': '/root/milkyhoop/node_modules/prisma/query-engine-debian-openssl-3.0.x'}, 'introspectionEngine': {}, 'migrationEngine': {}, 'libqueryEngine': {}, 'prismaFmt': {}})
+BINARY_PATHS = model_parse(BinaryPaths, {'queryEngine': {'debian-openssl-3.0.x': '/root/.cache/prisma-python/binaries/5.17.0/393aa359c9ad4a4bb28630fb5613f9c281cde053/node_modules/prisma/query-engine-debian-openssl-3.0.x'}, 'introspectionEngine': {}, 'migrationEngine': {}, 'libqueryEngine': {}, 'prismaFmt': {}})
 
 
 class Prisma(AsyncBasePrisma):
@@ -112,6 +112,18 @@ class Prisma(AsyncBasePrisma):
     order: 'actions.OrderActions[models.Order]'
     memory: 'actions.MemoryActions[models.Memory]'
     ragdocument: 'actions.RagDocumentActions[models.RagDocument]'
+    auditlog: 'actions.AuditLogActions[models.AuditLog]'
+    transaksiharian: 'actions.TransaksiHarianActions[models.TransaksiHarian]'
+    itemtransaksi: 'actions.ItemTransaksiActions[models.ItemTransaksi]'
+    hppbreakdown: 'actions.HppBreakdownActions[models.HppBreakdown]'
+    inventoryimpact: 'actions.InventoryImpactActions[models.InventoryImpact]'
+    iteminventory: 'actions.ItemInventoryActions[models.ItemInventory]'
+    persediaan: 'actions.PersediaanActions[models.Persediaan]'
+    outbox: 'actions.OutboxActions[models.Outbox]'
+    taxinfo: 'actions.TaxInfoActions[models.TaxInfo]'
+    baganakun: 'actions.BaganAkunActions[models.BaganAkun]'
+    jurnalentry: 'actions.JurnalEntryActions[models.JurnalEntry]'
+    jurnaldetail: 'actions.JurnalDetailActions[models.JurnalDetail]'
 
     __slots__ = (
         'user',
@@ -132,6 +144,18 @@ class Prisma(AsyncBasePrisma):
         'order',
         'memory',
         'ragdocument',
+        'auditlog',
+        'transaksiharian',
+        'itemtransaksi',
+        'hppbreakdown',
+        'inventoryimpact',
+        'iteminventory',
+        'persediaan',
+        'outbox',
+        'taxinfo',
+        'baganakun',
+        'jurnalentry',
+        'jurnaldetail',
     )
 
     def __init__(
@@ -180,6 +204,18 @@ class Prisma(AsyncBasePrisma):
         self.order = actions.OrderActions[models.Order](self, models.Order)
         self.memory = actions.MemoryActions[models.Memory](self, models.Memory)
         self.ragdocument = actions.RagDocumentActions[models.RagDocument](self, models.RagDocument)
+        self.auditlog = actions.AuditLogActions[models.AuditLog](self, models.AuditLog)
+        self.transaksiharian = actions.TransaksiHarianActions[models.TransaksiHarian](self, models.TransaksiHarian)
+        self.itemtransaksi = actions.ItemTransaksiActions[models.ItemTransaksi](self, models.ItemTransaksi)
+        self.hppbreakdown = actions.HppBreakdownActions[models.HppBreakdown](self, models.HppBreakdown)
+        self.inventoryimpact = actions.InventoryImpactActions[models.InventoryImpact](self, models.InventoryImpact)
+        self.iteminventory = actions.ItemInventoryActions[models.ItemInventory](self, models.ItemInventory)
+        self.persediaan = actions.PersediaanActions[models.Persediaan](self, models.Persediaan)
+        self.outbox = actions.OutboxActions[models.Outbox](self, models.Outbox)
+        self.taxinfo = actions.TaxInfoActions[models.TaxInfo](self, models.TaxInfo)
+        self.baganakun = actions.BaganAkunActions[models.BaganAkun](self, models.BaganAkun)
+        self.jurnalentry = actions.JurnalEntryActions[models.JurnalEntry](self, models.JurnalEntry)
+        self.jurnaldetail = actions.JurnalDetailActions[models.JurnalDetail](self, models.JurnalDetail)
 
         if auto_register:
             register(self)
@@ -190,7 +226,7 @@ class Prisma(AsyncBasePrisma):
         return {
             'name': 'db',
             'url': OptionalValueFromEnvVar(**{'value': None, 'fromEnvVar': 'DATABASE_URL'}).resolve(),
-            'source_file_path': '/root/milkyhoop/database/schemas/global_schema.prisma',
+            'source_file_path': '/root/milkyhoop-dev/database/schemas/global_schema.prisma',
         }
 
     async def execute_raw(self, query: LiteralString, *args: Any) -> int:
@@ -348,6 +384,18 @@ class Batch:
     order: 'OrderBatchActions'
     memory: 'MemoryBatchActions'
     ragdocument: 'RagDocumentBatchActions'
+    auditlog: 'AuditLogBatchActions'
+    transaksiharian: 'TransaksiHarianBatchActions'
+    itemtransaksi: 'ItemTransaksiBatchActions'
+    hppbreakdown: 'HppBreakdownBatchActions'
+    inventoryimpact: 'InventoryImpactBatchActions'
+    iteminventory: 'ItemInventoryBatchActions'
+    persediaan: 'PersediaanBatchActions'
+    outbox: 'OutboxBatchActions'
+    taxinfo: 'TaxInfoBatchActions'
+    baganakun: 'BaganAkunBatchActions'
+    jurnalentry: 'JurnalEntryBatchActions'
+    jurnaldetail: 'JurnalDetailBatchActions'
 
     def __init__(self, client: Prisma) -> None:
         self.__client = client
@@ -371,6 +419,18 @@ class Batch:
         self.order = OrderBatchActions(self)
         self.memory = MemoryBatchActions(self)
         self.ragdocument = RagDocumentBatchActions(self)
+        self.auditlog = AuditLogBatchActions(self)
+        self.transaksiharian = TransaksiHarianBatchActions(self)
+        self.itemtransaksi = ItemTransaksiBatchActions(self)
+        self.hppbreakdown = HppBreakdownBatchActions(self)
+        self.inventoryimpact = InventoryImpactBatchActions(self)
+        self.iteminventory = ItemInventoryBatchActions(self)
+        self.persediaan = PersediaanBatchActions(self)
+        self.outbox = OutboxBatchActions(self)
+        self.taxinfo = TaxInfoBatchActions(self)
+        self.baganakun = BaganAkunBatchActions(self)
+        self.jurnalentry = JurnalEntryBatchActions(self)
+        self.jurnaldetail = JurnalDetailBatchActions(self)
 
     def _add(self, **kwargs: Any) -> None:
         builder = QueryBuilder(
@@ -2415,6 +2475,1338 @@ class RagDocumentBatchActions:
         self._batcher._add(
             method='delete_many',
             model=models.RagDocument,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class AuditLogBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.AuditLogCreateInput,
+        include: Optional[types.AuditLogInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.AuditLog,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.AuditLogCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.AuditLog,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.AuditLogWhereUniqueInput,
+        include: Optional[types.AuditLogInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.AuditLog,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.AuditLogUpdateInput,
+        where: types.AuditLogWhereUniqueInput,
+        include: Optional[types.AuditLogInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.AuditLog,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.AuditLogWhereUniqueInput,
+        data: types.AuditLogUpsertInput,
+        include: Optional[types.AuditLogInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.AuditLog,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.AuditLogUpdateManyMutationInput,
+        where: types.AuditLogWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.AuditLog,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.AuditLogWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.AuditLog,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class TransaksiHarianBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.TransaksiHarianCreateInput,
+        include: Optional[types.TransaksiHarianInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.TransaksiHarian,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.TransaksiHarianCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.TransaksiHarian,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.TransaksiHarianWhereUniqueInput,
+        include: Optional[types.TransaksiHarianInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.TransaksiHarian,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.TransaksiHarianUpdateInput,
+        where: types.TransaksiHarianWhereUniqueInput,
+        include: Optional[types.TransaksiHarianInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.TransaksiHarian,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.TransaksiHarianWhereUniqueInput,
+        data: types.TransaksiHarianUpsertInput,
+        include: Optional[types.TransaksiHarianInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.TransaksiHarian,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.TransaksiHarianUpdateManyMutationInput,
+        where: types.TransaksiHarianWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.TransaksiHarian,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.TransaksiHarianWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.TransaksiHarian,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class ItemTransaksiBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.ItemTransaksiCreateInput,
+        include: Optional[types.ItemTransaksiInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.ItemTransaksi,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.ItemTransaksiCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.ItemTransaksi,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.ItemTransaksiWhereUniqueInput,
+        include: Optional[types.ItemTransaksiInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.ItemTransaksi,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.ItemTransaksiUpdateInput,
+        where: types.ItemTransaksiWhereUniqueInput,
+        include: Optional[types.ItemTransaksiInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.ItemTransaksi,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.ItemTransaksiWhereUniqueInput,
+        data: types.ItemTransaksiUpsertInput,
+        include: Optional[types.ItemTransaksiInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.ItemTransaksi,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.ItemTransaksiUpdateManyMutationInput,
+        where: types.ItemTransaksiWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.ItemTransaksi,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.ItemTransaksiWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.ItemTransaksi,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class HppBreakdownBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.HppBreakdownCreateInput,
+        include: Optional[types.HppBreakdownInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.HppBreakdown,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.HppBreakdownCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.HppBreakdown,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.HppBreakdownWhereUniqueInput,
+        include: Optional[types.HppBreakdownInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.HppBreakdown,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.HppBreakdownUpdateInput,
+        where: types.HppBreakdownWhereUniqueInput,
+        include: Optional[types.HppBreakdownInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.HppBreakdown,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.HppBreakdownWhereUniqueInput,
+        data: types.HppBreakdownUpsertInput,
+        include: Optional[types.HppBreakdownInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.HppBreakdown,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.HppBreakdownUpdateManyMutationInput,
+        where: types.HppBreakdownWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.HppBreakdown,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.HppBreakdownWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.HppBreakdown,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class InventoryImpactBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.InventoryImpactCreateInput,
+        include: Optional[types.InventoryImpactInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.InventoryImpact,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.InventoryImpactCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.InventoryImpact,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.InventoryImpactWhereUniqueInput,
+        include: Optional[types.InventoryImpactInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.InventoryImpact,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.InventoryImpactUpdateInput,
+        where: types.InventoryImpactWhereUniqueInput,
+        include: Optional[types.InventoryImpactInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.InventoryImpact,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.InventoryImpactWhereUniqueInput,
+        data: types.InventoryImpactUpsertInput,
+        include: Optional[types.InventoryImpactInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.InventoryImpact,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.InventoryImpactUpdateManyMutationInput,
+        where: types.InventoryImpactWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.InventoryImpact,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.InventoryImpactWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.InventoryImpact,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class ItemInventoryBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.ItemInventoryCreateInput,
+        include: Optional[types.ItemInventoryInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.ItemInventory,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.ItemInventoryCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.ItemInventory,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.ItemInventoryWhereUniqueInput,
+        include: Optional[types.ItemInventoryInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.ItemInventory,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.ItemInventoryUpdateInput,
+        where: types.ItemInventoryWhereUniqueInput,
+        include: Optional[types.ItemInventoryInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.ItemInventory,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.ItemInventoryWhereUniqueInput,
+        data: types.ItemInventoryUpsertInput,
+        include: Optional[types.ItemInventoryInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.ItemInventory,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.ItemInventoryUpdateManyMutationInput,
+        where: types.ItemInventoryWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.ItemInventory,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.ItemInventoryWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.ItemInventory,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class PersediaanBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.PersediaanCreateInput,
+        include: Optional[types.PersediaanInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.Persediaan,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.PersediaanCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.Persediaan,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.PersediaanWhereUniqueInput,
+        include: Optional[types.PersediaanInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.Persediaan,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.PersediaanUpdateInput,
+        where: types.PersediaanWhereUniqueInput,
+        include: Optional[types.PersediaanInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.Persediaan,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.PersediaanWhereUniqueInput,
+        data: types.PersediaanUpsertInput,
+        include: Optional[types.PersediaanInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.Persediaan,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.PersediaanUpdateManyMutationInput,
+        where: types.PersediaanWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.Persediaan,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.PersediaanWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.Persediaan,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class OutboxBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.OutboxCreateInput,
+        include: Optional[types.OutboxInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.Outbox,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.OutboxCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.Outbox,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.OutboxWhereUniqueInput,
+        include: Optional[types.OutboxInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.Outbox,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.OutboxUpdateInput,
+        where: types.OutboxWhereUniqueInput,
+        include: Optional[types.OutboxInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.Outbox,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.OutboxWhereUniqueInput,
+        data: types.OutboxUpsertInput,
+        include: Optional[types.OutboxInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.Outbox,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.OutboxUpdateManyMutationInput,
+        where: types.OutboxWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.Outbox,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.OutboxWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.Outbox,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class TaxInfoBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.TaxInfoCreateInput,
+        include: Optional[types.TaxInfoInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.TaxInfo,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.TaxInfoCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.TaxInfo,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.TaxInfoWhereUniqueInput,
+        include: Optional[types.TaxInfoInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.TaxInfo,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.TaxInfoUpdateInput,
+        where: types.TaxInfoWhereUniqueInput,
+        include: Optional[types.TaxInfoInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.TaxInfo,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.TaxInfoWhereUniqueInput,
+        data: types.TaxInfoUpsertInput,
+        include: Optional[types.TaxInfoInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.TaxInfo,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.TaxInfoUpdateManyMutationInput,
+        where: types.TaxInfoWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.TaxInfo,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.TaxInfoWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.TaxInfo,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class BaganAkunBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.BaganAkunCreateInput,
+        include: Optional[types.BaganAkunInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.BaganAkun,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.BaganAkunCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.BaganAkun,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.BaganAkunWhereUniqueInput,
+        include: Optional[types.BaganAkunInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.BaganAkun,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.BaganAkunUpdateInput,
+        where: types.BaganAkunWhereUniqueInput,
+        include: Optional[types.BaganAkunInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.BaganAkun,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.BaganAkunWhereUniqueInput,
+        data: types.BaganAkunUpsertInput,
+        include: Optional[types.BaganAkunInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.BaganAkun,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.BaganAkunUpdateManyMutationInput,
+        where: types.BaganAkunWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.BaganAkun,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.BaganAkunWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.BaganAkun,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class JurnalEntryBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.JurnalEntryCreateInput,
+        include: Optional[types.JurnalEntryInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.JurnalEntry,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.JurnalEntryCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.JurnalEntry,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.JurnalEntryWhereUniqueInput,
+        include: Optional[types.JurnalEntryInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.JurnalEntry,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.JurnalEntryUpdateInput,
+        where: types.JurnalEntryWhereUniqueInput,
+        include: Optional[types.JurnalEntryInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.JurnalEntry,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.JurnalEntryWhereUniqueInput,
+        data: types.JurnalEntryUpsertInput,
+        include: Optional[types.JurnalEntryInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.JurnalEntry,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.JurnalEntryUpdateManyMutationInput,
+        where: types.JurnalEntryWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.JurnalEntry,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.JurnalEntryWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.JurnalEntry,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class JurnalDetailBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.JurnalDetailCreateInput,
+        include: Optional[types.JurnalDetailInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.JurnalDetail,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.JurnalDetailCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.JurnalDetail,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.JurnalDetailWhereUniqueInput,
+        include: Optional[types.JurnalDetailInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.JurnalDetail,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.JurnalDetailUpdateInput,
+        where: types.JurnalDetailWhereUniqueInput,
+        include: Optional[types.JurnalDetailInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.JurnalDetail,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.JurnalDetailWhereUniqueInput,
+        data: types.JurnalDetailUpsertInput,
+        include: Optional[types.JurnalDetailInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.JurnalDetail,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.JurnalDetailUpdateManyMutationInput,
+        where: types.JurnalDetailWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.JurnalDetail,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.JurnalDetailWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.JurnalDetail,
             arguments={'where': where},
             root_selection=['count'],
         )

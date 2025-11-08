@@ -254,3 +254,123 @@ class BaseRagDocument(_PrismaModel):
         return actions.RagDocumentActions[_PrismaModelT](client or get_client(), cls)
 
 
+class BaseAuditLog(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['AuditLog']] = 'AuditLog'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.AuditLogActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.AuditLogActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseTransaksiHarian(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['TransaksiHarian']] = 'TransaksiHarian'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.TransaksiHarianActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.TransaksiHarianActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseItemTransaksi(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['ItemTransaksi']] = 'ItemTransaksi'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.ItemTransaksiActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.ItemTransaksiActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseHppBreakdown(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['HppBreakdown']] = 'HppBreakdown'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.HppBreakdownActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.HppBreakdownActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseInventoryImpact(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['InventoryImpact']] = 'InventoryImpact'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.InventoryImpactActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.InventoryImpactActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseItemInventory(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['ItemInventory']] = 'ItemInventory'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.ItemInventoryActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.ItemInventoryActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BasePersediaan(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['Persediaan']] = 'Persediaan'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.PersediaanActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.PersediaanActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseOutbox(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['Outbox']] = 'Outbox'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.OutboxActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.OutboxActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseTaxInfo(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['TaxInfo']] = 'TaxInfo'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.TaxInfoActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.TaxInfoActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseBaganAkun(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['BaganAkun']] = 'BaganAkun'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.BaganAkunActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.BaganAkunActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseJurnalEntry(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['JurnalEntry']] = 'JurnalEntry'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.JurnalEntryActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.JurnalEntryActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseJurnalDetail(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['JurnalDetail']] = 'JurnalDetail'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.JurnalDetailActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.JurnalDetailActions[_PrismaModelT](client or get_client(), cls)
+
+

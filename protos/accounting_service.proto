@@ -1,0 +1,250 @@
+syntax = "proto3";
+
+package accounting_service;
+
+import "google/protobuf/empty.proto";
+
+// ============================================
+// ACCOUNTING SERVICE
+// ============================================
+// Financial accounting & SAK EMKM compliance engine
+// - Auto-generate journal entries (double-entry bookkeeping)
+// - Chart of accounts (BaganAkun) management
+// - Automatic CoA mapping from transaction data
+// - Double-entry validation (Debit = Credit)
+
+service AccountingService {
+  // ==========================================
+  // JOURNAL ENTRY OPERATIONS
+  // ==========================================
+  
+  // Process transaction and auto-generate journal entries
+  rpc ProcessTransaction(ProcessTransactionRequest) returns (ProcessTransactionResponse);
+  
+  // Get journal entries for a transaction
+  rpc GetJournalEntry(GetJournalEntryRequest) returns (GetJournalEntryResponse);
+  
+  // Get journal entries for a period (for reporting)
+  rpc GetJournalEntriesByPeriod(GetJournalEntriesByPeriodRequest) returns (GetJournalEntriesByPeriodResponse);
+  
+  // ==========================================
+  // CHART OF ACCOUNTS OPERATIONS
+  // ==========================================
+  
+  // Create new account in chart of accounts
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
+  
+  // Get account details
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+  
+  // List all accounts for tenant
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+  
+  // Update account
+  rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse);
+  
+  // Deactivate account (soft delete)
+  rpc DeactivateAccount(DeactivateAccountRequest) returns (DeactivateAccountResponse);
+  
+  // ==========================================
+  // UTILITY OPERATIONS
+  // ==========================================
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// ============================================
+// JOURNAL ENTRY MESSAGES
+// ============================================
+
+// Request to process transaction accounting
+message ProcessTransactionRequest {
+  string tenant_id = 1;
+  string transaksi_id = 2;
+  string jenis_transaksi = 3;      // 'penjualan', 'pembelian', 'beban', 'penerimaan', 'pengeluaran'
+  int64 total_nominal = 4;          // Amount in cents
+  string kategori_arus_kas = 5;     // 'operasi', 'investasi', 'pendanaan'
+  string akun_perkiraan_id = 6;     // Optional: Override default CoA mapping
+  string created_by = 7;
+  int64 tanggal_transaksi = 8;      // Unix timestamp (seconds)
+  string periode_pelaporan = 9;     // Format: 'YYYY-MM' (e.g., '2025-10')
+  string keterangan = 10;           // Optional: Journal entry description
+}
+
+// Response with journal entry details
+message ProcessTransactionResponse {
+  bool success = 1;
+  string message = 2;
+  string jurnal_entry_id = 3;
+  string nomor_jurnal = 4;          // Journal number (e.g., 'JE-2025-10-001')
+  repeated JournalLine journal_lines = 5;
+  int64 total_debit = 6;            // Total debit amount (validation)
+  int64 total_kredit = 7;           // Total credit amount (validation)
+}
+
+// Individual journal line (debit or credit)
+message JournalLine {
+  string akun_id = 1;
+  string kode_akun = 2;             // Account code (e.g., '1-1100')
+  string nama_akun = 3;             // Account name (e.g., 'Kas')
+  int64 debit = 4;                  // Amount in cents
+  int64 kredit = 5;                 // Amount in cents
+  string keterangan = 6;            // Optional: Line description
+}
+
+// Request to get journal entry
+message GetJournalEntryRequest {
+  string tenant_id = 1;
+  string jurnal_entry_id = 2;
+}
+
+// Response with full journal entry details
+message GetJournalEntryResponse {
+  bool success = 1;
+  string message = 2;
+  JournalEntry journal_entry = 3;
+}
+
+// Request to get journal entries by period
+message GetJournalEntriesByPeriodRequest {
+  string tenant_id = 1;
+  string periode_pelaporan = 2;     // Format: 'YYYY-MM' or 'YYYY'
+  string status = 3;                // Optional filter: 'draft', 'posted', 'reversed'
+  int32 limit = 4;                  // Optional: Max results (default 100)
+  int32 offset = 5;                 // Optional: Pagination offset
+}
+
+// Response with list of journal entries
+message GetJournalEntriesByPeriodResponse {
+  bool success = 1;
+  string message = 2;
+  repeated JournalEntry journal_entries = 3;
+  int32 total_count = 4;
+}
+
+// Full journal entry (header + details)
+message JournalEntry {
+  string id = 1;
+  string nomor_jurnal = 2;
+  int64 tanggal_jurnal = 3;         // Unix timestamp
+  string keterangan = 4;
+  int64 total_debit = 5;
+  int64 total_kredit = 6;
+  string status = 7;                // 'draft', 'posted', 'reversed'
+  string periode_pelaporan = 8;
+  string transaksi_id = 9;          // Optional: Link to TransaksiHarian
+  repeated JournalLine details = 10;
+  int64 created_at = 11;            // Unix timestamp
+}
+
+// ============================================
+// CHART OF ACCOUNTS MESSAGES
+// ============================================
+
+// Request to create new account
+message CreateAccountRequest {
+  string tenant_id = 1;
+  string kode_akun = 2;             // Account code (e.g., '1-1100')
+  string nama_akun = 3;             // Account name (e.g., 'Kas')
+  string kategori = 4;              // 'aset', 'liabilitas', 'ekuitas', 'pendapatan', 'beban'
+  string sub_kategori = 5;          // Optional: Sub-category
+  string normal_balance = 6;        // 'debit' or 'kredit'
+  string parent_id = 7;             // Optional: Parent account for hierarchy
+  string created_by = 8;
+}
+
+// Response with created account
+message CreateAccountResponse {
+  bool success = 1;
+  string message = 2;
+  Account account = 3;
+}
+
+// Request to get account
+message GetAccountRequest {
+  string tenant_id = 1;
+  string akun_id = 2;               // Can be ID or kode_akun
+}
+
+// Response with account details
+message GetAccountResponse {
+  bool success = 1;
+  string message = 2;
+  Account account = 3;
+}
+
+// Request to list accounts
+message ListAccountsRequest {
+  string tenant_id = 1;
+  string kategori = 2;              // Optional filter: 'aset', 'liabilitas', etc
+  bool is_active = 3;               // Optional filter: active accounts only
+  int32 limit = 4;                  // Optional: Max results (default 100)
+}
+
+// Response with list of accounts
+message ListAccountsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated Account accounts = 3;
+  int32 total_count = 4;
+}
+
+// Request to update account
+message UpdateAccountRequest {
+  string tenant_id = 1;
+  string akun_id = 2;
+  string nama_akun = 3;             // Optional: Update name
+  string sub_kategori = 4;          // Optional: Update sub-category
+  bool is_active = 5;               // Optional: Activate/deactivate
+  string updated_by = 6;
+}
+
+// Response with updated account
+message UpdateAccountResponse {
+  bool success = 1;
+  string message = 2;
+  Account account = 3;
+}
+
+// Request to deactivate account
+message DeactivateAccountRequest {
+  string tenant_id = 1;
+  string akun_id = 2;
+  string deactivated_by = 3;
+}
+
+// Response for deactivate operation
+message DeactivateAccountResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Chart of accounts record
+message Account {
+  string id = 1;
+  string kode_akun = 2;
+  string nama_akun = 3;
+  string kategori = 4;              // 'aset', 'liabilitas', 'ekuitas', 'pendapatan', 'beban'
+  string sub_kategori = 5;
+  string normal_balance = 6;        // 'debit' or 'kredit'
+  bool is_active = 7;
+  string parent_id = 8;
+  int64 created_at = 9;             // Unix timestamp
+  int64 updated_at = 10;            // Unix timestamp
+}
+
+// ============================================
+// HEALTH CHECK MESSAGE
+// ============================================
+
+// Health check response
+message HealthResponse {
+  string status = 1;                // 'SERVING' or 'NOT_SERVING'
+  string service_name = 2;
+  int64 timestamp = 3;              // Unix timestamp in milliseconds
+  string version = 4;
+  bool database_connected = 5;
+  int32 total_accounts = 6;         // Number of accounts in CoA
+  int32 total_journal_entries = 7;  // Number of journal entries
+}

@@ -1,0 +1,152 @@
+import os
+import sys
+import asyncio
+from typing import AsyncGenerator
+from contextlib import asynccontextmanager
+
+import structlog
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Import routers
+from .routers import health
+from .routers import chat
+from .routers import session
+from .routers import auth
+from .routers import customer
+from backend.api_gateway.app.routers import ragcrud_test
+from backend.api_gateway.app.routers import ragllm_test
+from backend.api_gateway.app.routers import raginject_test
+from backend.api_gateway.app.routers import flow
+from backend.api_gateway.app.routers import onboarding
+from backend.api_gateway.app.routers import universal_chat
+
+# Import authentication middleware
+from .middleware.auth_middleware import AuthMiddleware
+
+# Import AuthClient for singleton
+from backend.api_gateway.app.services.auth_client import AuthClient
+
+# Logging setup
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stdout)
+)
+
+logger = structlog.get_logger()
+
+# Prisma binary path
+os.environ["PRISMA_QUERY_ENGINE_BINARY"] = "/app/libs/milkyhoop_prisma/engine/query-engine-debian-openssl-3.0.x"
+
+# Prisma client (Python)
+from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+
+prisma = Prisma()
+
+# Prisma lifecycle (startup & shutdown)
+@asynccontextmanager
+async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    retries = 5
+    for attempt in range(1, retries + 1):
+        try:
+            await prisma.connect()
+            print("Prisma connected.")
+            break
+        except Exception as e:
+            print(f"Retry {attempt}/{retries} connecting Prisma failed: {e}")
+            await asyncio.sleep(3)
+    else:
+        print("All Prisma connection attempts failed. Continuing without DB.")
+    yield
+    try:
+        await prisma.disconnect()
+        print("Prisma disconnected.")
+    except Exception as e:
+        print(f"Error disconnecting Prisma: {e}")
+
+# FastAPI app
+app = FastAPI(
+    title="MilkyHoop API Gateway",
+    description="Enterprise Multi-Tenant Chatbot Platform with Phase 2 Authentication",
+    version="3.0.0",
+    lifespan=prisma_lifespan
+)
+
+# Add Authentication Middleware
+app.add_middleware(AuthMiddleware)
+
+# Add CORS Middleware for Frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Global auth_client singleton
+auth_client = AuthClient(
+    host="milkyhoop-dev-auth_service-1",
+    port=8013,
+    timeout=60.0
+)
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize auth service connection on startup"""
+    logger.info("API Gateway starting up...")
+    try:
+        await auth_client.connect()
+        logger.info("Connected to Auth Service successfully")
+    except Exception as e:
+        logger.error(f"Failed to connect to Auth Service: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup auth service connection on shutdown"""
+    logger.info("API Gateway shutting down...")
+    try:
+        await auth_client.close()
+        logger.info("Auth Service connection closed")
+    except Exception as e:
+        logger.error(f"Error closing Auth Service connection: {e}")
+
+# Include routers
+app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(chat.router, prefix="/chat", tags=["chat"])
+app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
+app.include_router(session.router, prefix="/api/auth", tags=["authentication"])
+app.include_router(customer.router, prefix="", tags=["customer"])
+app.include_router(ragcrud_test.router, prefix="/api/test/ragcrud", tags=["ragcrud"])
+app.include_router(ragllm_test.router, prefix="/api/test/ragllm", tags=["ragllm"]) 
+app.include_router(raginject_test.router, prefix="/api/test/raginject", tags=["raginject"])
+app.include_router(flow.router, prefix="/api/flow", tags=["flow"])
+app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboarding"])
+app.include_router(universal_chat.router, prefix="", tags=["universal_chat"])
+
+@app.get("/")
+async def root():
+    return {
+        "message": "MilkyHoop API Gateway v3.0.0",
+        "status": "operational",
+        "phase": "Phase 2 - Authentication Active",
+        "features": {
+            "authentication": "Active - JWT + Session Management",
+            "session_management": "Active - Redis Storage", 
+            "middleware": "Active - Path-based Access Control",
+            "multi_tenant": "Active",
+            "chatbot_services": "Active"
+        },
+        "endpoints": {
+            "protected": ["/chat/", "/api/setup/", "/api/test/", "/api/auth/"],
+            "public": ["/health", "/healthz", "/docs", "/"],
+            "session": ["/api/auth/logout", "/api/auth/logout-all", "/api/auth/sessions"]
+        }
+    }
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "healthy", "phase": "2", "middleware": "active"}

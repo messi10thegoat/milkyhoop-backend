@@ -1,0 +1,69 @@
+╔════════════════════════════════════════════════════════════╗
+║         DATABASE RESTORE INSTRUCTIONS                      ║
+╚════════════════════════════════════════════════════════════╝
+
+Backup Information:
+  Timestamp: 20251014_080629
+  File: /root/milkyhoop-dev/database/backups/milkyhoop_full_backup_20251014_080629.sql
+  Size: 1.3M
+  Tables: 50
+
+════════════════════════════════════════════════════════════
+
+⚠️  RESTORE PROCEDURE (USE WITH CAUTION!)
+════════════════════════════════════════════════════════════
+
+OPTION 1: Full Database Restore (DESTRUCTIVE)
+──────────────────────────────────────────────────────────
+
+1. Drop existing schema:
+   export PGPASSWORD="Proyek771977"
+   psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
+        -p 5432 \
+        -U postgres \
+        -d postgres \
+        -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+2. Restore from backup:
+   export PGPASSWORD="Proyek771977"
+   psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
+        -p 5432 \
+        -U postgres \
+        -d postgres \
+        -f /root/milkyhoop-dev/database/backups/milkyhoop_full_backup_20251014_080629.sql
+
+3. Verify restore:
+   export PGPASSWORD="Proyek771977"
+   psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
+        -p 5432 \
+        -U postgres \
+        -d postgres \
+        -c "\dt"
+
+════════════════════════════════════════════════════════════
+
+OPTION 2: Selective Table Restore (SAFER)
+──────────────────────────────────────────────────────────
+
+1. Extract specific table from backup:
+   grep -A 1000 "CREATE TABLE specific_table" /root/milkyhoop-dev/database/backups/milkyhoop_full_backup_20251014_080629.sql > table_only.sql
+
+2. Restore specific table:
+   export PGPASSWORD="Proyek771977"
+   psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
+        -p 5432 \
+        -U postgres \
+        -d postgres \
+        -f table_only.sql
+
+════════════════════════════════════════════════════════════
+
+BACKUP METADATA
+────────────────────────────────────────────────────────────
+Date: Tue Oct 14 08:07:00 UTC 2025
+Host: docker-s-2vcpu-4gb-sgp1-01
+User: root
+PostgreSQL Client: pg_dump (PostgreSQL) 15.14 (Ubuntu 15.14-1.pgdg22.04+1)
+Server: PostgreSQL 15.8 (Supabase)
+
+════════════════════════════════════════════════════════════

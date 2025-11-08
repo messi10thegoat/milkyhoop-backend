@@ -1,0 +1,510 @@
+"""
+business_parser/app/services/llm_parser.py
+
+LLM-based Intent Classification for Tenant Mode Queries
+Purpose: Classify financial analytics, inventory, and accounting queries
+Scope: READ-ONLY analytics (no transaction recording)
+
+Author: MilkyHoop Team
+Version: 1.0.0
+"""
+
+import os
+import json
+import re
+from typing import Dict, Any
+from datetime import datetime
+from openai import OpenAI
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# Tenant mode prompt template (analytics-focused)
+TENANT_PROMPT_TEMPLATE = """
+PERAN: Kamu adalah asisten NLP untuk klasifikasi intent tenant mode di platform MilkyHoop.
+
+SCOPE: TENANT MODE (Read-Only Analytics)
+- Financial reports (SAK EMKM)
+- Product analytics (top/low sellers)
+- Inventory queries
+- Accounting queries
+
+TUJUAN: Klasifikasi intent pengguna dengan AKURAT dan ekstrak entitas relevan.
+
+OUTPUT FORMAT: JSON dengan struktur:
+{{
+  "intent": "nama_intent",
+  "entities": {{
+    // Entity structure sesuai intent type
+  }},
+  "confidence": 0.95,
+  "reasoning": "brief explanation"
+}}
+
+═══════════════════════════════════════════
+📊 TENANT MODE INTENTS (Analytics Only)
+═══════════════════════════════════════════
+
+1️⃣ financial_report
+   KAPAN: User meminta laporan keuangan SAK EMKM
+   TRIGGER: "untung", "rugi", "laba", "neraca", "kas", "aset", "laporan", "keuangan", "finansial", "omzet", "profit", "pendapatan"
+   
+   CONTOH:
+   - "Untung bulan ini berapa?"
+   - "Lihat neraca Oktober"
+   - "Kas masuk bulan lalu?"
+   - "Gimana kondisi keuangan bisnis?"
+   - "Omzet tahun ini berapa?"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "report_type": "laba_rugi",  // laba_rugi|neraca|arus_kas|perubahan_ekuitas
+       "periode_pelaporan": "{current_period}",  // YYYY-MM format
+       "time_reference": "bulan_ini"  // bulan_ini|bulan_lalu|tahun_ini
+     }}
+   }}
+   
+   REPORT TYPE MAPPING:
+   - "untung/rugi/laba/profit" → laba_rugi
+   - "neraca/aset/liabilitas/balance sheet" → neraca
+   - "kas/arus kas/cash flow" → arus_kas
+   - "modal/ekuitas/equity" → perubahan_ekuitas
+
+2️⃣ top_products
+   KAPAN: User meminta daftar produk terlaris/paling laku
+   TRIGGER: "terlaris", "paling laku", "best seller", "top", "ranking", "favorit"
+   
+   CONTOH:
+   - "Produk apa yang paling laku bulan ini?"
+   - "Top 5 best seller minggu ini"
+   - "Ranking penjualan produk"
+   - "Apa yang terlaris hari ini?"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "time_range": "monthly",  // daily|weekly|monthly
+       "limit": 10,
+       "periode_pelaporan": "{current_period}"
+     }}
+   }}
+
+3️⃣ low_sell_products
+   KAPAN: User meminta daftar produk kurang laku/slow moving
+   TRIGGER: "kurang laku", "slow moving", "jarang laku", "stok menumpuk", "tidak laku"
+   
+   CONTOH:
+   - "Produk apa yang kurang laku?"
+   - "Barang mana yang slow moving?"
+   - "Stok apa yang menumpuk?"
+   - "Produk yang jarang dibeli"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "time_range": "30_hari",
+       "limit": 10,
+       "periode_pelaporan": "{current_period}"
+     }}
+   }}
+
+4️⃣ inventory_query
+   KAPAN: User mengecek stok barang/persediaan
+   TRIGGER: "stok", "stock", "persediaan", "cek stok", "berapa stok", "habis"
+   
+   CONTOH:
+   - "Cek stok kaos hitam" → product_name: "kaos hitam"
+   - "Berapa stok di gudang Bandung?" → lokasi_gudang: "gudang_bandung"
+   - "Produk apa yang hampir habis?" → query_type: "low_stock_alert"
+   - "Stok ballpoint" → product_name: "ballpoint"
+   - "Berapa stok penghapus?" → product_name: "penghapus"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "query_type": "stock_level",  // stock_level|low_stock_alert|movement_history
+       "product_name": "ballpoint",  // REQUIRED: Extract product name from query
+       "lokasi_gudang": ""  // Optional: specific warehouse location
+     }}
+   }}
+   
+   EXTRACTION RULES:
+   - ALWAYS extract product_name if mentioned in query
+   - Product name: kata benda setelah "stok"/"stock"/"cek"/"berapa"
+   - Examples: "stok ballpoint" → "ballpoint", "cek stok penghapus" → "penghapus"
+   - If no specific product: product_name = "" (empty string)
+
+5️⃣ accounting_query
+   KAPAN: User mengecek jurnal/bagan akun/accounting data
+   TRIGGER: "jurnal", "bagan akun", "chart of accounts", "debit", "kredit", "balance"
+   
+   CONTOH:
+   - "Lihat jurnal bulan ini"
+   - "Cek bagan akun"
+   - "Daftar akun perkiraan"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "query_type": "journal_entries",  // journal_entries|chart_of_accounts
+       "periode_pelaporan": "{current_period}"
+     }}
+   }}
+
+6️⃣ general_inquiry
+   KAPAN: Pertanyaan umum tentang bisnis/strategi (tidak spesifik analytics)
+   TRIGGER: "gimana", "bagaimana", "tips", "saran", "cara"
+   
+   CONTOH:
+   - "Gimana cara naikin penjualan?"
+   - "Tips marketing yang efektif?"
+   - "Strategi meningkatkan profit"
+   
+   ENTITIES:
+   {{
+     "entities": {{
+       "topic": "sales_improvement"
+     }}
+   }}
+
+7️⃣ out_of_scope
+   KAPAN: Query di luar domain bisnis/keuangan
+   TRIGGER: Topik personal, politik, entertainment, dll
+   
+   CONTOH:
+   - "Siapa presiden Indonesia?"
+   - "Resep masak ayam?"
+   - "Cuaca hari ini?"
+   
+   ENTITIES: {{"entities": {{}}}}
+
+═══════════════════════════════════════════
+🎯 DECISION TREE (Tenant Mode)
+═══════════════════════════════════════════
+
+1. Ada kata "terlaris"/"paling laku"/"best seller"? → top_products
+2. Ada kata "kurang laku"/"slow moving"/"menumpuk"? → low_sell_products
+3. Ada kata "laporan"/"untung"/"rugi"/"neraca"/"kas"? → financial_report
+4. Ada kata "stok"/"stock"/"persediaan" + cek/berapa? → inventory_query
+5. Ada kata "jurnal"/"bagan akun"/"debit"/"kredit"? → accounting_query
+6. Pertanyaan strategi/tips bisnis umum? → general_inquiry
+7. Di luar domain bisnis? → out_of_scope
+
+═══════════════════════════════════════════
+✅ CRITICAL RULES
+═══════════════════════════════════════════
+
+1. TENANT MODE = READ-ONLY
+   ❌ NO transaction recording (redirect ke setup mode)
+   ❌ NO FAQ operations (redirect ke setup mode)
+   ✅ ONLY analytics, reports, queries
+
+2. FIELD FORMATS:
+   - periode_pelaporan: YYYY-MM (e.g., "{current_period}")
+   - time_range: daily|weekly|monthly|30_hari
+   - Lowercase: all enum values
+
+3. OUTPUT:
+   - Valid JSON (no markdown)
+   - Intent from list above
+   - Confidence 0.0-1.0
+   - Brief reasoning
+
+═══════════════════════════════════════════
+
+USER MESSAGE:
+{user_input}
+
+TENANT ID:
+{tenant_id}
+
+CONTEXT (if any):
+{context_info}
+
+JAWABAN JSON (no markdown, direct JSON only):
+"""
+
+
+def parse_tenant_intent_entities(
+    text: str, 
+    context: str = None,
+    tenant_id: str = None
+) -> Dict[str, Any]:
+    """
+    Parse tenant query to extract intent and entities using GPT-4o
+    
+    SCOPE: Tenant mode only (analytics, reports, inventory queries)
+    NOT for transaction recording or setup operations
+    
+    Args:
+        text: User input message
+        context: Optional conversation context
+        tenant_id: Tenant identifier
+        
+    Returns:
+        dict: Parsed intent, entities, confidence, reasoning
+    """
+    
+    # Build context info
+    context_info = "None"
+    if context:
+        context_info = f"""Previous conversation:
+{context}
+
+NOTE: Use context to understand query continuity.
+"""
+    
+    # Get current period
+    current_period = datetime.now().strftime("%Y-%m")
+    
+    # Build prompt
+    prompt = TENANT_PROMPT_TEMPLATE.format(
+        user_input=text.strip(),
+        tenant_id=tenant_id or "unknown",
+        context_info=context_info,
+        current_period=current_period
+    )
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"""You are a precise NLP intent classifier for TENANT MODE queries (analytics only).
+
+CRITICAL CONTEXT:
+- Today: {datetime.now().strftime('%Y-%m-%d')}
+- Current period: {current_period}
+
+SCOPE RESTRICTIONS:
+- ONLY classify analytics/reporting intents
+- NO transaction recording (that's setup mode)
+- NO FAQ operations (that's setup mode)
+
+OUTPUT RULES:
+- Valid JSON without markdown
+- Intent from tenant mode list only
+- Confidence score 0.0-1.0
+- Brief reasoning (<50 chars)
+
+TIME REFERENCE MAPPING:
+- "bulan ini" → periode_pelaporan: "{current_period}"
+- "bulan lalu" → periode_pelaporan: calculate last month
+- "tahun ini" → periode_pelaporan: "{datetime.now().strftime('%Y')}"
+
+ENTITY EXTRACTION (CRITICAL):
+- inventory_query: ALWAYS extract product_name if product mentioned
+- Example: "Cek stok ballpoint" → product_name: "ballpoint"
+- Example: "Berapa stok penghapus?" → product_name: "penghapus"
+- Example: "Stok buku tulis" → product_name: "buku tulis"
+                    """
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=800
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        print(f"[LLM] Raw output: {content[:200]}...")
+        
+        # Clean markdown if present
+        if content.startswith("```json"):
+            content = content.replace("```json", "").replace("```", "").strip()
+        elif content.startswith("```"):
+            content = content.replace("```", "").strip()
+        
+        # Parse JSON
+        parsed = json.loads(content)
+        
+        # ===== ADD: Debug entities =====
+        print(f"[LLM] Full parsed response: {json.dumps(parsed, indent=2)}")
+        
+        # Validate entities structure
+        if "entities" not in parsed or not parsed["entities"]:
+            print(f"[LLM] WARNING: Empty entities from GPT-4o")
+            parsed["entities"] = {}
+        
+        # For inventory_query, ensure product_name extraction
+        if parsed.get("intent") in ["inventory_query", "inventory", "stock", "check_stock"]:
+            entities = parsed.get("entities", {})
+            if not entities.get("product_name"):
+                # Fallback: extract from original text
+                product_name = _extract_product_name_fallback(text)
+                if product_name:
+                    entities["product_name"] = product_name
+                    print(f"[LLM] Fallback extracted product_name: {product_name}")
+                parsed["entities"] = entities
+        # ===== END ADD =====
+        
+        # Validate required fields
+        if not parsed.get("intent"):
+            raise ValueError("Intent missing from LLM response")
+        
+        # Normalize intent
+        intent = parsed.get("intent", "").lower().strip()
+        
+        # Intent mapping (handle variations)
+        intent_mapping = {
+            "report": "financial_report",
+            "get_report": "financial_report",
+            "top": "top_products",
+            "best_seller": "top_products",
+            "best_sellers": "top_products",
+            "low_sell": "low_sell_products",
+            "slow_moving": "low_sell_products",
+            "inventory": "inventory_query",
+            "stock": "inventory_query",
+            "check_stock": "inventory_query",
+            "accounting": "accounting_query",
+            "journal": "accounting_query",
+            "general": "general_inquiry",
+            "out_of_domain": "out_of_scope"
+        }
+        
+        normalized_intent = intent_mapping.get(intent, intent)
+        parsed["intent"] = normalized_intent
+        
+        # Ensure defaults
+        if "confidence" not in parsed:
+            parsed["confidence"] = 0.8
+        
+        if "reasoning" not in parsed:
+            parsed["reasoning"] = "llm classification"
+        
+        if "entities" not in parsed:
+            parsed["entities"] = {}
+        
+        # Add model metadata
+        parsed["model_used"] = "gpt-4o"
+        
+        print(f"[LLM] Classified: {normalized_intent} (confidence: {parsed['confidence']:.2f})")
+        
+        return parsed
+        
+    except json.JSONDecodeError as e:
+        print(f"[LLM] JSON parse error: {e}")
+        print(f"[LLM] Raw content: {content[:500]}")
+        
+        # Fallback to rule-based
+        return _rule_based_fallback(text)
+        
+    except Exception as e:
+        print(f"[LLM] API error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Fallback to rule-based
+        return _rule_based_fallback(text)
+
+
+def _rule_based_fallback(text: str) -> Dict[str, Any]:
+    """
+    Rule-based fallback for tenant intent classification
+    
+    Args:
+        text: User input
+        
+    Returns:
+        dict: Basic intent classification
+    """
+    text_lower = text.lower()
+    
+    # Top products
+    if any(kw in text_lower for kw in ["terlaris", "paling laku", "best seller", "top"]):
+        return {
+            "intent": "top_products",
+            "entities": {"time_range": "monthly", "limit": 10},
+            "confidence": 0.85,
+            "reasoning": "rule-based (keyword match)",
+            "model_used": "regex"
+        }
+    
+    # Low-sell products
+    if any(kw in text_lower for kw in ["kurang laku", "slow moving", "jarang laku", "menumpuk"]):
+        return {
+            "intent": "low_sell_products",
+            "entities": {"time_range": "30_hari", "limit": 10},
+            "confidence": 0.82,
+            "reasoning": "rule-based (keyword match)",
+            "model_used": "regex"
+        }
+    
+    # Financial report
+    if any(kw in text_lower for kw in ["untung", "rugi", "laba", "neraca", "kas", "laporan", "keuangan"]):
+        return {
+            "intent": "financial_report",
+            "entities": {
+                "report_type": "laba_rugi",
+                "periode_pelaporan": datetime.now().strftime("%Y-%m")
+            },
+            "confidence": 0.80,
+            "reasoning": "rule-based (keyword match)",
+            "model_used": "regex"
+        }
+    
+    # Inventory query
+    if any(kw in text_lower for kw in ["stok", "stock", "persediaan"]):
+        return {
+            "intent": "inventory_query",
+            "entities": {"query_type": "stock_level"},
+            "confidence": 0.78,
+            "reasoning": "rule-based (keyword match)",
+            "model_used": "regex"
+        }
+    
+    # Accounting
+    if any(kw in text_lower for kw in ["jurnal", "bagan akun", "debit", "kredit"]):
+        return {
+            "intent": "accounting_query",
+            "entities": {"query_type": "journal_entries"},
+            "confidence": 0.75,
+            "reasoning": "rule-based (keyword match)",
+            "model_used": "regex"
+        }
+    
+    # Default: general inquiry
+    return {
+        "intent": "general_inquiry",
+        "entities": {},
+        "confidence": 0.6,
+        "reasoning": "rule-based (default)",
+        "model_used": "regex"
+    }
+
+
+def _extract_product_name_fallback(text: str) -> str:
+    """
+    Fallback extraction for product_name from inventory queries
+    
+    Args:
+        text: User query
+        
+    Returns:
+        str: Extracted product name or empty string
+    """
+    import re
+    
+    text_lower = text.lower()
+    
+    # Pattern: "stok {product}" or "cek stok {product}" or "berapa stok {product}"
+    patterns = [
+        r'(?:stok|stock)\s+(?:produk\s+)?([a-z\s]+?)(?:\?|$)',
+        r'(?:cek|berapa)\s+stok\s+(?:produk\s+)?([a-z\s]+?)(?:\?|$)',
+        r'persediaan\s+([a-z\s]+?)(?:\?|$)'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            product = match.group(1).strip()
+            # Remove common filler words
+            product = re.sub(r'\b(di|ke|dari|untuk|yang|ini|itu)\b', '', product).strip()
+            if product and len(product) > 2:
+                return product
+    
+    return ""

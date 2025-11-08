@@ -1,0 +1,452 @@
+syntax = "proto3";
+
+package transaction_service;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "inventory_service.proto";
+
+// ============================================
+// TRANSACTION SERVICE - Write Path
+// ============================================
+// Handles financial transaction creation with:
+// - Idempotency (prevent duplicates)
+// - Multi-tenant isolation
+// - Outbox pattern (event sourcing)
+// - Support for SAK EMKM accounting standard (33-field compliance)
+// ============================================
+
+service TransactionService {
+  // Create new transaction (immutable event log)
+  rpc CreateTransaction (CreateTransactionRequest) returns (TransactionResponse);
+  
+  // Update draft transaction (only if status = 'draft')
+  rpc UpdateTransaction (UpdateTransactionRequest) returns (TransactionResponse);
+  
+  // Soft delete transaction (mark status = 'rejected')
+  rpc DeleteTransaction (DeleteTransactionRequest) returns (google.protobuf.Empty);
+  
+  // Get transaction by ID
+  rpc GetTransaction (GetTransactionRequest) returns (TransactionResponse);
+  
+  // List transactions with filters
+  rpc ListTransactions (ListTransactionsRequest) returns (ListTransactionsResponse);
+  
+  // Health check
+  rpc HealthCheck (google.protobuf.Empty) returns (HealthResponse);
+  
+  // ============================================
+  // ANALYTICS METHODS (Phase 2)
+  // ============================================
+  
+  // Get top selling products (daily/weekly/monthly)
+  rpc GetTopProducts (GetTopProductsRequest) returns (GetTopProductsResponse);
+  
+  // Get low-selling products (low turnover)
+  rpc GetLowSellProducts (GetLowSellProductsRequest) returns (GetLowSellProductsResponse);
+}
+
+// ============================================
+// REQUEST/RESPONSE MESSAGES
+// ============================================
+
+message CreateTransactionRequest {
+  // ============================================
+  // CORE FIELDS (1-6) - Existing + Enhanced
+  // ============================================
+  string tenant_id = 1;
+  string created_by = 2;  // user_id
+  string actor_role = 3;  // 'owner', 'bendahara', 'staf_toko', 'kurir', or custom role name
+  
+  // Transaction type discriminator
+  string jenis_transaksi = 4;  // 'penjualan', 'pembelian', 'beban', 'penerimaan', 'pengeluaran'
+  
+  // Transaction payload (one of these - BACKWARD COMPATIBLE)
+  oneof transaction_data {
+    TransaksiPenjualan penjualan = 5;
+    TransaksiPembelian pembelian = 6;
+    TransaksiBeban beban = 7;
+  }
+  
+  // Metadata (existing)
+  string raw_text = 8;  // Original user message
+  bytes raw_nlu = 9;    // NLU extraction result (optional)
+  string receipt_url = 10;
+  string idempotency_key = 11;  // CRITICAL: Prevent duplicates
+  
+  // Bank account tracking (existing)
+  string rekening_id = 12;
+  string rekening_type = 13;  // 'pribadi', 'bisnis', 'campur', 'cash', 'bank_bca', 'bank_mandiri', 'bank_bri', 'ewallet'
+  
+  // ============================================
+  // SAK EMKM COMPLIANCE FIELDS (NEW - Fields 6-33)
+  // ============================================
+  
+  // Field 6: Total nominal (top-level, calculated from items or provided)
+  int64 total_nominal = 14;  // In cents/sen to avoid floating-point issues
+  
+  // Fields 7-11: Payment & Cash Flow
+  string metode_pembayaran = 15;  // 'cash', 'transfer', 'tempo', 'giro', 'cicilan'
+  string status_pembayaran = 16;  // 'lunas', 'dp', 'tempo', 'cicilan', 'dibayar_sebagian'
+  int64 nominal_dibayar = 17;     // Amount paid in cents (optional)
+  int64 sisa_piutang_hutang = 18; // Remaining balance in cents (auto-calculated: total_nominal - nominal_dibayar)
+  int64 jatuh_tempo = 19;         // Due date unix timestamp in seconds (optional)
+  
+  // Fields 12-14: Pihak Terkait (Counter-party)
+  string nama_pihak = 20;         // Customer/supplier/employee/owner name
+  string kontak_pihak = 21;       // Phone/email/WhatsApp (optional)
+  string pihak_type = 22;         // 'customer', 'supplier', 'karyawan', 'owner', 'bank'
+  
+  // Field 17: Items array (Universal structure - replaces old ItemPenjualan/ItemPembelian)
+  repeated ItemTransaksi items = 23;
+  
+  // Field 18: HPP Breakdown (optional - for COGS tracking)
+  HppBreakdown hpp = 24;
+  
+  // Fields 19-20: Inventory Impact (optional - for stock tracking)
+  inventory_service.InventoryImpact inventory_impact = 25;
+  string lokasi_gudang = 26;      // Warehouse location (optional)
+  
+  // Fields 21-26: SAK EMKM Classification
+  string jenis_aset = 27;         // 'aset_lancar', 'aset_tidak_lancar', 'none'
+  string kategori_beban = 28;     // 'beban_pokok', 'beban_operasional', 'beban_penyusutan', 'none'
+  string kategori_arus_kas = 29;  // 'operasi', 'investasi', 'pendanaan' (REQUIRED for cash flow statement)
+  bool is_prive = 30;             // Owner withdrawal (default: false)
+  bool is_modal = 31;             // Capital injection or loan (default: false)
+  int64 pajak_amount = 32;        // Tax amount in cents (PPh/PPN) - optional
+  
+  // Field 27: Chart of Accounts
+  string akun_perkiraan_id = 33;  // Link to BaganAkun (optional, AI can auto-assign)
+  
+  // Fields 28-29: Depreciation (for fixed assets only)
+  int64 penyusutan_per_tahun = 34; // Annual depreciation in cents (optional)
+  int32 umur_manfaat = 35;        // Useful life in months (optional)
+  
+  // Field 30: Accounting Period
+  string periode_pelaporan = 36;  // Format: 'YYYY-MM' or 'YYYY' (e.g., '2025-10' or '2025')
+  
+  // Field 31: Additional notes (separate from raw_text)
+  string keterangan = 37;         // User-facing notes (optional)
+}
+
+message UpdateTransactionRequest {
+  string transaction_id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+  
+  // Only allow updates if status = 'draft'
+  oneof transaction_data {
+    TransaksiPenjualan penjualan = 4;
+    TransaksiPembelian pembelian = 5;
+    TransaksiBeban beban = 6;
+  }
+  
+  // Allow updating SAK EMKM fields (optional)
+  int64 total_nominal = 7;
+  string metode_pembayaran = 8;
+  string status_pembayaran = 9;
+  int64 nominal_dibayar = 10;
+  int64 sisa_piutang_hutang = 11;
+  int64 jatuh_tempo = 12;        
+  string nama_pihak = 13;
+  string kontak_pihak = 14;
+  string pihak_type = 15;
+  repeated ItemTransaksi items = 16;
+  HppBreakdown hpp = 17;
+  inventory_service.InventoryImpact inventory_impact = 18;
+  string lokasi_gudang = 19;
+  string jenis_aset = 20;
+  string kategori_beban = 21;
+  string kategori_arus_kas = 22;
+  bool is_prive = 23;
+  bool is_modal = 24;
+  int64 pajak_amount = 25;
+  string akun_perkiraan_id = 26;
+  int64 penyusutan_per_tahun = 27;
+  int32 umur_manfaat = 28;
+  string periode_pelaporan = 29;
+  string keterangan = 30;
+}
+
+message DeleteTransactionRequest {
+  string transaction_id = 1;
+  string tenant_id = 2;
+  string deleted_by = 3;
+  string reason = 4;
+}
+
+message GetTransactionRequest {
+  string transaction_id = 1;
+  string tenant_id = 2;
+}
+
+message ListTransactionsRequest {
+  string tenant_id = 1;
+  string jenis_transaksi = 2;  // Filter: 'penjualan', 'pembelian', 'beban' (optional)
+  string status = 3;  // Filter: 'draft', 'pending', 'approved', 'rejected' (optional)
+  int64 start_timestamp = 4;  // Unix timestamp (milliseconds)
+  int64 end_timestamp = 5;
+  int32 page = 6;  // Default: 1
+  int32 page_size = 7;  // Default: 50, Max: 200
+}
+
+message TransactionResponse {
+  bool success = 1;
+  string message = 2;
+  TransaksiHarian transaction = 3;
+}
+
+message ListTransactionsResponse {
+  repeated TransaksiHarian transactions = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message HealthResponse {
+  string status = 1;  // "healthy" or "unhealthy"
+  string version = 2;
+  int64 timestamp = 3;
+}
+
+// ============================================
+// TRANSACTION DATA MODELS (EXISTING - UNCHANGED)
+// ============================================
+
+message TransaksiHarian {
+  string id = 1;
+  string tenant_id = 2;
+  string created_by = 3;
+  string actor_role = 4;
+  int64 timestamp = 5;  // Unix timestamp (milliseconds)
+  
+  string jenis_transaksi = 6;
+  
+  oneof payload {
+    TransaksiPenjualan penjualan = 7;
+    TransaksiPembelian pembelian = 8;
+    TransaksiBeban beban = 9;
+  }
+  
+  string raw_text = 10;
+  bytes raw_nlu = 11;
+  string receipt_url = 12;
+  string receipt_checksum = 13;
+  string idempotency_key = 14;
+  
+  string status = 15;  // 'draft', 'pending', 'approved', 'rejected'
+  string approved_by = 16;
+  int64 approved_at = 17;
+  
+  string rekening_id = 18;
+  string rekening_type = 19;
+  
+  int64 created_at = 20;
+  int64 updated_at = 21;
+  
+  // SAK EMKM fields (new - will be populated from CreateTransactionRequest)
+  int64 total_nominal = 22;
+  string metode_pembayaran = 23;
+  string status_pembayaran = 24;
+  int64 nominal_dibayar = 25;
+  int64 sisa_piutang_hutang = 26;
+  int64 jatuh_tempo = 27;
+  string nama_pihak = 28;
+  string kontak_pihak = 29;
+  string pihak_type = 30;
+  string lokasi_gudang = 31;
+  string jenis_aset = 32;
+  string kategori_beban = 33;
+  string kategori_arus_kas = 34;
+  bool is_prive = 35;
+  bool is_modal = 36;
+  int64 pajak_amount = 37;
+  string akun_perkiraan_id = 38;
+  int64 penyusutan_per_tahun = 39;
+  int32 umur_manfaat = 40;
+  string periode_pelaporan = 41;
+  string keterangan = 42;
+}
+
+// ============================================
+// PENJUALAN (Sales Transaction) - UNCHANGED
+// ============================================
+message TransaksiPenjualan {
+  string customer_name = 1;
+  string customer_id = 2;  // Optional: if customer exists in CRM
+  
+  repeated ItemPenjualan items = 3;
+  
+  int64 subtotal = 4;
+  int64 discount = 5;
+  int64 tax = 6;  // PPN if applicable
+  int64 total_nominal = 7;
+  
+  string payment_method = 8;  // 'cash', 'transfer', 'qris', 'piutang'
+  string payment_status = 9;  // 'lunas', 'dp', 'belum_bayar'
+  
+  // For piutang (accounts receivable)
+  int64 amount_paid = 10;
+  int64 amount_due = 11;
+  int64 due_date = 12;  // Unix timestamp
+  
+  string notes = 13;
+}
+
+message ItemPenjualan {
+  string sku = 1;
+  string name = 2;
+  int32 quantity = 3;
+  string unit = 4;  // 'pcs', 'kg', 'meter', etc
+  int64 unit_price = 5;
+  int64 subtotal = 6;  // quantity * unit_price
+}
+
+// ============================================
+// PEMBELIAN (Purchase Transaction) - UNCHANGED
+// ============================================
+message TransaksiPembelian {
+  string vendor_name = 1;
+  string vendor_id = 2;  // Optional
+  
+  repeated ItemPembelian items = 3;
+  
+  int64 subtotal = 4;
+  int64 discount = 5;
+  int64 tax = 6;
+  int64 total_nominal = 7;
+  
+  string payment_method = 8;
+  string payment_status = 9;
+  
+  int64 amount_paid = 10;
+  int64 amount_due = 11;
+  int64 due_date = 12;
+  
+  string notes = 13;
+  string kategori = 14;  // 'bahan_baku', 'barang_jadi', 'aset', etc
+}
+
+message ItemPembelian {
+  string sku = 1;
+  string name = 2;
+  int32 quantity = 3;
+  string unit = 4;
+  int64 unit_price = 5;
+  int64 subtotal = 6;
+}
+
+// ============================================
+// BEBAN (Expense Transaction) - UNCHANGED
+// ============================================
+message TransaksiBeban {
+  string kategori = 1;  // 'gaji', 'listrik', 'transportasi', 'marketing', etc
+  string deskripsi = 2;
+  int64 nominal = 3;
+  
+  string payment_method = 4;
+  string recipient = 5;  // Penerima (employee name, vendor, etc)
+  
+  bool is_reimbursement = 6;
+  string reimbursement_to = 7;  // user_id if reimbursement
+  
+  string notes = 8;
+  string rekening_id = 9;
+}
+
+// ============================================
+// SAK EMKM SUB-MESSAGES (NEW - Phase 1)
+// ============================================
+
+// Field 17: Universal Item structure (replaces ItemPenjualan/ItemPembelian for new transactions)
+message ItemTransaksi {
+  string nama_produk = 1;         // Product description (natural language)
+  
+  // AI auto-assigned category hierarchy (4 levels max)
+  string kategori_path = 2;       // e.g., "Pakaian > Kaos > Kaos Oblong > Kaos Oblong Sablon"
+  string level1 = 3;              // Top-level category (strategic view) - AI auto-assign
+  string level2 = 4;              // Product category (optional) - AI auto-assign
+  string level3 = 5;              // Product type (optional) - AI auto-assign
+  string level4 = 6;              // Customization/variant (optional) - AI auto-assign
+  
+  double jumlah = 7;              // Quantity (support decimals: 2.5 kg, 1.75 meter)
+  string satuan = 8;              // Unit: 'pcs', 'kg', 'meter', 'jam', 'porsi', 'lusin', 'set'
+  int64 harga_satuan = 9;         // Unit price in cents
+  int64 subtotal = 10;            // jumlah * harga_satuan (auto-calculated)
+  
+  string produk_id = 11;          // Link to master Produk (optional)
+  string keterangan = 12;         // Item-specific notes (optional)
+}
+
+// Field 18: HPP (Cost of Goods Sold) Breakdown
+message HppBreakdown {
+  int64 biaya_bahan_baku = 1;     // Direct material cost in cents (optional)
+  int64 biaya_tenaga_kerja = 2;   // Direct labor cost in cents (optional)
+  int64 biaya_lainnya = 3;        // Other direct costs in cents (packaging, shipping, etc)
+  int64 total_hpp = 4;            // Sum of above (auto-calculated or provided)
+  string detail_json = 5;         // JSON breakdown for detailed analysis (optional)
+                                  // Example: {"kain_hitam": 1750000, "benang": 100000, "tinta": 150000}
+}
+
+// ============================================
+// ANALYTICS MESSAGES (Phase 2)
+// ============================================
+
+// Request to get top selling products
+message GetTopProductsRequest {
+  string tenant_id = 1;
+  string time_range = 2;          // 'daily', 'weekly', 'monthly'
+  int64 start_timestamp = 3;      // Optional: Custom start (unix seconds)
+  int64 end_timestamp = 4;        // Optional: Custom end (unix seconds)
+  int32 limit = 5;                // Default: 10
+}
+
+// Response with top products
+message GetTopProductsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ProductSales products = 3;
+  int32 total_count = 4;
+}
+
+// Product sales data
+message ProductSales {
+  string product_name = 1;
+  double quantity_sold = 2;
+  string unit = 3;                // 'pcs', 'meter', 'kg'
+  int64 total_revenue = 4;        // In cents
+  int32 transaction_count = 5;
+  double profit_margin = 6;       // Percentage (0-100)
+}
+
+// Request to get low-selling products
+message GetLowSellProductsRequest {
+  string tenant_id = 1;
+  string time_range = 2;          // 'daily', 'weekly', 'monthly'
+  int64 start_timestamp = 3;      // Optional: Custom start
+  int64 end_timestamp = 4;        // Optional: Custom end
+  double turnover_threshold = 5;  // Default: 10.0 (10%)
+  int32 limit = 6;                // Default: 10
+}
+
+// Response with low-sell products
+message GetLowSellProductsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ProductLowSell products = 3;
+  int32 total_count = 4;
+}
+
+// Low-selling product data
+message ProductLowSell {
+  string product_name = 1;
+  double quantity_sold = 2;
+  double current_stock = 3;
+  string unit = 4;
+  int64 total_revenue = 5;        // In cents
+  double turnover_percentage = 6; // 0-100
+  string suggestion = 7;          // Actionable suggestion
+}
+
+
+

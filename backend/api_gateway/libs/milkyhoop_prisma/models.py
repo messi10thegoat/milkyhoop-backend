@@ -61,6 +61,8 @@ class User(bases.BaseUser):
 
     id: _str
     email: _str
+    tenantId: Optional[_str] = None
+    tenant: Optional['models.Tenant'] = None
     username: Optional[_str] = None
     name: Optional[_str] = None
     fullname: Optional[_str] = None
@@ -87,6 +89,9 @@ class User(bases.BaseUser):
     subscriptions: Optional[List['models.UserSubscriptions']] = None
     aiSettings: Optional[List['models.UserAISettings']] = None
     media: Optional[List['models.UserMedia']] = None
+    auditLogs: Optional[List['models.AuditLog']] = None
+    transaksiCreated: Optional[List['models.TransaksiHarian']] = None
+    transaksiApproved: Optional[List['models.TransaksiHarian']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -1912,6 +1917,12 @@ class Tenant(bases.BaseTenant):
     status: _str
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    users: Optional[List['models.User']] = None
+    transaksiHarian: Optional[List['models.TransaksiHarian']] = None
+    taxInfo: Optional[List['models.TaxInfo']] = None
+    persediaan: Optional[List['models.Persediaan']] = None
+    baganAkun: Optional[List['models.BaganAkun']] = None
+    jurnalEntries: Optional[List['models.JurnalEntry']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -1993,9 +2004,33 @@ class Tenant(bases.BaseTenant):
                 for field in optional:
                     fields[field]['optional'] = True
 
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _Tenant_relational_fields
+                }
 
             if relations:
-                raise ValueError('Model: "Tenant" has no relational fields.')
+                for field, type_ in relations.items():
+                    if field not in _Tenant_relational_fields:
+                        raise errors.UnknownRelationalFieldError('Tenant', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
         except KeyError as exc:
             raise ValueError(
                 f'{exc.args[0]} is not a valid Tenant / {name} field.'
@@ -2342,8 +2377,1713 @@ class RagDocument(bases.BaseRagDocument):
         _created_partial_types.add(name)
 
 
+class AuditLog(bases.BaseAuditLog):
+    """Represents a AuditLog record"""
+
+    id: _str
+    userId: Optional[_str] = None
+    user: Optional['models.User'] = None
+    eventType: _str
+    ipAddress: Optional[_str] = None
+    userAgent: Optional[_str] = None
+    metadata: Optional['fields.Json'] = None
+    success: _bool
+    errorMessage: Optional[_str] = None
+    createdAt: datetime.datetime
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.AuditLogKeys']] = None,
+        exclude: Optional[Iterable['types.AuditLogKeys']] = None,
+        required: Optional[Iterable['types.AuditLogKeys']] = None,
+        optional: Optional[Iterable['types.AuditLogKeys']] = None,
+        relations: Optional[Mapping['types.AuditLogRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.AuditLogKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _AuditLog_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _AuditLog_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _AuditLog_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _AuditLog_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _AuditLog_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _AuditLog_relational_fields:
+                        raise errors.UnknownRelationalFieldError('AuditLog', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid AuditLog / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'AuditLog',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class TransaksiHarian(bases.BaseTransaksiHarian):
+    """Represents a TransaksiHarian record"""
+
+    id: _str
+    tenantId: _str
+    createdBy: _str
+    actorRole: _str
+    timestamp: _int
+    jenisTransaksi: _str
+    payload: 'fields.Json'
+    rawText: Optional[_str] = None
+    rawNlu: Optional['fields.Base64'] = None
+    metadata: Optional['fields.Json'] = None
+    receiptUrl: Optional[_str] = None
+    receiptChecksum: Optional[_str] = None
+    idempotencyKey: Optional[_str] = None
+    status: _str
+    approvedBy: Optional[_str] = None
+    approvedAt: Optional[_int] = None
+    rekeningId: Optional[_str] = None
+    rekeningType: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    totalNominal: Optional[_int] = None
+    metodePembayaran: Optional[_str] = None
+    statusPembayaran: Optional[_str] = None
+    nominalDibayar: Optional[_int] = None
+    sisaPiutangHutang: Optional[_int] = None
+    jatuhTempo: Optional[_int] = None
+    namaPihak: Optional[_str] = None
+    kontakPihak: Optional[_str] = None
+    pihakType: Optional[_str] = None
+    lokasiGudang: Optional[_str] = None
+    jenisAset: Optional[_str] = None
+    kategoriBeban: Optional[_str] = None
+    kategoriArusKas: Optional[_str] = None
+    isPrive: _bool
+    isModal: _bool
+    pajakAmount: Optional[_int] = None
+    akunPerkiraanId: Optional[_str] = None
+    penyusutanPerTahun: Optional[_int] = None
+    umurManfaat: Optional[_int] = None
+    periodePelaporan: Optional[_str] = None
+    keterangan: Optional[_str] = None
+    tenant: Optional['models.Tenant'] = None
+    creator: Optional['models.User'] = None
+    approver: Optional['models.User'] = None
+    outbox: Optional[List['models.Outbox']] = None
+    items: Optional[List['models.ItemTransaksi']] = None
+    hpp: Optional['models.HppBreakdown'] = None
+    inventoryImpact: Optional['models.InventoryImpact'] = None
+    jurnalEntries: Optional[List['models.JurnalEntry']] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.TransaksiHarianKeys']] = None,
+        exclude: Optional[Iterable['types.TransaksiHarianKeys']] = None,
+        required: Optional[Iterable['types.TransaksiHarianKeys']] = None,
+        optional: Optional[Iterable['types.TransaksiHarianKeys']] = None,
+        relations: Optional[Mapping['types.TransaksiHarianRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.TransaksiHarianKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _TransaksiHarian_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _TransaksiHarian_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _TransaksiHarian_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _TransaksiHarian_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _TransaksiHarian_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _TransaksiHarian_relational_fields:
+                        raise errors.UnknownRelationalFieldError('TransaksiHarian', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid TransaksiHarian / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'TransaksiHarian',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class ItemTransaksi(bases.BaseItemTransaksi):
+    """Represents a ItemTransaksi record"""
+
+    id: _str
+    transaksiId: _str
+    namaProduk: _str
+    kategoriPath: Optional[_str] = None
+    level1: Optional[_str] = None
+    level2: Optional[_str] = None
+    level3: Optional[_str] = None
+    level4: Optional[_str] = None
+    jumlah: _float
+    satuan: _str
+    hargaSatuan: _int
+    subtotal: _int
+    produkId: Optional[_str] = None
+    keterangan: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    transaksi: Optional['models.TransaksiHarian'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.ItemTransaksiKeys']] = None,
+        exclude: Optional[Iterable['types.ItemTransaksiKeys']] = None,
+        required: Optional[Iterable['types.ItemTransaksiKeys']] = None,
+        optional: Optional[Iterable['types.ItemTransaksiKeys']] = None,
+        relations: Optional[Mapping['types.ItemTransaksiRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.ItemTransaksiKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _ItemTransaksi_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _ItemTransaksi_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _ItemTransaksi_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _ItemTransaksi_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _ItemTransaksi_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _ItemTransaksi_relational_fields:
+                        raise errors.UnknownRelationalFieldError('ItemTransaksi', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid ItemTransaksi / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'ItemTransaksi',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class HppBreakdown(bases.BaseHppBreakdown):
+    """Represents a HppBreakdown record"""
+
+    id: _str
+    transaksiId: _str
+    biayaBahanBaku: Optional[_int] = None
+    biayaTenagaKerja: Optional[_int] = None
+    biayaLainnya: Optional[_int] = None
+    totalHpp: _int
+    detailJson: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    transaksi: Optional['models.TransaksiHarian'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.HppBreakdownKeys']] = None,
+        exclude: Optional[Iterable['types.HppBreakdownKeys']] = None,
+        required: Optional[Iterable['types.HppBreakdownKeys']] = None,
+        optional: Optional[Iterable['types.HppBreakdownKeys']] = None,
+        relations: Optional[Mapping['types.HppBreakdownRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.HppBreakdownKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _HppBreakdown_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _HppBreakdown_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _HppBreakdown_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _HppBreakdown_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _HppBreakdown_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _HppBreakdown_relational_fields:
+                        raise errors.UnknownRelationalFieldError('HppBreakdown', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid HppBreakdown / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'HppBreakdown',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class InventoryImpact(bases.BaseInventoryImpact):
+    """Represents a InventoryImpact record"""
+
+    id: _str
+    transaksiId: _str
+    isTracked: _bool
+    jenisMovement: Optional[_str] = None
+    lokasiGudang: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    transaksi: Optional['models.TransaksiHarian'] = None
+    itemsInventory: Optional[List['models.ItemInventory']] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.InventoryImpactKeys']] = None,
+        exclude: Optional[Iterable['types.InventoryImpactKeys']] = None,
+        required: Optional[Iterable['types.InventoryImpactKeys']] = None,
+        optional: Optional[Iterable['types.InventoryImpactKeys']] = None,
+        relations: Optional[Mapping['types.InventoryImpactRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.InventoryImpactKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _InventoryImpact_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _InventoryImpact_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _InventoryImpact_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _InventoryImpact_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _InventoryImpact_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _InventoryImpact_relational_fields:
+                        raise errors.UnknownRelationalFieldError('InventoryImpact', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid InventoryImpact / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'InventoryImpact',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class ItemInventory(bases.BaseItemInventory):
+    """Represents a ItemInventory record"""
+
+    id: _str
+    inventoryImpactId: _str
+    produkId: _str
+    jumlahMovement: _float
+    stokSetelah: _float
+    createdAt: datetime.datetime
+    inventoryImpact: Optional['models.InventoryImpact'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.ItemInventoryKeys']] = None,
+        exclude: Optional[Iterable['types.ItemInventoryKeys']] = None,
+        required: Optional[Iterable['types.ItemInventoryKeys']] = None,
+        optional: Optional[Iterable['types.ItemInventoryKeys']] = None,
+        relations: Optional[Mapping['types.ItemInventoryRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.ItemInventoryKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _ItemInventory_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _ItemInventory_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _ItemInventory_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _ItemInventory_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _ItemInventory_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _ItemInventory_relational_fields:
+                        raise errors.UnknownRelationalFieldError('ItemInventory', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid ItemInventory / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'ItemInventory',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class Persediaan(bases.BasePersediaan):
+    """Represents a Persediaan record"""
+
+    id: _str
+    tenantId: _str
+    produkId: _str
+    lokasiGudang: _str
+    jumlah: _float
+    satuan: Optional[_str] = None
+    nilaiPerUnit: Optional[_float] = None
+    totalNilai: Optional[_float] = None
+    lastMovementAt: Optional[datetime.datetime] = None
+    minimumStock: Optional[_float] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.PersediaanKeys']] = None,
+        exclude: Optional[Iterable['types.PersediaanKeys']] = None,
+        required: Optional[Iterable['types.PersediaanKeys']] = None,
+        optional: Optional[Iterable['types.PersediaanKeys']] = None,
+        relations: Optional[Mapping['types.PersediaanRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _Persediaan_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _Persediaan_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _Persediaan_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _Persediaan_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _Persediaan_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _Persediaan_relational_fields:
+                        raise errors.UnknownRelationalFieldError('Persediaan', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid Persediaan / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'Persediaan',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class Outbox(bases.BaseOutbox):
+    """Represents a Outbox record"""
+
+    id: _str
+    transaksiId: _str
+    eventType: _str
+    payload: 'fields.Json'
+    processed: _bool
+    processedAt: Optional[datetime.datetime] = None
+    retryCount: _int
+    errorMessage: Optional[_str] = None
+    createdAt: datetime.datetime
+    transaksi: Optional['models.TransaksiHarian'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.OutboxKeys']] = None,
+        exclude: Optional[Iterable['types.OutboxKeys']] = None,
+        required: Optional[Iterable['types.OutboxKeys']] = None,
+        optional: Optional[Iterable['types.OutboxKeys']] = None,
+        relations: Optional[Mapping['types.OutboxRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.OutboxKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _Outbox_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _Outbox_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _Outbox_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _Outbox_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _Outbox_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _Outbox_relational_fields:
+                        raise errors.UnknownRelationalFieldError('Outbox', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid Outbox / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'Outbox',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class TaxInfo(bases.BaseTaxInfo):
+    """Represents a TaxInfo record"""
+
+    id: _str
+    tenantId: _str
+    periode: _str
+    omzetBulanIni: _int
+    omzetTahunBerjalan: _int
+    exceeds500juta: _bool
+    exceeds4_8milyar: _bool
+    pphFinalTerutang: _int
+    pphFinalTerbayar: _int
+    isPkp: _bool
+    statusWp: Optional[_str] = None
+    tahunTerdaftar: Optional[_int] = None
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.TaxInfoKeys']] = None,
+        exclude: Optional[Iterable['types.TaxInfoKeys']] = None,
+        required: Optional[Iterable['types.TaxInfoKeys']] = None,
+        optional: Optional[Iterable['types.TaxInfoKeys']] = None,
+        relations: Optional[Mapping['types.TaxInfoRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.TaxInfoKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _TaxInfo_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _TaxInfo_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _TaxInfo_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _TaxInfo_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _TaxInfo_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _TaxInfo_relational_fields:
+                        raise errors.UnknownRelationalFieldError('TaxInfo', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid TaxInfo / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'TaxInfo',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class BaganAkun(bases.BaseBaganAkun):
+    """Represents a BaganAkun record"""
+
+    id: _str
+    tenantId: _str
+    kodeAkun: _str
+    namaAkun: _str
+    kategori: _str
+    subKategori: Optional[_str] = None
+    normalBalance: _str
+    isActive: _bool
+    parentId: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+    parent: Optional['models.BaganAkun'] = None
+    children: Optional[List['models.BaganAkun']] = None
+    jurnalDetails: Optional[List['models.JurnalDetail']] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.BaganAkunKeys']] = None,
+        exclude: Optional[Iterable['types.BaganAkunKeys']] = None,
+        required: Optional[Iterable['types.BaganAkunKeys']] = None,
+        optional: Optional[Iterable['types.BaganAkunKeys']] = None,
+        relations: Optional[Mapping['types.BaganAkunRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.BaganAkunKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _BaganAkun_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _BaganAkun_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _BaganAkun_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _BaganAkun_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _BaganAkun_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _BaganAkun_relational_fields:
+                        raise errors.UnknownRelationalFieldError('BaganAkun', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid BaganAkun / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'BaganAkun',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class JurnalEntry(bases.BaseJurnalEntry):
+    """Represents a JurnalEntry record"""
+
+    id: _str
+    tenantId: _str
+    transaksiId: Optional[_str] = None
+    nomorJurnal: _str
+    tanggalJurnal: _int
+    keterangan: Optional[_str] = None
+    totalDebit: _int
+    totalKredit: _int
+    status: _str
+    postedBy: Optional[_str] = None
+    postedAt: Optional[datetime.datetime] = None
+    periodePelaporan: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+    transaksi: Optional['models.TransaksiHarian'] = None
+    details: Optional[List['models.JurnalDetail']] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.JurnalEntryKeys']] = None,
+        exclude: Optional[Iterable['types.JurnalEntryKeys']] = None,
+        required: Optional[Iterable['types.JurnalEntryKeys']] = None,
+        optional: Optional[Iterable['types.JurnalEntryKeys']] = None,
+        relations: Optional[Mapping['types.JurnalEntryRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.JurnalEntryKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _JurnalEntry_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _JurnalEntry_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _JurnalEntry_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _JurnalEntry_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _JurnalEntry_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _JurnalEntry_relational_fields:
+                        raise errors.UnknownRelationalFieldError('JurnalEntry', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid JurnalEntry / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'JurnalEntry',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class JurnalDetail(bases.BaseJurnalDetail):
+    """Represents a JurnalDetail record"""
+
+    id: _str
+    jurnalEntryId: _str
+    akunId: _str
+    debit: _int
+    kredit: _int
+    keterangan: Optional[_str] = None
+    createdAt: datetime.datetime
+    jurnalEntry: Optional['models.JurnalEntry'] = None
+    akun: Optional['models.BaganAkun'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.JurnalDetailKeys']] = None,
+        exclude: Optional[Iterable['types.JurnalDetailKeys']] = None,
+        required: Optional[Iterable['types.JurnalDetailKeys']] = None,
+        optional: Optional[Iterable['types.JurnalDetailKeys']] = None,
+        relations: Optional[Mapping['types.JurnalDetailRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.JurnalDetailKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _JurnalDetail_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _JurnalDetail_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _JurnalDetail_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _JurnalDetail_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _JurnalDetail_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _JurnalDetail_relational_fields:
+                        raise errors.UnknownRelationalFieldError('JurnalDetail', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid JurnalDetail / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'JurnalDetail',
+            }
+        )
+        _created_partial_types.add(name)
+
+
 
 _User_relational_fields: Set[str] = {
+        'tenant',
         'accounts',
         'sessions',
         'profile',
@@ -2354,6 +4094,9 @@ _User_relational_fields: Set[str] = {
         'subscriptions',
         'aiSettings',
         'media',
+        'auditLogs',
+        'transaksiCreated',
+        'transaksiApproved',
     }
 _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
     [
@@ -2371,6 +4114,22 @@ _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
             'optional': False,
             'type': '_str',
             'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
             'documentation': None,
         }),
         ('username', {
@@ -2578,6 +4337,30 @@ _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
             'is_list': True,
             'optional': True,
             'type': 'List[\'models.UserMedia\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('auditLogs', {
+            'name': 'auditLogs',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.AuditLog\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('transaksiCreated', {
+            'name': 'transaksiCreated',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.TransaksiHarian\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('transaksiApproved', {
+            'name': 'transaksiApproved',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.TransaksiHarian\']',
             'is_relational': True,
             'documentation': None,
         }),
@@ -3381,7 +5164,14 @@ _UserMedia_fields: Dict['types.UserMediaKeys', PartialModelField] = OrderedDict(
     ],
 )
 
-_Tenant_relational_fields: Set[str] = set()  # pyright: ignore[reportUnusedVariable]
+_Tenant_relational_fields: Set[str] = {
+        'users',
+        'transaksiHarian',
+        'taxInfo',
+        'persediaan',
+        'baganAkun',
+        'jurnalEntries',
+    }
 _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
     [
         ('id', {
@@ -3446,6 +5236,54 @@ _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
             'optional': False,
             'type': 'datetime.datetime',
             'is_relational': False,
+            'documentation': None,
+        }),
+        ('users', {
+            'name': 'users',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.User\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('transaksiHarian', {
+            'name': 'transaksiHarian',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.TransaksiHarian\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('taxInfo', {
+            'name': 'taxInfo',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.TaxInfo\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('persediaan', {
+            'name': 'persediaan',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.Persediaan\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('baganAkun', {
+            'name': 'baganAkun',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.BaganAkun\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('jurnalEntries', {
+            'name': 'jurnalEntries',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.JurnalEntry\']',
+            'is_relational': True,
             'documentation': None,
         }),
     ],
@@ -3637,6 +5475,1556 @@ _RagDocument_fields: Dict['types.RagDocumentKeys', PartialModelField] = OrderedD
     ],
 )
 
+_AuditLog_relational_fields: Set[str] = {
+        'user',
+    }
+_AuditLog_fields: Dict['types.AuditLogKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('userId', {
+            'name': 'userId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('user', {
+            'name': 'user',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('eventType', {
+            'name': 'eventType',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('ipAddress', {
+            'name': 'ipAddress',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('userAgent', {
+            'name': 'userAgent',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('metadata', {
+            'name': 'metadata',
+            'is_list': False,
+            'optional': True,
+            'type': 'fields.Json',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('success', {
+            'name': 'success',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('errorMessage', {
+            'name': 'errorMessage',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+    ],
+)
+
+_TransaksiHarian_relational_fields: Set[str] = {
+        'tenant',
+        'creator',
+        'approver',
+        'outbox',
+        'items',
+        'hpp',
+        'inventoryImpact',
+        'jurnalEntries',
+    }
+_TransaksiHarian_fields: Dict['types.TransaksiHarianKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdBy', {
+            'name': 'createdBy',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('actorRole', {
+            'name': 'actorRole',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('timestamp', {
+            'name': 'timestamp',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jenisTransaksi', {
+            'name': 'jenisTransaksi',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('payload', {
+            'name': 'payload',
+            'is_list': False,
+            'optional': False,
+            'type': 'fields.Json',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('rawText', {
+            'name': 'rawText',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('rawNlu', {
+            'name': 'rawNlu',
+            'is_list': False,
+            'optional': True,
+            'type': 'fields.Base64',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('metadata', {
+            'name': 'metadata',
+            'is_list': False,
+            'optional': True,
+            'type': 'fields.Json',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('receiptUrl', {
+            'name': 'receiptUrl',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('receiptChecksum', {
+            'name': 'receiptChecksum',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('idempotencyKey', {
+            'name': 'idempotencyKey',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('status', {
+            'name': 'status',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('approvedBy', {
+            'name': 'approvedBy',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('approvedAt', {
+            'name': 'approvedAt',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('rekeningId', {
+            'name': 'rekeningId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('rekeningType', {
+            'name': 'rekeningType',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('totalNominal', {
+            'name': 'totalNominal',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('metodePembayaran', {
+            'name': 'metodePembayaran',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('statusPembayaran', {
+            'name': 'statusPembayaran',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('nominalDibayar', {
+            'name': 'nominalDibayar',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('sisaPiutangHutang', {
+            'name': 'sisaPiutangHutang',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jatuhTempo', {
+            'name': 'jatuhTempo',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('namaPihak', {
+            'name': 'namaPihak',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kontakPihak', {
+            'name': 'kontakPihak',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('pihakType', {
+            'name': 'pihakType',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lokasiGudang', {
+            'name': 'lokasiGudang',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jenisAset', {
+            'name': 'jenisAset',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kategoriBeban', {
+            'name': 'kategoriBeban',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kategoriArusKas', {
+            'name': 'kategoriArusKas',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isPrive', {
+            'name': 'isPrive',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isModal', {
+            'name': 'isModal',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('pajakAmount', {
+            'name': 'pajakAmount',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('akunPerkiraanId', {
+            'name': 'akunPerkiraanId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('penyusutanPerTahun', {
+            'name': 'penyusutanPerTahun',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('umurManfaat', {
+            'name': 'umurManfaat',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('periodePelaporan', {
+            'name': 'periodePelaporan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('keterangan', {
+            'name': 'keterangan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('creator', {
+            'name': 'creator',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('approver', {
+            'name': 'approver',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('outbox', {
+            'name': 'outbox',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.Outbox\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('items', {
+            'name': 'items',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.ItemTransaksi\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('hpp', {
+            'name': 'hpp',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.HppBreakdown',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('inventoryImpact', {
+            'name': 'inventoryImpact',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.InventoryImpact',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('jurnalEntries', {
+            'name': 'jurnalEntries',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.JurnalEntry\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_ItemTransaksi_relational_fields: Set[str] = {
+        'transaksi',
+    }
+_ItemTransaksi_fields: Dict['types.ItemTransaksiKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksiId', {
+            'name': 'transaksiId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('namaProduk', {
+            'name': 'namaProduk',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kategoriPath', {
+            'name': 'kategoriPath',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('level1', {
+            'name': 'level1',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('level2', {
+            'name': 'level2',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('level3', {
+            'name': 'level3',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('level4', {
+            'name': 'level4',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jumlah', {
+            'name': 'jumlah',
+            'is_list': False,
+            'optional': False,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('satuan', {
+            'name': 'satuan',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('hargaSatuan', {
+            'name': 'hargaSatuan',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('subtotal', {
+            'name': 'subtotal',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('produkId', {
+            'name': 'produkId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('keterangan', {
+            'name': 'keterangan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksi', {
+            'name': 'transaksi',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_HppBreakdown_relational_fields: Set[str] = {
+        'transaksi',
+    }
+_HppBreakdown_fields: Dict['types.HppBreakdownKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksiId', {
+            'name': 'transaksiId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('biayaBahanBaku', {
+            'name': 'biayaBahanBaku',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('biayaTenagaKerja', {
+            'name': 'biayaTenagaKerja',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('biayaLainnya', {
+            'name': 'biayaLainnya',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('totalHpp', {
+            'name': 'totalHpp',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('detailJson', {
+            'name': 'detailJson',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksi', {
+            'name': 'transaksi',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_InventoryImpact_relational_fields: Set[str] = {
+        'transaksi',
+        'itemsInventory',
+    }
+_InventoryImpact_fields: Dict['types.InventoryImpactKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksiId', {
+            'name': 'transaksiId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isTracked', {
+            'name': 'isTracked',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jenisMovement', {
+            'name': 'jenisMovement',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lokasiGudang', {
+            'name': 'lokasiGudang',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksi', {
+            'name': 'transaksi',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('itemsInventory', {
+            'name': 'itemsInventory',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.ItemInventory\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_ItemInventory_relational_fields: Set[str] = {
+        'inventoryImpact',
+    }
+_ItemInventory_fields: Dict['types.ItemInventoryKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('inventoryImpactId', {
+            'name': 'inventoryImpactId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('produkId', {
+            'name': 'produkId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jumlahMovement', {
+            'name': 'jumlahMovement',
+            'is_list': False,
+            'optional': False,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('stokSetelah', {
+            'name': 'stokSetelah',
+            'is_list': False,
+            'optional': False,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('inventoryImpact', {
+            'name': 'inventoryImpact',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.InventoryImpact',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_Persediaan_relational_fields: Set[str] = {
+        'tenant',
+    }
+_Persediaan_fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('produkId', {
+            'name': 'produkId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lokasiGudang', {
+            'name': 'lokasiGudang',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jumlah', {
+            'name': 'jumlah',
+            'is_list': False,
+            'optional': False,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('satuan', {
+            'name': 'satuan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('nilaiPerUnit', {
+            'name': 'nilaiPerUnit',
+            'is_list': False,
+            'optional': True,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('totalNilai', {
+            'name': 'totalNilai',
+            'is_list': False,
+            'optional': True,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lastMovementAt', {
+            'name': 'lastMovementAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('minimumStock', {
+            'name': 'minimumStock',
+            'is_list': False,
+            'optional': True,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_Outbox_relational_fields: Set[str] = {
+        'transaksi',
+    }
+_Outbox_fields: Dict['types.OutboxKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksiId', {
+            'name': 'transaksiId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('eventType', {
+            'name': 'eventType',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('payload', {
+            'name': 'payload',
+            'is_list': False,
+            'optional': False,
+            'type': 'fields.Json',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('processed', {
+            'name': 'processed',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('processedAt', {
+            'name': 'processedAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('retryCount', {
+            'name': 'retryCount',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('errorMessage', {
+            'name': 'errorMessage',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksi', {
+            'name': 'transaksi',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_TaxInfo_relational_fields: Set[str] = {
+        'tenant',
+    }
+_TaxInfo_fields: Dict['types.TaxInfoKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('periode', {
+            'name': 'periode',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('omzetBulanIni', {
+            'name': 'omzetBulanIni',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('omzetTahunBerjalan', {
+            'name': 'omzetTahunBerjalan',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('exceeds500juta', {
+            'name': 'exceeds500juta',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('exceeds4_8milyar', {
+            'name': 'exceeds4_8milyar',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('pphFinalTerutang', {
+            'name': 'pphFinalTerutang',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('pphFinalTerbayar', {
+            'name': 'pphFinalTerbayar',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isPkp', {
+            'name': 'isPkp',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('statusWp', {
+            'name': 'statusWp',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tahunTerdaftar', {
+            'name': 'tahunTerdaftar',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_BaganAkun_relational_fields: Set[str] = {
+        'tenant',
+        'parent',
+        'children',
+        'jurnalDetails',
+    }
+_BaganAkun_fields: Dict['types.BaganAkunKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kodeAkun', {
+            'name': 'kodeAkun',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('namaAkun', {
+            'name': 'namaAkun',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kategori', {
+            'name': 'kategori',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('subKategori', {
+            'name': 'subKategori',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('normalBalance', {
+            'name': 'normalBalance',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isActive', {
+            'name': 'isActive',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('parentId', {
+            'name': 'parentId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('parent', {
+            'name': 'parent',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.BaganAkun',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('children', {
+            'name': 'children',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.BaganAkun\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('jurnalDetails', {
+            'name': 'jurnalDetails',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.JurnalDetail\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_JurnalEntry_relational_fields: Set[str] = {
+        'tenant',
+        'transaksi',
+        'details',
+    }
+_JurnalEntry_fields: Dict['types.JurnalEntryKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('transaksiId', {
+            'name': 'transaksiId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('nomorJurnal', {
+            'name': 'nomorJurnal',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tanggalJurnal', {
+            'name': 'tanggalJurnal',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('keterangan', {
+            'name': 'keterangan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('totalDebit', {
+            'name': 'totalDebit',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('totalKredit', {
+            'name': 'totalKredit',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('status', {
+            'name': 'status',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('postedBy', {
+            'name': 'postedBy',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('postedAt', {
+            'name': 'postedAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('periodePelaporan', {
+            'name': 'periodePelaporan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('transaksi', {
+            'name': 'transaksi',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('details', {
+            'name': 'details',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.JurnalDetail\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_JurnalDetail_relational_fields: Set[str] = {
+        'jurnalEntry',
+        'akun',
+    }
+_JurnalDetail_fields: Dict['types.JurnalDetailKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jurnalEntryId', {
+            'name': 'jurnalEntryId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('akunId', {
+            'name': 'akunId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('debit', {
+            'name': 'debit',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kredit', {
+            'name': 'kredit',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('keterangan', {
+            'name': 'keterangan',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('jurnalEntry', {
+            'name': 'jurnalEntry',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.JurnalEntry',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('akun', {
+            'name': 'akun',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.BaganAkun',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
 
 
 # we have to import ourselves as relation types are namespaced to models
@@ -3662,3 +7050,15 @@ model_rebuild(Tenant)
 model_rebuild(Order)
 model_rebuild(Memory)
 model_rebuild(RagDocument)
+model_rebuild(AuditLog)
+model_rebuild(TransaksiHarian)
+model_rebuild(ItemTransaksi)
+model_rebuild(HppBreakdown)
+model_rebuild(InventoryImpact)
+model_rebuild(ItemInventory)
+model_rebuild(Persediaan)
+model_rebuild(Outbox)
+model_rebuild(TaxInfo)
+model_rebuild(BaganAkun)
+model_rebuild(JurnalEntry)
+model_rebuild(JurnalDetail)

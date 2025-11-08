@@ -1,0 +1,467 @@
+"""
+Setup Orchestrator gRPC Server
+Coordinates multi-service setup workflow for business chatbot setup
+"""
+
+import asyncio
+import grpc
+import logging
+import json
+import uuid
+from datetime import datetime
+from concurrent import futures
+from typing import Optional, Dict, Any
+
+# Proto imports
+import setup_orchestrator_pb2
+import setup_orchestrator_pb2_grpc
+from google.protobuf import empty_pb2
+
+# Configuration
+from config import settings
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+import sys
+import os
+
+# ============================================
+# CRITICAL: Prioritize local directory for stub imports
+# ============================================
+# This ensures we import stubs from THIS directory:
+#   /app/backend/services/setup_orchestrator/app/
+# NOT from the global protos directory:
+#   /app/protos/
+#
+# Industry Standard: Each service uses its own generated stubs
+# ============================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+    
+class GrpcClientManager:
+    """Manages gRPC client connections to all dependent services"""
+    
+    def __init__(self):
+        self.channels = {}
+        self.stubs = {}
+        
+    async def initialize(self):
+        """Initialize all gRPC client connections"""
+        try:
+            # Intent Parser (Port 7009)
+            await self._create_channel('intent_parser', 'intent_parser:5009')
+            
+            # Business Extractor (Port 7015)
+            await self._create_channel('business_extractor', 'business_extractor:5015')
+            
+            # Conversation Manager (Port 7016)
+            await self._create_channel('conversation_manager', 'conversation_manager:5016')
+            
+            # RAG CRUD (Port 7001)
+            await self._create_channel('ragcrud', 'ragcrud_service:5001')
+            
+            # RAG LLM (Port 7011)
+            await self._create_channel('ragllm', 'ragllm_service:5011')
+            
+            logger.info("All gRPC clients initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize gRPC clients: {e}")
+            raise
+    
+    async def _create_channel(self, service_name: str, address: str):
+        """Create gRPC channel and stub for a service"""
+        try:
+            channel = grpc.aio.insecure_channel(address)
+            self.channels[service_name] = channel
+            
+            # Import and create appropriate stub based on service
+            if service_name == 'intent_parser':
+                from intent_parser_pb2_grpc import IntentParserServiceStub
+                self.stubs[service_name] = IntentParserServiceStub(channel)
+            elif service_name == 'business_extractor':
+                from business_extractor_pb2_grpc import BusinessExtractorStub
+                self.stubs[service_name] = BusinessExtractorStub(channel)
+            elif service_name == 'conversation_manager':
+                from conversation_manager_pb2_grpc import ConversationManagerStub
+                self.stubs[service_name] = ConversationManagerStub(channel)
+            elif service_name == 'ragcrud':
+                from ragcrud_service_pb2_grpc import RagCrudServiceStub
+                self.stubs[service_name] = RagCrudServiceStub(channel)
+            elif service_name == 'ragllm':
+                from ragllm_service_pb2_grpc import RagLlmServiceStub
+                self.stubs[service_name] = RagLlmServiceStub(channel)
+                
+            logger.info(f"Connected to {service_name} at {address}")
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to {service_name}: {e}")
+            raise
+    
+    async def close_all(self):
+        """Close all gRPC channels"""
+        for service_name, channel in self.channels.items():
+            await channel.close()
+            logger.info(f"Closed connection to {service_name}")
+
+
+class SetupOrchestratorServicer(setup_orchestrator_pb2_grpc.SetupOrchestratorServicer):
+    """Setup Orchestrator Service Implementation"""
+    
+    def __init__(self):
+        self.client_manager = GrpcClientManager()
+        logger.info("SetupOrchestratorServicer initialized")
+    
+    async def initialize_clients(self):
+        """Initialize all gRPC clients"""
+        await self.client_manager.initialize()
+    
+    async def ProcessSetupChat(
+        self, 
+        request: setup_orchestrator_pb2.ProcessSetupChatRequest,
+        context: grpc.aio.ServicerContext
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """
+        Main orchestration logic for setup chat
+        Coordinates multiple services to handle conversational setup
+        """
+        start_time = datetime.now()
+        trace_id = str(uuid.uuid4())[:8]
+        service_calls = []
+        
+        logger.info(
+            f"[{trace_id}] ProcessSetupChat started | "
+            f"user={request.user_id} | tenant={request.tenant_id} | "
+            f"session={request.session_id}"
+        )
+        
+        try:
+            # Step 1: Get conversation context
+            logger.info(f"[{trace_id}] Step 1: Getting conversation context")
+            ctx_start = datetime.now()
+            
+            from conversation_manager_pb2 import GetContextRequest
+            ctx_request = GetContextRequest(session_id=request.session_id)
+            
+            ctx_response = await self.client_manager.stubs['conversation_manager'].GetContext(
+                ctx_request
+            )
+            
+            ctx_duration = (datetime.now() - ctx_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "conversation_manager",
+                "method": "GetContext",
+                "duration_ms": int(ctx_duration),
+                "status": "success"
+            })
+            
+            logger.info(
+                f"[{trace_id}] Context retrieved | state={ctx_response.current_state} | "
+                f"duration={ctx_duration:.0f}ms"
+            )
+            
+            # Step 2: Classify intent
+            logger.info(f"[{trace_id}] Step 2: Classifying intent")
+            intent_start = datetime.now()
+            
+            from intent_parser_pb2 import ClassifyIntentRequest
+            intent_request = ClassifyIntentRequest(
+                message=request.message,
+                context=ctx_response.extracted_data_json
+            )
+            
+            intent_response = await self.client_manager.stubs['intent_parser'].ClassifyIntent(
+                intent_request
+            )
+            
+            intent_duration = (datetime.now() - intent_start).total_seconds() * 1000
+            service_calls.append({
+                "service_name": "intent_parser",
+                "method": "ClassifyIntent",
+                "duration_ms": int(intent_duration),
+                "status": "success"
+            })
+            
+            logger.info(
+                f"[{trace_id}] Intent classified | intent={intent_response.intent} | "
+                f"confidence={intent_response.confidence:.2f} | "
+                f"duration={intent_duration:.0f}ms"
+            )
+            
+            # Step 3: Route based on intent
+            if intent_response.intent == "business_setup":
+                response = await self._handle_business_setup(
+                    request, ctx_response, intent_response, 
+                    trace_id, service_calls
+                )
+            elif intent_response.intent == "faq_create":
+                response = await self._handle_faq_create(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls
+                )
+            elif intent_response.intent == "confirm_setup":
+                response = await self._handle_confirm_setup(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls
+                )
+            else:
+                response = await self._handle_general(
+                    request, ctx_response, intent_response,
+                    trace_id, service_calls
+                )
+            
+            # Add metadata
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            metadata = setup_orchestrator_pb2.ResponseMetadata(
+                trace_id=trace_id,
+                processing_time_ms=int(processing_time),
+                timestamp=datetime.now().isoformat(),
+                service_version=settings.service_version,
+                service_calls=[
+                    setup_orchestrator_pb2.ServiceCall(**call) 
+                    for call in service_calls
+                ]
+            )
+            response.metadata.CopyFrom(metadata)
+            
+            logger.info(
+                f"[{trace_id}] ProcessSetupChat completed | "
+                f"status={response.status} | "
+                f"total_time={processing_time:.0f}ms"
+            )
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"[{trace_id}] ProcessSetupChat failed: {e}", exc_info=True)
+            
+            error = setup_orchestrator_pb2.ErrorDetails(
+                code="ORCHESTRATION_ERROR",
+                message=str(e),
+                service="setup_orchestrator",
+                details="See logs for full stack trace"
+            )
+            
+            return setup_orchestrator_pb2.ProcessSetupChatResponse(
+                status="error",
+                milky_response="Maaf, ada masalah teknis. Coba lagi ya!",
+                session_id=request.session_id,
+                error=error
+            )
+    
+    async def _handle_business_setup(
+        self, 
+        request, 
+        ctx_response, 
+        intent_response,
+        trace_id: str,
+        service_calls: list
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle business information collection"""
+        logger.info(f"[{trace_id}] Handling business_setup intent")
+        
+        # Extract business info
+        extract_start = datetime.now()
+        
+        from business_extractor_pb2 import ExtractBusinessInfoRequest
+        extract_request = ExtractBusinessInfoRequest(
+            message=request.message,
+            context=ctx_response.extracted_data_json
+        )
+        
+        extract_response = await self.client_manager.stubs['business_extractor'].ExtractBusinessInfo(
+            extract_request
+        )
+        
+        extract_duration = (datetime.now() - extract_start).total_seconds() * 1000
+        service_calls.append({
+            "service_name": "business_extractor",
+            "method": "ExtractBusinessInfo",
+            "duration_ms": int(extract_duration),
+            "status": "success"
+        })
+        
+        # Update state
+        from conversation_manager_pb2 import UpdateStateRequest
+        update_request = UpdateStateRequest(
+            session_id=request.session_id,
+            new_state="collecting_info",
+            data_json=json.dumps({
+                "business_type": extract_response.business_type,
+                "business_name": extract_response.business_name,
+                "products_services": list(extract_response.products_services),
+                "pricing": extract_response.pricing_info
+            }),
+            message=request.message
+        )
+        
+        await self.client_manager.stubs['conversation_manager'].UpdateState(
+            update_request
+        )
+        
+        # Get next question
+        from conversation_manager_pb2 import GetNextQuestionRequest
+        next_q_request = GetNextQuestionRequest(session_id=request.session_id)
+        
+        next_q_response = await self.client_manager.stubs['conversation_manager'].GetNextQuestion(
+            next_q_request
+        )
+        
+        # Generate conversational response
+        milky_response = f"Oke sipp! Jadi kamu punya bisnis {extract_response.business_type} ya. "
+        if extract_response.business_name:
+            milky_response += f"Namanya {extract_response.business_name}. "
+        
+        milky_response += f"\n\n{next_q_response.next_question}"
+        
+        # Build business data
+        business_data = setup_orchestrator_pb2.BusinessData(
+            business_type=extract_response.business_type,
+            business_name=extract_response.business_name,
+            products_services=", ".join(extract_response.products_services) if extract_response.products_services else "",
+            pricing=extract_response.pricing_info,
+            completeness_score=extract_response.confidence_score
+        )
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="collecting_info",
+            session_id=request.session_id,
+            business_data=business_data,
+            next_action="continue_collecting_info"
+        )
+    
+    async def _handle_faq_create(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle FAQ creation request"""
+        logger.info(f"[{trace_id}] Handling faq_create intent")
+        
+        # Generate FAQ suggestions
+        from business_extractor_pb2 import GenerateFAQSuggestionsRequest
+        faq_request = GenerateFAQSuggestionsRequest(
+            business_type=ctx_response.extracted_data.get("business_type", ""),
+            products_services=ctx_response.extracted_data.get("products_services", "")
+        )
+        
+        faq_response = await self.client_manager.stubs['business_extractor'].GenerateFAQSuggestions(
+            faq_request
+        )
+        
+        # Convert to proto format
+        suggested_faqs = [
+            setup_orchestrator_pb2.FAQSuggestion(
+                question=faq.question,
+                answer=faq.answer,
+                category=faq.category,
+                confidence=0.8
+            )
+            for faq in faq_response.suggestions
+        ]
+        
+        milky_response = f"Oke, gue buatin {len(suggested_faqs)} FAQ suggestions nih! "
+        milky_response += "Mau review dulu atau langsung save semua?"
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="review_faqs",
+            session_id=request.session_id,
+            suggested_faqs=suggested_faqs,
+            next_action="review_or_save_faqs"
+        )
+    
+    async def _handle_confirm_setup(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle setup confirmation"""
+        logger.info(f"[{trace_id}] Handling confirm_setup intent")
+        
+        milky_response = "Mantap! Setup chatbot kamu udah selesai! "
+        milky_response += "Sekarang customer bisa langsung chat dan dapet jawaban otomatis dari FAQ yang udah kita bikin."
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="setup_complete",
+            session_id=request.session_id,
+            next_action="setup_complete"
+        )
+    
+    async def _handle_general(
+        self,
+        request,
+        ctx_response,
+        intent_response,
+        trace_id: str,
+        service_calls: list
+    ) -> setup_orchestrator_pb2.ProcessSetupChatResponse:
+        """Handle general queries"""
+        logger.info(f"[{trace_id}] Handling general intent")
+        
+        milky_response = "Halo! Aku Milky, assistant kamu untuk setup chatbot bisnis. "
+        milky_response += "Cerita dong tentang bisnis kamu? Misalnya: jenis bisnis, produk/jasa yang dijual, dll."
+        
+        return setup_orchestrator_pb2.ProcessSetupChatResponse(
+            status="success",
+            milky_response=milky_response,
+            current_state="initial",
+            session_id=request.session_id,
+            next_action="start_business_info_collection"
+        )
+    
+    async def HealthCheck(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext
+    ) -> empty_pb2.Empty:
+        """Health check endpoint"""
+        return empty_pb2.Empty()
+
+
+async def serve():
+    """Start gRPC server"""
+    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    
+    servicer = SetupOrchestratorServicer()
+    await servicer.initialize_clients()
+    
+    setup_orchestrator_pb2_grpc.add_SetupOrchestratorServicer_to_server(
+        servicer, server
+    )
+    
+    listen_addr = f'0.0.0.0:{settings.grpc_port}'
+    server.add_insecure_port(listen_addr)
+    
+    logger.info(f"Starting Setup Orchestrator gRPC server on {listen_addr}")
+    await server.start()
+    
+    try:
+        await server.wait_for_termination()
+    except KeyboardInterrupt:
+        logger.info("Shutting down gracefully...")
+        await servicer.client_manager.close_all()
+        await server.stop(grace=5)
+
+
+if __name__ == '__main__':
+    asyncio.run(serve())

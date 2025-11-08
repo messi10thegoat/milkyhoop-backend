@@ -1,0 +1,67 @@
+"""
+Audit Logging Helper for Authentication Events
+Logs all auth-related activities to audit_logs table
+"""
+
+from datetime import datetime
+from typing import Optional, Dict, Any
+from backend.api_gateway.app.prisma_client import prisma
+
+
+async def log_auth_event(
+    event_type: str,
+    user_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    success: bool = True,
+    error_message: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Log authentication event to audit_logs table
+    
+    Args:
+        event_type: Type of event (LOGIN, LOGOUT, REGISTER, FAILED_LOGIN, etc)
+        user_id: User ID if available
+        ip_address: Client IP address
+        user_agent: Client User-Agent header
+        success: Whether the operation was successful
+        error_message: Error message if operation failed
+        metadata: Additional metadata as JSON
+    """
+    try:
+        # Ensure Prisma is connected
+        if not prisma.is_connected():
+            await prisma.connect()
+        
+        # Create audit log entry
+        await prisma.auditlog.create(
+            data={
+                'userId': user_id,
+                'eventType': event_type,
+                'ipAddress': ip_address,
+                'userAgent': user_agent,
+                'success': success,
+                'errorMessage': error_message,
+                'metadata': metadata or {},
+                'createdAt': datetime.utcnow()
+            }
+        )
+        
+        print(f"✅ Audit log created: {event_type} for user {user_id or 'anonymous'}")
+        
+    except Exception as e:
+        # Don't let audit logging failure break the main operation
+        print(f"⚠️  Audit logging failed: {str(e)}")
+
+
+# Event type constants
+class AuditEventType:
+    LOGIN = "LOGIN"
+    LOGOUT = "LOGOUT"
+    REGISTER = "REGISTER"
+    FAILED_LOGIN = "FAILED_LOGIN"
+    TOKEN_REFRESH = "TOKEN_REFRESH"
+    SESSION_REVOKED = "SESSION_REVOKED"
+    PASSWORD_CHANGE = "PASSWORD_CHANGE"
+    PROFILE_UPDATE = "PROFILE_UPDATE"

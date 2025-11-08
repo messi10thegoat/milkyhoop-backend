@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "business_extractor"
+version = "0.1.0"
+description = "Business Extractor - AI-powered business info parser"
+authors = ["MilkyHoop Team"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+grpcio = "^1.60.0"
+protobuf = "^4.25.0"
+grpcio-tools = "^1.60.0"
+grpcio-health-checking = "^1.60.0"
+openai = "^1.40.0"
+prisma = "^0.15.0"
+pydantic = "^2.4.2"
+python-dotenv = "^1.0.0"
+pyyaml = "^6.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

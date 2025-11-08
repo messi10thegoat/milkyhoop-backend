@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "setup_orchestrator"
+version = "0.1.0"
+description = "Setup Mode Orchestrator - Main coordinator for conversational chatbot setup"
+authors = ["MilkyHoop Team"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+grpcio = "^1.60.0"
+protobuf = "^4.25.0"
+grpcio-tools = "^1.60.0"
+grpcio-health-checking = "^1.60.0"
+redis = {version = "^4.6.0", extras = ["asyncio"]}
+openai = "^1.0.0"
+prisma = "^0.15.0"
+PyJWT = "^2.8.0"
+pydantic = "^2.4.2"
+pydantic-settings = "^2.0.0"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package setup_orchestrator;
+
+import "google/protobuf/empty.proto";
+
+// ============================================
+// Setup Orchestrator Service
+// ============================================
+// Coordinates multi-service setup workflow
+// Handles conversational business setup flow
+// Manages state transitions and FAQ generation
+// ============================================
+
+service SetupOrchestrator {
+  // Main RPC for processing setup chat interactions
+  // Coordinates: intent_parser, business_extractor, conversation_manager, ragcrud, ragllm
+  rpc ProcessSetupChat (ProcessSetupChatRequest) returns (ProcessSetupChatResponse);
+  
+  // Health check endpoint
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// ============================================
+// Request Messages
+// ============================================
+
+message ProcessSetupChatRequest {
+  string user_id = 1;              // Business owner ID
+  string tenant_id = 2;            // Tenant/business ID
+  string session_id = 3;           // Conversation session ID
+  string message = 4;              // User's input message
+  
+  // Optional context for continuation
+  string previous_state = 5;       // Last known state (optional)
+}
+
+// ============================================
+// Response Messages
+// ============================================
+
+message ProcessSetupChatResponse {
+  string status = 1;               // "success" or "error"
+  string milky_response = 2;       // Conversational response to user
+  string current_state = 3;        // Current conversation state
+  string session_id = 4;           // Session ID for tracking
+  
+  // Business data extracted so far
+  BusinessData business_data = 5;
+  
+  // FAQ suggestions (if in generating_faqs state)
+  repeated FAQSuggestion suggested_faqs = 6;
+  
+  // Next action suggestion
+  string next_action = 7;          // What should happen next
+  
+  // Error details (if status = "error")
+  ErrorDetails error = 8;
+  
+  // Metadata
+  ResponseMetadata metadata = 9;
+  
+  // NEW: Progress tracking
+  int32 progress_percentage = 10;  // Progress tracking (0-100)
+}
+
+// ============================================
+// Supporting Data Structures
+// ============================================
+
+message BusinessData {
+  string business_type = 1;        // e.g., "custom_cake_shop"
+  string business_name = 2;        // e.g., "Rina Cakes"
+  string products_services = 3;    // Description of offerings
+  string pricing = 4;              // Pricing information
+  string hours = 5;                // Operating hours
+  string location = 6;             // Business location
+  repeated string common_questions = 7;  // Common customer questions
+  string target_customers = 8;     // Target customer segments
+  
+  // Completeness tracking
+  float completeness_score = 9;    // 0.0 to 1.0 (RENUMBERED from 8)
+  repeated string missing_fields = 10;  // (RENUMBERED from 9)
+}
+
+message FAQSuggestion {
+  string question = 1;             // FAQ question
+  string answer = 2;               // FAQ answer
+  string category = 3;             // e.g., "pricing", "products", "general"
+  float confidence = 4;            // 0.0 to 1.0
+}
+
+message ErrorDetails {
+  string code = 1;                 // Error code (e.g., "SERVICE_UNAVAILABLE")
+  string message = 2;              // Human-readable error message
+  string service = 3;              // Which service failed
+  string details = 4;              // Additional context
+}
+
+message ResponseMetadata {
+  string trace_id = 1;             // For distributed tracing
+  int64 processing_time_ms = 2;    // Total processing time
+  string timestamp = 3;            // ISO timestamp
+  string service_version = 4;      // Service version
+  
+  // Service call tracking
+  repeated ServiceCall service_calls = 5;
+}
+
+message ServiceCall {
+  string service_name = 1;         // e.g., "business_extractor"
+  string method = 2;               // e.g., "ExtractBusinessInfo"
+  int64 duration_ms = 3;           // Call duration
+  string status = 4;               // "success" or "error"
+}

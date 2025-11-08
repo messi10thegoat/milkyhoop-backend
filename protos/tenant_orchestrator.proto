@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package tenant_orchestrator;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// ============================================
+// TenantOrchestrator Service
+// Purpose: Handle tenant-specific business queries (financial, analytics, customer data)
+// Architecture: Routes to business_parser → financial services (transaction, reporting, inventory)
+// ============================================
+
+service TenantOrchestrator {
+  // Main tenant query endpoint (financial reports, analytics, customer data)
+  rpc ProcessTenantQuery (ProcessTenantQueryRequest) returns (ProcessTenantQueryResponse);
+  
+  // Health check
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// ===== ProcessTenantQuery RPC =====
+
+message ProcessTenantQueryRequest {
+  string tenant_id = 1;           // REQUIRED: Tenant identifier (e.g., "konsultanpsikologi")
+  string user_id = 2;             // Optional: User identifier
+  string session_id = 3;          // Session tracking
+  string message = 4;             // REQUIRED: User natural language query
+  string conversation_context = 5; // Optional: Previous conversation context
+}
+
+message ProcessTenantQueryResponse {
+  string status = 1;              // "success" or "error"
+  string milky_response = 2;      // Natural language response to user
+  string intent = 3;              // Classified intent (e.g., "financial_report", "top_products")
+  string entities_json = 4;       // JSON string of extracted entities
+  
+  // Service call tracing
+  repeated ServiceCall service_calls = 5;
+  int32 total_duration_ms = 6;
+  
+  // Error handling
+  string error_code = 7;          // Error code if status=error
+  string error_message = 8;       // Human-readable error message
+  
+  // Metadata
+  string trace_id = 9;            // Request trace ID
+  google.protobuf.Timestamp timestamp = 10;
+}
+
+message ServiceCall {
+  string service_name = 1;        // e.g., "business_parser", "transaction_service"
+  string method = 2;              // e.g., "ClassifyIntent", "GetTopProducts"
+  int32 duration_ms = 3;          // Duration in milliseconds
+  string status = 4;              // "success" or "error"
+}

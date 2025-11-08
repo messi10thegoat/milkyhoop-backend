@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package business_parser;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// ============================================
+// BusinessParser Service
+// Purpose: Intent classification and entity extraction for tenant queries
+// Scope: Financial reports, analytics, inventory, accounting queries
+// Architecture: Called by tenant_orchestrator → routes to financial services
+// ============================================
+
+service BusinessParser {
+  // Main intent classification endpoint
+  rpc ClassifyIntent (ClassifyIntentRequest) returns (ClassifyIntentResponse);
+  
+  // Health check
+  rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// ===== ClassifyIntent RPC =====
+
+message ClassifyIntentRequest {
+  string tenant_id = 1;           // REQUIRED: Tenant identifier
+  string message = 2;             // REQUIRED: User natural language query
+  string context = 3;             // Optional: Previous conversation context
+  string user_id = 4;             // Optional: User identifier
+}
+
+message ClassifyIntentResponse {
+  string intent = 1;              // Classified intent (see IntentType)
+  string entities_json = 2;       // JSON string of extracted entities
+  double confidence = 3;          // Confidence score (0.0-1.0)
+  string reasoning = 4;           // Optional: Why this intent was chosen
+  
+  // Metadata
+  string model_used = 5;          // AI model used (gpt-4o, gpt-3.5-turbo)
+  int32 processing_time_ms = 6;   // Processing duration
+  google.protobuf.Timestamp timestamp = 7;
+}
+
+// ============================================
+// INTENT TYPES & ENTITY STRUCTURES
+// ============================================
+
+// Intent Types (returned in ClassifyIntentResponse.intent):
+// 
+// 1. "financial_report" - Request for SAK EMKM reports
+//    Entities: {
+//      "report_type": "laba_rugi" | "neraca" | "arus_kas" | "perubahan_ekuitas",
+//      "periode_pelaporan": "YYYY-MM" (e.g., "2025-11"),
+//      "time_reference": "bulan_ini" | "bulan_lalu" | "tahun_ini" (optional)
+//    }
+//    Maps to: reporting_service.GetLabaRugi | GetNeraca | GetArusKas | GetPerubahanEkuitas
+//
+// 2. "top_products" - Request for best-selling products analytics
+//    Entities: {
+//      "time_range": "daily" | "weekly" | "monthly",
+//      "limit": 5-20 (default: 10)
+//    }
+//    Maps to: transaction_service.GetTopProducts
+//
+// 3. "low_sell_products" - Request for slow-moving products
+//    Entities: {
+//      "time_range": "daily" | "weekly" | "monthly",
+//      "limit": 5-20 (default: 10)
+//    }
+//    Maps to: transaction_service.GetLowSellProducts
+//
+// 4. "inventory_query" - Stock level or movement queries
+//    Entities: {
+//      "query_type": "stock_level" | "movement_history" | "low_stock",
+//      "produk_id": "KAOS-001" (optional),
+//      "product_name": "kaos hitam" (optional),
+//      "lokasi_gudang": "gudang_bandung" (optional)
+//    }
+//    Maps to: inventory_service.GetStockLevel | GetStockMovementHistory | GetLowStockAlerts
+//
+// 5. "accounting_query" - Chart of accounts or journal entries
+//    Entities: {
+//      "query_type": "chart_of_accounts" | "journal_entries",
+//      "kategori": "aset" | "liabilitas" | "ekuitas" | "pendapatan" | "beban" (optional),
+//      "periode_pelaporan": "YYYY-MM" (optional),
+//      "akun_perkiraan_id": "string" (optional)
+//    }
+//    Maps to: accounting_service.ListAccounts | GetJournalEntriesByPeriod
+//
+// 6. "transaction_record" - User wants to record transaction
+//    Action: Redirect to setup mode (tenant mode is read-only)
+//    Entities: None needed (just classification)
+//
+// 7. "general_inquiry" - General business questions, help, unclear intent
+//    Action: Provide friendly response or ask for clarification
+//    Entities: None
+//
+// 8. "out_of_scope" - Query outside business domain
+//    Action: Polite deflection
+//    Entities: None
+
+// ============================================
+// ENTITY EXTRACTION EXAMPLES
+// ============================================
+//
+// Example 1: Financial Report Query
+// User: "Cek laporan laba rugi bulan ini"
+// Response: {
+//   "intent": "financial_report",
+//   "entities_json": "{\"report_type\":\"laba_rugi\",\"periode_pelaporan\":\"2025-11\",\"time_reference\":\"bulan_ini\"}",
+//   "confidence": 0.95
+// }
+//
+// Example 2: Top Products Query
+// User: "Produk apa yang paling laku minggu ini?"
+// Response: {
+//   "intent": "top_products",
+//   "entities_json": "{\"time_range\":\"weekly\",\"limit\":10}",
+//   "confidence": 0.92
+// }
+//
+// Example 3: Inventory Query
+// User: "Berapa stok kaos hitam di gudang Bandung?"
+// Response: {
+//   "intent": "inventory_query",
+//   "entities_json": "{\"query_type\":\"stock_level\",\"product_name\":\"kaos hitam\",\"lokasi_gudang\":\"gudang_bandung\"}",
+//   "confidence": 0.88
+// }
+//
+// Example 4: Transaction Record (Redirect)
+// User: "Catat penjualan 50 kaos @45rb"
+// Response: {
+//   "intent": "transaction_record",
+//   "entities_json": "{}",
+//   "confidence": 0.90
+// }
+//
+// Example 5: General Inquiry
+// User: "Gimana cara naikin penjualan?"
+// Response: {
+//   "intent": "general_inquiry",
+//   "entities_json": "{\"topic\":\"sales_improvement\"}",
+//   "confidence": 0.75
+// }

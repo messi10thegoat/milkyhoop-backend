@@ -529,27 +529,30 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-  auth_service:
 
+
+
+
+  auth_service:
     build:
       context: .
       dockerfile: backend/services/auth_service/Dockerfile
     ports:
-      - "7004:5004"  # gRPC port
+      - "8014:8013"  # ← CHANGE 1: dari 7004:5004
     networks:
       - internal
     environment:
-      - GRPC_PORT=5004
+      - SERVICE_PORT=8013  # ← CHANGE 2: dari GRPC_PORT=5004
       - HTTP_PORT=8000
       - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+      - JWT_SECRET=fe9e6b579ad0d194aea51b325e6f0790ace8b2bd3d91c059a016abd2c0e54de2  # ← CHANGE 3: new secret
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
     volumes:
       - ./logs/auth_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5004"]
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:8013"]  # ← CHANGE 4: dari 5004
       interval: 30s
       timeout: 3s
       retries: 3
@@ -562,6 +565,348 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+
+  setup_orchestrator:
+    build:
+      context: .
+      dockerfile: backend/services/setup_orchestrator/Dockerfile
+    ports:
+      - "7014:5014"  # gRPC port
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5014
+      - SERVICE_NAME=SetupOrchestrator
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - INTENT_PARSER_GRPC_HOST=intent_parser
+      - INTENT_PARSER_GRPC_PORT=5009
+      - BUSINESS_EXTRACTOR_GRPC_HOST=business_extractor
+      - BUSINESS_EXTRACTOR_GRPC_PORT=5015
+      - CONVERSATION_MANAGER_GRPC_HOST=conversation_manager
+      - CONVERSATION_MANAGER_GRPC_PORT=5016
+      - RAGCRUD_GRPC_HOST=ragcrud_service
+      - RAGCRUD_GRPC_PORT=5001
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/setup_orchestrator:/app/backend/services/setup_orchestrator
+      - ./logs/setup_orchestrator:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5014"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+      - intent_parser
+      - conversation_manager
+      - business_extractor
+      - ragcrud_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  conversation_manager:
+    build:
+      context: .
+      dockerfile: backend/services/conversation_manager/Dockerfile
+    ports:
+      - "7016:5016"  # gRPC port
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5016
+      - SERVICE_NAME=ConversationManager
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/conversation_manager:/app/backend/services/conversation_manager
+      - ./logs/conversation_manager:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5016"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  business_extractor:
+    build:
+      context: .
+      dockerfile: backend/services/business_extractor/Dockerfile
+    ports:
+      - "7015:5015"  # gRPC port
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5015
+      - SERVICE_NAME=BusinessExtractor
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/business_extractor:/app/backend/services/business_extractor
+      - ./logs/business_extractor:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5015"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  transaction_service:
+    build:
+      context: .
+      dockerfile: backend/services/transaction_service/Dockerfile
+    container_name: milkyhoop-dev-transaction_service-1
+    ports:
+      - "7020:7020"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=7020
+      - SERVICE_NAME=TransactionService
+      - DATABASE_URL=${DATABASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/transaction_service:/app/backend/services/transaction_service
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/transaction_service:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:7020"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  reporting_service:
+    build:
+      context: .
+      dockerfile: backend/services/reporting_service/Dockerfile
+    container_name: milkyhoop-dev-reporting_service-1
+    ports:
+      - "7030:7030"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=7030
+      - SERVICE_NAME=ReportingService
+      - DATABASE_URL=${DATABASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/reporting_service:/app/backend/services/reporting_service
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/reporting_service:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:7030"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - transaction_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  inventory_service:
+    build:
+      context: .
+      dockerfile: backend/services/inventory_service/Dockerfile
+    container_name: milkyhoop-dev-inventory_service-1
+    ports:
+      - "7040:7040"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=7040
+      - SERVICE_NAME=InventoryService
+      - DATABASE_URL=${DATABASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/inventory_service:/app/backend/services/inventory_service
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/inventory_service:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:7040"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - transaction_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  accounting_service:
+    build:
+      context: .
+      dockerfile: backend/services/accounting_service/Dockerfile
+    container_name: milkyhoop-dev-accounting_service-1
+    ports:
+      - "7050:7050"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=7050
+      - SERVICE_NAME=AccountingService
+      - DATABASE_URL=${DATABASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/accounting_service:/app/backend/services/accounting_service
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/accounting_service:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:7050"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - transaction_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+
+
+  tenant_orchestrator:
+    build:
+      context: .
+      dockerfile: backend/services/tenant_orchestrator/Dockerfile
+    container_name: milkyhoop-dev-tenant_orchestrator-1
+    ports:
+      - "7017:5017"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5017
+      - SERVICE_NAME=TenantOrchestrator
+      - DATABASE_URL=${DATABASE_URL}
+      - BUSINESS_PARSER_GRPC_HOST=business_parser
+      - BUSINESS_PARSER_GRPC_PORT=5018
+      - TRANSACTION_GRPC_HOST=transaction_service
+      - TRANSACTION_GRPC_PORT=7020
+      - REPORTING_GRPC_HOST=reporting_service
+      - REPORTING_GRPC_PORT=7030
+      - INVENTORY_GRPC_HOST=inventory_service
+      - INVENTORY_GRPC_PORT=7040
+      - ACCOUNTING_GRPC_HOST=accounting_service
+      - ACCOUNTING_GRPC_PORT=7050
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/tenant_orchestrator:/app/backend/services/tenant_orchestrator
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/tenant_orchestrator:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5017"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+      - business_parser
+      - transaction_service
+      - reporting_service
+      - inventory_service
+      - accounting_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  business_parser:
+    build:
+      context: .
+      dockerfile: backend/services/business_parser/Dockerfile
+    container_name: milkyhoop-dev-business_parser-1
+    ports:
+      - "7018:5018"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5018
+      - SERVICE_NAME=BusinessParser
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/business_parser:/app/backend/services/business_parser
+      - ./protos:/app/protos
+      - ./logs/business_parser:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5018"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 
   frontend:
     build:

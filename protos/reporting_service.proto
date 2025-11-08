@@ -1,0 +1,239 @@
+syntax = "proto3";
+
+package reporting_service;
+
+import "google/protobuf/empty.proto";
+
+// ========================================
+// Reporting Service - SAK EMKM Financial Reports
+// ========================================
+// Purpose: Read-only analytics layer for transaction_service
+// Architecture: Query SAK EMKM fields from TransaksiHarian table
+// Port: 7030
+// Dependencies: transaction_service (7020), PostgreSQL
+// ========================================
+
+service ReportingService {
+  // 4 Laporan Keuangan SAK EMKM
+  rpc GetLabaRugi (ReportRequest) returns (LaporanLabaRugi);
+  rpc GetNeraca (ReportRequest) returns (LaporanNeraca);
+  rpc GetArusKas (ReportRequest) returns (LaporanArusKas);
+  rpc GetPerubahanEkuitas (ReportRequest) returns (LaporanPerubahanEkuitas);
+  
+  // Health Check
+  rpc HealthCheck (google.protobuf.Empty) returns (HealthResponse);
+}
+
+// ========================================
+// REQUEST MESSAGE (Universal for all reports)
+// ========================================
+
+message ReportRequest {
+  string tenant_id = 1;               // Required: Multi-tenant isolation
+  string periode_pelaporan = 2;       // Format: "2025-10", "2025-Q3", "2025"
+  int64 start_date = 3;               // Optional: Unix timestamp (ms) - override periode
+  int64 end_date = 4;                 // Optional: Unix timestamp (ms) - override periode
+  string created_by = 5;              // user_id who requests the report
+}
+
+// ========================================
+// LAPORAN LABA RUGI (Income Statement)
+// ========================================
+// Formula: Laba Bersih = Pendapatan - HPP - Beban Operasional
+// Field mapping aligned dengan TransaksiHarian schema
+
+message LaporanLabaRugi {
+  // Metadata
+  string tenant_id = 1;
+  string periode_pelaporan = 2;
+  int64 generated_at = 3;             // Report generation timestamp
+  
+  // PENDAPATAN
+  // Source: SUM(total_nominal) WHERE jenis_transaksi='penjualan' AND status='approved'
+  int64 pendapatan_penjualan = 10;
+  int64 pendapatan_lainnya = 11;      // Future: other revenue
+  int64 total_pendapatan = 12;
+  
+  // HARGA POKOK PENJUALAN (COGS)
+  // Source: JOIN HppBreakdown table
+  int64 hpp_bahan_baku = 20;          // SUM(HppBreakdown.biayaBahanBaku)
+  int64 hpp_tenaga_kerja = 21;        // SUM(HppBreakdown.biayaTenagaKerja)
+  int64 hpp_overhead = 22;            // SUM(HppBreakdown.biayaLainnya)
+  int64 total_hpp = 23;               // SUM(HppBreakdown.totalHpp)
+  
+  // BEBAN OPERASIONAL
+  // Source: SUM(total_nominal) WHERE jenis_transaksi='beban' AND kategori_beban=<specific>
+  int64 beban_gaji = 30;              // kategori_beban='beban_gaji'
+  int64 beban_sewa = 31;              // kategori_beban='beban_sewa'
+  int64 beban_utilitas = 32;          // kategori_beban='beban_utilitas'
+  int64 beban_transportasi = 33;      // kategori_beban='beban_transportasi'
+  int64 beban_penyusutan = 34;        // SUM(penyusutan_per_tahun) / 12
+  int64 beban_operasional_lainnya = 35;
+  int64 total_beban_operasional = 36;
+  
+  // HASIL USAHA
+  int64 laba_kotor = 40;              // total_pendapatan - total_hpp
+  int64 laba_operasional = 41;        // laba_kotor - total_beban_operasional
+  int64 beban_bunga = 42;             // Interest expense
+  int64 laba_bersih = 43;             // laba_operasional - beban_bunga
+  
+  // ANALISIS
+  float margin_laba_kotor = 50;       // (laba_kotor / total_pendapatan) * 100
+  float margin_laba_bersih = 51;      // (laba_bersih / total_pendapatan) * 100
+  int32 jumlah_transaksi = 52;        // COUNT(transaksi)
+}
+
+// ========================================
+// LAPORAN NERACA (Balance Sheet)
+// ========================================
+// Formula: Aset = Liabilitas + Ekuitas
+// Field mapping aligned dengan TransaksiHarian schema
+
+message LaporanNeraca {
+  // Metadata
+  string tenant_id = 1;
+  string periode_pelaporan = 2;
+  int64 generated_at = 3;
+  
+  // ASET LANCAR (Current Assets)
+  // Source: Aggregation dari metode_pembayaran, sisa_piutang_hutang, InventoryImpact
+  int64 kas = 10;                     // SUM(total_nominal) WHERE metode_pembayaran='cash'
+  int64 bank = 11;                    // SUM(total_nominal) WHERE metode_pembayaran='transfer'
+  int64 piutang_usaha = 12;           // SUM(sisa_piutang_hutang) WHERE >0 AND pihak_type='customer'
+  int64 persediaan = 13;              // Calculated dari InventoryImpact
+  int64 total_aset_lancar = 14;
+  
+  // ASET TIDAK LANCAR (Non-Current Assets)
+  // Source: SUM(total_nominal) WHERE jenis_aset='aset_tidak_lancar'
+  int64 peralatan = 20;               // jenis_aset contains 'peralatan'
+  int64 kendaraan = 21;               // jenis_aset contains 'kendaraan'
+  int64 bangunan = 22;                // jenis_aset contains 'bangunan'
+  int64 akumulasi_penyusutan = 23;    // SUM(penyusutan_per_tahun * months_elapsed / 12) - NEGATIVE
+  int64 total_aset_tidak_lancar = 24;
+  
+  int64 total_aset = 25;              // total_aset_lancar + total_aset_tidak_lancar
+  
+  // LIABILITAS JANGKA PENDEK (Current Liabilities)
+  // Source: SUM(sisa_piutang_hutang) WHERE >0 AND pihak_type='supplier'
+  int64 hutang_usaha = 30;
+  int64 hutang_bank_jangka_pendek = 31;
+  int64 total_liabilitas_jangka_pendek = 32;
+  
+  // LIABILITAS JANGKA PANJANG (Long-term Liabilities)
+  int64 hutang_bank_jangka_panjang = 40;
+  int64 total_liabilitas_jangka_panjang = 41;
+  
+  int64 total_liabilitas = 42;
+  
+  // EKUITAS (Equity)
+  // Source: is_modal, is_prive flags + laba_bersih dari LaporanLabaRugi
+  int64 modal_awal = 50;              // SUM(total_nominal) WHERE is_modal=true
+  int64 laba_ditahan = 51;            // Accumulated retained earnings
+  int64 prive = 52;                   // SUM(total_nominal) WHERE is_prive=true - NEGATIVE
+  int64 total_ekuitas = 53;           // modal_awal + laba_ditahan - prive
+  
+  // BALANCE CHECK
+  int64 total_liabilitas_dan_ekuitas = 60;
+  bool is_balanced = 61;              // total_aset == total_liabilitas_dan_ekuitas
+}
+
+// ========================================
+// LAPORAN ARUS KAS (Cash Flow Statement)
+// ========================================
+// Formula: Kas Akhir = Kas Awal + Operasi + Investasi + Pendanaan
+// Field mapping aligned dengan TransaksiHarian.kategori_arus_kas
+
+message LaporanArusKas {
+  // Metadata
+  string tenant_id = 1;
+  string periode_pelaporan = 2;
+  int64 generated_at = 3;
+  
+  // KAS AWAL PERIODE
+  int64 kas_awal_periode = 10;
+  
+  // ARUS KAS DARI AKTIVITAS OPERASI
+  // Source: SUM(nominal_dibayar) WHERE kategori_arus_kas='operasi'
+  int64 penerimaan_dari_pelanggan = 20;  // kategori_arus_kas='operasi' AND jenis_transaksi='penjualan'
+  int64 pembayaran_ke_supplier = 21;     // kategori_arus_kas='operasi' AND jenis_transaksi='pembelian'
+  int64 pembayaran_beban_operasional = 22; // kategori_arus_kas='operasi' AND jenis_transaksi='beban'
+  int64 arus_kas_operasi = 23;
+  
+  // ARUS KAS DARI AKTIVITAS INVESTASI
+  // Source: SUM(total_nominal) WHERE kategori_arus_kas='investasi'
+  int64 pembelian_aset_tetap = 30;    // kategori_arus_kas='investasi' AND jenis_aset like 'aset_tidak_lancar%'
+  int64 penjualan_aset_tetap = 31;
+  int64 arus_kas_investasi = 32;
+  
+  // ARUS KAS DARI AKTIVITAS PENDANAAN
+  // Source: SUM(total_nominal) WHERE kategori_arus_kas='pendanaan'
+  int64 penerimaan_modal = 40;        // kategori_arus_kas='pendanaan' AND is_modal=true
+  int64 penerimaan_pinjaman = 41;
+  int64 pembayaran_pinjaman = 42;
+  int64 prive_pemilik = 43;           // kategori_arus_kas='pendanaan' AND is_prive=true
+  int64 arus_kas_pendanaan = 44;
+  
+  // KENAIKAN/PENURUNAN KAS
+  int64 kenaikan_penurunan_kas = 50;
+  
+  // KAS AKHIR PERIODE
+  int64 kas_akhir_periode = 60;
+  
+  // VALIDASI
+  int64 kas_actual = 61;              // From Neraca
+  bool is_reconciled = 62;
+}
+
+// ========================================
+// LAPORAN PERUBAHAN EKUITAS (Changes in Equity)
+// ========================================
+// Formula: Ekuitas Akhir = Ekuitas Awal + Laba Bersih - Prive
+// Field mapping aligned dengan is_modal, is_prive flags
+
+message LaporanPerubahanEkuitas {
+  // Metadata
+  string tenant_id = 1;
+  string periode_pelaporan = 2;
+  int64 generated_at = 3;
+  
+  // EKUITAS AWAL PERIODE
+  int64 ekuitas_awal_periode = 10;
+  
+  // MODAL
+  // Source: SUM(total_nominal) WHERE is_modal=true
+  int64 modal_awal = 20;
+  int64 penambahan_modal = 21;        // Current period additions
+  int64 pengurangan_modal = 22;
+  int64 modal_akhir = 23;
+  
+  // LABA RUGI
+  // Source: From LaporanLabaRugi.laba_bersih
+  int64 laba_bersih_periode_berjalan = 30;
+  int64 rugi_periode_berjalan = 31;
+  
+  // PRIVE
+  // Source: SUM(total_nominal) WHERE is_prive=true
+  int64 prive_periode_berjalan = 40;
+  
+  // LABA DITAHAN
+  int64 laba_ditahan_awal = 50;
+  int64 laba_ditahan_akhir = 51;
+  
+  // EKUITAS AKHIR PERIODE
+  int64 ekuitas_akhir_periode = 60;
+  
+  // VALIDASI
+  int64 ekuitas_from_neraca = 61;
+  bool is_reconciled = 62;
+}
+
+// ========================================
+// HEALTH CHECK
+// ========================================
+
+message HealthResponse {
+  string status = 1;                  // "healthy" or "unhealthy"
+  string version = 2;                 // Service version
+  int64 timestamp = 3;                // Current Unix milliseconds
+  bool database_connected = 4;        // Prisma connection status
+}

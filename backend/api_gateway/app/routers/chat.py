@@ -12,7 +12,6 @@ from backend.api_gateway.app.services.chatbot_client import ChatbotClient
 from backend.api_gateway.app.services.ragllm_client import RagLLMClient
 from backend.api_gateway.app.services.tenant_client import TenantParserClient
 from backend.api_gateway.app.services.intent_client import IntentParserClient
-from backend.api_gateway.app.services.complaint_client import ComplaintServiceClient
 
 # Level 13 imports - PROPER PROTO ACCESS
 import grpc
