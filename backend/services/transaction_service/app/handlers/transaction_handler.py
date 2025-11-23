@@ -8,6 +8,7 @@ Extracted from grpc_server.py - NO LOGIC CHANGES, only modularization.
 import logging
 import uuid
 import json
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 import grpc
@@ -210,7 +211,7 @@ class TransactionHandler:
             # User validation can be added here if needed
             
             # ============================================================
-            # ✨ STEP 3: VALIDATE STOCK AVAILABILITY (NEW)
+            # ✨ STEP 3: EXTRACT INVENTORY IMPACT (FOR OUTBOX)
             # ============================================================
             inventory_impact = None
 
@@ -235,42 +236,13 @@ class TransactionHandler:
                     inventory_impact = request.beban.inventory_impact
                     logger.info(f"📦 Using beban.inventory_impact")
 
-            logger.info(f"📦 Final inventory_impact: {'SET' if inventory_impact else 'NULL'}")
-
-            # Validate stock availability for outbound movements
-            if inventory_impact and inventory_impact.is_tracked:
-                if inventory_impact.jenis_movement == "keluar":
-                    logger.info("🔍 Validating stock availability before transaction...")
-                    
-                    inventory_client = get_inventory_client_func()
-                    
-                    # Import inventory proto for validation
-                    from app import inventory_service_pb2 as inv_pb
-                    
-                    for item in inventory_impact.items_inventory:
-                        validate_req = inv_pb.ValidateStockRequest(
-                            tenant_id=request.tenant_id,
-                            produk_id=item.produk_id,
-                            lokasi_gudang=inventory_impact.lokasi_gudang or "default",
-                            quantity_needed=abs(item.jumlah_movement)
-                        )
-                        
-                        validate_resp = await inventory_client.ValidateStockAvailability(validate_req)
-                        
-                        if not validate_resp.is_available:
-                            error_msg = f"❌ Insufficient stock: {item.produk_id} needs {abs(item.jumlah_movement)}, available {validate_resp.current_stock}"
-                            logger.error(error_msg)
-                            return pb.TransactionResponse(
-                                success=False,
-                                message=error_msg,
-                                transaction=None
-                            )
-                        else:
-                            logger.info(f"✅ Stock available: {item.produk_id} = {validate_resp.current_stock}")
+            logger.info(f"📦 Inventory impact: {'SET' if inventory_impact else 'NULL'} | Validation deferred to outbox_worker")
+            
+            # NOTE: Stock validation moved to outbox_worker for async processing
+            # This eliminates blocking gRPC calls during transaction creation
             
             # Step 4: Generate IDs
             tx_id = f"tx_{uuid.uuid4().hex[:16]}"
-            outbox_id = f"outbox_{uuid.uuid4().hex[:16]}"
             current_time_ms = int(datetime.utcnow().timestamp() * 1000)
             
             # Step 5: Convert Proto payload to JSONB
@@ -314,6 +286,15 @@ class TransactionHandler:
                 'periodePelaporan': request.periode_pelaporan if request.periode_pelaporan else None,
                 'keterangan': request.keterangan if request.keterangan else None,
                 'payload': json.dumps(payload_dict) if payload_dict else None,
+                # Discount & PPN Fields (V005)
+                'discountType': request.discount_type if hasattr(request, 'discount_type') and request.discount_type else None,
+                'discountValue': float(request.discount_value) if hasattr(request, 'discount_value') and request.discount_value else None,
+                'discountAmount': request.discount_amount if hasattr(request, 'discount_amount') and request.discount_amount else 0,
+                'subtotalBeforeDiscount': request.subtotal_before_discount if hasattr(request, 'subtotal_before_discount') and request.subtotal_before_discount else None,
+                'subtotalAfterDiscount': request.subtotal_after_discount if hasattr(request, 'subtotal_after_discount') and request.subtotal_after_discount else None,
+                'includeVat': request.include_vat if hasattr(request, 'include_vat') else False,
+                'vatAmount': request.vat_amount if hasattr(request, 'vat_amount') and request.vat_amount else 0,
+                'grandTotal': request.grand_total if hasattr(request, 'grand_total') and request.grand_total else None,
             }
             
             # Step 5.5: Handle ItemTransaksi (line items)
@@ -365,7 +346,12 @@ class TransactionHandler:
             logger.info(f"📦 Extracted {len(items_data)} items from {request.jenis_transaksi} payload")
             
             # Step 6: Atomic write with outbox pattern
+            time_before_db = time.time()
+            logger.info(f"⏱️ [TIMING] Starting database write at {time_before_db}")
             new_tx = await rls_prisma.transaksiharian.create(data=tx_data)
+            time_after_db = time.time()
+            db_duration = (time_after_db - time_before_db) * 1000
+            logger.info(f"⏱️ [TIMING] Database write completed in {db_duration:.0f}ms")
             
             # Step 6.1: Create ItemTransaksi records (if any)
             if items_data:
@@ -387,82 +373,76 @@ class TransactionHandler:
                 await rls_prisma.hppbreakdown.create(data=hpp_data)
             
             # ============================================================
-            # ✨ STEP 7: PROCESS INVENTORY IMPACT (NEW)
+            # ✨ STEP 7: INVENTORY IMPACT - ASYNC VIA OUTBOX (OPTIMIZED)
             # ============================================================
-            if inventory_impact and inventory_impact.is_tracked:
-                logger.info(f"📦 Processing inventory impact for {tx_id}...")
-                
-                inventory_client = get_inventory_client_func()
-                
-                # Import inventory proto
-                from app import inventory_service_pb2 as inv_pb
-                
-                impact_req = inv_pb.ProcessInventoryImpactRequest(
-                    tenant_id=request.tenant_id,
-                    transaksi_id=tx_id,
-                    inventory_impact=inventory_impact
-                )
-                
-                try:
-                    impact_resp = await inventory_client.ProcessInventoryImpact(impact_req)
-                    
-                    if impact_resp.success:
-                        logger.info(f"✅ Inventory updated: {impact_resp.message}")
-                        
-                        # Log low stock alerts
-                        for update in impact_resp.updates:
-                            if update.low_stock_alert:
-                                logger.warning(f"⚠️ LOW STOCK ALERT: {update.produk_id} @ {update.lokasi_gudang} = {update.stok_setelah}")
-                    else:
-                        logger.error(f"❌ Inventory update failed: {impact_resp.message}")
-                        
-                except grpc.RpcError as e:
-                    logger.error(f"❌ Inventory service RPC error: {e.code()} - {e.details()}")
-
-            # ============================================================
-            # ✨ STEP 8: PROCESS ACCOUNTING (NEW)
-            # ============================================================
-            if tx_data['status'] == 'draft':  # Process for all transactions
-                logger.info(f"📒 Processing accounting for {tx_id}...")
-                
-                accounting_result = await process_accounting_func(
-                    tenant_id=request.tenant_id,
-                    transaksi_id=tx_id,
-                    jenis_transaksi=request.jenis_transaksi,
-                    total_nominal=TransactionHandler.extract_total_nominal(request),
-                    kategori_arus_kas=request.kategori_arus_kas or 'operasi',
-                    created_by=request.created_by,
-                    tanggal_transaksi=int(current_time_ms / 1000),  # Convert ms to seconds
-                    periode_pelaporan=request.periode_pelaporan or '',
-                    keterangan=request.keterangan or '',
-                    akun_perkiraan_id=request.akun_perkiraan_id or ''
-                )
-                
-                if accounting_result['success']:
-                    logger.info(f"✅ Journal entry created: {accounting_result['journal_number']}")
-                else:
-                    logger.warning(f"⚠️ Accounting processing failed: {accounting_result.get('error', 'Unknown error')}")
+            # Note: Inventory processing now handled asynchronously by outbox_worker
             
-            # Step 6.4: Create outbox event
+            # ============================================================
+            # ✨ STEP 8: ACCOUNTING - ASYNC VIA OUTBOX (OPTIMIZED)
+            # ============================================================
+            # Note: Journal entry creation now handled asynchronously by outbox_worker
+            
+            # ============================================================
+            # ✨ STEP 9: CREATE OUTBOX EVENTS FOR ASYNC PROCESSING
+            # ============================================================
+            
+            # Event 1: Inventory Update (if tracked)
+            if inventory_impact and inventory_impact.is_tracked:
+                inventory_payload = {
+                    'transaksi_id': tx_id,
+                    'tenant_id': request.tenant_id,
+                    'items': []
+                }
+                
+                # Build inventory items from inventory_impact
+                for item in inventory_impact.items_inventory:
+                    inventory_payload['items'].append({
+                        'produk_id': item.produk_id,
+                        'jumlah_movement': item.jumlah_movement,
+                        'stok_setelah': item.stok_setelah,
+                        'lokasi_gudang': inventory_impact.lokasi_gudang or ''
+                    })
+                
+                await rls_prisma.outbox.create(data={
+                    'transaksi': {'connect': {'id': tx_id}},
+                    'eventType': 'inventory.update',
+                    'payload': json.dumps(inventory_payload),
+                    'processed': False
+                })
+                
+                logger.info(f"📦 Outbox event created: inventory.update ({len(inventory_payload['items'])} items)")
+            
+            # Event 2: Accounting Journal Entry
+            accounting_payload = {
+                'transaksi_id': tx_id,
+                'tenant_id': request.tenant_id,
+                'jenis_transaksi': request.jenis_transaksi,
+                'total_nominal': TransactionHandler.extract_total_nominal(request),
+                'periode_pelaporan': request.periode_pelaporan or datetime.now().strftime('%Y-%m')
+            }
+            
             await rls_prisma.outbox.create(data={
-                'id': outbox_id,
                 'transaksi': {'connect': {'id': tx_id}},
-                'eventType': 'transaction_created',
-                'payload': json.dumps({
-                    'transaction_id': tx_id,
-                    'jenis_transaksi': request.jenis_transaksi,
-                    'created_by': request.created_by,
-                    'timestamp': tx_data['timestamp'],
-                    'has_items': len(items_data) > 0,
-                    'has_hpp': request.HasField('hpp'),
-                    'has_inventory': inventory_impact is not None,
-                }),
+                'eventType': 'accounting.create',
+                'payload': json.dumps(accounting_payload),
                 'processed': False
             })
             
-            logger.info(f"✅ Transaction created: {tx_id}, outbox: {outbox_id}")
+            logger.info(f"📒 Outbox event created: accounting.create")
+            
+            time_after_outbox = time.time()
+            outbox_duration = (time_after_outbox - time_after_db) * 1000
+            logger.info(f"⏱️ [TIMING] Outbox events created in {outbox_duration:.0f}ms")
+            
+            logger.info(f"✅ Transaction created: {tx_id} (async processing queued)")
+            
+            
             
             # Step 8: Return response
+            time_before_return = time.time()
+            total_handler_duration = (time_before_return - time_before_db) * 1000
+            logger.info(f"⏱️ [TIMING] Total handler duration: {total_handler_duration:.0f}ms (from DB write to return)")
+            
             return pb.TransactionResponse(
                 success=True,
                 message=f"Transaction created successfully: {tx_id}",
@@ -515,33 +495,64 @@ class TransactionHandler:
                     f"Cannot update transaction with status '{existing.status}'"
                 )
             
-            payload_dict = TransactionHandler.proto_to_db_payload(request)
+            # Build update_data - only include fields that are actually being updated
+            # proto_to_db_payload only needed if updating transaction_data (oneof)
+            payload_dict = None
+            if request.HasField('penjualan') or request.HasField('pembelian') or request.HasField('beban'):
+                payload_dict = TransactionHandler.proto_to_db_payload(request)
             
+            # Build update_data dict - only set non-None fields
             update_data = {
-                'payload': json.dumps(payload_dict) if payload_dict else None,
-                'updatedAt': datetime.utcnow(),
-                'totalNominal': request.total_nominal if request.total_nominal is not None else None,
-                'metodePembayaran': request.metode_pembayaran if request.metode_pembayaran else None,
-                'statusPembayaran': request.status_pembayaran if request.status_pembayaran else None,
-                'nominalDibayar': request.nominal_dibayar or None,
-                'sisaPiutangHutang': request.sisa_piutang_hutang or None,
-                'jatuhTempo': request.jatuh_tempo or None,
-                'namaPihak': request.nama_pihak if request.nama_pihak else None,
-                'kontakPihak': request.kontak_pihak if request.kontak_pihak else None,
-                'pihakType': request.pihak_type if request.pihak_type else None,
-                'lokasiGudang': request.lokasi_gudang if request.lokasi_gudang else None,
-                'jenisAset': request.jenis_aset if request.jenis_aset else None,
-                'kategoriBeban': request.kategori_beban if request.kategori_beban else None,
-                'kategoriArusKas': request.kategori_arus_kas if request.kategori_arus_kas else None,
-                'isPrive': request.jenis_transaksi == 'prive',
-                'isModal': request.jenis_transaksi == 'modal',
-                'pajakAmount': request.pajak_amount or None,
-                'akunPerkiraanId': request.akun_perkiraan_id if request.akun_perkiraan_id else None,
-                'penyusutanPerTahun': request.penyusutan_per_tahun or None,
-                'umurManfaat': request.umur_manfaat or None,
-                'periodePelaporan': request.periode_pelaporan if request.periode_pelaporan else None,
-                'keterangan': request.keterangan if request.keterangan else None,
+                'updatedAt': datetime.utcnow()
             }
+            
+            # Only update payload if transaction_data (oneof) is provided
+            if payload_dict:
+                update_data['payload'] = json.dumps(payload_dict)
+            
+            # Update SAK EMKM fields only if provided (not None)
+            if request.total_nominal is not None and request.total_nominal != 0:
+                update_data['totalNominal'] = request.total_nominal
+            if request.metode_pembayaran:
+                update_data['metodePembayaran'] = request.metode_pembayaran
+            if request.status_pembayaran:
+                update_data['statusPembayaran'] = request.status_pembayaran
+            if request.nominal_dibayar is not None:
+                update_data['nominalDibayar'] = request.nominal_dibayar
+            if request.sisa_piutang_hutang is not None:
+                update_data['sisaPiutangHutang'] = request.sisa_piutang_hutang
+            if request.jatuh_tempo is not None:
+                update_data['jatuhTempo'] = request.jatuh_tempo
+            if request.nama_pihak:
+                update_data['namaPihak'] = request.nama_pihak
+            if request.kontak_pihak:
+                update_data['kontakPihak'] = request.kontak_pihak
+            if request.pihak_type:
+                update_data['pihakType'] = request.pihak_type
+            if request.lokasi_gudang:
+                update_data['lokasiGudang'] = request.lokasi_gudang
+            if request.jenis_aset:
+                update_data['jenisAset'] = request.jenis_aset
+            if request.kategori_beban:
+                update_data['kategoriBeban'] = request.kategori_beban
+            if request.kategori_arus_kas:
+                update_data['kategoriArusKas'] = request.kategori_arus_kas
+            if request.is_prive:
+                update_data['isPrive'] = request.is_prive
+            if request.is_modal:
+                update_data['isModal'] = request.is_modal
+            if request.pajak_amount is not None:
+                update_data['pajakAmount'] = request.pajak_amount
+            if request.akun_perkiraan_id:
+                update_data['akunPerkiraanId'] = request.akun_perkiraan_id
+            if request.penyusutan_per_tahun is not None:
+                update_data['penyusutanPerTahun'] = request.penyusutan_per_tahun
+            if request.umur_manfaat is not None:
+                update_data['umurManfaat'] = request.umur_manfaat
+            if request.periode_pelaporan:
+                update_data['periodePelaporan'] = request.periode_pelaporan
+            if request.keterangan:
+                update_data['keterangan'] = request.keterangan
             
             async with prisma.tx() as transaction:
                 updated_tx = await transaction.transaksiharian.update(

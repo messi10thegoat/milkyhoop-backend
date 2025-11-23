@@ -186,7 +186,7 @@ class AuthClient:
                     "success": True,
                     "access_token": response.access_token,
                     "refresh_token": response.refresh_token,
-                    "expires_at": response.expires_at
+                    "expires_in": response.expires_in if hasattr(response, 'expires_in') else 900
                 }
             else:
                 return {
@@ -300,4 +300,51 @@ class AuthClient:
             return {
                 "success": False,
                 "error": f"Failed to revoke session: {str(e)}"
+            }
+
+    async def logout(self, user_id: str, refresh_token: str = None, logout_all_devices: bool = False) -> Dict[str, Any]:
+        """
+        Logout user - revoke refresh token(s)
+        
+        Args:
+            user_id: User ID
+            refresh_token: Specific refresh token to revoke (optional)
+            logout_all_devices: If True, revoke all tokens for user
+            
+        Returns:
+            Dict containing success status and revoked token count
+        """
+        try:
+            await self.ensure_connected()
+            
+            request = auth_pb2.LogoutRequest(
+                user_id=user_id,
+                refresh_token=refresh_token if refresh_token else "",
+                logout_all_devices=logout_all_devices
+            )
+            response = await self.stub.Logout(request)
+            
+            if response.success:
+                return {
+                    "success": True,
+                    "message": response.message,
+                    "revoked_tokens": response.revoked_tokens
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": response.message or "Logout failed"
+                }
+                
+        except grpc.RpcError as e:
+            logger.error(f"gRPC error during logout: {e.code()} - {e.details()}")
+            return {
+                "success": False,
+                "error": f"Logout failed: {e.details()}"
+            }
+        except Exception as e:
+            logger.error(f"Error during logout: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Logout failed: {str(e)}"
             }

@@ -33,10 +33,19 @@ class TenantParserClient:
         if not GRPC_AVAILABLE:
             print("⚠️ gRPC protobuf not available, falling back to direct RAG")
             return False
-            
+
         try:
             if self.channel is None:
-                self.channel = grpc.aio.insecure_channel(self.target)
+                # gRPC keepalive configuration to prevent "too_many_pings" error
+                options = [
+                    ('grpc.keepalive_time_ms', 30000),                      # Send keepalive ping every 30s
+                    ('grpc.keepalive_timeout_ms', 10000),                   # Wait 10s for ping ack
+                    ('grpc.keepalive_permit_without_calls', 1),             # Allow keepalive pings when no calls
+                    ('grpc.http2.max_pings_without_data', 0),               # No limit on pings without data
+                    ('grpc.http2.min_time_between_pings_ms', 30000),        # Min 30s between pings
+                    ('grpc.http2.min_ping_interval_without_data_ms', 30000),  # Min 30s between pings without data
+                ]
+                self.channel = grpc.aio.insecure_channel(self.target, options=options)
                 self.stub = IntentParserServiceStub(self.channel)
                 print(f"🔗 Connected to Enhanced Confidence Engine: {self.target}")
             return True

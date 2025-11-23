@@ -28,6 +28,56 @@ class TenantChatResponse(BaseModel):
     trace_id: str = ""
 
 
+@router.get("/{tenant_id}/info")
+async def get_tenant_info(tenant_id: str):
+    """
+    Get Tenant Public Info
+    
+    Purpose: Fetch tenant display_name, menu_items for dynamic UI
+    Authentication: NOT required (public endpoint)
+    """
+    import asyncpg
+    
+    try:
+        # Connect to Supabase PostgreSQL
+        conn = await asyncpg.connect(
+            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="postgres"
+        )
+        
+        # Query tenant data
+        row = await conn.fetchrow(
+            'SELECT id, alias, display_name, menu_items, status FROM "Tenant" WHERE id = $1',
+            tenant_id
+        )
+        
+        await conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Tenant '{tenant_id}' not found")
+        
+        return {
+            "status": "success",
+            "data": {
+                "tenant_id": row["id"],
+                "alias": row["alias"],
+                "display_name": row["display_name"],
+                "menu_items": row["menu_items"],
+                "status": row["status"]
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch tenant info: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch tenant info")
+
+
+
 @router.post("/{tenant_id}/chat", response_model=TenantChatResponse)
 async def tenant_chat(tenant_id: str, request_body: TenantChatRequest, request: Request):
     """
@@ -38,8 +88,8 @@ async def tenant_chat(tenant_id: str, request_body: TenantChatRequest, request: 
     """
     
     try:
-        # Get user_id from JWT context (set by AuthMiddleware)
-        user_id = getattr(request.state, "user_id", "")
+         # Get user_id from JWT context (set by AuthMiddleware)
+        user_id = request.state.user.get("user_id", "")
         
         logger.info(f"Tenant chat request | tenant={tenant_id} | user={user_id} | message={request_body.message[:50]}")
         

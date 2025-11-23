@@ -24,7 +24,18 @@ service ConversationManager {
   
   // Clear session (for testing or explicit cleanup)
   rpc ClearSession (ClearSessionRequest) returns (ClearSessionResponse);
-  
+
+  // ===== PHASE 1.5: Draft Transaction Management =====
+
+  // Save draft transaction state
+  rpc SaveDraft (SaveDraftRequest) returns (SaveDraftResponse);
+
+  // Retrieve draft transaction
+  rpc GetDraft (GetDraftRequest) returns (GetDraftResponse);
+
+  // Delete draft transaction
+  rpc DeleteDraft (DeleteDraftRequest) returns (DeleteDraftResponse);
+
   // Health check
   rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
 }
@@ -110,5 +121,38 @@ message ClearSessionRequest {
 
 message ClearSessionResponse {
   string status = 1;
+  string message = 2;
+}
+
+// ===== PHASE 1.5: Draft Transaction Messages =====
+
+message SaveDraftRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+  string draft_json = 3;     // JSON string of draft transaction data
+}
+
+message SaveDraftResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetDraftRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+}
+
+message GetDraftResponse {
+  bool exists = 1;
+  string draft_json = 2;     // JSON string of draft data, empty if not exists
+}
+
+message DeleteDraftRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+}
+
+message DeleteDraftResponse {
+  bool success = 1;
   string message = 2;
 }

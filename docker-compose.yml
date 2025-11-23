@@ -404,17 +404,21 @@ services:
     build:
       context: .
       dockerfile: backend/services/conversation_service/Dockerfile
+    container_name: milkyhoop-dev-conversation_service-1
     ports:
       - "7002:5002"
     networks:
       - internal
     environment:
       - GRPC_PORT=5002
+      - SERVICE_NAME=ConversationService
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
     volumes:
+      - ./backend/services/conversation_service:/app/backend/services/conversation_service
+      - ./protos:/app/protos
       - ./logs/conversation_service:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:5002"]
@@ -838,6 +842,8 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - BUSINESS_PARSER_GRPC_HOST=business_parser
       - BUSINESS_PARSER_GRPC_PORT=5018
+      - RULE_ENGINE_GRPC_HOST=rule_engine
+      - RULE_ENGINE_GRPC_PORT=5070
       - TRANSACTION_GRPC_HOST=transaction_service
       - TRANSACTION_GRPC_PORT=7020
       - REPORTING_GRPC_HOST=reporting_service
@@ -863,6 +869,7 @@ services:
       - postgres
       - redis
       - business_parser
+      - rule_engine
       - transaction_service
       - reporting_service
       - inventory_service
@@ -906,6 +913,79 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  rule_engine:
+    build:
+      context: .
+      dockerfile: backend/services/rule_engine/Dockerfile
+    container_name: milkyhoop-dev-rule_engine-1
+    ports:
+      - "7070:5070"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5070
+      - SERVICE_NAME=RuleEngine
+      - DATABASE_URL=${DATABASE_URL}
+      - CACHE_TTL_SECONDS=300
+      - LOG_LEVEL=INFO
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/rule_engine:/app/backend/services/rule_engine
+      - ./database/schemas:/app/database/schemas
+      - ./protos:/app/protos
+      - ./logs/rule_engine:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5070"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  outbox_worker:
+    build:
+      context: .
+      dockerfile: backend/services/outbox_worker/Dockerfile
+    container_name: milkyhoop-dev-outbox_worker-1
+    ports:
+      - "7060:5060"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5060
+      - SERVICE_NAME=OutboxWorker
+      - DATABASE_URL=${DATABASE_URL}
+      - POLL_INTERVAL=2
+    env_file:
+      - .env
+    volumes:
+      - ./backend/services/outbox_worker:/app/backend/services/outbox_worker
+      - ./protos:/app/protos
+      - ./logs/outbox_worker:/var/log
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5060"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: "no"
+    depends_on:
+      - postgres
+      - inventory_service
+      - accounting_service
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 
 
   frontend:

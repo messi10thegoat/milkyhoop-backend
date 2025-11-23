@@ -15,6 +15,7 @@ service AuthService {
   rpc RefreshToken (RefreshTokenRequest) returns (RefreshTokenResponse);
   rpc ValidateToken (ValidateTokenRequest) returns (ValidateTokenResponse);
   rpc RevokeToken (RevokeTokenRequest) returns (RevokeTokenResponse);
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
   rpc GetUserProfile (UserProfileRequest) returns (UserProfileResponse);
   
   // Token Management & Security
@@ -148,6 +149,21 @@ message RevokeTokenResponse {
   string message = 2;
   int32 revoked_sessions = 3;
   string audit_id = 4; // for tracking
+}
+
+message LogoutRequest {
+  string user_id = 1;
+  string refresh_token = 2; // optional, if empty logout all devices
+  bool logout_all_devices = 3;
+  string session_id = 4;
+  map<string, string> metadata = 5;
+}
+
+message LogoutResponse {
+  bool success = 1;
+  string message = 2;
+  int32 revoked_tokens = 3;
+  string audit_id = 4;
 }
 
 // ========================================

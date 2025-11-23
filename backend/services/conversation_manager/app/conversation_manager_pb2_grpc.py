@@ -70,6 +70,21 @@ class ConversationManagerStub(object):
                 request_serializer=conversation__manager__pb2.ClearSessionRequest.SerializeToString,
                 response_deserializer=conversation__manager__pb2.ClearSessionResponse.FromString,
                 _registered_method=True)
+        self.SaveDraft = channel.unary_unary(
+                '/conversation_manager.ConversationManager/SaveDraft',
+                request_serializer=conversation__manager__pb2.SaveDraftRequest.SerializeToString,
+                response_deserializer=conversation__manager__pb2.SaveDraftResponse.FromString,
+                _registered_method=True)
+        self.GetDraft = channel.unary_unary(
+                '/conversation_manager.ConversationManager/GetDraft',
+                request_serializer=conversation__manager__pb2.GetDraftRequest.SerializeToString,
+                response_deserializer=conversation__manager__pb2.GetDraftResponse.FromString,
+                _registered_method=True)
+        self.DeleteDraft = channel.unary_unary(
+                '/conversation_manager.ConversationManager/DeleteDraft',
+                request_serializer=conversation__manager__pb2.DeleteDraftRequest.SerializeToString,
+                response_deserializer=conversation__manager__pb2.DeleteDraftResponse.FromString,
+                _registered_method=True)
         self.HealthCheck = channel.unary_unary(
                 '/conversation_manager.ConversationManager/HealthCheck',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -120,6 +135,29 @@ class ConversationManagerServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SaveDraft(self, request, context):
+        """===== PHASE 1.5: Draft Transaction Management =====
+
+        Save draft transaction state
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDraft(self, request, context):
+        """Retrieve draft transaction
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteDraft(self, request, context):
+        """Delete draft transaction
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HealthCheck(self, request, context):
         """Health check
         """
@@ -154,6 +192,21 @@ def add_ConversationManagerServicer_to_server(servicer, server):
                     servicer.ClearSession,
                     request_deserializer=conversation__manager__pb2.ClearSessionRequest.FromString,
                     response_serializer=conversation__manager__pb2.ClearSessionResponse.SerializeToString,
+            ),
+            'SaveDraft': grpc.unary_unary_rpc_method_handler(
+                    servicer.SaveDraft,
+                    request_deserializer=conversation__manager__pb2.SaveDraftRequest.FromString,
+                    response_serializer=conversation__manager__pb2.SaveDraftResponse.SerializeToString,
+            ),
+            'GetDraft': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDraft,
+                    request_deserializer=conversation__manager__pb2.GetDraftRequest.FromString,
+                    response_serializer=conversation__manager__pb2.GetDraftResponse.SerializeToString,
+            ),
+            'DeleteDraft': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteDraft,
+                    request_deserializer=conversation__manager__pb2.DeleteDraftRequest.FromString,
+                    response_serializer=conversation__manager__pb2.DeleteDraftResponse.SerializeToString,
             ),
             'HealthCheck': grpc.unary_unary_rpc_method_handler(
                     servicer.HealthCheck,
@@ -300,6 +353,87 @@ class ConversationManager(object):
             '/conversation_manager.ConversationManager/ClearSession',
             conversation__manager__pb2.ClearSessionRequest.SerializeToString,
             conversation__manager__pb2.ClearSessionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SaveDraft(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/conversation_manager.ConversationManager/SaveDraft',
+            conversation__manager__pb2.SaveDraftRequest.SerializeToString,
+            conversation__manager__pb2.SaveDraftResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDraft(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/conversation_manager.ConversationManager/GetDraft',
+            conversation__manager__pb2.GetDraftRequest.SerializeToString,
+            conversation__manager__pb2.GetDraftResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteDraft(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/conversation_manager.ConversationManager/DeleteDraft',
+            conversation__manager__pb2.DeleteDraftRequest.SerializeToString,
+            conversation__manager__pb2.DeleteDraftResponse.FromString,
             options,
             channel_credentials,
             insecure,

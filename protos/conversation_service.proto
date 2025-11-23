@@ -3,21 +3,87 @@ syntax = "proto3";
 package conversation_service;
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/milkyhoop/template-service-golang/internal/delivery/pb/template;template";
-// option python_package = "app.protos";
+option go_package = "github.com/milkyhoop/milkyhoop-conversation/internal/delivery/pb/conversation;conversation";
 
-service Conversation_service {
-  rpc DoSomething (Conversation_serviceRequest) returns (Conversation_serviceResponse);
+// ============================================
+// CONVERSATION SERVICE - CHAT PERSISTENCE
+// ============================================
+service ConversationService {
+  // Save a chat message with response
+  rpc SaveMessage (SaveMessageRequest) returns (SaveMessageResponse);
+  
+  // Get paginated chat history
+  rpc GetChatHistory (GetChatHistoryRequest) returns (GetChatHistoryResponse);
+  
+  // Get messages since a timestamp (for sync)
+  rpc GetMessagesSince (GetMessagesSinceRequest) returns (GetMessagesSinceResponse);
+  
+  // Health check
   rpc HealthCheck (google.protobuf.Empty) returns (google.protobuf.Empty);
 }
 
-message Conversation_serviceRequest {
+// ============================================
+// SAVE MESSAGE
+// ============================================
+message SaveMessageRequest {
   string user_id = 1;
-  string input = 2;
+  string tenant_id = 2;
+  string message = 3;
+  string response = 4;
+  string intent = 5;
+  string metadata_json = 6;  // JSON string for flexible metadata
 }
 
-message Conversation_serviceResponse {
+message SaveMessageResponse {
   string status = 1;
-  string result = 2;
+  string message_id = 2;
+  int64 created_at = 3;  // Unix timestamp
+}
+
+// ============================================
+// GET CHAT HISTORY (PAGINATION)
+// ============================================
+message GetChatHistoryRequest {
+  string user_id = 1;
+  string tenant_id = 2;
+  int32 limit = 3;   // Default: 30
+  int32 offset = 4;  // Default: 0
+}
+
+message GetChatHistoryResponse {
+  string status = 1;
+  repeated ChatMessage messages = 2;
+  int32 total_count = 3;
+  bool has_more = 4;
+}
+
+// ============================================
+// GET MESSAGES SINCE (REAL-TIME SYNC)
+// ============================================
+message GetMessagesSinceRequest {
+  string user_id = 1;
+  string tenant_id = 2;
+  int64 since_timestamp = 3;  // Unix timestamp
+}
+
+message GetMessagesSinceResponse {
+  string status = 1;
+  repeated ChatMessage messages = 2;
+  int64 latest_timestamp = 3;
+}
+
+// ============================================
+// CHAT MESSAGE MODEL
+// ============================================
+message ChatMessage {
+  string id = 1;
+  string user_id = 2;
+  string tenant_id = 3;
+  string message = 4;
+  string response = 5;
+  string intent = 6;
+  string metadata_json = 7;
+  int64 created_at = 8;  // Unix timestamp
 }

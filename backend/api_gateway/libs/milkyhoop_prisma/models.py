@@ -92,6 +92,8 @@ class User(bases.BaseUser):
     auditLogs: Optional[List['models.AuditLog']] = None
     transaksiCreated: Optional[List['models.TransaksiHarian']] = None
     transaksiApproved: Optional[List['models.TransaksiHarian']] = None
+    refreshTokens: Optional[List['models.RefreshToken']] = None
+    chatMessages: Optional[List['models.ChatMessage']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -488,6 +490,144 @@ class Session(bases.BaseSession):
         _created_partial_types.add(name)
 
 
+class RefreshToken(bases.BaseRefreshToken):
+    """Represents a RefreshToken record"""
+
+    id: _str
+    userId: _str
+    tenantId: _str
+    tokenHash: _str
+    expiresAt: datetime.datetime
+    createdAt: datetime.datetime
+    revokedAt: Optional[datetime.datetime] = None
+    deviceInfo: Optional[_str] = None
+    lastUsedAt: datetime.datetime
+    user: Optional['models.User'] = None
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.RefreshTokenKeys']] = None,
+        exclude: Optional[Iterable['types.RefreshTokenKeys']] = None,
+        required: Optional[Iterable['types.RefreshTokenKeys']] = None,
+        optional: Optional[Iterable['types.RefreshTokenKeys']] = None,
+        relations: Optional[Mapping['types.RefreshTokenRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.RefreshTokenKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _RefreshToken_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _RefreshToken_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _RefreshToken_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _RefreshToken_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _RefreshToken_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _RefreshToken_relational_fields:
+                        raise errors.UnknownRelationalFieldError('RefreshToken', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid RefreshToken / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'RefreshToken',
+            }
+        )
+        _created_partial_types.add(name)
+
+
 class UserSecurity(bases.BaseUserSecurity):
     """Represents a UserSecurity record"""
 
@@ -863,13 +1003,19 @@ class VerificationToken(bases.BaseVerificationToken):
         _created_partial_types.add(name)
 
 
-class messages(bases.Basemessages):
-    """Represents a messages record"""
+class ChatMessage(bases.BaseChatMessage):
+    """Represents a ChatMessage record"""
 
-    id: _int
-    user_id: _str
+    id: _str
+    userId: _str
+    tenantId: _str
     message: _str
-    created_at: Optional[datetime.datetime] = None
+    response: Optional[_str] = None
+    metadata: Optional['fields.Json'] = None
+    intent: Optional[_str] = None
+    createdAt: datetime.datetime
+    user: Optional['models.User'] = None
+    tenant: Optional['models.Tenant'] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -890,11 +1036,11 @@ class messages(bases.Basemessages):
     @staticmethod
     def create_partial(
         name: str,
-        include: Optional[Iterable['types.messagesKeys']] = None,
-        exclude: Optional[Iterable['types.messagesKeys']] = None,
-        required: Optional[Iterable['types.messagesKeys']] = None,
-        optional: Optional[Iterable['types.messagesKeys']] = None,
-        relations: Optional[Mapping['types.messagesRelationalFieldKeys', str]] = None,
+        include: Optional[Iterable['types.ChatMessageKeys']] = None,
+        exclude: Optional[Iterable['types.ChatMessageKeys']] = None,
+        required: Optional[Iterable['types.ChatMessageKeys']] = None,
+        optional: Optional[Iterable['types.ChatMessageKeys']] = None,
+        relations: Optional[Mapping['types.ChatMessageRelationalFieldKeys', str]] = None,
         exclude_relational_fields: bool = False,
     ) -> None:
         if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
@@ -921,26 +1067,26 @@ class messages(bases.Basemessages):
                 'exclude_relational_fields and relations are mutually exclusive'
             )
 
-        fields: Dict['types.messagesKeys', PartialModelField] = OrderedDict()
+        fields: Dict['types.ChatMessageKeys', PartialModelField] = OrderedDict()
 
         try:
             if include:
                 for field in include:
-                    fields[field] = _messages_fields[field].copy()
+                    fields[field] = _ChatMessage_fields[field].copy()
             elif exclude:
                 for field in exclude:
-                    if field not in _messages_fields:
+                    if field not in _ChatMessage_fields:
                         raise KeyError(field)
 
                 fields = {
                     key: data.copy()
-                    for key, data in _messages_fields.items()
+                    for key, data in _ChatMessage_fields.items()
                     if key not in exclude
                 }
             else:
                 fields = {
                     key: data.copy()
-                    for key, data in _messages_fields.items()
+                    for key, data in _ChatMessage_fields.items()
                 }
 
             if required:
@@ -951,12 +1097,36 @@ class messages(bases.Basemessages):
                 for field in optional:
                     fields[field]['optional'] = True
 
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _ChatMessage_relational_fields
+                }
 
             if relations:
-                raise ValueError('Model: "messages" has no relational fields.')
+                for field, type_ in relations.items():
+                    if field not in _ChatMessage_relational_fields:
+                        raise errors.UnknownRelationalFieldError('ChatMessage', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
         except KeyError as exc:
             raise ValueError(
-                f'{exc.args[0]} is not a valid messages / {name} field.'
+                f'{exc.args[0]} is not a valid ChatMessage / {name} field.'
             ) from None
 
         models = partial_models_ctx.get()
@@ -964,7 +1134,7 @@ class messages(bases.Basemessages):
             {
                 'name': name,
                 'fields': cast(Mapping[str, PartialModelField], fields),
-                'from_model': 'messages',
+                'from_model': 'ChatMessage',
             }
         )
         _created_partial_types.add(name)
@@ -1920,9 +2090,14 @@ class Tenant(bases.BaseTenant):
     users: Optional[List['models.User']] = None
     transaksiHarian: Optional[List['models.TransaksiHarian']] = None
     taxInfo: Optional[List['models.TaxInfo']] = None
+    products: Optional[List['models.Products']] = None
+    suppliers: Optional[List['models.Supplier']] = None
     persediaan: Optional[List['models.Persediaan']] = None
     baganAkun: Optional[List['models.BaganAkun']] = None
     jurnalEntries: Optional[List['models.JurnalEntry']] = None
+    refreshTokens: Optional[List['models.RefreshToken']] = None
+    chatMessages: Optional[List['models.ChatMessage']] = None
+    tenantRules: Optional[List['models.TenantRule']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -2553,6 +2728,14 @@ class TransaksiHarian(bases.BaseTransaksiHarian):
     isPrive: _bool
     isModal: _bool
     pajakAmount: Optional[_int] = None
+    discountType: Optional[_str] = None
+    discountValue: Optional[_float] = None
+    discountAmount: Optional[_int] = None
+    subtotalBeforeDiscount: Optional[_int] = None
+    subtotalAfterDiscount: Optional[_int] = None
+    includeVat: _bool
+    vatAmount: Optional[_int] = None
+    grandTotal: Optional[_int] = None
     akunPerkiraanId: Optional[_str] = None
     penyusutanPerTahun: Optional[_int] = None
     umurManfaat: Optional[_int] = None
@@ -3241,15 +3424,287 @@ class ItemInventory(bases.BaseItemInventory):
         _created_partial_types.add(name)
 
 
+class Products(bases.BaseProducts):
+    """Represents a Products record"""
+
+    id: _str
+    tenantId: _str
+    namaProduk: _str
+    satuan: _str
+    kategori: Optional[_str] = None
+    hargaJual: Optional[_float] = None
+    deskripsi: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+    persediaan: Optional[List['models.Persediaan']] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.ProductsKeys']] = None,
+        exclude: Optional[Iterable['types.ProductsKeys']] = None,
+        required: Optional[Iterable['types.ProductsKeys']] = None,
+        optional: Optional[Iterable['types.ProductsKeys']] = None,
+        relations: Optional[Mapping['types.ProductsRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.ProductsKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _Products_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _Products_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _Products_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _Products_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _Products_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _Products_relational_fields:
+                        raise errors.UnknownRelationalFieldError('Products', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid Products / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'Products',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class Supplier(bases.BaseSupplier):
+    """Represents a Supplier record"""
+
+    id: _str
+    tenantId: _str
+    namaSupplier: _str
+    kontak: Optional[_str] = None
+    alamat: Optional[_str] = None
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.SupplierKeys']] = None,
+        exclude: Optional[Iterable['types.SupplierKeys']] = None,
+        required: Optional[Iterable['types.SupplierKeys']] = None,
+        optional: Optional[Iterable['types.SupplierKeys']] = None,
+        relations: Optional[Mapping['types.SupplierRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.SupplierKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _Supplier_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _Supplier_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _Supplier_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _Supplier_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _Supplier_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _Supplier_relational_fields:
+                        raise errors.UnknownRelationalFieldError('Supplier', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid Supplier / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'Supplier',
+            }
+        )
+        _created_partial_types.add(name)
+
+
 class Persediaan(bases.BasePersediaan):
     """Represents a Persediaan record"""
 
     id: _str
     tenantId: _str
-    produkId: _str
+    productId: _str
     lokasiGudang: _str
     jumlah: _float
-    satuan: Optional[_str] = None
     nilaiPerUnit: Optional[_float] = None
     totalNilai: Optional[_float] = None
     lastMovementAt: Optional[datetime.datetime] = None
@@ -3257,6 +3712,7 @@ class Persediaan(bases.BasePersediaan):
     createdAt: datetime.datetime
     updatedAt: datetime.datetime
     tenant: Optional['models.Tenant'] = None
+    product: Optional['models.Products'] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -3513,6 +3969,143 @@ class Outbox(bases.BaseOutbox):
                 'name': name,
                 'fields': cast(Mapping[str, PartialModelField], fields),
                 'from_model': 'Outbox',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class TenantRule(bases.BaseTenantRule):
+    """Represents a TenantRule record"""
+
+    id: _str
+    tenantId: _str
+    ruleId: _str
+    ruleType: _str
+    ruleYaml: _str
+    isActive: _bool
+    priority: _int
+    createdAt: datetime.datetime
+    updatedAt: datetime.datetime
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.TenantRuleKeys']] = None,
+        exclude: Optional[Iterable['types.TenantRuleKeys']] = None,
+        required: Optional[Iterable['types.TenantRuleKeys']] = None,
+        optional: Optional[Iterable['types.TenantRuleKeys']] = None,
+        relations: Optional[Mapping['types.TenantRuleRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.TenantRuleKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _TenantRule_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _TenantRule_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _TenantRule_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _TenantRule_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _TenantRule_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _TenantRule_relational_fields:
+                        raise errors.UnknownRelationalFieldError('TenantRule', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid TenantRule / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'TenantRule',
             }
         )
         _created_partial_types.add(name)
@@ -4097,6 +4690,8 @@ _User_relational_fields: Set[str] = {
         'auditLogs',
         'transaksiCreated',
         'transaksiApproved',
+        'refreshTokens',
+        'chatMessages',
     }
 _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
     [
@@ -4364,6 +4959,22 @@ _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
             'is_relational': True,
             'documentation': None,
         }),
+        ('refreshTokens', {
+            'name': 'refreshTokens',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.RefreshToken\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('chatMessages', {
+            'name': 'chatMessages',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.ChatMessage\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
     ],
 )
 
@@ -4521,6 +5132,103 @@ _Session_fields: Dict['types.SessionKeys', PartialModelField] = OrderedDict(
             'is_list': False,
             'optional': True,
             'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_RefreshToken_relational_fields: Set[str] = {
+        'user',
+        'tenant',
+    }
+_RefreshToken_fields: Dict['types.RefreshTokenKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('userId', {
+            'name': 'userId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tokenHash', {
+            'name': 'tokenHash',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('expiresAt', {
+            'name': 'expiresAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('revokedAt', {
+            'name': 'revokedAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('deviceInfo', {
+            'name': 'deviceInfo',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lastUsedAt', {
+            'name': 'lastUsedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('user', {
+            'name': 'user',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
             'is_relational': True,
             'documentation': None,
         }),
@@ -4693,19 +5401,30 @@ _VerificationToken_fields: Dict['types.VerificationTokenKeys', PartialModelField
     ],
 )
 
-_messages_relational_fields: Set[str] = set()  # pyright: ignore[reportUnusedVariable]
-_messages_fields: Dict['types.messagesKeys', PartialModelField] = OrderedDict(
+_ChatMessage_relational_fields: Set[str] = {
+        'user',
+        'tenant',
+    }
+_ChatMessage_fields: Dict['types.ChatMessageKeys', PartialModelField] = OrderedDict(
     [
         ('id', {
             'name': 'id',
             'is_list': False,
             'optional': False,
-            'type': '_int',
+            'type': '_str',
             'is_relational': False,
             'documentation': None,
         }),
-        ('user_id', {
-            'name': 'user_id',
+        ('userId', {
+            'name': 'userId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
             'is_list': False,
             'optional': False,
             'type': '_str',
@@ -4720,12 +5439,52 @@ _messages_fields: Dict['types.messagesKeys', PartialModelField] = OrderedDict(
             'is_relational': False,
             'documentation': None,
         }),
-        ('created_at', {
-            'name': 'created_at',
+        ('response', {
+            'name': 'response',
             'is_list': False,
             'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('metadata', {
+            'name': 'metadata',
+            'is_list': False,
+            'optional': True,
+            'type': 'fields.Json',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('intent', {
+            'name': 'intent',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
             'type': 'datetime.datetime',
             'is_relational': False,
+            'documentation': None,
+        }),
+        ('user', {
+            'name': 'user',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
             'documentation': None,
         }),
     ],
@@ -5168,9 +5927,14 @@ _Tenant_relational_fields: Set[str] = {
         'users',
         'transaksiHarian',
         'taxInfo',
+        'products',
+        'suppliers',
         'persediaan',
         'baganAkun',
         'jurnalEntries',
+        'refreshTokens',
+        'chatMessages',
+        'tenantRules',
     }
 _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
     [
@@ -5262,6 +6026,22 @@ _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
             'is_relational': True,
             'documentation': None,
         }),
+        ('products', {
+            'name': 'products',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.Products\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('suppliers', {
+            'name': 'suppliers',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.Supplier\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
         ('persediaan', {
             'name': 'persediaan',
             'is_list': True,
@@ -5283,6 +6063,30 @@ _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
             'is_list': True,
             'optional': True,
             'type': 'List[\'models.JurnalEntry\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('refreshTokens', {
+            'name': 'refreshTokens',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.RefreshToken\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('chatMessages', {
+            'name': 'chatMessages',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.ChatMessage\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('tenantRules', {
+            'name': 'tenantRules',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.TenantRule\']',
             'is_relational': True,
             'documentation': None,
         }),
@@ -5863,6 +6667,70 @@ _TransaksiHarian_fields: Dict['types.TransaksiHarianKeys', PartialModelField] = 
             'is_relational': False,
             'documentation': None,
         }),
+        ('discountType', {
+            'name': 'discountType',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('discountValue', {
+            'name': 'discountValue',
+            'is_list': False,
+            'optional': True,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('discountAmount', {
+            'name': 'discountAmount',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('subtotalBeforeDiscount', {
+            'name': 'subtotalBeforeDiscount',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('subtotalAfterDiscount', {
+            'name': 'subtotalAfterDiscount',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('includeVat', {
+            'name': 'includeVat',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('vatAmount', {
+            'name': 'vatAmount',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('grandTotal', {
+            'name': 'grandTotal',
+            'is_list': False,
+            'optional': True,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
         ('akunPerkiraanId', {
             'name': 'akunPerkiraanId',
             'is_list': False,
@@ -6347,8 +7215,178 @@ _ItemInventory_fields: Dict['types.ItemInventoryKeys', PartialModelField] = Orde
     ],
 )
 
+_Products_relational_fields: Set[str] = {
+        'tenant',
+        'persediaan',
+    }
+_Products_fields: Dict['types.ProductsKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('namaProduk', {
+            'name': 'namaProduk',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('satuan', {
+            'name': 'satuan',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kategori', {
+            'name': 'kategori',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('hargaJual', {
+            'name': 'hargaJual',
+            'is_list': False,
+            'optional': True,
+            'type': '_float',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('deskripsi', {
+            'name': 'deskripsi',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('persediaan', {
+            'name': 'persediaan',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.Persediaan\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_Supplier_relational_fields: Set[str] = {
+        'tenant',
+    }
+_Supplier_fields: Dict['types.SupplierKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('namaSupplier', {
+            'name': 'namaSupplier',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('kontak', {
+            'name': 'kontak',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('alamat', {
+            'name': 'alamat',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
 _Persediaan_relational_fields: Set[str] = {
         'tenant',
+        'product',
     }
 _Persediaan_fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDict(
     [
@@ -6368,8 +7406,8 @@ _Persediaan_fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDic
             'is_relational': False,
             'documentation': None,
         }),
-        ('produkId', {
-            'name': 'produkId',
+        ('productId', {
+            'name': 'productId',
             'is_list': False,
             'optional': False,
             'type': '_str',
@@ -6389,14 +7427,6 @@ _Persediaan_fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDic
             'is_list': False,
             'optional': False,
             'type': '_float',
-            'is_relational': False,
-            'documentation': None,
-        }),
-        ('satuan', {
-            'name': 'satuan',
-            'is_list': False,
-            'optional': True,
-            'type': '_str',
             'is_relational': False,
             'documentation': None,
         }),
@@ -6453,6 +7483,14 @@ _Persediaan_fields: Dict['types.PersediaanKeys', PartialModelField] = OrderedDic
             'is_list': False,
             'optional': True,
             'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('product', {
+            'name': 'product',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Products',
             'is_relational': True,
             'documentation': None,
         }),
@@ -6541,6 +7579,94 @@ _Outbox_fields: Dict['types.OutboxKeys', PartialModelField] = OrderedDict(
             'is_list': False,
             'optional': True,
             'type': 'models.TransaksiHarian',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
+_TenantRule_relational_fields: Set[str] = {
+        'tenant',
+    }
+_TenantRule_fields: Dict['types.TenantRuleKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('ruleId', {
+            'name': 'ruleId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('ruleType', {
+            'name': 'ruleType',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('ruleYaml', {
+            'name': 'ruleYaml',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isActive', {
+            'name': 'isActive',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('priority', {
+            'name': 'priority',
+            'is_list': False,
+            'optional': False,
+            'type': '_int',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('updatedAt', {
+            'name': 'updatedAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
             'is_relational': True,
             'documentation': None,
         }),
@@ -7035,10 +8161,11 @@ from . import models, actions
 model_rebuild(User)
 model_rebuild(Account)
 model_rebuild(Session)
+model_rebuild(RefreshToken)
 model_rebuild(UserSecurity)
 model_rebuild(UserProfile)
 model_rebuild(VerificationToken)
-model_rebuild(messages)
+model_rebuild(ChatMessage)
 model_rebuild(UserBusiness)
 model_rebuild(UserLocations)
 model_rebuild(UserFinance)
@@ -7056,8 +8183,11 @@ model_rebuild(ItemTransaksi)
 model_rebuild(HppBreakdown)
 model_rebuild(InventoryImpact)
 model_rebuild(ItemInventory)
+model_rebuild(Products)
+model_rebuild(Supplier)
 model_rebuild(Persediaan)
 model_rebuild(Outbox)
+model_rebuild(TenantRule)
 model_rebuild(TaxInfo)
 model_rebuild(BaganAkun)
 model_rebuild(JurnalEntry)

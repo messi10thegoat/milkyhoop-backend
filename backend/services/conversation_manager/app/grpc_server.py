@@ -551,7 +551,123 @@ Return ONLY the question text, nothing else. No explanations, no metadata.
                 grpc.StatusCode.INTERNAL,
                 f"Failed to clear session: {str(e)}"
             )
-    
+
+    # ============================================
+    # PHASE 1.5: DRAFT TRANSACTION MANAGEMENT
+    # ============================================
+
+    async def SaveDraft(self, request: pb.SaveDraftRequest, context) -> pb.SaveDraftResponse:
+        """
+        Save draft transaction state to Redis
+        Phase 1.5: Multi-turn conversation support
+        """
+        try:
+            tenant_id = request.tenant_id
+            session_id = request.session_id
+            draft_json = request.draft_json
+
+            logger.info(f"SaveDraft: tenant={tenant_id}, session={session_id}")
+
+            # Parse and validate JSON
+            try:
+                draft_data = json.loads(draft_json)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid draft JSON: {e}")
+                return pb.SaveDraftResponse(
+                    success=False,
+                    message=f"Invalid JSON format: {str(e)}"
+                )
+
+            # Save to Redis with 30-min TTL
+            success = await self.redis.save_draft(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                draft_data=draft_data,
+                ttl=1800  # 30 minutes
+            )
+
+            if success:
+                return pb.SaveDraftResponse(
+                    success=True,
+                    message="Draft saved successfully"
+                )
+            else:
+                return pb.SaveDraftResponse(
+                    success=False,
+                    message="Failed to save draft"
+                )
+
+        except Exception as e:
+            logger.error(f"SaveDraft error: {e}")
+            return pb.SaveDraftResponse(
+                success=False,
+                message=f"Error: {str(e)}"
+            )
+
+    async def GetDraft(self, request: pb.GetDraftRequest, context) -> pb.GetDraftResponse:
+        """
+        Retrieve draft transaction from Redis
+        Phase 1.5: Multi-turn conversation support
+        """
+        try:
+            tenant_id = request.tenant_id
+            session_id = request.session_id
+
+            logger.info(f"GetDraft: tenant={tenant_id}, session={session_id}")
+
+            # Get draft from Redis
+            draft_data = await self.redis.get_draft(tenant_id, session_id)
+
+            if draft_data:
+                return pb.GetDraftResponse(
+                    exists=True,
+                    draft_json=json.dumps(draft_data)
+                )
+            else:
+                return pb.GetDraftResponse(
+                    exists=False,
+                    draft_json=""
+                )
+
+        except Exception as e:
+            logger.error(f"GetDraft error: {e}")
+            return pb.GetDraftResponse(
+                exists=False,
+                draft_json=""
+            )
+
+    async def DeleteDraft(self, request: pb.DeleteDraftRequest, context) -> pb.DeleteDraftResponse:
+        """
+        Delete draft transaction from Redis
+        Phase 1.5: Multi-turn conversation support
+        """
+        try:
+            tenant_id = request.tenant_id
+            session_id = request.session_id
+
+            logger.info(f"DeleteDraft: tenant={tenant_id}, session={session_id}")
+
+            # Delete from Redis
+            success = await self.redis.delete_draft(tenant_id, session_id)
+
+            if success:
+                return pb.DeleteDraftResponse(
+                    success=True,
+                    message="Draft deleted successfully"
+                )
+            else:
+                return pb.DeleteDraftResponse(
+                    success=False,
+                    message="Draft not found or failed to delete"
+                )
+
+        except Exception as e:
+            logger.error(f"DeleteDraft error: {e}")
+            return pb.DeleteDraftResponse(
+                success=False,
+                message=f"Error: {str(e)}"
+            )
+
     async def HealthCheck(self, request: empty_pb2.Empty, context) -> empty_pb2.Empty:
         """Health check endpoint"""
         return empty_pb2.Empty()

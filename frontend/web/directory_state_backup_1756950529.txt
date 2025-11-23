@@ -1,0 +1,26 @@
+total 428
+drwxr-xr-x 6 root root  4096 Sep  4 01:48 .
+drwxr-xr-x 8 root root  4096 Sep  4 01:48 ..
+-rw-r--r-- 1 root root  8535 Sep  4 01:33 App.tsx
+-rw-r--r-- 1 root root  8535 Sep  4 01:48 App.tsx.ROLLBACK_POINT_1756950529
+-rw-r--r-- 1 root root 33598 Aug 29 09:25 App.tsx.backup_1756459514
+-rw-r--r-- 1 root root 33603 Sep  4 01:06 App.tsx.backup_before_auth_1756947991
+-rw-r--r-- 1 root root 33603 Sep  4 01:11 App.tsx.backup_before_auth_1756948278
+-rw-r--r-- 1 root root 33603 Sep  4 01:33 App.tsx.backup_before_auth_final_1756949614
+-rw-r--r-- 1 root root 15483 Aug 20 12:20 App.tsx.backup_before_claude_1755692458
+-rw-r--r-- 1 root root 20606 Aug 20 12:29 App.tsx.backup_enhanced_bca_1755692941
+-rw-r--r-- 1 root root 15483 Aug 20 12:25 App.tsx.backup_final_1755692751
+-rw-r--r-- 1 root root 25891 Aug 29 07:16 App.tsx.backup_final_1756451815
+-rw-r--r-- 1 root root 19661 Aug 20 11:47 App.tsx.backup_fix_hero_1755690423
+-rw-r--r-- 1 root root 19381 Aug 20 11:44 App.tsx.backup_fix_images_1755690284
+-rw-r--r-- 1 root root 15707 Aug 20 11:31 App.tsx.backup_mainbot_1755689495
+-rw-r--r-- 1 root root 33594 Aug 29 07:30 App.tsx.backup_nginx_fix_1756452658
+-rw-r--r-- 1 root root 12282 Aug 20 10:44 App.tsx.backup_seamless_1755686697
+-rw-r--r-- 1 root root 25891 Aug 29 05:38 App.tsx.backup_setup_mode_1756445929
+-rw-r--r-- 1 root root  3700 Aug 20 10:24 App.tsx.backup_ui_1755685467
+-rw-r--r-- 1 root root  8535 Sep  4 01:28 App_auth_integrated.tsx
+drwxr-xr-x 2 root root  4096 Sep  4 01:06 components
+drwxr-xr-x 2 root root  4096 Sep  4 01:48 contexts
+drwxr-xr-x 2 root root  4096 Aug 20 04:41 hooks
+-rw-r--r-- 1 root root   255 Aug 20 05:56 index.tsx
+drwxr-xr-x 2 root root  4096 Aug 20 08:31 pages

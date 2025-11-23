@@ -33,7 +33,13 @@ service InventoryService {
   
   // Get inventory valuation (total value for Neraca)
   rpc GetInventoryValuation (GetInventoryValuationRequest) returns (InventoryValuationResponse);
-  
+
+  // Search products by name with fuzzy matching (for product resolution)
+  rpc SearchProducts (SearchProductsRequest) returns (SearchProductsResponse);
+
+  // Create new product in Products table (for new product flow)
+  rpc CreateProduct (CreateProductRequest) returns (CreateProductResponse);
+
   // ========================================
   // STOCK OPERATIONS
   // ========================================
@@ -155,6 +161,43 @@ message ProductValuation {
   string satuan = 4;
   double nilai_per_unit = 5;
   int64 total_nilai = 6;              // jumlah * nilai_per_unit (in cents)
+}
+
+message SearchProductsRequest {
+  string tenant_id = 1;               // Required: Multi-tenant isolation
+  string query = 2;                   // Required: Product name to search (fuzzy)
+  int32 limit = 3;                    // Optional: Max results (default: 10)
+}
+
+message SearchProductsResponse {
+  repeated ProductMatch matches = 1;  // Products sorted by similarity score
+  int32 total_found = 2;              // Total matches found
+}
+
+message ProductMatch {
+  string produk_id = 1;               // Product identifier
+  string nama_produk = 2;             // Product name (from Persediaan)
+  string satuan = 3;                  // Unit of measure (pcs, kg, etc.)
+  double current_stock = 4;           // Current available stock
+  int32 similarity_score = 5;         // 0-100 (Levenshtein similarity percentage)
+  string lokasi_gudang = 6;           // Primary warehouse location
+}
+
+message CreateProductRequest {
+  string tenant_id = 1;               // Required: Multi-tenant isolation
+  string nama_produk = 2;             // Required: Product name (unique per tenant)
+  string satuan = 3;                  // Required: Unit of measure (pcs, kg, liter, etc.)
+  string kategori = 4;                // Optional: Product category
+  double harga_jual = 5;              // Optional: Selling price
+  string deskripsi = 6;               // Optional: Product description
+}
+
+message CreateProductResponse {
+  bool success = 1;                   // True if created successfully
+  string message = 2;                 // Success or error message
+  string product_id = 3;              // UUID of created product
+  string nama_produk = 4;             // Product name (confirmation)
+  string satuan = 5;                  // Unit of measure (confirmation)
 }
 
 // ========================================

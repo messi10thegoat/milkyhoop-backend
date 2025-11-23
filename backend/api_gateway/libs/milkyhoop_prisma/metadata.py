@@ -9,10 +9,11 @@ PRISMA_MODELS: set[str] = {
     'User',
     'Account',
     'Session',
+    'RefreshToken',
     'UserSecurity',
     'UserProfile',
     'VerificationToken',
-    'messages',
+    'ChatMessage',
     'UserBusiness',
     'UserLocations',
     'UserFinance',
@@ -30,8 +31,11 @@ PRISMA_MODELS: set[str] = {
     'HppBreakdown',
     'InventoryImpact',
     'ItemInventory',
+    'Products',
+    'Supplier',
     'Persediaan',
     'Outbox',
+    'TenantRule',
     'TaxInfo',
     'BaganAkun',
     'JurnalEntry',
@@ -54,12 +58,18 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
         'auditLogs': 'AuditLog',
         'transaksiCreated': 'TransaksiHarian',
         'transaksiApproved': 'TransaksiHarian',
+        'refreshTokens': 'RefreshToken',
+        'chatMessages': 'ChatMessage',
     },
     'Account': {
         'user': 'User',
     },
     'Session': {
         'user': 'User',
+    },
+    'RefreshToken': {
+        'user': 'User',
+        'tenant': 'Tenant',
     },
     'UserSecurity': {
         'user': 'User',
@@ -69,7 +79,9 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
     },
     'VerificationToken': {
     },
-    'messages': {
+    'ChatMessage': {
+        'user': 'User',
+        'tenant': 'Tenant',
     },
     'UserBusiness': {
         'user': 'User',
@@ -97,9 +109,14 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
         'users': 'User',
         'transaksiHarian': 'TransaksiHarian',
         'taxInfo': 'TaxInfo',
+        'products': 'Products',
+        'suppliers': 'Supplier',
         'persediaan': 'Persediaan',
         'baganAkun': 'BaganAkun',
         'jurnalEntries': 'JurnalEntry',
+        'refreshTokens': 'RefreshToken',
+        'chatMessages': 'ChatMessage',
+        'tenantRules': 'TenantRule',
     },
     'Order': {
     },
@@ -133,11 +150,22 @@ RELATIONAL_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
     'ItemInventory': {
         'inventoryImpact': 'InventoryImpact',
     },
+    'Products': {
+        'tenant': 'Tenant',
+        'persediaan': 'Persediaan',
+    },
+    'Supplier': {
+        'tenant': 'Tenant',
+    },
     'Persediaan': {
         'tenant': 'Tenant',
+        'product': 'Products',
     },
     'Outbox': {
         'transaksi': 'TransaksiHarian',
+    },
+    'TenantRule': {
+        'tenant': 'Tenant',
     },
     'TaxInfo': {
         'tenant': 'Tenant',

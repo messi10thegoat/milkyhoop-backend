@@ -104,6 +104,16 @@ class BaseSession(_PrismaModel):
         return actions.SessionActions[_PrismaModelT](client or get_client(), cls)
 
 
+class BaseRefreshToken(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['RefreshToken']] = 'RefreshToken'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.RefreshTokenActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.RefreshTokenActions[_PrismaModelT](client or get_client(), cls)
+
+
 class BaseUserSecurity(_PrismaModel):
     __prisma_model__: ClassVar[Literal['UserSecurity']] = 'UserSecurity'  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -134,14 +144,14 @@ class BaseVerificationToken(_PrismaModel):
         return actions.VerificationTokenActions[_PrismaModelT](client or get_client(), cls)
 
 
-class Basemessages(_PrismaModel):
-    __prisma_model__: ClassVar[Literal['messages']] = 'messages'  # pyright: ignore[reportIncompatibleVariableOverride]
+class BaseChatMessage(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['ChatMessage']] = 'ChatMessage'  # pyright: ignore[reportIncompatibleVariableOverride]
 
     @classmethod
-    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.messagesActions[_PrismaModelT]':
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.ChatMessageActions[_PrismaModelT]':
         from .client import get_client
 
-        return actions.messagesActions[_PrismaModelT](client or get_client(), cls)
+        return actions.ChatMessageActions[_PrismaModelT](client or get_client(), cls)
 
 
 class BaseUserBusiness(_PrismaModel):
@@ -314,6 +324,26 @@ class BaseItemInventory(_PrismaModel):
         return actions.ItemInventoryActions[_PrismaModelT](client or get_client(), cls)
 
 
+class BaseProducts(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['Products']] = 'Products'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.ProductsActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.ProductsActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseSupplier(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['Supplier']] = 'Supplier'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.SupplierActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.SupplierActions[_PrismaModelT](client or get_client(), cls)
+
+
 class BasePersediaan(_PrismaModel):
     __prisma_model__: ClassVar[Literal['Persediaan']] = 'Persediaan'  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -332,6 +362,16 @@ class BaseOutbox(_PrismaModel):
         from .client import get_client
 
         return actions.OutboxActions[_PrismaModelT](client or get_client(), cls)
+
+
+class BaseTenantRule(_PrismaModel):
+    __prisma_model__: ClassVar[Literal['TenantRule']] = 'TenantRule'  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    @classmethod
+    def prisma(cls: Type[_PrismaModelT], client: Optional['Prisma'] = None) -> 'actions.TenantRuleActions[_PrismaModelT]':
+        from .client import get_client
+
+        return actions.TenantRuleActions[_PrismaModelT](client or get_client(), cls)
 
 
 class BaseTaxInfo(_PrismaModel):

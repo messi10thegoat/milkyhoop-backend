@@ -17,6 +17,17 @@ from backend.api_gateway.app.services.intent_client import IntentParserClient
 import grpc
 import sys
 sys.path.append('/app/backend/api_gateway/libs')
+sys.path.append('/app/backend/api_gateway/libs/milkyhoop_protos')
+
+# Conversation Service imports - CHAT PERSISTENCE
+try:
+    from conversation_service_pb2 import GetChatHistoryRequest, SaveMessageRequest
+    from conversation_service_pb2_grpc import ConversationServiceStub
+except ImportError as e:
+    print(f"⚠️ Warning: conversation_service_pb2 import failed: {e}")
+    print("   This is OK if conversation_service is not available")
+    GetChatHistoryRequest = None
+    ConversationServiceStub = None
 
 router = APIRouter()
 
@@ -578,6 +589,77 @@ class Level13ContextClient:
 
 
 # =====================================================
+# CONVERSATION SERVICE CLIENT - CHAT PERSISTENCE
+# =====================================================
+class ConversationServiceClient:
+    """Client for conversation_service - chat persistence"""
+    
+    def __init__(self, host: str = "conversation_service", port: int = 5002):
+        self.host = host
+        self.port = port
+    
+    async def get_chat_history(self, user_id: str, tenant_id: str, limit: int = 30, offset: int = 0):
+        """Get paginated chat history"""
+        if GetChatHistoryRequest is None or ConversationServiceStub is None:
+            print(f"❌ [ConversationServiceClient] conversation_service_pb2 not available")
+            raise Exception("conversation_service protobuf not available")
+        
+        channel = None
+        try:
+            print(f"📖 [ConversationServiceClient] GetChatHistory: user={user_id}, tenant={tenant_id}, limit={limit}, offset={offset}")
+            channel = grpc.aio.insecure_channel(f'{self.host}:{self.port}')
+            
+            stub = ConversationServiceStub(channel)
+            request = GetChatHistoryRequest(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                limit=limit,
+                offset=offset
+            )
+            
+            print(f"📞 [ConversationServiceClient] Calling gRPC: {self.host}:{self.port}")
+            response = await stub.GetChatHistory(request)
+            print(f"✅ [ConversationServiceClient] Response received: status={response.status}, messages={len(response.messages)}")
+            
+            # Convert to dict
+            messages = []
+            for msg in response.messages:
+                messages.append({
+                    'id': msg.id,
+                    'user_id': msg.user_id,
+                    'tenant_id': msg.tenant_id,
+                    'message': msg.message,
+                    'response': msg.response,
+                    'intent': msg.intent,
+                    'metadata_json': msg.metadata_json,
+                    'created_at': msg.created_at
+                })
+            
+            result = {
+                'status': response.status,
+                'messages': messages,
+                'total_count': response.total_count,
+                'has_more': response.has_more
+            }
+            print(f"✅ [ConversationServiceClient] Returning {len(messages)} messages")
+            return result
+            
+        except grpc.RpcError as e:
+            print(f"❌ [ConversationServiceClient] gRPC error: code={e.code()}, details={e.details()}")
+            raise Exception(f"gRPC error: {e.code()} - {e.details()}")
+        except Exception as e:
+            print(f"❌ [ConversationServiceClient] GetChatHistory error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise Exception(f"Failed to get chat history: {str(e)}")
+        finally:
+            if channel:
+                try:
+                    await channel.close()
+                except:
+                    pass
+
+# =====================================================
 # HELPER FUNCTIONS
 # =====================================================
 
@@ -899,6 +981,70 @@ def extract_answer_from_faq(content: str) -> str:
     if content.startswith("Q:") and "\nA:" in content:
         return content.split("\nA:", 1)[1].strip()
     return content.strip()
+# =====================================================
+# CHAT HISTORY ENDPOINT - GOAL 1 COMPLETION
+# =====================================================
+@router.get("/history")
+async def get_chat_history(
+    user_id: str,
+    tenant_id: str,
+    limit: int = 30,
+    offset: int = 0
+):
+    """
+    Get paginated chat history for user
+    
+    Query Parameters:
+    - user_id: User identifier (required)
+    - tenant_id: Tenant identifier (required)
+    - limit: Number of messages to return (default: 30, max: 100)
+    - offset: Pagination offset (default: 0)
+    
+    Returns:
+    - messages: List of chat messages (newest first)
+    - total_count: Total number of messages
+    - has_more: Boolean indicating if more messages available
+    """
+    print(f"📥 [get_chat_history] Request: user_id={user_id}, tenant_id={tenant_id}, limit={limit}, offset={offset}")
+    
+    # Validate limit
+    if limit > 100:
+        limit = 100
+    if limit < 1:
+        limit = 30
+    
+    conversation_client = ConversationServiceClient()
+    
+    try:
+        print(f"📞 [get_chat_history] Calling ConversationServiceClient.get_chat_history()")
+        result = await conversation_client.get_chat_history(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            limit=limit,
+            offset=offset
+        )
+        
+        print(f"✅ [get_chat_history] Success: {len(result.get('messages', []))} messages")
+        
+        return {
+            "status": "success",
+            "data": {
+                "messages": result['messages'],
+                "total_count": result['total_count'],
+                "has_more": result['has_more'],
+                "limit": limit,
+                "offset": offset
+            }
+        }
+    except Exception as e:
+        print(f"❌ [get_chat_history] Error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve chat history: {str(e)}"
+        )
+
 # Phase 2 Authentication Testing - GET Endpoints
 @router.get("/")
 async def chat_get_test():

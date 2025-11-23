@@ -97,10 +97,11 @@ class Prisma(AsyncBasePrisma):
     user: 'actions.UserActions[models.User]'
     account: 'actions.AccountActions[models.Account]'
     session: 'actions.SessionActions[models.Session]'
+    refreshtoken: 'actions.RefreshTokenActions[models.RefreshToken]'
     usersecurity: 'actions.UserSecurityActions[models.UserSecurity]'
     userprofile: 'actions.UserProfileActions[models.UserProfile]'
     verificationtoken: 'actions.VerificationTokenActions[models.VerificationToken]'
-    messages: 'actions.messagesActions[models.messages]'
+    chatmessage: 'actions.ChatMessageActions[models.ChatMessage]'
     userbusiness: 'actions.UserBusinessActions[models.UserBusiness]'
     userlocations: 'actions.UserLocationsActions[models.UserLocations]'
     userfinance: 'actions.UserFinanceActions[models.UserFinance]'
@@ -118,8 +119,11 @@ class Prisma(AsyncBasePrisma):
     hppbreakdown: 'actions.HppBreakdownActions[models.HppBreakdown]'
     inventoryimpact: 'actions.InventoryImpactActions[models.InventoryImpact]'
     iteminventory: 'actions.ItemInventoryActions[models.ItemInventory]'
+    products: 'actions.ProductsActions[models.Products]'
+    supplier: 'actions.SupplierActions[models.Supplier]'
     persediaan: 'actions.PersediaanActions[models.Persediaan]'
     outbox: 'actions.OutboxActions[models.Outbox]'
+    tenantrule: 'actions.TenantRuleActions[models.TenantRule]'
     taxinfo: 'actions.TaxInfoActions[models.TaxInfo]'
     baganakun: 'actions.BaganAkunActions[models.BaganAkun]'
     jurnalentry: 'actions.JurnalEntryActions[models.JurnalEntry]'
@@ -129,10 +133,11 @@ class Prisma(AsyncBasePrisma):
         'user',
         'account',
         'session',
+        'refreshtoken',
         'usersecurity',
         'userprofile',
         'verificationtoken',
-        'messages',
+        'chatmessage',
         'userbusiness',
         'userlocations',
         'userfinance',
@@ -150,8 +155,11 @@ class Prisma(AsyncBasePrisma):
         'hppbreakdown',
         'inventoryimpact',
         'iteminventory',
+        'products',
+        'supplier',
         'persediaan',
         'outbox',
+        'tenantrule',
         'taxinfo',
         'baganakun',
         'jurnalentry',
@@ -189,10 +197,11 @@ class Prisma(AsyncBasePrisma):
         self.user = actions.UserActions[models.User](self, models.User)
         self.account = actions.AccountActions[models.Account](self, models.Account)
         self.session = actions.SessionActions[models.Session](self, models.Session)
+        self.refreshtoken = actions.RefreshTokenActions[models.RefreshToken](self, models.RefreshToken)
         self.usersecurity = actions.UserSecurityActions[models.UserSecurity](self, models.UserSecurity)
         self.userprofile = actions.UserProfileActions[models.UserProfile](self, models.UserProfile)
         self.verificationtoken = actions.VerificationTokenActions[models.VerificationToken](self, models.VerificationToken)
-        self.messages = actions.messagesActions[models.messages](self, models.messages)
+        self.chatmessage = actions.ChatMessageActions[models.ChatMessage](self, models.ChatMessage)
         self.userbusiness = actions.UserBusinessActions[models.UserBusiness](self, models.UserBusiness)
         self.userlocations = actions.UserLocationsActions[models.UserLocations](self, models.UserLocations)
         self.userfinance = actions.UserFinanceActions[models.UserFinance](self, models.UserFinance)
@@ -210,8 +219,11 @@ class Prisma(AsyncBasePrisma):
         self.hppbreakdown = actions.HppBreakdownActions[models.HppBreakdown](self, models.HppBreakdown)
         self.inventoryimpact = actions.InventoryImpactActions[models.InventoryImpact](self, models.InventoryImpact)
         self.iteminventory = actions.ItemInventoryActions[models.ItemInventory](self, models.ItemInventory)
+        self.products = actions.ProductsActions[models.Products](self, models.Products)
+        self.supplier = actions.SupplierActions[models.Supplier](self, models.Supplier)
         self.persediaan = actions.PersediaanActions[models.Persediaan](self, models.Persediaan)
         self.outbox = actions.OutboxActions[models.Outbox](self, models.Outbox)
+        self.tenantrule = actions.TenantRuleActions[models.TenantRule](self, models.TenantRule)
         self.taxinfo = actions.TaxInfoActions[models.TaxInfo](self, models.TaxInfo)
         self.baganakun = actions.BaganAkunActions[models.BaganAkun](self, models.BaganAkun)
         self.jurnalentry = actions.JurnalEntryActions[models.JurnalEntry](self, models.JurnalEntry)
@@ -369,10 +381,11 @@ class Batch:
     user: 'UserBatchActions'
     account: 'AccountBatchActions'
     session: 'SessionBatchActions'
+    refreshtoken: 'RefreshTokenBatchActions'
     usersecurity: 'UserSecurityBatchActions'
     userprofile: 'UserProfileBatchActions'
     verificationtoken: 'VerificationTokenBatchActions'
-    messages: 'messagesBatchActions'
+    chatmessage: 'ChatMessageBatchActions'
     userbusiness: 'UserBusinessBatchActions'
     userlocations: 'UserLocationsBatchActions'
     userfinance: 'UserFinanceBatchActions'
@@ -390,8 +403,11 @@ class Batch:
     hppbreakdown: 'HppBreakdownBatchActions'
     inventoryimpact: 'InventoryImpactBatchActions'
     iteminventory: 'ItemInventoryBatchActions'
+    products: 'ProductsBatchActions'
+    supplier: 'SupplierBatchActions'
     persediaan: 'PersediaanBatchActions'
     outbox: 'OutboxBatchActions'
+    tenantrule: 'TenantRuleBatchActions'
     taxinfo: 'TaxInfoBatchActions'
     baganakun: 'BaganAkunBatchActions'
     jurnalentry: 'JurnalEntryBatchActions'
@@ -404,10 +420,11 @@ class Batch:
         self.user = UserBatchActions(self)
         self.account = AccountBatchActions(self)
         self.session = SessionBatchActions(self)
+        self.refreshtoken = RefreshTokenBatchActions(self)
         self.usersecurity = UserSecurityBatchActions(self)
         self.userprofile = UserProfileBatchActions(self)
         self.verificationtoken = VerificationTokenBatchActions(self)
-        self.messages = messagesBatchActions(self)
+        self.chatmessage = ChatMessageBatchActions(self)
         self.userbusiness = UserBusinessBatchActions(self)
         self.userlocations = UserLocationsBatchActions(self)
         self.userfinance = UserFinanceBatchActions(self)
@@ -425,8 +442,11 @@ class Batch:
         self.hppbreakdown = HppBreakdownBatchActions(self)
         self.inventoryimpact = InventoryImpactBatchActions(self)
         self.iteminventory = ItemInventoryBatchActions(self)
+        self.products = ProductsBatchActions(self)
+        self.supplier = SupplierBatchActions(self)
         self.persediaan = PersediaanBatchActions(self)
         self.outbox = OutboxBatchActions(self)
+        self.tenantrule = TenantRuleBatchActions(self)
         self.taxinfo = TaxInfoBatchActions(self)
         self.baganakun = BaganAkunBatchActions(self)
         self.jurnalentry = JurnalEntryBatchActions(self)
@@ -818,6 +838,117 @@ class SessionBatchActions:
 
 # NOTE: some arguments are meaningless in this context but are included
 # for completeness sake
+class RefreshTokenBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.RefreshTokenCreateInput,
+        include: Optional[types.RefreshTokenInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.RefreshToken,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.RefreshTokenCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.RefreshToken,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.RefreshTokenWhereUniqueInput,
+        include: Optional[types.RefreshTokenInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.RefreshToken,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.RefreshTokenUpdateInput,
+        where: types.RefreshTokenWhereUniqueInput,
+        include: Optional[types.RefreshTokenInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.RefreshToken,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.RefreshTokenWhereUniqueInput,
+        data: types.RefreshTokenUpsertInput,
+        include: Optional[types.RefreshTokenInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.RefreshToken,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.RefreshTokenUpdateManyMutationInput,
+        where: types.RefreshTokenWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.RefreshToken,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.RefreshTokenWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.RefreshToken,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
 class UserSecurityBatchActions:
     def __init__(self, batcher: Batch) -> None:
         self._batcher = batcher
@@ -1151,18 +1282,18 @@ class VerificationTokenBatchActions:
 
 # NOTE: some arguments are meaningless in this context but are included
 # for completeness sake
-class messagesBatchActions:
+class ChatMessageBatchActions:
     def __init__(self, batcher: Batch) -> None:
         self._batcher = batcher
 
     def create(
         self,
-        data: types.messagesCreateInput,
-        include: Optional[types.messagesInclude] = None
+        data: types.ChatMessageCreateInput,
+        include: Optional[types.ChatMessageInclude] = None
     ) -> None:
         self._batcher._add(
             method='create',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={
                 'data': data,
                 'include': include,
@@ -1171,7 +1302,7 @@ class messagesBatchActions:
 
     def create_many(
         self,
-        data: List[types.messagesCreateWithoutRelationsInput],
+        data: List[types.ChatMessageCreateWithoutRelationsInput],
         *,
         skip_duplicates: Optional[bool] = None,
     ) -> None:
@@ -1180,7 +1311,7 @@ class messagesBatchActions:
 
         self._batcher._add(
             method='create_many',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={
                 'data': data,
                 'skipDuplicates': skip_duplicates,
@@ -1190,12 +1321,12 @@ class messagesBatchActions:
 
     def delete(
         self,
-        where: types.messagesWhereUniqueInput,
-        include: Optional[types.messagesInclude] = None,
+        where: types.ChatMessageWhereUniqueInput,
+        include: Optional[types.ChatMessageInclude] = None,
     ) -> None:
         self._batcher._add(
             method='delete',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={
                 'where': where,
                 'include': include,
@@ -1204,13 +1335,13 @@ class messagesBatchActions:
 
     def update(
         self,
-        data: types.messagesUpdateInput,
-        where: types.messagesWhereUniqueInput,
-        include: Optional[types.messagesInclude] = None
+        data: types.ChatMessageUpdateInput,
+        where: types.ChatMessageWhereUniqueInput,
+        include: Optional[types.ChatMessageInclude] = None
     ) -> None:
         self._batcher._add(
             method='update',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={
                 'data': data,
                 'where': where,
@@ -1220,13 +1351,13 @@ class messagesBatchActions:
 
     def upsert(
         self,
-        where: types.messagesWhereUniqueInput,
-        data: types.messagesUpsertInput,
-        include: Optional[types.messagesInclude] = None,
+        where: types.ChatMessageWhereUniqueInput,
+        data: types.ChatMessageUpsertInput,
+        include: Optional[types.ChatMessageInclude] = None,
     ) -> None:
         self._batcher._add(
             method='upsert',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={
                 'where': where,
                 'include': include,
@@ -1237,23 +1368,23 @@ class messagesBatchActions:
 
     def update_many(
         self,
-        data: types.messagesUpdateManyMutationInput,
-        where: types.messagesWhereInput,
+        data: types.ChatMessageUpdateManyMutationInput,
+        where: types.ChatMessageWhereInput,
     ) -> None:
         self._batcher._add(
             method='update_many',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={'data': data, 'where': where,},
             root_selection=['count'],
         )
 
     def delete_many(
         self,
-        where: Optional[types.messagesWhereInput] = None,
+        where: Optional[types.ChatMessageWhereInput] = None,
     ) -> None:
         self._batcher._add(
             method='delete_many',
-            model=models.messages,
+            model=models.ChatMessage,
             arguments={'where': where},
             root_selection=['count'],
         )
@@ -3149,6 +3280,228 @@ class ItemInventoryBatchActions:
 
 # NOTE: some arguments are meaningless in this context but are included
 # for completeness sake
+class ProductsBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.ProductsCreateInput,
+        include: Optional[types.ProductsInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.Products,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.ProductsCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.Products,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.ProductsWhereUniqueInput,
+        include: Optional[types.ProductsInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.Products,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.ProductsUpdateInput,
+        where: types.ProductsWhereUniqueInput,
+        include: Optional[types.ProductsInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.Products,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.ProductsWhereUniqueInput,
+        data: types.ProductsUpsertInput,
+        include: Optional[types.ProductsInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.Products,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.ProductsUpdateManyMutationInput,
+        where: types.ProductsWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.Products,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.ProductsWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.Products,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class SupplierBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.SupplierCreateInput,
+        include: Optional[types.SupplierInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.Supplier,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.SupplierCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.Supplier,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.SupplierWhereUniqueInput,
+        include: Optional[types.SupplierInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.Supplier,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.SupplierUpdateInput,
+        where: types.SupplierWhereUniqueInput,
+        include: Optional[types.SupplierInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.Supplier,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.SupplierWhereUniqueInput,
+        data: types.SupplierUpsertInput,
+        include: Optional[types.SupplierInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.Supplier,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.SupplierUpdateManyMutationInput,
+        where: types.SupplierWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.Supplier,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.SupplierWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.Supplier,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
 class PersediaanBatchActions:
     def __init__(self, batcher: Batch) -> None:
         self._batcher = batcher
@@ -3363,6 +3716,117 @@ class OutboxBatchActions:
         self._batcher._add(
             method='delete_many',
             model=models.Outbox,
+            arguments={'where': where},
+            root_selection=['count'],
+        )
+
+
+
+# NOTE: some arguments are meaningless in this context but are included
+# for completeness sake
+class TenantRuleBatchActions:
+    def __init__(self, batcher: Batch) -> None:
+        self._batcher = batcher
+
+    def create(
+        self,
+        data: types.TenantRuleCreateInput,
+        include: Optional[types.TenantRuleInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='create',
+            model=models.TenantRule,
+            arguments={
+                'data': data,
+                'include': include,
+            },
+        )
+
+    def create_many(
+        self,
+        data: List[types.TenantRuleCreateWithoutRelationsInput],
+        *,
+        skip_duplicates: Optional[bool] = None,
+    ) -> None:
+        if skip_duplicates and self._batcher._active_provider in CREATE_MANY_SKIP_DUPLICATES_UNSUPPORTED:
+            raise errors.UnsupportedDatabaseError(self._batcher._active_provider, 'create_many_skip_duplicates')
+
+        self._batcher._add(
+            method='create_many',
+            model=models.TenantRule,
+            arguments={
+                'data': data,
+                'skipDuplicates': skip_duplicates,
+            },
+            root_selection=['count'],
+        )
+
+    def delete(
+        self,
+        where: types.TenantRuleWhereUniqueInput,
+        include: Optional[types.TenantRuleInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete',
+            model=models.TenantRule,
+            arguments={
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def update(
+        self,
+        data: types.TenantRuleUpdateInput,
+        where: types.TenantRuleWhereUniqueInput,
+        include: Optional[types.TenantRuleInclude] = None
+    ) -> None:
+        self._batcher._add(
+            method='update',
+            model=models.TenantRule,
+            arguments={
+                'data': data,
+                'where': where,
+                'include': include,
+            },
+        )
+
+    def upsert(
+        self,
+        where: types.TenantRuleWhereUniqueInput,
+        data: types.TenantRuleUpsertInput,
+        include: Optional[types.TenantRuleInclude] = None,
+    ) -> None:
+        self._batcher._add(
+            method='upsert',
+            model=models.TenantRule,
+            arguments={
+                'where': where,
+                'include': include,
+                'create': data.get('create'),
+                'update': data.get('update'),
+            },
+        )
+
+    def update_many(
+        self,
+        data: types.TenantRuleUpdateManyMutationInput,
+        where: types.TenantRuleWhereInput,
+    ) -> None:
+        self._batcher._add(
+            method='update_many',
+            model=models.TenantRule,
+            arguments={'data': data, 'where': where,},
+            root_selection=['count'],
+        )
+
+    def delete_many(
+        self,
+        where: Optional[types.TenantRuleWhereInput] = None,
+    ) -> None:
+        self._batcher._add(
+            method='delete_many',
+            model=models.TenantRule,
             arguments={'where': where},
             root_selection=['count'],
         )

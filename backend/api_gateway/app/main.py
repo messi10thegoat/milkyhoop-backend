@@ -14,6 +14,9 @@ from .routers import chat
 from .routers import session
 from .routers import auth
 from .routers import customer
+from .routers import transactions
+from .routers import products
+from .routers import suppliers
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -86,7 +89,7 @@ app.add_middleware(AuthMiddleware)
 # Add CORS Middleware for Frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://milkyhoop.com", "https://dev.milkyhoop.com", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -128,6 +131,13 @@ app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboardin
 app.include_router(setup_chat.router, prefix="/api/setup", tags=["setup"])
 app.include_router(public_chat.router, prefix="", tags=["public"])
 app.include_router(tenant_chat.router, prefix="/api/tenant", tags=["tenant"])
+
+# Transaction form-based router
+app.include_router(transactions.router, prefix="/api/transactions", tags=["transactions"])
+
+# Autocomplete routers
+app.include_router(products.router, prefix="/api/products", tags=["products"])
+app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"])
 
 @app.get("/")
 async def root():

@@ -67,6 +67,11 @@ class AuthServiceStub(object):
                 request_serializer=auth__service__pb2.RevokeTokenRequest.SerializeToString,
                 response_deserializer=auth__service__pb2.RevokeTokenResponse.FromString,
                 _registered_method=True)
+        self.Logout = channel.unary_unary(
+                '/auth_service.AuthService/Logout',
+                request_serializer=auth__service__pb2.LogoutRequest.SerializeToString,
+                response_deserializer=auth__service__pb2.LogoutResponse.FromString,
+                _registered_method=True)
         self.GetUserProfile = channel.unary_unary(
                 '/auth_service.AuthService/GetUserProfile',
                 request_serializer=auth__service__pb2.UserProfileRequest.SerializeToString,
@@ -155,6 +160,12 @@ class AuthServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def RevokeToken(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Logout(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -257,6 +268,11 @@ def add_AuthServiceServicer_to_server(servicer, server):
                     servicer.RevokeToken,
                     request_deserializer=auth__service__pb2.RevokeTokenRequest.FromString,
                     response_serializer=auth__service__pb2.RevokeTokenResponse.SerializeToString,
+            ),
+            'Logout': grpc.unary_unary_rpc_method_handler(
+                    servicer.Logout,
+                    request_deserializer=auth__service__pb2.LogoutRequest.FromString,
+                    response_serializer=auth__service__pb2.LogoutResponse.SerializeToString,
             ),
             'GetUserProfile': grpc.unary_unary_rpc_method_handler(
                     servicer.GetUserProfile,
@@ -450,6 +466,33 @@ class AuthService(object):
             '/auth_service.AuthService/RevokeToken',
             auth__service__pb2.RevokeTokenRequest.SerializeToString,
             auth__service__pb2.RevokeTokenResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Logout(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/auth_service.AuthService/Logout',
+            auth__service__pb2.LogoutRequest.SerializeToString,
+            auth__service__pb2.LogoutResponse.FromString,
             options,
             channel_credentials,
             insecure,

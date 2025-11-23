@@ -12,8 +12,10 @@ from app import auth_service_pb2 as pb
 from app.prisma_client import prisma, connect_prisma, disconnect_prisma
 from app.utils.jwt_handler import JWTHandler
 from app.utils.password_handler import PasswordHandler
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
+import hashlib
+import secrets
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +31,14 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
         """Initialize authentication service with utility handlers"""
         self.jwt_handler = JWTHandler()
         self.password_handler = PasswordHandler()
+    
+    def _hash_token(self, token: str) -> str:
+        """SHA256 hash for storing refresh token securely"""
+        return hashlib.sha256(token.encode()).hexdigest()
+    
+    def _generate_refresh_token(self) -> str:
+        """Generate secure random refresh token"""
+        return f"rt_{secrets.token_urlsafe(32)}"
     
     def _validate_email(self, email: str) -> bool:
         """Validate email format"""
@@ -165,23 +175,25 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
             
             logger.info(f"Password verified for user: {user.id}")
             
-            # Generate session ID
-            session_id = str(uuid.uuid4())
+            # Generate refresh token
+            refresh_token = self._generate_refresh_token()
+            token_hash = self._hash_token(refresh_token)
             
-            # Create session record
-            session_expires = datetime.utcnow() + timedelta(days=7)
-            session_token = str(uuid.uuid4())
+            # Store refresh token in DB
+            device_info = request.device_info if request.device_info else "Unknown device"
+            expires_at = datetime.utcnow() + timedelta(days=30)
             
-            await prisma.session.create(
+            await prisma.refreshtoken.create(
                 data={
-                    "id": session_id,
-                    "sessionToken": session_token,
                     "userId": user.id,
-                    "expires": session_expires
+                    "tenantId": user.tenantId if user.tenantId else "default",
+                    "tokenHash": token_hash,
+                    "expiresAt": expires_at,
+                    "deviceInfo": device_info
                 }
             )
             
-            logger.info(f"Session created: {session_id}")
+            logger.info(f"Refresh token created for user: {user.id}")
             
             # Update last login timestamp
             try:
@@ -192,19 +204,13 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
             except Exception as update_error:
                 logger.warning(f"Could not update last interaction: {update_error}")
             
-            # Generate JWT tokens
+            # Generate JWT access token only
             access_token = self.jwt_handler.create_access_token(
                 user_id=user.id,
                 tenant_id=user.tenantId if user.tenantId else "default",
                 role=user.role if user.role else "USER",
                 email=user.email,
                 username=user.username if user.username else user.email
-            )
-            
-            refresh_token = self.jwt_handler.create_refresh_token(
-                user_id=user.id,
-                session_id=session_id,
-                tenant_id=user.tenantId if user.tenantId else "default"
             )
             
             logger.info(f"JWT tokens generated for user: {user.id}")
@@ -217,8 +223,8 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
                 tenant_id=user.tenantId if user.tenantId else "default",
                 access_token=access_token,
                 refresh_token=refresh_token,
-                session_id=session_id,
-                expires_in=3600,
+                session_id="",
+                expires_in=604800,
                 role=user.role if user.role else "USER",
                 requires_password_change=False,
                 email=user.email,                             
@@ -236,26 +242,83 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
     
     async def RefreshToken(self, request, context):
         """Token rotation with security validation"""
-        logger.info(f"Token refresh for session: {request.session_id}")
+        logger.info("Token refresh request received")
         
         try:
-            # TODO: Implement token refresh with rotation
+            # Hash incoming token to lookup in DB
+            token_hash = self._hash_token(request.refresh_token)
+            
+            # Find token in database
+            stored_token = await prisma.refreshtoken.find_unique(
+                where={"tokenHash": token_hash},
+                include={"user": True}
+            )
+            
+            # Validate token exists
+            if not stored_token:
+                logger.warning("Refresh token not found")
+                context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+                return pb.RefreshTokenResponse(
+                    success=False,
+                    message="Invalid refresh token"
+                )
+            
+            # Check if revoked
+            if stored_token.revokedAt:
+                logger.warning(f"Refresh token was revoked at: {stored_token.revokedAt}")
+                context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+                return pb.RefreshTokenResponse(
+                    success=False,
+                    message="Token has been revoked"
+                )
+            
+            # Check if expired
+            if datetime.now(timezone.utc) > stored_token.expiresAt:
+                logger.warning("Refresh token expired")
+                context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+                return pb.RefreshTokenResponse(
+                    success=False,
+                    message="Refresh token expired"
+                )
+            
+            # Generate new access token
+            user = stored_token.user
+            access_token = self.jwt_handler.create_access_token(
+                user_id=user.id,
+                tenant_id=stored_token.tenantId,
+                role=user.role if user.role else "USER",
+                email=user.email,
+                username=user.username if user.username else user.email
+            )
+            
+            # Update last used timestamp
+            await prisma.refreshtoken.update(
+                where={"id": stored_token.id},
+                data={"lastUsedAt": datetime.now(timezone.utc)}
+            )
+            
+            logger.info(f"Access token refreshed for user: {user.id}")
+            
             return pb.RefreshTokenResponse(
                 success=True,
-                message="Token refreshed",
-                access_token="new_access_token",
-                refresh_token="new_refresh_token",
-                tenant_id="temp_tenant_id",
-                user_id="temp_user_id",
-                role="USER",
-                session_id=request.session_id,
-                expires_in=3600,
-                token_rotated=True
+                message="Token refreshed successfully",
+                access_token=access_token,
+                refresh_token=request.refresh_token,
+                tenant_id=stored_token.tenantId,
+                user_id=user.id,
+                role=user.role if user.role else "USER",
+                session_id="",
+                expires_in=604800,
+                token_rotated=False
             )
+            
         except Exception as e:
-            logger.error(f"Token refresh error: {e}")
-            context.set_code(grpc.StatusCode.UNAUTHENTICATED)
-            return pb.RefreshTokenResponse(success=False, message="Token refresh failed")
+            logger.error(f"Token refresh error: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.RefreshTokenResponse(
+                success=False,
+                message=f"Token refresh failed: {str(e)}"
+            )
     
     async def ValidateToken(self, request, context):
         """JWT token validation - FIXED: Now properly decodes JWT"""
@@ -298,6 +361,53 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
         except Exception as e:
             logger.error(f"Token revocation error: {e}")
             return pb.RevokeTokenResponse(success=False, message="Revocation failed")
+    
+    async def Logout(self, request, context):
+        """Logout user - revoke refresh token(s)"""
+        logger.info(f"Logout request for user: {request.user_id}")
+        
+        try:
+            if request.refresh_token and not request.logout_all_devices:
+                # Revoke specific token
+                token_hash = self._hash_token(request.refresh_token)
+                
+                result = await prisma.refreshtoken.update_many(
+                    where={
+                        "tokenHash": token_hash,
+                        "userId": request.user_id
+                    },
+                    data={"revokedAt": datetime.utcnow()}
+                )
+                
+                revoked_count = result
+                logger.info(f"Revoked {revoked_count} token for user: {request.user_id}")
+                
+            else:
+                # Revoke all tokens for user (logout all devices)
+                result = await prisma.refreshtoken.update_many(
+                    where={
+                        "userId": request.user_id,
+                        "revokedAt": None
+                    },
+                    data={"revokedAt": datetime.utcnow()}
+                )
+                
+                revoked_count = result
+                logger.info(f"Revoked all tokens ({revoked_count}) for user: {request.user_id}")
+            
+            return pb.LogoutResponse(
+                success=True,
+                message="Logged out successfully",
+                revoked_tokens=revoked_count if revoked_count else 0
+            )
+            
+        except Exception as e:
+            logger.error(f"Logout error: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            return pb.LogoutResponse(
+                success=False,
+                message=f"Logout failed: {str(e)}"
+            )
     
     # Additional service methods remain as TODO stubs
     async def GetUserProfile(self, request, context):

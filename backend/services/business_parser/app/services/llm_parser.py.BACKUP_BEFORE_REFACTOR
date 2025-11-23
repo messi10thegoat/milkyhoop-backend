@@ -1,0 +1,1330 @@
+"""
+business_parser/app/services/llm_parser.py
+
+LLM-based Intent Classification for Tenant Mode Queries
+Optimized: 50% token reduction, 2x faster, same quality
+
+Author: MilkyHoop Team
+Version: 2.0.0 (Optimized 12-Nov-2025)
+"""
+
+import os
+import json
+import re
+import logging
+from typing import Dict, Any
+from datetime import datetime
+from openai import OpenAI
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein distance between two strings"""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def _fuzzy_match_payment_method(text: str, keywords: dict, threshold: int = 2) -> str:
+    """
+    Fuzzy match payment method keywords with typo tolerance.
+
+    Args:
+        text: Text to search in (lowercased)
+        keywords: Dict of {keyword: method_name}
+        threshold: Max edit distance (default 2 = tolerates 2 typos)
+
+    Returns:
+        Matched method name or None
+    """
+    words = text.split()
+
+    for keyword, method in keywords.items():
+        keyword_words = keyword.split()
+
+        # Exact match first (fast path)
+        if keyword in text:
+            return method
+
+        # Fuzzy match each word in keyword
+        if len(keyword_words) == 1:
+            # Single word keyword: check each word in text
+            for word in words:
+                if len(word) >= 3:  # Only fuzzy match words >= 3 chars
+                    distance = _levenshtein_distance(word, keyword)
+                    if distance <= threshold:
+                        logger.info(f"[FUZZY] Matched '{word}' → '{keyword}' (distance={distance})")
+                        return method
+        else:
+            # Multi-word keyword: check consecutive word pairs
+            for i in range(len(words) - len(keyword_words) + 1):
+                phrase = " ".join(words[i:i+len(keyword_words)])
+                distance = _levenshtein_distance(phrase, keyword)
+                if distance <= threshold:
+                    logger.info(f"[FUZZY] Matched '{phrase}' → '{keyword}' (distance={distance})")
+                    return method
+
+    return None
+
+
+TENANT_PROMPT_TEMPLATE = """Classify tenant business query into intent + extract entities.
+
+INTENTS:
+1. transaction_record - Jual/beli/bayar transactions (complete OR incomplete). Examples:
+   - Complete: "jual 100 kaos @45rb", "beli 50 buku @10rb tunai"
+   - Incomplete: "jual kopi", "beli kain", "bayar gaji" (missing details - will be asked later)
+   - Generic: Works for ANY product/service (barang: kaos, buku, kopi, kain, dll; jasa: konsultasi, desain, servis, dll)
+2. retur_penjualan - Customer return barang rusak/salah (e.g. "customer return 3 pcs kemeja rusak")
+3. retur_pembelian - Return ke supplier (e.g. "return 5 buku ke supplier")
+4. pembayaran_hutang - Bayar cicilan/pelunasan hutang (e.g. "bayar cicilan Rp5jt dari total Rp20jt")
+5. financial_report - Laporan laba/rugi/neraca/kas + Salary payment queries (e.g. "untung bulan ini?", "sudah bayar gaji siapa saja?", "gaji bulan November sudah bayar siapa saja?")
+6. top_products - Terlaris/best seller (e.g. "produk paling laku?")
+7. low_sell_products - Produk kurang laku (e.g. "produk mana yang kurang laku?")
+8. query_transaksi - Filter transaksi by supplier/date (e.g. "transaksi supplier Toko Kain bulan Oktober")
+9. inventory_query - Cek stok (e.g. "stok ballpoint berapa?")
+10. inventory_history - Riwayat pergerakan stok (e.g. "riwayat stok kain cotton", "history stok ballpoint bulan lalu")
+11. koreksi - Koreksi/update transaksi sebelumnya (e.g. "ada koreksi", "salah harusnya Rp500rb", "ubah nominal jadi Rp1jt")
+12. general_inquiry - Tips/strategi bisnis
+13. out_of_scope - Bukan bisnis
+
+ENTITIES BY INTENT:
+
+transaction_record:
+{{
+  "jenis_transaksi": "penjualan|pembelian|beban|modal|prive",
+  "total_nominal": 450000,  // OPTIONAL for incomplete: null if missing. If complete: MUST BE jumlah × harga_satuan
+  "metode_pembayaran": "cash|transfer|tempo",  // OPTIONAL: null if missing
+  "status_pembayaran": "lunas|dp|tempo",  // OPTIONAL
+  "kategori_beban": "beban_gaji|beban_operasional|beban_pajak|beban_listrik|beban_sewa|bahan_baku",  // For beban transactions
+  "detail_karyawan": "Anna, Bambang, Inggrid",  // For beban_gaji: extract employee names (comma-separated if multiple)
+  "periode_gaji": "November",  // For beban_gaji: extract period (e.g. "November", "Desember", "bulan ini")
+  "items": [{{"nama_produk": "x", "jumlah": 10, "satuan": "pcs", "harga_satuan": 45000, "subtotal": 450000}}],  // OPTIONAL: [] if incomplete. If complete: ALWAYS calculate subtotal = jumlah × harga_satuan
+  "inventory_impact": {{
+    "is_tracked": true,
+    "jenis_movement": "keluar|masuk",  // keluar=penjualan (NEGATIVE), masuk=pembelian (POSITIVE)
+    "lokasi_gudang": "",
+    "items_inventory": [{{"produk_id": "", "jumlah_movement": -10.0, "stok_setelah": 0}}]
+  }},
+  "kategori_arus_kas": "operasi|investasi|pendanaan"
+}}
+NOTE: For incomplete transactions (e.g. "jual kopi", "beli kain"), return transaction_record with minimal entities:
+- jenis_transaksi: REQUIRED (detect from keyword: "jual"→penjualan, "beli"→pembelian, "bayar"→beban)
+- items: [] or [{{"nama_produk": "kopi"}}] if product name mentioned
+- total_nominal: null if missing
+- metode_pembayaran: null if missing
+- Other fields: null if missing (will be asked via multi-turn conversation)
+
+retur_penjualan:
+{{
+  "jenis_transaksi": "retur_penjualan",
+  "total_nominal": -150000,
+  "keterangan": "Retur: rusak|salah kirim|tidak sesuai",
+  "metadata": {{"is_retur": true, "alasan_retur": "rusak"}},
+  "items": [{{"nama_produk": "x", "jumlah": 3, "satuan": "pcs", "harga_satuan": 50000, "subtotal": 150000}}],
+  "inventory_impact": {{
+    "is_tracked": true,
+    "jenis_movement": "masuk",
+    "lokasi_gudang": "",
+    "items_inventory": [{{"produk_id": "", "jumlah_movement": 3.0, "stok_setelah": 0}}]
+  }}
+}}
+
+retur_pembelian:
+{{
+  "is_retur": true,
+  "jenis_transaksi": "retur_pembelian",
+  "total_nominal": -200000,  // NEGATIVE (money back from supplier)
+  "nama_pihak": "supplier_name",
+  "items": [{{"nama_produk": "x", "jumlah": 5, "satuan": "pcs", "harga_satuan": 40000}}]
+}}
+
+pembayaran_hutang:
+{{
+  "jenis_transaksi": "pembayaran_hutang",
+  "total_nominal": 5000000,  // Amount being paid NOW
+  "nama_pihak": "supplier_name",
+  "total_hutang_awal": 20000000,  // Original debt
+  "sisa_hutang": 15000000,  // Remaining after payment
+  "metode_pembayaran": "cash|transfer"
+}}
+
+financial_report:
+{{"report_type": "laba_rugi|neraca|arus_kas", "periode_pelaporan": "YYYY-MM"}}
+NOTE: Salary payment queries (e.g. "sudah bayar gaji siapa saja", "gaji siapa yang belum dibayar", "gaji bulan November") should be classified as financial_report, NOT transaction_record
+
+top_products:
+{{"time_range": "daily|weekly|monthly|yearly", "limit": 10}}
+
+low_sell_products:
+{{"time_range": "monthly", "limit": 10, "threshold": 0}}
+
+query_transaksi:
+{{"supplier_name": "Toko Kain Jaya", "customer_name": "", "date_range": "2024-10", "jenis_transaksi": "pembelian|penjualan"}}
+
+inventory_query:
+{{"query_type": "stock_level", "product_name": "ballpoint", "lokasi_gudang": ""}}
+
+inventory_history:
+{{"query_type": "movement_history", "product_name": "ballpoint", "lokasi_gudang": "", "date_range": "2024-10"}}
+
+koreksi:
+{{
+  "field_to_update": "total_nominal|metode_pembayaran|items|keterangan",
+  "new_value": "value atau object",
+  "reference": "transaksi_tadi|transaksi_terakhir|yang_tadi"
+}}
+
+CRITICAL RULES:
+- Amounts in RUPIAH (integer, NO cents conversion)
+- Rp 5.000 → 5000 | Rp 5.000.000 → 5000000
+- DO NOT multiply by 100
+- "@Rp 75.000" means harga_satuan (price PER UNIT), NOT total
+- total_nominal MUST = SUM of all (jumlah × harga_satuan)
+- For multi-item: "10 kemeja @150rb, 5 celana @200rb" → total_nominal = (10×150000) + (5×200000) = 2500000
+- ALWAYS calculate subtotal per item: subtotal = jumlah × harga_satuan
+- **MANDATORY FOR transaction_record**: ALWAYS extract "items" array, even for single item transactions
+- **MANDATORY**: "jual 10 kopi @20000" MUST extract items=[{nama_produk:"kopi",jumlah:10,harga_satuan:20000,subtotal:200000}]
+- **MANDATORY**: Never skip items extraction. If quantity & product exist, create items array
+- Penjualan: jenis_movement="keluar", jumlah_movement NEGATIVE
+- Pembelian: jenis_movement="masuk", jumlah_movement POSITIVE
+- RETUR: Use negative total_nominal, opposite jenis_movement
+- KEYWORDS: "return", "retur", "rusak", "refund" → retur_penjualan
+- KEYWORDS: "bayar cicilan", "bayar hutang", "pelunasan" → pembayaran_hutang
+- ALWAYS extract product_name for inventory_query
+- Output: pure JSON, no markdown
+
+Examples:
+
+Q: "jual 50 buku @10rb"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"penjualan","total_nominal":500000,"items":[{{"nama_produk":"buku","jumlah":50,"satuan":"pcs","harga_satuan":10000,"subtotal":500000}}],"inventory_impact":{{"is_tracked":true,"jenis_movement":"keluar","items_inventory":[{{"produk_id":"","jumlah_movement":-50.0}}]}}}},"confidence":0.95}}
+
+Q: "jual kopi"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"penjualan","items":[{{"nama_produk":"kopi"}}],"total_nominal":null,"metode_pembayaran":null}},"confidence":0.90}}
+
+Q: "beli kain"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"pembelian","items":[{{"nama_produk":"kain"}}],"total_nominal":null,"metode_pembayaran":null}},"confidence":0.90}}
+
+Q: "jual jasa konsultasi"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"penjualan","items":[{{"nama_produk":"jasa konsultasi"}}],"total_nominal":null,"metode_pembayaran":null}},"confidence":0.90}}
+
+Q: "catat penjualan: 10 kemeja @150rb, 5 celana @200rb, 3 jaket @350rb"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"penjualan","total_nominal":3550000,"items":[{{"nama_produk":"kemeja","jumlah":10,"harga_satuan":150000,"subtotal":1500000}},{{"nama_produk":"celana","jumlah":5,"harga_satuan":200000,"subtotal":1000000}},{{"nama_produk":"jaket","jumlah":3,"harga_satuan":350000,"subtotal":1050000}}]}},"confidence":0.95}}
+
+Q: "customer return 3 pcs kemeja rusak, refund Rp450rb"
+A: {{"intent":"retur_penjualan","entities":{{"is_retur":true,"jenis_transaksi":"retur_penjualan","total_nominal":-450000,"alasan_retur":"rusak","items":[{{"nama_produk":"kemeja","jumlah":3,"harga_satuan":150000}}],"inventory_impact":{{"is_tracked":true,"jenis_movement":"masuk","items_inventory":[{{"produk_id":"","jumlah_movement":3.0}}]}}}},"confidence":0.95}}
+
+Q: "bayar cicilan utang ke supplier Rp5jt dari total Rp20jt"
+A: {{"intent":"pembayaran_hutang","entities":{{"jenis_transaksi":"pembayaran_hutang","total_nominal":5000000,"total_hutang_awal":20000000,"sisa_hutang":15000000,"metode_pembayaran":"cash"}},"confidence":0.95}}
+
+Q: "bayar gaji 5 karyawan masing-masing 3jt, listrik 2jt, sewa 10jt"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"beban","total_nominal":27000000,"kategori_beban":"beban_gaji","items":[{{"nama_produk":"gaji karyawan","jumlah":5,"harga_satuan":3000000,"subtotal":15000000}},{{"nama_produk":"listrik","jumlah":1,"harga_satuan":2000000,"subtotal":2000000,"kategori_beban":"beban_listrik"},{{"nama_produk":"sewa","jumlah":1,"harga_satuan":10000000,"subtotal":10000000,"kategori_beban":"beban_sewa"}}]}},"confidence":0.95}}
+
+Q: "bayar gaji Rp 50 juta untuk karyawan"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"beban","total_nominal":50000000,"kategori_beban":"beban_gaji"}},"confidence":0.95}}
+
+Q: "Bayar gaji bulan November: Anna Rp 3juta, Bambang Rp 3 juta, Inggrid Rp 3 JUTA"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"beban","total_nominal":9000000,"kategori_beban":"beban_gaji","detail_karyawan":"Anna, Bambang, Inggrid","periode_gaji":"November"}},"confidence":0.95}}
+
+Q: "bayar gaji untuk Anna, Bambang, dan Inggrid masing-masing 3 juta, bulan November"
+A: {{"intent":"transaction_record","entities":{{"jenis_transaksi":"beban","total_nominal":9000000,"kategori_beban":"beban_gaji","detail_karyawan":"Anna, Bambang, Inggrid","periode_gaji":"November"}},"confidence":0.95}}
+
+Q: "tampilkan transaksi supplier Toko Kain Jaya bulan Oktober"
+A: {{"intent":"query_transaksi","entities":{{"supplier_name":"Toko Kain Jaya","date_range":"2024-10","jenis_transaksi":"pembelian"}},"confidence":0.95}}
+
+Q: "produk mana yang kurang laku?"
+A: {{"intent":"low_sell_products","entities":{{"time_range":"monthly","limit":10}},"confidence":0.95}}
+
+Q: "stok pensil berapa?"
+A: {{"intent":"inventory_query","entities":{{"query_type":"stock_level","product_name":"pensil","lokasi_gudang":""}},"confidence":0.95}}
+
+Q: "riwayat stok kain cotton bulan lalu"
+A: {{"intent":"inventory_history","entities":{{"query_type":"movement_history","product_name":"kain cotton","date_range":"2024-10"}},"confidence":0.95}}
+
+Q: "history pergerakan stok ballpoint"
+A: {{"intent":"inventory_history","entities":{{"query_type":"movement_history","product_name":"ballpoint"}},"confidence":0.95}}
+
+Q: "ada koreksi, nominalnya salah harusnya Rp500rb"
+A: {{"intent":"koreksi","entities":{{"field_to_update":"total_nominal","new_value":500000,"reference":"transaksi_tadi"}},"confidence":0.95}}
+
+Q: "ubah transaksi tadi jadi Rp1jt"
+A: {{"intent":"koreksi","entities":{{"field_to_update":"total_nominal","new_value":1000000,"reference":"transaksi_tadi"}},"confidence":0.95}}
+
+Q: "sudah bayar gaji siapa saja bulan ini?"
+A: {{"intent":"financial_report","entities":{{"report_type":"laba_rugi","periode_pelaporan":"2025-01"}},"confidence":0.95}}
+
+Q: "gaji bulan November sudah bayar siapa saja?"
+A: {{"intent":"financial_report","entities":{{"report_type":"laba_rugi","periode_pelaporan":"2024-11"}},"confidence":0.95}}
+
+Q: "berapa total pengeluaran untuk gaji di bulan Desember?"
+A: {{"intent":"financial_report","entities":{{"report_type":"laba_rugi","periode_pelaporan":"2024-12"}},"confidence":0.95}}
+
+USER: {user_input}
+TENANT: {tenant_id}
+TODAY: {today}
+PERIOD: {current_period}
+
+JSON:"""
+
+
+def parse_tenant_intent_entities(
+    text: str,
+    context: str = None,
+    tenant_id: str = None
+) -> Dict[str, Any]:
+    """
+    Parse tenant query with 3-layer cascade classification:
+    Layer 0: Keyword matching (5ms) - 30% traffic
+    Layer 1: Regex extraction (10ms) - 30% traffic
+    Layer 2: OpenAI (800ms) - 40% traffic
+
+    PHASE 1.4: Added cascade to reduce LLM calls 85%
+    """
+
+    # ===========================================
+    # PHASE 1.4: LAYER 0 - KEYWORD MATCHING (5ms)
+    # ===========================================
+    keyword_result = _classify_by_keywords(text)
+    if keyword_result and keyword_result.get("confidence", 0) >= 0.75:
+        logger.info(f"[PHASE1.4] 🚀 Layer 0 HIT (keyword): {keyword_result['intent']}")
+        return keyword_result
+
+    # ===========================================
+    # PHASE 1.4: LAYER 1 - REGEX EXTRACTION (10ms)
+    # ===========================================
+    regex_result = _classify_by_regex(text)
+    if regex_result and regex_result.get("confidence", 0) >= 0.80:
+        logger.info(f"[PHASE1.4] ⚡ Layer 1 HIT (regex): {regex_result['intent']}")
+        return regex_result
+
+    # ===========================================
+    # LAYER 2: OPENAI FALLBACK (800ms)
+    # ===========================================
+    logger.info(f"[PHASE1.4] 💾 Layer 0+1 MISS → OpenAI fallback")
+
+    current_period = datetime.now().strftime("%Y-%m")
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Escape {{ and }} in template to prevent format string errors
+    # Replace {{ with {{{{ and }} with }}}}
+    escaped_template = TENANT_PROMPT_TEMPLATE.replace("{{", "{{{{").replace("}}", "}}}}")
+    
+    prompt = escaped_template.format(
+        user_input=text.strip(),
+        tenant_id=tenant_id or "unknown",
+        today=today,
+        current_period=current_period
+    )
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a precise NLP classifier. Output pure JSON only, no markdown."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=600  # Reduced from 800
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        # Clean markdown
+        if "```" in content:
+            content = re.sub(r'```(?:json)?', '', content).strip()
+        
+        parsed = json.loads(content)
+        
+        # 🔍 DEBUG: Print full LLM output
+        print(f"[LLM_DEBUG] Full output: {json.dumps(parsed, indent=2, ensure_ascii=False)}")
+        
+        # Validate & normalize
+        if not parsed.get("intent"):
+            raise ValueError("Missing intent")
+        
+        # Intent normalization
+        intent_map = {
+            "transaction": "transaction_record",
+            "record_transaction": "transaction_record",
+            "return": "retur_penjualan",
+            "retur": "retur_penjualan",
+            "refund": "retur_penjualan",
+            "payment": "pembayaran_hutang",
+            "bayar_hutang": "pembayaran_hutang",
+            "cicilan": "pembayaran_hutang",
+            "report": "financial_report",
+            "top": "top_products",
+            "best_seller": "top_products",
+            "low_sell": "low_sell_products",
+            "kurang_laku": "low_sell_products",
+            "query": "query_transaksi",
+            "filter": "query_transaksi",
+            "inventory": "inventory_query",
+            "stock": "inventory_query",
+            "check_stock": "inventory_query",
+            "koreksi": "koreksi",
+            "koreksi_transaksi": "koreksi",
+            "update": "koreksi",
+            "ubah": "koreksi",
+            "salah": "koreksi",
+            "general": "general_inquiry"
+        }
+        
+        intent = parsed["intent"].lower().strip()
+        parsed["intent"] = intent_map.get(intent, intent)
+        
+        # Ensure defaults
+        parsed.setdefault("confidence", 0.85)
+        parsed.setdefault("entities", {})
+        parsed["model_used"] = "gpt-3.5-turbo"
+
+        # POST-PROCESSING: Extract items array if LLM failed (CRITICAL FIX)
+        entities = parsed.get("entities", {})
+        if parsed.get("intent") == "transaction_record":
+            # Check if items array is missing or empty
+            if not entities.get("items") or len(entities.get("items", [])) == 0:
+                print(f"[FALLBACK] LLM failed to extract items, using regex parser")
+                fallback_items = _extract_items_from_text(text)
+                if fallback_items:
+                    entities["items"] = fallback_items
+                    # Recalculate total_nominal from items
+                    total = sum(item.get("subtotal", 0) for item in fallback_items)
+                    if total > 0:
+                        entities["total_nominal"] = total
+                        print(f"[FALLBACK] Extracted {len(fallback_items)} items, total={total}")
+            
+            # CRITICAL: Extract metode_pembayaran from text (tunai, transfer, kas, tempo)
+            # This ensures complete transactions don't trigger unnecessary questions
+            # NEW: With fuzzy matching for typo tolerance (e.g., "tranffer" → "transfer")
+            if not entities.get("metode_pembayaran"):
+                text_lower = text.lower()
+                payment_keywords = {
+                    "tunai": "tunai", "cash": "tunai", "kas": "tunai",
+                    "transfer": "transfer", "tf": "transfer", "bank": "transfer",
+                    "via transfer": "transfer", "via tunai": "tunai",  # "via" prefix support
+                    "tempo": "tempo", "hutang": "tempo", "utang": "tempo", "credit": "tempo"
+                }
+
+                # Try fuzzy matching first (handles typos like "tranffer" → "transfer")
+                fuzzy_method = _fuzzy_match_payment_method(text_lower, payment_keywords, threshold=2)
+                if fuzzy_method:
+                    entities["metode_pembayaran"] = fuzzy_method
+                    logger.info(f"[LLM_POST] Extracted metode_pembayaran via fuzzy match: {fuzzy_method}")
+                else:
+                    # Fallback to exact matching
+                    for keyword, method in payment_keywords.items():
+                        if keyword in text_lower:
+                            entities["metode_pembayaran"] = method
+                            logger.info(f"[LLM_POST] Extracted metode_pembayaran: {method} from keyword '{keyword}'")
+                            break
+
+        # Auto-classify kategori_beban for beban transactions
+        entities = parsed.get("entities", {})
+        if parsed.get("intent") == "transaction_record" and entities.get("jenis_transaksi") == "beban":
+            # Auto-detect kategori_beban from keywords
+            text_lower = text.lower()
+            
+            if not entities.get("kategori_beban"):
+                if any(k in text_lower for k in ["gaji", "bayar gaji", "gaji karyawan", "upah"]):
+                    entities["kategori_beban"] = "beban_gaji"
+                elif any(k in text_lower for k in ["listrik", "pln", "tagihan listrik"]):
+                    entities["kategori_beban"] = "beban_listrik"
+                elif any(k in text_lower for k in ["sewa", "rent", "sewa tempat"]):
+                    entities["kategori_beban"] = "beban_sewa"
+                elif any(k in text_lower for k in ["pajak", "ppn", "pph"]):
+                    entities["kategori_beban"] = "beban_pajak"
+                else:
+                    entities["kategori_beban"] = "beban_operasional"  # Default
+            
+            # Auto-extract detail_karyawan and periode_gaji for beban_gaji
+            if entities.get("kategori_beban") == "beban_gaji":
+                # Extract employee names (multiple patterns)
+                if not entities.get("detail_karyawan"):
+                    # Pattern 1: "Anna Rp 3juta, Bambang Rp 3 juta, Inggrid Rp 3 JUTA"
+                    # Pattern 2: "untuk Anna, Bambang, dan Inggrid"
+                    # Pattern 3: "Anna, Bambang, Inggrid"
+                    
+                    # Find capitalized words that look like names
+                    # Pattern 1: "Anna Rp 3juta, Bambang Rp 3 juta, Inggrid Rp 3 JUTA"
+                    # Pattern 2: "untuk Anna, Bambang, dan Inggrid"
+                    # Pattern 3: "Anna, Bambang, Inggrid"
+                    
+                    names = []
+                    skip_words = {"Rp", "Juta", "JUTA", "Million", "Bulan", "November", "Desember", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "Bayar", "Gaji"}
+                    
+                    # Pattern 1: Extract names before "Rp" (format: "Name Rp amount")
+                    name_before_rp = re.findall(r'([A-Z][a-z]+)\s+Rp\s*\d', text)
+                    for name in name_before_rp:
+                        if name not in skip_words and len(name) > 2:
+                            names.append(name)
+                    
+                    # Pattern 2: Extract names after colon (format: ": Name1 Rp, Name2 Rp")
+                    if ':' in text:
+                        after_colon = text.split(':', 1)[1]
+                        name_after_colon = re.findall(r'([A-Z][a-z]+)\s+Rp\s*\d', after_colon)
+                        for name in name_after_colon:
+                            if name not in skip_words and len(name) > 2:
+                                names.append(name)
+                    
+                    # Pattern 3: Extract from "untuk Name1, Name2, dan Name3"
+                    untuk_match = re.search(r'(?:untuk|gaji\s+untuk)\s+([A-Z][a-z]+(?:\s*,\s*(?:dan\s+)?[A-Z][a-z]+)*)', text)
+                    if untuk_match:
+                        names_str = untuk_match.group(1)
+                        # Split by comma and "dan"
+                        extracted_names = re.split(r',\s*(?:dan\s+)?', names_str)
+                        for name in extracted_names:
+                            name = name.strip()
+                            if name and name[0].isupper() and name not in skip_words and len(name) > 2:
+                                names.append(name)
+                    
+                    # Pattern 4: Extract standalone capitalized words separated by comma
+                    if not names:
+                        comma_separated = re.findall(r'([A-Z][a-z]+)(?:\s*,\s*([A-Z][a-z]+))*(?:\s*,\s*(?:dan\s+)?([A-Z][a-z]+))?', text)
+                        for match in comma_separated:
+                            for name in match:
+                                if name and name not in skip_words and len(name) > 2:
+                                    names.append(name)
+                    
+                    # Remove duplicates while preserving order
+                    names = list(dict.fromkeys(names))
+                    
+                    if names:
+                        entities["detail_karyawan"] = ", ".join(names)
+                
+                # Extract periode_gaji
+                if not entities.get("periode_gaji"):
+                    bulan_map = {
+                        "januari": "Januari", "februari": "Februari", "maret": "Maret", "april": "April",
+                        "mei": "Mei", "juni": "Juni", "juli": "Juli", "agustus": "Agustus",
+                        "september": "September", "oktober": "Oktober", "november": "November", "desember": "Desember"
+                    }
+                    
+                    # Pattern: "bulan November" or just "November"
+                    periode_patterns = [
+                        r'bulan\s+(november|desember|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober)',
+                        r'(november|desember|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober)',
+                    ]
+                    
+                    for pattern in periode_patterns:
+                        match = re.search(pattern, text_lower)
+                        if match:
+                            bulan = match.group(1)
+                            entities["periode_gaji"] = bulan_map.get(bulan, bulan.capitalize())
+                            break
+                    
+                    # If not found, check for "bulan ini"
+                    if not entities.get("periode_gaji") and "bulan ini" in text_lower:
+                        bulan_map_num = {
+                            1: "Januari", 2: "Februari", 3: "Maret", 4: "April",
+                            5: "Mei", 6: "Juni", 7: "Juli", 8: "Agustus",
+                            9: "September", 10: "Oktober", 11: "November", 12: "Desember"
+                        }
+                        current_month = datetime.now().month
+                        entities["periode_gaji"] = bulan_map_num.get(current_month, "bulan ini")
+        
+        # Inventory fallback extraction
+        if parsed["intent"] == "inventory_query":
+            entities = parsed["entities"]
+            if not entities.get("product_name"):
+                product = _extract_product_name(text)
+                if product:
+                    entities["product_name"] = product
+        
+        print(f"[LLM] {parsed['intent']} (conf: {parsed['confidence']:.2f})")
+        
+        return parsed
+        
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"[LLM] Error: {e}, fallback to rules")
+        return _rule_fallback(text)
+
+
+def _rule_fallback(text: str) -> Dict[str, Any]:
+    """Fast rule-based fallback"""
+    text_lower = text.lower()
+    
+    # Retur detection (PRIORITY)
+    if any(k in text_lower for k in ["return", "retur", "rusak", "refund", "kembalikan"]):
+        return {
+            "intent": "retur_penjualan",
+            "entities": {"is_retur": True, "alasan_retur": "rusak"},
+            "confidence": 0.85,
+            "model_used": "regex"
+        }
+    
+    # Pembayaran hutang
+    if any(k in text_lower for k in ["bayar cicilan", "bayar hutang", "pelunasan", "cicilan"]) and any(k in text_lower for k in ["supplier", "utang", "hutang"]):
+        return {
+            "intent": "pembayaran_hutang",
+            "entities": {},
+            "confidence": 0.80,
+            "model_used": "regex"
+        }
+    
+    # Transaction - detect jual/beli/bayar (with OR without amount for incomplete transactions)
+    # Match complete: "jual 100", "beli kain @10rb", "bayar gaji 50jt"
+    # Match incomplete: "jual kopi", "beli kain", "bayar gaji" (will trigger multi-turn conversation)
+    transaction_keywords = ["jual", "beli", "bayar", "setor", "catat", "penjualan", "pembelian"]
+    has_transaction_keyword = any(k in text_lower for k in transaction_keywords)
+    has_amount = re.search(r'(?:rp\s*)?\d+[\s.,]*(?:rb|jt|juta|ribu|juta)?', text_lower) or re.search(r'\d+', text)
+    
+    # CRITICAL FIX: Detect transaction even without amount (incomplete transaction)
+    # This allows multi-turn conversation to ask for missing details
+    if has_transaction_keyword:
+        # Auto-detect jenis_transaksi
+        entities = {}
+        if any(k in text_lower for k in ["jual", "terjual", "penjualan"]):
+            entities["jenis_transaksi"] = "penjualan"
+        elif any(k in text_lower for k in ["beli", "pembelian", "membeli"]):
+            entities["jenis_transaksi"] = "pembelian"
+        elif any(k in text_lower for k in ["bayar", "beban", "pengeluaran"]):
+            entities["jenis_transaksi"] = "beban"
+            # Auto-detect kategori_beban
+            if any(k in text_lower for k in ["gaji", "upah"]):
+                entities["kategori_beban"] = "beban_gaji"
+        
+        # Extract product/service name (generic - works for any product or service)
+        # Pattern: "jual [product]", "beli [product]", "bayar [service]"
+        # Generic approach: capture any word/phrase after transaction keyword
+        product_match = re.search(r'(?:jual|beli|bayar|setor|catat|penjualan|pembelian)\s+([a-zA-Z0-9\s]+?)(?:\s|$|@|Rp|tunai|transfer|kas)', text_lower)
+        if product_match:
+            product_name = product_match.group(1).strip()
+            # Remove common stop words and transaction keywords
+            stop_words = ["yang", "dari", "ke", "untuk", "dengan", "adalah", "ini", "itu", "sebanyak", "sejumlah"]
+            product_words = [w for w in product_name.split() if w not in stop_words and w not in transaction_keywords]
+            if product_words:
+                product_name = " ".join(product_words)
+                # Only add if product name is meaningful (not empty, not just numbers)
+                if product_name and not product_name.isdigit():
+                    entities.setdefault("items", [])
+                    entities["items"].append({"nama_produk": product_name})
+        
+        # Extract detail_karyawan for beban_gaji (rule-based) - only if jenis_transaksi is beban
+        if entities.get("jenis_transaksi") == "beban" and entities.get("kategori_beban") == "beban_gaji":
+            names = []
+            skip_words = {"Rp", "Juta", "JUTA", "Million", "Bulan", "November", "Desember", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "Bayar", "Gaji"}
+            
+            # Pattern: Extract names before "Rp" (format: "Name Rp amount")
+            name_before_rp = re.findall(r'([A-Z][a-z]+)\s+Rp\s*\d', text)
+            for name in name_before_rp:
+                if name not in skip_words and len(name) > 2:
+                    names.append(name)
+            
+            # Pattern: Extract names after colon
+            if ':' in text:
+                after_colon = text.split(':', 1)[1]
+                name_after_colon = re.findall(r'([A-Z][a-z]+)\s+Rp\s*\d', after_colon)
+                for name in name_after_colon:
+                    if name not in skip_words and len(name) > 2:
+                        names.append(name)
+            
+            # Remove duplicates
+            names = list(dict.fromkeys(names))
+            if names:
+                entities["detail_karyawan"] = ", ".join(names)
+            
+            # Extract periode_gaji
+            bulan_map = {
+                "januari": "Januari", "februari": "Februari", "maret": "Maret", "april": "April",
+                "mei": "Mei", "juni": "Juni", "juli": "Juli", "agustus": "Agustus",
+                "september": "September", "oktober": "Oktober", "november": "November", "desember": "Desember"
+            }
+            periode_patterns = [
+                r'bulan\s+(november|desember|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober)',
+                r'(november|desember|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober)',
+            ]
+            for pattern in periode_patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    bulan = match.group(1)
+                    entities["periode_gaji"] = bulan_map.get(bulan, bulan.capitalize())
+                    break
+            
+            # CRITICAL: For beban_gaji with multiple employees, calculate total from all salaries
+            # Extract all "Name Rp amount" patterns and sum them
+            if names:
+                # Find all salary amounts: "Anna Rp 3juta", "Bambang Rp 3 juta", etc.
+                salary_patterns = re.findall(r'([A-Z][a-z]+)\s+Rp\s*(\d+)\s*(juta|jt|JUTA|rb|ribu)?', text)
+                total_salary = 0
+                employee_salaries = {}  # Store per-employee for response formatting
+                
+                for name, amount_str, unit in salary_patterns:
+                    if name not in skip_words and len(name) > 2:
+                        amount_num = int(amount_str)
+                        if unit and ('juta' in unit.lower() or 'jt' in unit.lower()):
+                            salary_amount = amount_num * 1000000
+                        elif unit and ('rb' in unit.lower() or 'ribu' in unit.lower()):
+                            salary_amount = amount_num * 1000
+                        else:
+                            # Default: assume juta if amount > 1000, else ribu
+                            if amount_num > 1000:
+                                salary_amount = amount_num * 1000000
+                            else:
+                                salary_amount = amount_num * 1000
+                        
+                        total_salary += salary_amount
+                        employee_salaries[name] = salary_amount
+                
+                # If we found multiple salaries, use the sum
+                if total_salary > 0:
+                    entities["total_nominal"] = total_salary
+                    # Store employee salaries in metadata for response formatting
+                    entities["employee_salaries"] = employee_salaries
+        
+        # Extract total_nominal from amount (only if not already set and amount found)
+        if has_amount and not entities.get("total_nominal"):
+            # Patterns: "Rp 50 juta", "50jt", "50 juta", "Rp50.000.000"
+            amount_match = re.search(r'(?:rp\s*)?(\d+)[\s.,]*(?:rb|jt|juta|ribu)?', text_lower)
+            if amount_match:
+                amount_str = amount_match.group(1).replace('.', '').replace(',', '')
+                amount_num = int(amount_str)
+                
+                # Check if it's juta (million) or ribu (thousand)
+                if 'juta' in text_lower or 'jt' in text_lower:
+                    total_nominal = amount_num * 1000000
+                elif 'ribu' in text_lower or 'rb' in text_lower:
+                    total_nominal = amount_num * 1000
+                else:
+                    # Default: assume juta if > 1000, else ribu
+                    if amount_num > 1000:
+                        total_nominal = amount_num * 1000000
+                    else:
+                        total_nominal = amount_num * 1000
+                
+                entities["total_nominal"] = total_nominal
+
+        # CRITICAL: Extract items array using regex (fallback for all transaction_record)
+        # Check if items array is empty OR incomplete (missing jumlah/harga_satuan)
+        has_complete_items = False
+        if entities.get("items") and len(entities.get("items", [])) > 0:
+            first_item = entities["items"][0]
+            has_complete_items = (first_item.get("jumlah") is not None and
+                                 first_item.get("harga_satuan") is not None)
+
+        if not has_complete_items:
+            fallback_items = _extract_items_from_text(text)
+            if fallback_items:
+                entities["items"] = fallback_items
+                # Recalculate total_nominal from items if items found
+                total_from_items = sum(item.get("subtotal", 0) for item in fallback_items)
+                if total_from_items > 0:
+                    entities["total_nominal"] = total_from_items
+        
+        # CRITICAL: Extract metode_pembayaran from text (tunai, transfer, kas, tempo)
+        # This ensures complete transactions don't trigger unnecessary questions
+        if not entities.get("metode_pembayaran"):
+            payment_keywords = {
+                "via transfer": "transfer",  # Check "via" prefix first
+                "via tunai": "tunai",
+                "tunai": "tunai",
+                "cash": "tunai",
+                "kas": "tunai",
+                "uang tunai": "tunai",
+                "transfer": "transfer",
+                "tf": "transfer",
+                "bank": "transfer",
+                "bca": "transfer",
+                "mandiri": "transfer",
+                "bni": "transfer",
+                "tempo": "tempo",
+                "hutang": "tempo",
+                "utang": "tempo",
+                "credit": "tempo"
+            }
+
+            for keyword, method in payment_keywords.items():
+                if keyword in text_lower:
+                    entities["metode_pembayaran"] = method
+                    logger.info(f"[RULE] Extracted metode_pembayaran: {method} from keyword '{keyword}'")
+                    break
+
+        # Return transaction_record with appropriate confidence
+        # Higher confidence if complete (has amount), lower if incomplete (will trigger multi-turn)
+        confidence = 0.85 if has_amount else 0.75
+        
+        return {
+            "intent": "transaction_record",
+            "entities": entities,
+            "confidence": confidence,
+            "model_used": "regex"
+        }
+    
+    # Query transaksi
+    if any(k in text_lower for k in ["transaksi", "tampilkan", "filter"]) and any(k in text_lower for k in ["supplier", "customer", "bulan", "oktober"]):
+        return {
+            "intent": "query_transaksi",
+            "entities": {},
+            "confidence": 0.75,
+            "model_used": "regex"
+        }
+    
+    # Inventory query vs history
+    if any(k in text_lower for k in ["stok", "stock", "persediaan"]):
+        # Check if it's history query
+        if any(k in text_lower for k in ["riwayat", "history", "histori", "pergerakan", "movement", "masuk keluar"]):
+            return {
+                "intent": "inventory_history",
+                "entities": {
+                    "query_type": "movement_history",
+                    "product_name": _extract_product_name(text)
+                },
+                "confidence": 0.80,
+                "model_used": "regex"
+            }
+        else:
+            return {
+                "intent": "inventory_query",
+                "entities": {
+                    "query_type": "stock_level",
+                    "product_name": _extract_product_name(text)
+                },
+                "confidence": 0.78,
+                "model_used": "regex"
+            }
+    
+    # Financial (including salary payment queries)
+    salary_keywords = ["sudah bayar gaji", "bayar gaji siapa", "gaji siapa saja", "belum bayar gaji", 
+                       "yang belum dibayar", "gaji bulan", "total pengeluaran gaji", "pengeluaran gaji"]
+    financial_keywords = ["untung", "rugi", "laba", "neraca", "kas"]
+    
+    if any(k in text_lower for k in salary_keywords) or any(k in text_lower for k in financial_keywords):
+        return {
+            "intent": "financial_report",
+            "entities": {
+                "report_type": "laba_rugi",
+                "periode_pelaporan": datetime.now().strftime("%Y-%m")
+            },
+            "confidence": 0.80,
+            "model_used": "regex"
+        }
+    
+    # Low sell products
+    if any(k in text_lower for k in ["kurang laku", "slow moving", "tidak laku"]):
+        return {
+            "intent": "low_sell_products",
+            "entities": {"time_range": "monthly", "limit": 10},
+            "confidence": 0.85,
+            "model_used": "regex"
+        }
+    
+    # Top products
+    if any(k in text_lower for k in ["terlaris", "paling laku", "best seller"]):
+        return {
+            "intent": "top_products",
+            "entities": {"time_range": "monthly", "limit": 10},
+            "confidence": 0.85,
+            "model_used": "regex"
+        }
+    
+    # Koreksi
+    if any(k in text_lower for k in ["koreksi", "salah", "ubah", "ganti", "edit"]) and any(k in text_lower for k in ["transaksi", "tadi", "terakhir", "yang"]):
+        return {
+            "intent": "koreksi",
+            "entities": {"reference": "transaksi_tadi"},
+            "confidence": 0.85,
+            "model_used": "regex"
+        }
+    
+    # Default
+    return {
+        "intent": "general_inquiry",
+        "entities": {},
+        "confidence": 0.60,
+        "model_used": "regex"
+    }
+
+
+def _extract_items_from_text(text: str) -> list:
+    """
+    Fallback regex-based item extraction when LLM fails.
+    Handles patterns like:
+    - "jual 10 kopi @20000"
+    - "beli 5 buku @15rb"
+    - "jual 10 kaos @45rb, 5 celana @100rb"
+    """
+    items = []
+
+    # Pattern: quantity product @price
+    # Match: "10 kopi @20000", "5 buku @15rb", "100 kaos @45rb"
+    # NEW: Also match "teh 100 gelas @Rp 15.000" with satuan and price with dots
+    # IMPORTANT: Pattern with satuan must be checked FIRST (most specific)
+    patterns = [
+        # Pattern 3: "teh 100 gelas @15.000" (product quantity satuan @price) - CHECK FIRST!
+        r'(?:jual|beli|bayar)?\s*([a-zA-Z][a-zA-Z0-9\s]*?)\s+(\d+)\s+([a-zA-Z]+)\s+@\s*(?:rp\s*)?(\d+[\.,]?\d*)\s*(rb|ribu|k|jt|juta)?',
+        # Pattern 1: "10 kopi @20000" or "10 kopi @20rb"
+        r'(\d+)\s+([a-zA-Z][a-zA-Z0-9\s]*?)\s+@\s*(?:rp\s*)?(\d+[\.,]?\d*)\s*(rb|ribu|k|jt|juta)?',
+        # Pattern 2: "kopi 10 @20000" (reversed order)
+        r'([a-zA-Z][a-zA-Z0-9\s]*?)\s+(\d+)\s+@\s*(?:rp\s*)?(\d+[\.,]?\d*)\s*(rb|ribu|k|jt|juta)?',
+    ]
+
+    for pattern_idx, pattern in enumerate(patterns):
+        matches = re.findall(pattern, text.lower())
+        for match in matches:
+            try:
+                # Pattern 0 has 5 groups (product, quantity, satuan, price, unit)
+                # Pattern 1 & 2 have 4 groups
+                if pattern_idx == 0 and len(match) == 5:
+                    # Pattern 3: (product, quantity, satuan, price, unit)
+                    product_name, quantity_str, satuan, price_str, unit = match
+                    # Strip transaction keywords from product name
+                    product_name = re.sub(r'^(jual|beli|bayar)\s+', '', product_name).strip()
+                elif pattern_idx == 1 and len(match) == 4:
+                    # Pattern 1: (quantity, product, price, unit)
+                    quantity_str, product_name, price_str, unit = match
+                    satuan = "pcs"
+                elif pattern_idx == 2 and len(match) == 4:
+                    # Pattern 2: (product, quantity, price, unit)
+                    product_name, quantity_str, price_str, unit = match
+                    satuan = "pcs"
+                else:
+                    continue  # Skip mismatched patterns
+
+                # Remove dots/commas from price (15.000 → 15000)
+                price_str = price_str.replace('.', '').replace(',', '')
+
+                quantity = float(quantity_str)
+                price_num = float(price_str)
+
+                # Convert unit to full amount
+                if unit and ('jt' in unit or 'juta' in unit):
+                    harga_satuan = int(price_num * 1000000)
+                elif unit and ('rb' in unit or 'ribu' in unit or 'k' in unit):
+                    harga_satuan = int(price_num * 1000)
+                else:
+                    # No unit, assume raw number
+                    harga_satuan = int(price_num)
+
+                subtotal = int(quantity * harga_satuan)
+
+                items.append({
+                    "nama_produk": product_name.strip(),
+                    "jumlah": int(quantity),
+                    "satuan": satuan.strip() if satuan != "pcs" else "pcs",
+                    "harga_satuan": harga_satuan,
+                    "subtotal": subtotal
+                })
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse match {match}: {e}")
+                continue
+
+        # CRITICAL: If pattern matched and items found, STOP checking remaining patterns
+        # This prevents overlapping matches (e.g. Pattern 0 matches "teh 100 gelas @15rb",
+        # then Pattern 1 also matches "100 gelas @15rb" creating duplicate)
+        if items:
+            break
+
+    return items
+
+
+def _extract_product_name(text: str) -> str:
+    """Extract product name from inventory query"""
+    text_lower = text.lower()
+
+    patterns = [
+        r'(?:stok|stock)\s+([a-z0-9\s]+?)(?:\s+(?:berapa|ada|di)|$|\?)',
+        r'(?:cek|berapa)\s+stok\s+([a-z0-9\s]+?)(?:\?|$)',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            product = match.group(1).strip()
+            product = re.sub(r'\b(di|ke|dari|yang|ini|itu)\b', '', product).strip()
+            if product and len(product) > 2:
+                return product
+
+    return ""
+
+
+# ===========================================
+# PHASE 1.4: CASCADE CLASSIFICATION HELPERS
+# ===========================================
+
+def _classify_by_keywords(text: str) -> dict:
+    """
+    Layer 0: Fast keyword matching (5ms)
+    Returns classification if confidence >= 0.75
+    Expected to handle 30% of traffic
+    """
+    text_lower = text.lower()
+
+    # Define keyword patterns for each intent (EXPANDED - 50+ patterns)
+    KEYWORD_PATTERNS = {
+        "financial_report": {
+            "patterns": [
+                # Laba Rugi
+                ["laporan", "laba"], ["laporan", "rugi"],
+                ["untung", "berapa"], ["rugi", "berapa"],
+                ["pendapatan", "total"], ["pendapatan", "bulan"],
+                ["laba", "bersih"], ["laba", "kotor"],
+                ["profit", "berapa"], ["loss", "berapa"],
+
+                # Neraca & Saldo
+                ["laporan", "neraca"], ["neraca", "saldo"],
+                ["saldo", "kas"], ["berapa", "kas"],
+                ["kas", "saya"], ["uang", "tersedia"],
+                ["total", "aset"], ["total", "hutang"],
+                ["piutang", "berapa"], ["hutang", "berapa"],
+                ["balance", "sheet"],
+
+                # Arus Kas
+                ["arus", "kas"], ["cash", "flow"],
+                ["kas", "masuk"], ["kas", "keluar"],
+
+                # Gaji
+                ["gaji", "siapa"], ["bayar", "gaji"],
+                ["gaji", "sudah"], ["gaji", "belum"],
+                ["gaji", "bulan"], ["daftar", "gaji"],
+                ["salary", "payment"],
+
+                # Pajak
+                ["pajak", "berapa"], ["pph", "berapa"],
+                ["omzet", "tahun"], ["omzet", "bulan"],
+                ["tax", "info"],
+            ],
+            "confidence": 0.80,
+            "entities": {
+                "report_type": "laba_rugi",
+                "periode_pelaporan": datetime.now().strftime("%Y-%m")
+            }
+        },
+
+        "inventory_query": {
+            "patterns": [
+                # Stock level
+                ["stok", "berapa"], ["cek", "stok"],
+                ["sisa", "stok"], ["persediaan", "berapa"],
+                ["berapa", "stok"], ["jumlah", "stok"],
+
+                # Availability
+                ["ada", "stok"], ["tersedia", "berapa"],
+                ["masih", "ada"], ["stock", "check"],
+
+                # Location
+                ["stok", "gudang"], ["persediaan", "gudang"],
+            ],
+            "confidence": 0.80,
+            "entities": {
+                "query_type": "stock_level",
+                "product_name": _extract_product_name(text)
+            }
+        },
+
+        "top_products": {
+            "patterns": [
+                ["produk", "terlaris"], ["barang", "terlaris"],
+                ["paling", "laku"], ["best", "seller"],
+                ["terbanyak", "terjual"], ["top", "produk"],
+                ["favorit", "customer"], ["paling", "banyak"],
+                ["produk", "populer"], ["barang", "favorit"],
+            ],
+            "confidence": 0.85,
+            "entities": {
+                "time_range": "monthly",
+                "limit": 10
+            }
+        },
+
+        "low_sell_products": {
+            "patterns": [
+                ["produk", "sepi"], ["kurang", "laku"],
+                ["paling", "sedikit"], ["tidak", "laku"],
+                ["lambat", "jual"], ["jarang", "terjual"],
+                ["barang", "mati"], ["slow", "moving"],
+            ],
+            "confidence": 0.85,
+            "entities": {
+                "time_range": "monthly",
+                "limit": 10,
+                "threshold": 0
+            }
+        },
+
+        "query_transaksi": {
+            "patterns": [
+                # By party
+                ["transaksi", "supplier"], ["pembelian", "dari"],
+                ["transaksi", "customer"], ["penjualan", "ke"],
+
+                # By date
+                ["transaksi", "hari"], ["transaksi", "bulan"],
+                ["transaksi", "kemarin"], ["transaksi", "minggu"],
+                ["riwayat", "transaksi"], ["history", "transaksi"],
+
+                # By type
+                ["semua", "pembelian"], ["semua", "penjualan"],
+                ["daftar", "beban"], ["list", "transaction"],
+            ],
+            "confidence": 0.75,
+            "entities": {
+                "date_range": "",
+                "jenis_transaksi": ""
+            }
+        },
+
+        "inventory_history": {
+            "patterns": [
+                ["riwayat", "stok"], ["history", "stok"],
+                ["pergerakan", "stok"], ["mutasi", "stok"],
+                ["stok", "masuk"], ["stok", "keluar"],
+                ["movement", "inventory"],
+            ],
+            "confidence": 0.80,
+            "entities": {
+                "query_type": "movement_history",
+                "product_name": _extract_product_name(text),
+                "date_range": ""
+            }
+        },
+
+        "koreksi": {
+            "patterns": [
+                ["ada", "salah"], ["koreksi", "transaksi"],
+                ["ubah", "transaksi"], ["edit", "transaksi"],
+                ["perbaiki", "data"], ["ralat", "transaksi"],
+                ["harusnya", "jadi"], ["seharusnya", "berapa"],
+            ],
+            "confidence": 0.75,
+            "entities": {
+                "field_to_update": "",
+                "reference": "transaksi_terakhir"
+            }
+        }
+    }
+
+    # Check each intent pattern
+    for intent, config in KEYWORD_PATTERNS.items():
+        for pattern in config["patterns"]:
+            # Check if ALL keywords in pattern exist
+            if all(keyword in text_lower for keyword in pattern):
+                return {
+                    "intent": intent,
+                    "entities": config["entities"],
+                    "confidence": config["confidence"],
+                    "source": "keyword"
+                }
+
+    return None
+
+
+def _classify_by_regex(text: str) -> dict:
+    """
+    Layer 1: Regex-based extraction (10ms)
+    Returns classification if confidence >= 0.80
+    Expected to handle 30% of traffic
+    """
+    text_lower = text.lower()
+
+    # ===========================================
+    # PATTERN 1: Transaction Record
+    # Match: "jual 10 kopi @15rb", "beli 5 buku @20000"
+    # ===========================================
+    tx_pattern = re.compile(
+        r'\b(jual|beli|bayar)\s+(\d+)\s+([a-zA-Z][a-zA-Z0-9\s]*?)\s+@\s*(?:rp\s*)?(\d+)\s*(rb|ribu|k|jt|juta)?',
+        re.IGNORECASE
+    )
+    tx_match = tx_pattern.search(text)
+
+    if tx_match:
+        jenis_raw = tx_match.group(1).lower()
+        jumlah = int(tx_match.group(2))
+        nama_produk = tx_match.group(3).strip()
+        harga_raw = float(tx_match.group(4))
+        unit = (tx_match.group(5) or "").lower()
+
+        # Determine jenis_transaksi
+        if jenis_raw in ["jual", "terjual"]:
+            jenis_transaksi = "penjualan"
+        elif jenis_raw in ["beli", "membeli"]:
+            jenis_transaksi = "pembelian"
+        else:
+            jenis_transaksi = "beban"
+
+        # Convert unit to full amount
+        if 'jt' in unit or 'juta' in unit:
+            harga_satuan = int(harga_raw * 1000000)
+        elif 'rb' in unit or 'ribu' in unit or 'k' in unit:
+            harga_satuan = int(harga_raw * 1000)
+        else:
+            harga_satuan = int(harga_raw)
+
+        subtotal = jumlah * harga_satuan
+        total_nominal = subtotal
+
+        # Extract metode_pembayaran if mentioned
+        metode_pembayaran = None
+        payment_keywords = {
+            "tunai": "tunai", "cash": "tunai", "kas": "tunai",
+            "transfer": "transfer", "tf": "transfer", "bank": "transfer",
+            "tempo": "tempo", "hutang": "tempo", "utang": "tempo", "credit": "tempo"
+        }
+        text_lower = text.lower()
+        for keyword, method in payment_keywords.items():
+            if keyword in text_lower:
+                metode_pembayaran = method
+                break
+        
+        # Build entities
+        entities = {
+            "jenis_transaksi": jenis_transaksi,
+            "total_nominal": total_nominal,
+            "items": [{
+                "nama_produk": nama_produk,
+                "jumlah": jumlah,
+                "satuan": "pcs",
+                "harga_satuan": harga_satuan,
+                "subtotal": subtotal
+            }]
+        }
+        
+        if metode_pembayaran:
+            entities["metode_pembayaran"] = metode_pembayaran
+
+        # Add inventory impact for penjualan/pembelian
+        if jenis_transaksi in ["penjualan", "pembelian"]:
+            jenis_movement = "keluar" if jenis_transaksi == "penjualan" else "masuk"
+            jumlah_movement = -float(jumlah) if jenis_transaksi == "penjualan" else float(jumlah)
+
+            entities["inventory_impact"] = {
+                "is_tracked": True,
+                "jenis_movement": jenis_movement,
+                "lokasi_gudang": "gudang-utama",
+                "items_inventory": [{
+                    "produk_id": "",
+                    "jumlah_movement": jumlah_movement,
+                    "stok_setelah": 0
+                }]
+            }
+
+        return {
+            "intent": "transaction_record",
+            "entities": entities,
+            "confidence": 0.90,
+            "source": "regex"
+        }
+
+    # ===========================================
+    # PATTERN 2: Simple Transaction (no @)
+    # Match: "jual 100rb", "bayar 50jt"
+    # ===========================================
+    simple_tx_pattern = re.compile(
+        r'\b(jual|beli|bayar)\s+(?:rp\s*)?(\d+)\s*(rb|ribu|jt|juta)?',
+        re.IGNORECASE
+    )
+    simple_match = simple_tx_pattern.search(text)
+
+    if simple_match:
+        jenis_raw = simple_match.group(1).lower()
+        amount = float(simple_match.group(2))
+        unit = (simple_match.group(3) or "").lower()
+
+        # Convert to full amount
+        if 'jt' in unit or 'juta' in unit:
+            total_nominal = int(amount * 1000000)
+        elif 'rb' in unit or 'ribu' in unit:
+            total_nominal = int(amount * 1000)
+        else:
+            # Default: assume ribu if < 10000, else full amount
+            total_nominal = int(amount * 1000 if amount < 10000 else amount)
+
+        # Determine jenis_transaksi
+        if jenis_raw in ["jual", "terjual"]:
+            jenis_transaksi = "penjualan"
+        elif jenis_raw in ["beli", "membeli"]:
+            jenis_transaksi = "pembelian"
+        else:
+            jenis_transaksi = "beban"
+
+        return {
+            "intent": "transaction_record",
+            "entities": {
+                "jenis_transaksi": jenis_transaksi,
+                "total_nominal": total_nominal
+            },
+            "confidence": 0.75,
+            "source": "regex"
+        }
+
+    # ===========================================
+    # PATTERN 3: Retur (Return)
+    # Match: "return 3 kemeja", "retur 5 buku rusak"
+    # ===========================================
+    if any(k in text_lower for k in ["return", "retur", "rusak", "refund"]):
+        retur_pattern = re.compile(
+            r'\b(?:return|retur)\s+(\d+)\s+([a-zA-Z][a-zA-Z0-9\s]+)',
+            re.IGNORECASE
+        )
+        retur_match = retur_pattern.search(text)
+
+        if retur_match:
+            jumlah = int(retur_match.group(1))
+            nama_produk = retur_match.group(2).strip()
+
+            return {
+                "intent": "retur_penjualan",
+                "entities": {
+                    "jenis_transaksi": "retur_penjualan",
+                    "items": [{
+                        "nama_produk": nama_produk,
+                        "jumlah": jumlah,
+                        "satuan": "pcs"
+                    }],
+                    "keterangan": "Retur barang",
+                    "is_retur": True
+                },
+                "confidence": 0.85,
+                "source": "regex"
+            }
+
+    # ===========================================
+    # PATTERN 4: Pembayaran Hutang
+    # Match: "bayar cicilan 5jt", "bayar hutang 10jt"
+    # ===========================================
+    if any(k in text_lower for k in ["bayar cicilan", "bayar hutang", "pelunasan"]):
+        hutang_pattern = re.compile(
+            r'\b(?:bayar\s+(?:cicilan|hutang|utang))\s+(?:rp\s*)?(\d+)\s*(rb|ribu|jt|juta)?',
+            re.IGNORECASE
+        )
+        hutang_match = hutang_pattern.search(text)
+
+        if hutang_match:
+            amount = float(hutang_match.group(1))
+            unit = (hutang_match.group(2) or "").lower()
+
+            if 'jt' in unit or 'juta' in unit:
+                total_nominal = int(amount * 1000000)
+            elif 'rb' in unit or 'ribu' in unit:
+                total_nominal = int(amount * 1000)
+            else:
+                total_nominal = int(amount)
+
+            return {
+                "intent": "pembayaran_hutang",
+                "entities": {
+                    "jenis_transaksi": "pembayaran_hutang",
+                    "total_nominal": total_nominal
+                },
+                "confidence": 0.85,
+                "source": "regex"
+            }
+
+    return None

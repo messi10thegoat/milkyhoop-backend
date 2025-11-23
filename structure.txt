@@ -1,0 +1,662 @@
+.
+├── LICENSE
+├── Makefile
+├── README.md
+├── app
+│   └── grpc_clients
+│       └── chatbot
+├── auth_service_assessment_20251004_101527
+│   ├── build_prerequisites.txt
+│   ├── config_status.txt
+│   ├── dependency_analysis.txt
+│   ├── functionality_test.txt
+│   ├── readiness_decision.txt
+│   └── risk_assessment.txt
+├── backend
+│   ├── __init__.py
+│   ├── api_gateway
+│   │   ├── Dockerfile
+│   │   ├── Dockerfile.pre_enhanced_20250914_175524
+│   │   ├── Dockerfile.pre_validation_20250914_173203
+│   │   ├── __init__.py
+│   │   ├── app
+│   │   ├── backend
+│   │   ├── configs
+│   │   ├── libs
+│   │   ├── protos
+│   │   ├── pyproject.toml
+│   │   ├── pytest.ini
+│   │   ├── requirements.txt
+│   │   ├── requirements.txt.backup_20250914_165912
+│   │   ├── requirements.txt.bak_20251014_075002
+│   │   ├── requirements.txt.pre_lock_20250914_173203
+│   │   ├── requirements.txt.protobuf632_backup_20250914_175916
+│   │   ├── requirements_from_working_container.txt
+│   │   ├── site-packages
+│   │   ├── tests
+│   │   └── validate_build.sh
+│   ├── database
+│   │   └── schemas
+│   └── services
+│       ├── accounting_service
+│       ├── api_gateway
+│       ├── auth_service
+│       ├── business-service.backup_20251007_224248
+│       ├── business_extractor
+│       ├── business_parser
+│       ├── chatbot_service
+│       ├── complaint_service.backup_20251007_224248
+│       ├── context_service
+│       ├── conversation_manager
+│       ├── conversation_service
+│       ├── cust_context
+│       ├── cust_orchestrator
+│       ├── cust_reference.backup-20250918_175935
+│       ├── flow-executor
+│       ├── hoop-registry.backup_20251007_224248
+│       ├── intent_parser
+│       ├── inventory_service
+│       ├── llm_parser.py
+│       ├── memory_service
+│       ├── notification-service
+│       ├── outbox_worker
+│       ├── ragcrud_service
+│       ├── ragindex_service
+│       ├── ragllm_service
+│       ├── reporting_service
+│       ├── rule_engine
+│       ├── setup_orchestrator
+│       ├── tenant_orchestrator
+│       ├── tenant_parser
+│       ├── transaction_service
+│       └── visualhoop-compiler.backup_20251101_085149
+├── backup_all_matviews.sql
+├── backup_chat_data_20251113_143015.sql
+├── backup_laporan_laba_rugi_view.sql
+├── backup_schema_20251113_143015.sql
+├── backups
+│   ├── cust_orchestrator_20251004_150035
+│   │   ├── Dockerfile
+│   │   ├── Dockerfile.backup_simple_fix_20251003_094533
+│   │   ├── Dockerfile.enhance3.0
+│   │   ├── __init__.py
+│   │   ├── app
+│   │   ├── poetry.lock
+│   │   ├── pyproject.toml
+│   │   ├── pyproject.toml.backup_20251003_063601
+│   │   ├── requirements.txt
+│   │   └── tests
+│   ├── dependencies_20251004_150556
+│   ├── grpc_server_broken_1758633961.py
+│   ├── phase1_20250917_183001
+│   │   ├── api_gateway_original
+│   │   ├── current_response_format.json
+│   │   ├── current_structure.txt
+│   │   ├── service_dependencies.txt
+│   │   ├── tenant_parser_imports.txt
+│   │   └── tenant_parser_original
+│   ├── pre_rename_4.0_20251029_074554
+│   │   └── docker-compose.yml.backup
+│   ├── proto_stubs_backup_20251029_075005
+│   │   ├── auth_service_pb2.py
+│   │   ├── auth_service_pb2_grpc.py
+│   │   ├── business_extractor_pb2.py
+│   │   ├── business_extractor_pb2_grpc.py
+│   │   ├── chatbot_service_pb2.py
+│   │   ├── chatbot_service_pb2_grpc.py
+│   │   ├── context_service_pb2.py
+│   │   ├── context_service_pb2_grpc.py
+│   │   ├── conversation_manager_pb2.py
+│   │   ├── conversation_manager_pb2_grpc.py
+│   │   ├── conversation_service_pb2.py
+│   │   ├── conversation_service_pb2_grpc.py
+│   │   ├── cust_context_backup9_pb2.py
+│   │   ├── cust_context_backup9_pb2_grpc.py
+│   │   ├── cust_context_pb2.py
+│   │   ├── cust_context_pb2_grpc.py
+│   │   ├── cust_orchestrator_pb2.py
+│   │   ├── cust_orchestrator_pb2_grpc.py
+│   │   ├── cust_reference_pb2.py
+│   │   ├── cust_reference_pb2_grpc.py
+│   │   ├── intent_parser_pb2.py
+│   │   ├── intent_parser_pb2_grpc.py
+│   │   ├── memory_service_pb2.py
+│   │   ├── memory_service_pb2_grpc.py
+│   │   ├── minimal_pb2.py
+│   │   ├── minimal_pb2_grpc.py
+│   │   ├── order_service_pb2.py
+│   │   ├── order_service_pb2_grpc.py
+│   │   ├── payment_service_pb2.py
+│   │   ├── payment_service_pb2_grpc.py
+│   │   ├── ragcrud_service_pb2.py
+│   │   ├── ragcrud_service_pb2_grpc.py
+│   │   ├── ragindex_service_pb2.py
+│   │   ├── ragindex_service_pb2_grpc.py
+│   │   ├── ragllm_service_pb2.py
+│   │   ├── ragllm_service_pb2_grpc.py
+│   │   ├── template_service_pb2.py
+│   │   ├── template_service_pb2_grpc.py
+│   │   ├── template_service_python_prisma_pb2.py
+│   │   ├── template_service_python_prisma_pb2_grpc.py
+│   │   ├── tenant_manager_pb2.py
+│   │   ├── tenant_manager_pb2_grpc.py
+│   │   ├── tenant_parser_pb2.py
+│   │   ├── tenant_parser_pb2_grpc.py
+│   │   ├── test_context_pb2.py
+│   │   ├── test_context_pb2_grpc.py
+│   │   ├── visualhoop_compiler_pb2.py
+│   │   └── visualhoop_compiler_pb2_grpc.py
+│   ├── routers_20250911_090746
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── chat.py
+│   │   ├── customer.py
+│   │   ├── flow.py
+│   │   ├── health.py
+│   │   ├── onboarding.py
+│   │   ├── onboarding_faq.py
+│   │   ├── ragcrud_test.py
+│   │   ├── raginject_test.py
+│   │   ├── ragllm_test.py
+│   │   ├── session.py
+│   │   └── token_refresh.py
+│   └── stub_fix_20251103_185817
+│       ├── setup_orchestrator_pb2.py
+│       └── setup_orchestrator_pb2_grpc.py
+├── check-container-drift.sh
+├── clean_build_assessment_20251004_101313
+│   ├── complete_module_list.txt
+│   ├── dependency_map.txt
+│   ├── first_module_recommendation.txt
+│   ├── pre_build_assessment_template.md
+│   └── recommended_build_sequence.md
+├── codex
+│   ├── CHANGELOG.md
+│   ├── LICENSE
+│   ├── LICENSE.enhance3.0
+│   ├── NOTICE
+│   ├── NOTICE.enhance3.0
+│   ├── README.md
+│   ├── cliff.toml
+│   ├── codex-cli
+│   │   ├── Dockerfile
+│   │   ├── Dockerfile.enhance3.0
+│   │   ├── HUSKY.md
+│   │   ├── bin
+│   │   ├── build.mjs
+│   │   ├── examples
+│   │   ├── ignore-react-devtools-plugin.js
+│   │   ├── package-lock.json
+│   │   ├── package.json
+│   │   ├── require-shim.js
+│   │   ├── scripts
+│   │   ├── src
+│   │   ├── tests
+│   │   ├── tsconfig.json
+│   │   └── vite.config.ts
+│   ├── docs
+│   │   └── CLA.md
+│   ├── flake.lock
+│   ├── flake.nix
+│   ├── package-lock.json
+│   └── package.json
+├── common
+│   ├── adapter_schema.py
+│   ├── database_utils
+│   ├── helpers
+│   │   ├── rate_limiter.py
+│   │   └── redis_client.py
+│   └── shared_libs
+├── comprehensive-audit.sh
+├── coordinated_rebuild.sh
+├── data
+│   └── tenant_profiles  [error opening dir]
+├── database
+│   ├── backups
+│   │   ├── RESTORE_20251014_080629.txt
+│   │   ├── milkyhoop_full_backup_20251014_080629.sql
+│   │   └── schema_backup_20251101_183831.sql
+│   ├── database_utils
+│   │   └── db.py
+│   ├── migrations
+│   │   ├── V002__add_retur_and_pembayaran_hutang_to_jenis_transaksi.sql
+│   │   ├── V003__add_tenant_rules_table.sql
+│   │   └── atlas
+│   ├── optimizations
+│   │   ├── indexing
+│   │   ├── query_optimization
+│   │   └── sharding_partitioning
+│   ├── schemas
+│   │   ├── chatbot_schema.prisma
+│   │   ├── global_schema.prisma
+│   │   ├── global_schema.prisma.backup_1756867211
+│   │   ├── global_schema.prisma.backup_20250903_152508
+│   │   ├── global_schema.prisma.backup_20251013_014752
+│   │   ├── global_schema.prisma.backup_20251013_111022
+│   │   ├── global_schema.prisma.backup_20251029_150222
+│   │   ├── global_schema.prisma.backup_20251103_174056
+│   │   ├── global_schema.prisma.bak_20251014_075002
+│   │   ├── initial_migration.sql
+│   │   ├── package-lock.json
+│   │   ├── package.json
+│   │   └── prisma
+│   └── seeders
+│       └── README.md
+├── dependency_test_plan.md
+├── deploy
+│   ├── deploy-cust-orchestrator.sh
+│   └── environments
+│       ├── development.env
+│       └── production.env
+├── docker
+│   ├── Dockerfile.base
+│   ├── docker-compose.chatbot.yml
+│   └── scripts
+├── docker-compose-dev.yml
+├── docker-compose.dev-volumes.yml
+├── docker-compose.resource-limited.yml
+├── docker-compose.staging.yml
+├── docker-compose.yml
+├── docs
+│   ├── DEBUG_CLARIFICATION_RESPONSE.md
+│   ├── api
+│   ├── api-specs
+│   ├── architecture
+│   │   └── TENANT_MODE_FLOW_LOGIC.md
+│   ├── backend
+│   │   ├── API-GATEWAY.md
+│   │   ├── CHATBOT-SERVICE.md
+│   │   ├── README.md
+│   │   ├── api-gateway-auth.md
+│   │   └── api-gateway-openapi.md
+│   ├── database
+│   │   └── README.md
+│   ├── database-schemas
+│   ├── deployment-guide
+│   ├── infrastructure
+│   │   └── README.md
+│   ├── onboarding-guide
+│   └── service-mesh
+├── extracted_patterns
+│   └── bca_patterns.txt
+├── finalize_api_gateway.sh
+├── finalize_module.sh
+├── flows
+│   ├── compiled
+│   │   ├── sample_flow.pb
+│   │   ├── sample_flowjson
+│   │   └── sample_flowjson.enhance3.0
+│   ├── examples
+│   │   ├── business-setup-handler.json
+│   │   ├── contextual-customer-handler.json
+│   │   ├── customer-inquiry-handler.json
+│   │   ├── default-handler.json
+│   │   ├── faq-create-handler.json
+│   │   ├── faq-delete-handler.json
+│   │   ├── faq-query-handler.json
+│   │   ├── faq-read-handler.json
+│   │   ├── faq-update-handler.json
+│   │   └── sample_flow.json
+│   └── global
+├── frontend
+│   ├── 50x.html
+│   ├── Dockerfile
+│   ├── asset-manifest.json
+│   ├── index.html
+│   ├── nginx.conf
+│   ├── static
+│   │   ├── css
+│   │   └── js
+│   └── web
+│       ├── COMPLETE_ROLLBACK_1756950518.sh
+│       ├── Dockerfile
+│       ├── Dockerfile.backup_1756449267
+│       ├── RESTORE_CONTAINER_1756950518.sh
+│       ├── ROLLBACK_COMMANDS_1756950529.sh
+│       ├── build
+│       ├── build.log
+│       ├── container_backup_1756950518
+│       ├── directory_state_backup_1756950529.txt
+│       ├── full_error.log
+│       ├── nginx.conf
+│       ├── package-lock.json
+│       ├── package-lock.json.backup_1756950529
+│       ├── package.json
+│       ├── package.json.backup_1756449528
+│       ├── package.json.backup_1756950529
+│       ├── postcss.config.js
+│       ├── public
+│       ├── src
+│       ├── src_backup_before_auth_fix_1756950529
+│       ├── tailwind.config.js
+│       └── tsconfig.json
+├── frontend-nginx.conf
+├── github.com
+│   └── milkyhoop
+│       └── flow-executor
+├── go.work
+├── go.work.sum
+├── grpc_health_probe
+├── infra
+│   ├── env
+│   ├── high_availability
+│   │   ├── failover
+│   │   ├── load_balancing
+│   │   └── multi_region
+│   ├── istio
+│   ├── kubernetes
+│   ├── scripts
+│   │   ├── check_conflict.sh
+│   │   ├── docker_build_audit.sh
+│   │   ├── env_validator.py
+│   │   ├── git_guardian.sh
+│   │   └── healthcheck_tester.py
+│   ├── secret-management
+│   │   └── README.md
+│   ├── secrets
+│   │   ├── api_key.txt
+│   │   ├── db_password.txt
+│   │   └── jwt_secret.txt
+│   ├── service-mesh
+│   │   └── istio
+│   └── terraform
+├── junk-cleanup.sh
+├── logs
+│   ├── accounting_service
+│   ├── api_gateway
+│   │   ├── alternatives.log
+│   │   ├── apt
+│   │   └── dpkg.log
+│   ├── auth_service
+│   ├── business_extractor
+│   │   ├── alternatives.log
+│   │   ├── apt
+│   │   └── dpkg.log
+│   ├── business_parser
+│   ├── chatbot_service
+│   ├── context_service
+│   ├── conversation_manager
+│   ├── conversation_service
+│   ├── cust_context
+│   ├── cust_orchestrator
+│   ├── cust_reference
+│   ├── flow-executor
+│   ├── intent_parser
+│   ├── inventory_service
+│   ├── memory_service
+│   ├── notification_service
+│   ├── outbox_worker
+│   ├── postgres
+│   ├── ragcrud_service
+│   │   ├── alternatives.log
+│   │   ├── apt
+│   │   └── dpkg.log
+│   ├── ragindex_service
+│   ├── ragllm_service
+│   ├── redis
+│   ├── reporting_service
+│   ├── setup_orchestrator
+│   │   ├── alternatives.log
+│   │   ├── apt
+│   │   └── dpkg.log
+│   ├── tenant_orchestrator
+│   ├── tenant_parser
+│   │   ├── alternatives.log
+│   │   ├── apt
+│   │   └── dpkg.log
+│   └── transaction_service
+├── migrations
+│   ├── V001__initial_financial_schema.sql
+│   └── V001__initial_financial_schema_FIXED.sql
+├── missing-services.yml
+├── nginx-corrected.conf
+├── nginx-fixed.conf
+├── orchestrator_grpc_integrated.py
+├── package-lock.json
+├── package.json
+├── prisma
+│   └── migrations
+│       ├── 20251031173213_baseline
+│       ├── README.md
+│       └── migration_lock.toml
+├── protobuf_versions.lock
+├── protos
+│   ├── __init__.py
+│   ├── accounting_service.proto
+│   ├── app
+│   │   └── grpc_clients
+│   ├── auth
+│   │   ├── __init__.py
+│   │   ├── auth.proto
+│   │   ├── auth.proto.backup
+│   │   ├── auth_pb2.py
+│   │   └── auth_pb2_grpc.py
+│   ├── auth_service.proto
+│   ├── auth_service.proto.backup_20250905_175359
+│   ├── auth_service_pb2.py
+│   ├── auth_service_pb2_grpc.py
+│   ├── buf.gen.yaml
+│   ├── business_extractor.proto
+│   ├── business_extractor.proto.backup_20251008_015729
+│   ├── business_extractor.proto.backup_20251008_040302
+│   ├── business_extractor_pb2.py
+│   ├── business_extractor_pb2_grpc.py
+│   ├── business_parser.proto
+│   ├── chatbot_service.proto
+│   ├── chatbot_service_pb2.py
+│   ├── chatbot_service_pb2_grpc.py
+│   ├── complaint_service.proto.backup_20251007_224248
+│   ├── complaint_service_pb2.py.backup_20251007_224248
+│   ├── complaint_service_pb2_grpc.py.backup_20251007_224248
+│   ├── context_service.proto
+│   ├── context_service_pb2.py
+│   ├── context_service_pb2_grpc.py
+│   ├── conversation_manager.proto
+│   ├── conversation_manager.proto.backup-20251008-082714
+│   ├── conversation_manager.proto.backup.20251021_080708
+│   ├── conversation_manager.proto.backup_20251008_015729
+│   ├── conversation_manager_pb2.py
+│   ├── conversation_manager_pb2_grpc.py
+│   ├── conversation_service.proto
+│   ├── conversation_service_pb2.py
+│   ├── conversation_service_pb2_grpc.py
+│   ├── conversational_financial.proto
+│   ├── cust_context.proto
+│   ├── cust_context.proto.pre_enhancement
+│   ├── cust_context_backup9.proto
+│   ├── cust_context_backup9_pb2.py
+│   ├── cust_context_backup9_pb2_grpc.py
+│   ├── cust_context_pb2.py
+│   ├── cust_context_pb2_grpc.py
+│   ├── cust_orchestrator.proto
+│   ├── cust_orchestrator_pb2.py
+│   ├── cust_orchestrator_pb2_grpc.py
+│   ├── cust_reference.proto
+│   ├── cust_reference_pb2.py
+│   ├── cust_reference_pb2_grpc.py
+│   ├── flow
+│   │   ├── __init__.py
+│   │   ├── flow.proto
+│   │   ├── flow_pb2.py
+│   │   └── flow_pb2_grpc.py
+│   ├── go.mod
+│   ├── go.sum
+│   ├── google
+│   │   ├── __init__.py
+│   │   ├── health.proto
+│   │   ├── health_pb2.py
+│   │   └── health_pb2_grpc.py
+│   ├── hoop-registry.proto.backup_20251007_224248
+│   ├── hoop_registry_pb2.py.backup_20251007_224248
+│   ├── hoop_registry_pb2_grpc.py.backup_20251007_224248
+│   ├── intent_parser.proto
+│   ├── intent_parser.proto.backup-20251008-115524
+│   ├── intent_parser_pb2.py
+│   ├── intent_parser_pb2_grpc.py
+│   ├── inventory_service.proto
+│   ├── memory_service.proto
+│   ├── memory_service_pb2.py
+│   ├── memory_service_pb2_grpc.py
+│   ├── minimal.proto
+│   ├── minimal_pb2.py
+│   ├── minimal_pb2_grpc.py
+│   ├── notification
+│   │   ├── __init__.py
+│   │   ├── notification.proto
+│   │   ├── notification_pb2.py
+│   │   └── notification_pb2_grpc.py
+│   ├── order_service_pb2.py
+│   ├── order_service_pb2_grpc.py
+│   ├── outbox_worker.proto
+│   ├── payment
+│   │   ├── __init__.py
+│   │   ├── payment.proto
+│   │   ├── payment_pb2.py
+│   │   └── payment_pb2_grpc.py
+│   ├── payment_service_pb2.py
+│   ├── payment_service_pb2_grpc.py
+│   ├── rag
+│   │   ├── __init__.py
+│   │   ├── rag.proto
+│   │   ├── rag_pb2.py
+│   │   └── rag_pb2_grpc.py
+│   ├── ragcrud_service.proto
+│   ├── ragcrud_service_pb2.py
+│   ├── ragcrud_service_pb2_grpc.py
+│   ├── ragindex_service.proto
+│   ├── ragindex_service_pb2.py
+│   ├── ragindex_service_pb2_grpc.py
+│   ├── ragllm_service.proto
+│   ├── ragllm_service_pb2.py
+│   ├── ragllm_service_pb2_grpc.py
+│   ├── reporting_service.proto
+│   ├── rule_engine.proto
+│   ├── setup_orchestrator.proto
+│   ├── setup_orchestrator.proto.backup.20251021_080708
+│   ├── template
+│   │   ├── __init__.py
+│   │   ├── template.proto
+│   │   ├── template_pb2.py
+│   │   └── template_pb2_grpc.py
+│   ├── template-service-python-prisma.proto
+│   ├── template_service.proto
+│   ├── template_service_pb2.py
+│   ├── template_service_pb2_grpc.py
+│   ├── template_service_python_prisma_pb2.py
+│   ├── template_service_python_prisma_pb2_grpc.py
+│   ├── tenant_manager_pb2.py
+│   ├── tenant_manager_pb2_grpc.py
+│   ├── tenant_orchestrator.proto
+│   ├── tenant_parser.proto
+│   ├── tenant_parser_pb2.py
+│   ├── tenant_parser_pb2_grpc.py
+│   ├── test_context.proto
+│   ├── test_context_pb2.py
+│   ├── test_context_pb2_grpc.py
+│   ├── transaction_service.proto
+│   ├── transaction_service.proto.backup_20251029_141906
+│   ├── transaction_service.proto.backup_before_ascii_fix
+│   ├── visualhoop-compiler
+│   │   ├── visualhoop-compiler.pb.go
+│   │   └── visualhoop-compiler_grpc.pb.go
+│   ├── visualhoop-compiler.proto
+│   ├── visualhoop_compiler_pb2.py
+│   └── visualhoop_compiler_pb2_grpc.py
+├── pytest.ini
+├── scripts
+│   ├── add_kopi_rule.py
+│   ├── build.sh
+│   ├── build_for_staging.sh
+│   ├── check_conflict.sh
+│   ├── compile_flow.py
+│   ├── create-tenant.sh
+│   ├── deploy.sh
+│   ├── fix_prisma_client.py
+│   ├── generate_protos.sh
+│   ├── generate_protos_go.sh
+│   ├── generate_protos_py.sh
+│   ├── generate_protos_python.sh
+│   ├── generate_ragcrud_only.sh
+│   ├── generate_test_token.py
+│   ├── inject_faq_reuni.py
+│   ├── inject_onboarding_knowledge.py
+│   ├── migrate.sh
+│   ├── milky_api_gateway.py
+│   ├── milky_cli.py
+│   ├── milky_cli_api_gateway.py
+│   ├── patch_stub_imports.sh
+│   ├── replace_placeholder.sh
+│   ├── rollback
+│   │   ├── quick.sh
+│   │   ├── rollback.sh
+│   │   └── snapshot.sh
+│   └── start-dev.sh
+├── service_dependency_matrix.md
+├── src
+│   └── components
+├── structure.txt
+├── temp_replace.txt
+├── tests
+│   ├── Dockerfile
+│   ├── Dockerfile.enhance3.0
+│   ├── business_extractor
+│   │   └── test_extraction.py
+│   ├── check_memory_storage.py
+│   ├── conversation_manager
+│   │   └── test_state_machine.py
+│   ├── insert_faq_reuni_vanlith.py
+│   ├── integration-tests
+│   │   ├── test_auth_grpc_login.py
+│   │   ├── test_db_connection.py
+│   │   └── test_intent_parser.py
+│   ├── load-tests
+│   │   └── README.md
+│   ├── performance-tests
+│   │   └── README.md
+│   ├── setup_orchestrator
+│   │   └── test_orchestration.py
+│   ├── test_auth_login.py
+│   ├── test_integration_rag.py
+│   ├── test_memory_standalone.py
+│   ├── test_pipeline_rag.py
+│   ├── test_update_faq.py
+│   └── unit-tests
+├── update_all_requirements.sh
+├── validate_pre_build.sh
+└── working_code_extracted
+    ├── Dockerfile
+    ├── Dockerfile.enhance3.0
+    ├── __init__.py
+    ├── app
+    │   ├── __init__.py
+    │   ├── clients
+    │   ├── config.py
+    │   ├── cust_orchestrator_pb2.py
+    │   ├── cust_orchestrator_pb2_grpc.py
+    │   ├── cust_reference_pb2.py
+    │   ├── cust_reference_pb2_grpc.py
+    │   ├── grpc_server.py
+    │   ├── grpc_server.py.backup_20250919_172823
+    │   ├── grpc_server.py.backup_20250923_052346
+    │   ├── grpc_server.py.old_backup
+    │   ├── http_server.py
+    │   ├── main.py
+    │   ├── models
+    │   ├── orchestrator.py
+    │   ├── prisma_client.py
+    │   ├── protos
+    │   ├── ragllm_service_pb2.py
+    │   ├── ragllm_service_pb2_grpc.py
+    │   ├── routes
+    │   ├── services
+    │   ├── tenant_parser_pb2.py
+    │   └── tenant_parser_pb2_grpc.py
+    ├── poetry.lock
+    ├── pyproject.toml
+    ├── pyproject.toml.backup_20251003_063601
+    ├── requirements.txt
+    └── tests
+        ├── __init__.py
+        └── test_healthcheck.py
+
+203 directories, 457 files

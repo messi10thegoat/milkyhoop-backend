@@ -127,6 +127,16 @@ message CreateTransactionRequest {
   
   // Field 31: Additional notes (separate from raw_text)
   string keterangan = 37;         // User-facing notes (optional)
+
+  // Discount & PPN Fields (V005)
+  string discount_type = 38;            // 'percentage' or 'nominal'
+  double discount_value = 39;           // Raw value: 10 (%) or 5000 (Rp)
+  int64 discount_amount = 40;           // Calculated discount in cents
+  int64 subtotal_before_discount = 41;  // Sum of items before discount
+  int64 subtotal_after_discount = 42;   // After discount applied
+  bool include_vat = 43;                // Whether PPN 11% is applied
+  int64 vat_amount = 44;                // Calculated VAT amount
+  int64 grand_total = 45;               // Final total after discount & PPN
 }
 
 message UpdateTransactionRequest {

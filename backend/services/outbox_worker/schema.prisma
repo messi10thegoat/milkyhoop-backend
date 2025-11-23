@@ -1,0 +1,645 @@
+generator client {
+  provider      = "prisma-client-py"
+  interface     = "asyncio"
+  output        = "./app/prisma_client"
+  engine_type   = "binary"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+model User {
+  id                String              @id @default(uuid())
+  email             String              @unique
+  tenantId          String?
+  tenant            Tenant?             @relation(fields: [tenantId], references: [id])
+  username          String?             @unique
+  name              String?
+  fullname          String?
+  nickname          String?
+  avatarUrl         String?
+  coverPhotoUrl     String?
+  bio               String?
+  emailVerified     DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  isVerified        Boolean             @default(false)
+  role              Role                @default(FREE)
+  lastInteraction   DateTime            @default(now())
+  passwordHash      String?
+  oauthProvider     String?
+  oauthId           String?
+  accounts          Account[]
+  sessions          Session[]
+  profile           UserProfile?
+  security          UserSecurity?
+  business          UserBusiness[]
+  locations         UserLocations[]
+  finance           UserFinance[]
+  subscriptions     UserSubscriptions[]
+  aiSettings        UserAISettings[]
+  media             UserMedia[]
+  auditLogs         AuditLog[]
+  transaksiCreated  TransaksiHarian[]   @relation("TransaksiCreator")
+  transaksiApproved TransaksiHarian[]   @relation("TransaksiApprover")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  access_token      String?
+  expires_at        Int?
+  id_token          String?
+  refresh_token     String?
+  scope             String?
+  session_state     String?
+  token_type        String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSecurity {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  passwordHash     String?
+  twoFactorEnabled Boolean @default(false)
+  oauthId          String?
+  oauthProvider    String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserProfile {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  bio              String?
+  phoneNumber      String?
+  tagline          String?
+  publicUrlSlug    String? @unique
+  digitalSignature String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model messages {
+  id         Int       @id @default(autoincrement())
+  user_id    String    @db.VarChar(255)
+  message    String
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model UserBusiness {
+  businessId       String  @id @default(uuid())
+  userId           String
+  businessName     String
+  businessCategory String
+  businessLicense  String
+  taxId            String
+  businessWebsite  String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserLocations {
+  locationId    String  @id @default(uuid())
+  userId        String
+  latitude      Float
+  longitude     Float
+  addressDetail String
+  isPrimary     Boolean @default(false)
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserFinance {
+  financeId      String @id @default(uuid())
+  userId         String
+  balance        Float  @default(0.0)
+  currency       String
+  paymentMethods Json
+  loyaltyPoints  Int    @default(0)
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSubscriptions {
+  subscriptionId    String   @id @default(uuid())
+  userId            String
+  planId            String
+  tokenUsage        Int      @default(0)
+  tokenLimit        Int
+  tokenResetAt      DateTime
+  subscriptionStart DateTime
+  subscriptionEnd   DateTime
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan              Plans    @relation(fields: [planId], references: [planId], onDelete: Cascade)
+}
+
+model Plans {
+  planId        String              @id @default(uuid())
+  planName      String
+  subscriptions UserSubscriptions[]
+}
+
+model UserAISettings {
+  aiSettingsId         String  @id @default(uuid())
+  userId               String
+  botSlug              String  @unique
+  ragEnabled           Boolean @default(false)
+  aiPersonalityProfile Json
+  user                 User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserMedia {
+  mediaId    String    @id @default(uuid())
+  userId     String
+  mediaType  MediaType
+  mediaUrl   String
+  uploadDate DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Tenant {
+  id              String            @id @default(uuid())
+  alias           String            @unique
+  display_name    String
+  menu_items      Json
+  address         String?
+  status          String            @default("ACTIVE")
+  created_at      DateTime          @default(now())
+  updated_at      DateTime          @updatedAt
+  users           User[]
+  transaksiHarian TransaksiHarian[]
+  taxInfo         TaxInfo[]
+  persediaan      Persediaan[]
+  baganAkun       BaganAkun[]
+  jurnalEntries   JurnalEntry[]
+}
+
+model Order {
+  id            String   @id @default(uuid())
+  customer_name String
+  items         String
+  total_price   Float
+  status        String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+}
+
+model Memory {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RagDocument {
+  id         Int      @id @default(autoincrement())
+  tenantId   String
+  title      String
+  content    String
+  source     String?
+  tags       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  embeddings Json?    @default("[]")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  eventType    String
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json?
+  success      Boolean  @default(true)
+  errorMessage String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// TRANSAKSI HARIAN (EXTENDED FOR SAK EMKM)
+// ============================================
+model TransaksiHarian {
+  id             String @id @default(uuid())
+  tenantId       String @map("tenant_id")
+  createdBy      String @map("created_by")
+  actorRole      String @map("actor_role") @db.VarChar(50)
+  timestamp      BigInt
+  jenisTransaksi String @map("jenis_transaksi") @db.VarChar(50)
+
+  // Legacy payload (backward compatibility - will be deprecated)
+  payload Json
+
+  rawText         String?  @map("raw_text")
+  rawNlu          Bytes?   @map("raw_nlu")
+  metadata        Json?
+  receiptUrl      String?  @map("receipt_url")
+  receiptChecksum String?  @map("receipt_checksum") @db.VarChar(64)
+  idempotencyKey  String?  @unique @map("idempotency_key") @db.VarChar(255)
+  status          String   @default("draft") @db.VarChar(50)
+  approvedBy      String?  @map("approved_by")
+  approvedAt      BigInt?  @map("approved_at")
+  rekeningId      String?  @map("rekening_id") @db.VarChar(100)
+  rekeningType    String?  @map("rekening_type") @db.VarChar(50)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // ============================================
+  // SAK EMKM COMPLIANCE FIELDS (NEW - 23 fields)
+  // ============================================
+
+  // Field 6: Total nominal
+  totalNominal BigInt? @map("total_nominal")
+
+  // Fields 7-11: Payment & Cash Flow
+  metodePembayaran  String? @map("metode_pembayaran") @db.VarChar(50)
+  statusPembayaran  String? @map("status_pembayaran") @db.VarChar(50)
+  nominalDibayar    BigInt? @map("nominal_dibayar")
+  sisaPiutangHutang BigInt? @map("sisa_piutang_hutang")
+  jatuhTempo        BigInt? @map("jatuh_tempo")
+
+  // Fields 12-14: Pihak Terkait
+  namaPihak   String? @map("nama_pihak") @db.VarChar(255)
+  kontakPihak String? @map("kontak_pihak") @db.VarChar(100)
+  pihakType   String? @map("pihak_type") @db.VarChar(50)
+
+  // Field 20: Lokasi Gudang (top-level)
+  lokasiGudang String? @map("lokasi_gudang") @db.VarChar(255)
+
+  // Fields 21-26: SAK EMKM Classification
+  jenisAset       String? @map("jenis_aset") @db.VarChar(50)
+  kategoriBeban   String? @map("kategori_beban") @db.VarChar(50)
+  kategoriArusKas String? @map("kategori_arus_kas") @db.VarChar(50)
+  isPrive         Boolean @default(false) @map("is_prive")
+  isModal         Boolean @default(false) @map("is_modal")
+  pajakAmount     BigInt? @map("pajak_amount")
+
+  // Field 27: Chart of Accounts
+  akunPerkiraanId String? @map("akun_perkiraan_id") @db.VarChar(100)
+
+  // Fields 28-29: Depreciation
+  penyusutanPerTahun BigInt? @map("penyusutan_per_tahun")
+  umurManfaat        Int?    @map("umur_manfaat")
+
+  // Field 30: Accounting Period
+  periodePelaporan String? @map("periode_pelaporan") @db.VarChar(7)
+
+  // Field 31: Additional notes
+  keterangan String? @map("keterangan") @db.Text
+
+  // Relations
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator         User             @relation("TransaksiCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  approver        User?            @relation("TransaksiApprover", fields: [approvedBy], references: [id], onDelete: Restrict)
+  outbox          Outbox[]
+  items           ItemTransaksi[] // NEW: Line items relation
+  hpp             HppBreakdown? // NEW: HPP breakdown relation
+  inventoryImpact InventoryImpact? // NEW: Inventory impact relation
+  jurnalEntries   JurnalEntry[]
+
+  @@index([tenantId])
+  @@index([timestamp])
+  @@index([jenisTransaksi])
+  @@index([status])
+  @@index([tenantId, status])
+  @@index([tenantId, timestamp(sort: Desc)])
+  @@index([createdBy])
+  @@index([idempotencyKey])
+  @@index([tenantId, periodePelaporan])
+  @@index([tenantId, kategoriArusKas])
+  @@index([namaPihak])
+  @@map("transaksi_harian")
+}
+
+// ============================================
+// ITEM TRANSAKSI (NEW - Field 17)
+// ============================================
+model ItemTransaksi {
+  id          String @id @default(uuid())
+  transaksiId String @map("transaksi_id")
+
+  // Product description
+  namaProduk String @map("nama_produk") @db.Text
+
+  // AI auto-assigned category hierarchy
+  kategoriPath String? @map("kategori_path") @db.VarChar(500)
+  level1       String? @map("level1") @db.VarChar(100)
+  level2       String? @map("level2") @db.VarChar(100)
+  level3       String? @map("level3") @db.VarChar(100)
+  level4       String? @map("level4") @db.VarChar(100)
+
+  // Quantity & pricing
+  jumlah      Float  @map("jumlah")
+  satuan      String @map("satuan") @db.VarChar(50)
+  hargaSatuan BigInt @map("harga_satuan")
+  subtotal    BigInt @map("subtotal")
+
+  // Optional references
+  produkId   String? @map("produk_id") @db.VarChar(100)
+  keterangan String? @map("keterangan") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  transaksi TransaksiHarian @relation(fields: [transaksiId], references: [id], onDelete: Cascade)
+
+  @@index([transaksiId])
+  @@index([level1])
+  @@index([level2])
+  @@index([produkId])
+  @@map("item_transaksi")
+}
+
+// ============================================
+// HPP BREAKDOWN (NEW - Field 18)
+// ============================================
+model HppBreakdown {
+  id          String @id @default(uuid())
+  transaksiId String @unique @map("transaksi_id")
+
+  // Cost components (in cents)
+  biayaBahanBaku   BigInt? @map("biaya_bahan_baku")
+  biayaTenagaKerja BigInt? @map("biaya_tenaga_kerja")
+  biayaLainnya     BigInt? @map("biaya_lainnya")
+  totalHpp         BigInt  @map("total_hpp")
+
+  // Detailed breakdown (JSON)
+  detailJson String? @map("detail_json") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  transaksi TransaksiHarian @relation(fields: [transaksiId], references: [id], onDelete: Cascade)
+
+  @@index([transaksiId])
+  @@map("hpp_breakdown")
+}
+
+// ============================================
+// INVENTORY IMPACT (NEW - Fields 19-20)
+// ============================================
+model InventoryImpact {
+  id          String @id @default(uuid())
+  transaksiId String @unique @map("transaksi_id")
+
+  // Impact settings
+  isTracked     Boolean @map("is_tracked")
+  jenisMovement String? @map("jenis_movement") @db.VarChar(50)
+  lokasiGudang  String? @map("lokasi_gudang") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  transaksi      TransaksiHarian @relation(fields: [transaksiId], references: [id], onDelete: Cascade)
+  itemsInventory ItemInventory[]
+
+  @@index([transaksiId])
+  @@index([jenisMovement])
+  @@map("inventory_impact")
+}
+
+// ============================================
+// ITEM INVENTORY (NEW - Sub-field of InventoryImpact)
+// ============================================
+model ItemInventory {
+  id                String @id @default(uuid())
+  inventoryImpactId String @map("inventory_impact_id")
+
+  produkId       String @map("produk_id") @db.VarChar(100)
+  jumlahMovement Float  @map("jumlah_movement")
+  stokSetelah    Float  @map("stok_setelah")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  inventoryImpact InventoryImpact @relation(fields: [inventoryImpactId], references: [id], onDelete: Cascade)
+
+  @@index([inventoryImpactId])
+  @@index([produkId])
+  @@map("item_inventory")
+}
+
+// ============================================
+// PERSEDIAAN - CURRENT STOCK LEDGER (SAK EMKM)
+// ============================================
+model Persediaan {
+  id           String @id @default(uuid())
+  tenantId     String @map("tenant_id")
+  produkId     String @map("produk_id") @db.VarChar(100)
+  lokasiGudang String @map("lokasi_gudang") @db.VarChar(255)
+
+  // Current stock balance
+  jumlah Float   @default(0)
+  satuan String? @db.VarChar(50)
+
+  // Inventory valuation (SAK EMKM - harga perolehan)
+  nilaiPerUnit Float? @map("nilai_per_unit")
+  totalNilai   Float? @map("total_nilai")
+
+  // Stock management
+  lastMovementAt DateTime? @map("last_movement_at")
+  minimumStock   Float?    @map("minimum_stock")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, produkId, lokasiGudang])
+  @@index([tenantId])
+  @@index([produkId])
+  @@index([jumlah])
+  @@index([tenantId, lokasiGudang])
+  @@map("persediaan")
+}
+
+model Outbox {
+  id           String    @id @default(uuid())
+  transaksiId  String    @map("transaksi_id")
+  eventType    String    @map("event_type") @db.VarChar(100)
+  payload      Json
+  processed    Boolean   @default(false)
+  processedAt  DateTime? @map("processed_at")
+  retryCount   Int       @default(0) @map("retry_count")
+  errorMessage String?   @map("error_message")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  transaksi TransaksiHarian @relation(fields: [transaksiId], references: [id], onDelete: Cascade)
+
+  @@index([processed, createdAt])
+  @@index([transaksiId])
+  @@index([eventType])
+  @@map("outbox")
+}
+
+model TaxInfo {
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  periode            String   @db.VarChar(7)
+  omzetBulanIni      BigInt   @default(0) @map("omzet_bulan_ini")
+  omzetTahunBerjalan BigInt   @default(0) @map("omzet_tahun_berjalan")
+  exceeds500juta     Boolean  @default(false) @map("exceeds_500juta")
+  exceeds4_8milyar   Boolean  @default(false) @map("exceeds_4_8milyar")
+  pphFinalTerutang   BigInt   @default(0) @map("pph_final_terutang")
+  pphFinalTerbayar   BigInt   @default(0) @map("pph_final_terbayar")
+  isPkp              Boolean  @default(false) @map("is_pkp")
+  statusWp           String?  @map("status_wp") @db.VarChar(50)
+  tahunTerdaftar     Int?     @map("tahun_terdaftar")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, periode])
+  @@index([tenantId])
+  @@index([periode])
+  @@index([tenantId, exceeds500juta, exceeds4_8milyar])
+  @@map("tax_info")
+}
+
+// ============================================
+// BAGAN AKUN - CHART OF ACCOUNTS (SAK EMKM)
+// ============================================
+model BaganAkun {
+  id       String @id @default(uuid())
+  tenantId String @map("tenant_id")
+
+  // Account identification
+  kodeAkun String @map("kode_akun") @db.VarChar(50)
+  namaAkun String @map("nama_akun") @db.VarChar(255)
+
+  // Account classification (SAK EMKM)
+  kategori    String  @db.VarChar(50) // 'aset', 'liabilitas', 'ekuitas', 'pendapatan', 'beban'
+  subKategori String? @map("sub_kategori") @db.VarChar(100)
+
+  // Account behavior
+  normalBalance String  @map("normal_balance") @db.VarChar(10) // 'debit' or 'kredit'
+  isActive      Boolean @default(true) @map("is_active")
+
+  // Optional parent for hierarchical CoA
+  parentId String? @map("parent_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parent        BaganAkun?     @relation("AkunHierarchy", fields: [parentId], references: [id])
+  children      BaganAkun[]    @relation("AkunHierarchy")
+  jurnalDetails JurnalDetail[]
+
+  @@unique([tenantId, kodeAkun])
+  @@index([tenantId])
+  @@index([kategori])
+  @@index([tenantId, isActive])
+  @@map("bagan_akun")
+}
+
+// ============================================
+// JURNAL ENTRY - JOURNAL HEADER (SAK EMKM)
+// ============================================
+model JurnalEntry {
+  id          String  @id @default(uuid())
+  tenantId    String  @map("tenant_id")
+  transaksiId String? @map("transaksi_id") // Link to TransaksiHarian (optional for manual entries)
+
+  // Entry metadata
+  nomorJurnal   String  @map("nomor_jurnal") @db.VarChar(50)
+  tanggalJurnal BigInt  @map("tanggal_jurnal") // Unix timestamp
+  keterangan    String? @db.Text
+
+  // Double-entry validation
+  totalDebit  BigInt @map("total_debit")
+  totalKredit BigInt @map("total_kredit")
+
+  // Entry status
+  status   String    @default("draft") @db.VarChar(50) // 'draft', 'posted', 'reversed'
+  postedBy String?   @map("posted_by")
+  postedAt DateTime? @map("posted_at")
+
+  // Period
+  periodePelaporan String? @map("periode_pelaporan") @db.VarChar(7)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transaksi TransaksiHarian? @relation(fields: [transaksiId], references: [id], onDelete: SetNull)
+  details   JurnalDetail[]
+
+  @@unique([tenantId, nomorJurnal])
+  @@index([tenantId])
+  @@index([transaksiId])
+  @@index([tanggalJurnal])
+  @@index([tenantId, periodePelaporan])
+  @@index([status])
+  @@map("jurnal_entry")
+}
+
+// ============================================
+// JURNAL DETAIL - JOURNAL LINES (SAK EMKM)
+// ============================================
+model JurnalDetail {
+  id            String @id @default(uuid())
+  jurnalEntryId String @map("jurnal_entry_id")
+  akunId        String @map("akun_id")
+
+  // Debit or Credit
+  debit  BigInt @default(0)
+  kredit BigInt @default(0)
+
+  // Optional description
+  keterangan String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  jurnalEntry JurnalEntry @relation(fields: [jurnalEntryId], references: [id], onDelete: Cascade)
+  akun        BaganAkun   @relation(fields: [akunId], references: [id], onDelete: Restrict)
+
+  @@index([jurnalEntryId])
+  @@index([akunId])
+  @@map("jurnal_detail")
+}
+
+enum Role {
+  FREE
+  BUSINESS
+  PRO
+  CORPORATE
+  ADMIN
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}

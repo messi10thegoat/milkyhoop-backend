@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package rule_engine;
+
+service RuleEngine {
+  rpc EvaluateRule(RuleRequest) returns (RuleResponse);
+  rpc GetTenantRules(TenantRulesRequest) returns (TenantRulesResponse);
+  rpc UpdateTenantRules(UpdateRulesRequest) returns (UpdateRulesResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message RuleRequest {
+  string tenant_id = 1;
+  string rule_context = 2; // JSON string with context data
+  string rule_type = 3; // "product_mapping", "tax_calculation", "hpp_formula", etc.
+  string trace_id = 4; // For distributed tracing
+}
+
+message RuleResponse {
+  bool rule_matched = 1;
+  string rule_id = 2;
+  string action_json = 3; // JSON string with action data
+  float confidence = 4; // 1.0 for rule match, 0.0 for no match
+  string fallback_reason = 5;
+}
+
+message TenantRulesRequest {
+  string tenant_id = 1;
+  string rule_type = 2; // optional filter
+}
+
+message TenantRulesResponse {
+  repeated RuleDefinition rules = 1;
+}
+
+message RuleDefinition {
+  string rule_id = 1;
+  string rule_yaml = 2;
+  string rule_type = 3;
+  int32 priority = 4;
+  bool is_active = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+}
+
+message UpdateRulesRequest {
+  string tenant_id = 1;
+  string rule_yaml = 2;
+  string rule_type = 3;
+  int32 priority = 4;
+}
+
+message UpdateRulesResponse {
+  bool success = 1;
+  string message = 2;
+  string rule_id = 3;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+  string service_name = 2;
+}

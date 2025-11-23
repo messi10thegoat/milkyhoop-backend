@@ -1,0 +1,19 @@
+=== BCA ROUTING PATTERNS ===
+
+1. Routes:
+path:"/"
+path:"/bca"
+path:"/bca/chat"
+path:"/chat"
+
+2. BCA references:
+/api/tenant/bca/chat
+/bca
+/bca/chat
+Chat with bca...
+bca
+milkyhoop.com/bca
+
+3. API calls:
+fetch("/api/chat/"
+fetch("/api/tenant/bca/chat"

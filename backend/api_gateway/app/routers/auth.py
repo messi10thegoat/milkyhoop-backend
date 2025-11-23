@@ -267,6 +267,10 @@ async def auth_health_check():
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+    logout_all_devices: bool = False
+
 class SessionResponse(BaseModel):
     session_id: str
     device: Optional[str] = "Unknown"
@@ -430,4 +434,142 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Revoke session error: {str(e)}"
+        )
+
+@router.post("/logout", response_model=AuthResponse)
+async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
+    """
+    Logout user - revoke refresh token(s)
+    
+    Query Parameters:
+        - user_id: User ID (from JWT token in production)
+        
+    Request Body:
+        - refresh_token: Specific token to revoke (optional)
+        - logout_all_devices: If true, logout from all devices
+        
+    Response:
+        - success: Boolean
+        - message: Success message
+        - revoked_tokens: Number of tokens revoked
+    """
+    try:
+        logger.info(f"Logout request for user: {user_id}")
+        
+        # Call auth service
+        result = await auth_client.logout(
+            user_id=user_id,
+            refresh_token=data.refresh_token,
+            logout_all_devices=data.logout_all_devices
+        )
+        
+        if result.get("success"):
+            logger.info(f"User {user_id} logged out successfully")
+            
+            # Log logout event
+            await log_auth_event(
+                event_type=AuditEventType.LOGOUT,
+                user_id=user_id,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+                success=True,
+                metadata={
+                    "logout_all_devices": data.logout_all_devices,
+                    "revoked_tokens": result.get("revoked_tokens", 0)
+                }
+            )
+            
+            return AuthResponse(
+                success=True,
+                message=result.get("message", "Logged out successfully"),
+                data={
+                    "revoked_tokens": result.get("revoked_tokens", 0)
+                }
+            )
+        else:
+            error_msg = result.get("error", "Logout failed")
+            logger.warning(f"Logout failed: {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in logout endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Logout error: {str(e)}"
+        )
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+    logout_all_devices: bool = False
+
+@router.post("/logout", response_model=AuthResponse)
+async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
+    """
+    Logout user - revoke refresh token(s)
+    
+    Query Parameters:
+        - user_id: User ID (from JWT token in production)
+        
+    Request Body:
+        - refresh_token: Specific token to revoke (optional)
+        - logout_all_devices: If true, logout from all devices
+        
+    Response:
+        - success: Boolean
+        - message: Success message
+        - revoked_tokens: Number of tokens revoked
+    """
+    try:
+        logger.info(f"Logout request for user: {user_id}")
+        
+        # Call auth service
+        result = await auth_client.logout(
+            user_id=user_id,
+            refresh_token=data.refresh_token,
+            logout_all_devices=data.logout_all_devices
+        )
+        
+        if result.get("success"):
+            logger.info(f"User {user_id} logged out successfully")
+            
+            # Log logout event
+            await log_auth_event(
+                event_type=AuditEventType.LOGOUT,
+                user_id=user_id,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+                success=True,
+                metadata={
+                    "logout_all_devices": data.logout_all_devices,
+                    "revoked_tokens": result.get("revoked_tokens", 0)
+                }
+            )
+            
+            return AuthResponse(
+                success=True,
+                message=result.get("message", "Logged out successfully"),
+                data={
+                    "revoked_tokens": result.get("revoked_tokens", 0)
+                }
+            )
+        else:
+            error_msg = result.get("error", "Logout failed")
+            logger.warning(f"Logout failed: {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in logout endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Logout error: {str(e)}"
         )

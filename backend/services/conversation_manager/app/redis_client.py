@@ -181,10 +181,10 @@ class ConversationRedisClient:
     async def get_session_ttl(self, session_id: str) -> int:
         """
         Get remaining TTL for session
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             Remaining seconds or -1 if not found
         """
@@ -192,7 +192,104 @@ class ConversationRedisClient:
             key = self._session_key(session_id)
             ttl = await self.client.ttl(key)
             return ttl
-            
+
         except Exception as e:
             logger.error(f"Error getting TTL for {session_id}: {e}")
             return -1
+
+    # ============================================
+    # DRAFT TRANSACTION METHODS (Phase 1.5)
+    # ============================================
+
+    def _draft_key(self, tenant_id: str, session_id: str) -> str:
+        """Generate Redis key for draft transaction"""
+        return f"draft:{tenant_id}:{session_id}"
+
+    async def save_draft(
+        self,
+        tenant_id: str,
+        session_id: str,
+        draft_data: Dict[str, Any],
+        ttl: int = 1800  # 30 minutes
+    ) -> bool:
+        """
+        Save draft transaction state to Redis
+
+        Args:
+            tenant_id: Tenant identifier
+            session_id: Session/conversation identifier
+            draft_data: Draft transaction data
+            ttl: Time to live in seconds (default: 30 min)
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = self._draft_key(tenant_id, session_id)
+
+            # Add timestamp metadata
+            draft_data['updated_at'] = datetime.utcnow().isoformat()
+            if 'created_at' not in draft_data:
+                draft_data['created_at'] = draft_data['updated_at']
+
+            # Store with TTL
+            await self.client.setex(
+                key,
+                ttl,
+                json.dumps(draft_data)
+            )
+
+            logger.info(f"✅ Saved draft for tenant={tenant_id}, session={session_id}, TTL={ttl}s")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error saving draft for {tenant_id}/{session_id}: {e}")
+            return False
+
+    async def get_draft(self, tenant_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve draft transaction from Redis
+
+        Args:
+            tenant_id: Tenant identifier
+            session_id: Session/conversation identifier
+
+        Returns:
+            Draft data dict or None if not found
+        """
+        try:
+            key = self._draft_key(tenant_id, session_id)
+            data = await self.client.get(key)
+
+            if data:
+                draft = json.loads(data)
+                logger.info(f"📥 Retrieved draft for tenant={tenant_id}, session={session_id}")
+                return draft
+            else:
+                logger.debug(f"No draft found for {tenant_id}/{session_id}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error getting draft for {tenant_id}/{session_id}: {e}")
+            return None
+
+    async def delete_draft(self, tenant_id: str, session_id: str) -> bool:
+        """
+        Delete draft transaction from Redis
+
+        Args:
+            tenant_id: Tenant identifier
+            session_id: Session/conversation identifier
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = self._draft_key(tenant_id, session_id)
+            await self.client.delete(key)
+            logger.info(f"🗑️ Deleted draft for tenant={tenant_id}, session={session_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error deleting draft for {tenant_id}/{session_id}: {e}")
+            return False

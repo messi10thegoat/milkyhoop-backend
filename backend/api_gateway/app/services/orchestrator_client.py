@@ -50,8 +50,16 @@ class OrchestratorClient:
         
         for attempt in range(self.max_retries + 1):
             try:
-                # Create gRPC channel
-                channel = grpc.aio.insecure_channel(self.endpoint)
+                # Create gRPC channel with keepalive configuration
+                options = [
+                    ('grpc.keepalive_time_ms', 30000),
+                    ('grpc.keepalive_timeout_ms', 10000),
+                    ('grpc.keepalive_permit_without_calls', 1),
+                    ('grpc.http2.max_pings_without_data', 0),
+                    ('grpc.http2.min_time_between_pings_ms', 30000),
+                    ('grpc.http2.min_ping_interval_without_data_ms', 30000),
+                ]
+                channel = grpc.aio.insecure_channel(self.endpoint, options=options)
                 
                 try:
                     # Create gRPC stub
@@ -126,8 +134,16 @@ class OrchestratorClient:
             sys.path.append('/app/backend/api_gateway/libs')
             from milkyhoop_protos.cust_orchestrator_pb2_grpc import CustOrchestratorServiceStub
             from google.protobuf.empty_pb2 import Empty
-            
-            channel = grpc.aio.insecure_channel(self.endpoint)
+
+            options = [
+                ('grpc.keepalive_time_ms', 30000),
+                ('grpc.keepalive_timeout_ms', 10000),
+                ('grpc.keepalive_permit_without_calls', 1),
+                ('grpc.http2.max_pings_without_data', 0),
+                ('grpc.http2.min_time_between_pings_ms', 30000),
+                ('grpc.http2.min_ping_interval_without_data_ms', 30000),
+            ]
+            channel = grpc.aio.insecure_channel(self.endpoint, options=options)
             
             try:
                 stub = CustOrchestratorServiceStub(channel)
@@ -158,8 +174,16 @@ class OrchestratorClient:
             sys.path.append('/app/backend/api_gateway/libs')
             from milkyhoop_protos.cust_orchestrator_pb2_grpc import CustOrchestratorServiceStub
             from google.protobuf.empty_pb2 import Empty
-            
-            channel = grpc.aio.insecure_channel(self.endpoint)
+
+            options = [
+                ('grpc.keepalive_time_ms', 30000),
+                ('grpc.keepalive_timeout_ms', 10000),
+                ('grpc.keepalive_permit_without_calls', 1),
+                ('grpc.http2.max_pings_without_data', 0),
+                ('grpc.http2.min_time_between_pings_ms', 30000),
+                ('grpc.http2.min_ping_interval_without_data_ms', 30000),
+            ]
+            channel = grpc.aio.insecure_channel(self.endpoint, options=options)
             
             try:
                 stub = CustOrchestratorServiceStub(channel)

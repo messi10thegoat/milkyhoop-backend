@@ -34,19 +34,35 @@ class LabaRugiHandler:
         )
         pendapatan_penjualan = sum(tx.totalNominal or 0 for tx in pendapatan_penjualan_list)
         
-        # HPP (Cost of Goods Sold)
-        hpp_records = await prisma.hppbreakdown.find_many(
-            where={'transaksi': {'tenantId': where['tenantId'], 'status': 'approved'}}
+        logger.info(f"💰 Found {len(pendapatan_penjualan_list)} penjualan transactions")
+        logger.info(f"💰 Total pendapatan: Rp{pendapatan_penjualan:,}")
+        for tx in pendapatan_penjualan_list:
+            logger.info(f"   ├─ {tx.id}: Rp{tx.totalNominal:,} at {tx.timestamp}")
+        
+        # HPP (Cost of Goods Sold) - dari transaksi PEMBELIAN
+        pembelian_list = await rls_client.transaksiharian.find_many(
+            where={**where, 'jenisTransaksi': 'pembelian'}
         )
-        hpp_bahan_baku = sum(h.biayaBahanBaku or 0 for h in hpp_records)
-        hpp_tenaga_kerja = sum(h.biayaTenagaKerja or 0 for h in hpp_records)
-        hpp_overhead = sum(h.biayaLainnya or 0 for h in hpp_records)
-        total_hpp = sum(h.totalHpp or 0 for h in hpp_records)
+        total_hpp = sum(tx.totalNominal or 0 for tx in pembelian_list)
+        
+        logger.info(f"📦 Found {len(pembelian_list)} pembelian transactions")
+        logger.info(f"📦 Total HPP: Rp{total_hpp:,}")
+        for tx in pembelian_list:
+            logger.info(f"   ├─ {tx.id}: Rp{tx.totalNominal:,} at {tx.timestamp}")
+        
+        # Breakdown HPP (optional - set to 0 if no hppbreakdown data)
+        hpp_bahan_baku = 0
+        hpp_tenaga_kerja = 0
+        hpp_overhead = 0
         
         # BEBAN (Expenses)
         beban_list = await rls_client.transaksiharian.find_many(
             where={**where, 'jenisTransaksi': 'beban'}
         )
+        
+        logger.info(f"💸 Found {len(beban_list)} beban transactions")
+        for tx in beban_list:
+            logger.info(f"   ├─ {tx.id}: Rp{tx.totalNominal:,} ({tx.kategoriBeban}) at {tx.timestamp}")
         
         beban_gaji = sum(tx.totalNominal or 0 for tx in beban_list if tx.kategoriBeban == 'beban_gaji')
         beban_sewa = sum(tx.totalNominal or 0 for tx in beban_list if tx.kategoriBeban == 'beban_sewa')
@@ -76,7 +92,14 @@ class LabaRugiHandler:
         margin_laba_kotor = (laba_kotor / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
         margin_laba_bersih = (laba_bersih / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
         
-        jumlah_transaksi = len(pendapatan_penjualan_list) + len(beban_list)
+        jumlah_transaksi = len(pendapatan_penjualan_list) + len(pembelian_list) + len(beban_list)
+        
+        logger.info(f"📊 CALCULATION SUMMARY:")
+        logger.info(f"   ├─ Total Pendapatan: Rp{total_pendapatan:,}")
+        logger.info(f"   ├─ Total HPP: Rp{total_hpp:,}")
+        logger.info(f"   ├─ Total Beban: Rp{total_beban_operasional:,}")
+        logger.info(f"   ├─ Laba Bersih: Rp{laba_bersih:,}")
+        logger.info(f"   └─ Jumlah Transaksi: {jumlah_transaksi}")
         
         # ============================================
         # MONTH-OVER-MONTH COMPARISON (Phase 2)
@@ -85,13 +108,29 @@ class LabaRugiHandler:
         try:
             # Calculate last month period
             from datetime import datetime, timedelta
-            if where.get('periodePelaporan'):
-                current_period = datetime.strptime(where['periodePelaporan'], '%Y-%m')
+            # Extract periode from where clause or request
+            periode_str = where.get('periodePelaporan')
+            if not periode_str and where.get('timestamp'):
+                # Derive periode from timestamp if not explicitly provided
+                ts = where['timestamp'].get('gte', 0)
+                periode_str = datetime.fromtimestamp(ts/1000).strftime('%Y-%m')
+            
+            if periode_str:
+                current_period = datetime.strptime(periode_str, '%Y-%m')
                 last_month = current_period - timedelta(days=current_period.day)
                 last_month_periode = last_month.strftime('%Y-%m')
                 
-                # Query last month data
-                last_month_where = {**where, 'periodePelaporan': last_month_periode}
+                # Query last month data using timestamp range
+                from queries.financial_queries import parse_periode_pelaporan
+                last_month_range = parse_periode_pelaporan(last_month_periode)
+                last_month_where = {
+                    'tenantId': where['tenantId'],
+                    'status': 'approved',
+                    'timestamp': {
+                        'gte': last_month_range['start'],
+                        'lte': last_month_range['end']
+                    }
+                }
                 
                 last_month_pendapatan_list = await rls_client.transaksiharian.find_many(
                     where={**last_month_where, 'jenisTransaksi': 'penjualan'}

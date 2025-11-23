@@ -10,18 +10,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def format_rupiah(amount_in_cents: int) -> str:
+def format_rupiah(amount: int) -> str:
     """
     Format rupiah to Indonesian Rupiah (PUEBI + SAK EMKM compliant)
     
     Args:
-        amount_in_cents: Amount in cents
+        amount: Amount in full Rupiah (NOT cents)
         
     Returns:
-        Formatted string: "Rp300.000" (titik sebagai pemisah ribuan)
+        Formatted string: "Rp70.000.000" (titik sebagai pemisah ribuan)
     """
-    rupiah = amount_in_cents // 100
-    formatted = f"{rupiah:,}".replace(",", ".")
+    formatted = f"{amount:,}".replace(",", ".")
     return f"Rp{formatted}"
 
 

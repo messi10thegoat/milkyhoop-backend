@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package outbox_worker;
+
+// ============================================================================
+// OUTBOX WORKER SERVICE
+// Background service for processing outbox events asynchronously
+// Polls outbox table and processes inventory + accounting updates
+// ============================================================================
+
+service OutboxWorker {
+  // Health check for monitoring
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  
+  // Manual trigger for processing (optional, for testing/admin)
+  rpc ProcessOutbox(ProcessOutboxRequest) returns (ProcessOutboxResponse);
+  
+  // Get worker status and metrics
+  rpc GetWorkerStatus(WorkerStatusRequest) returns (WorkerStatusResponse);
+}
+
+// ============================================================================
+// HEALTH CHECK
+// ============================================================================
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;           // "healthy" or "unhealthy"
+  string service_name = 2;     // "OutboxWorker"
+  int64 timestamp = 3;         // Unix timestamp
+  WorkerMetrics metrics = 4;   // Current worker metrics
+}
+
+// ============================================================================
+// PROCESS OUTBOX (Manual Trigger)
+// ============================================================================
+
+message ProcessOutboxRequest {
+  int32 batch_size = 1;        // Number of events to process (default: 10)
+  bool force_retry = 2;        // Retry failed events (default: false)
+}
+
+message ProcessOutboxResponse {
+  bool success = 1;
+  int32 processed_count = 2;   // Number of events processed
+  int32 failed_count = 3;      // Number of events failed
+  string message = 4;
+  repeated ProcessedEvent events = 5;
+}
+
+message ProcessedEvent {
+  string outbox_id = 1;
+  string event_type = 2;
+  bool success = 3;
+  string error_message = 4;
+  int64 processed_at = 5;      // Unix timestamp
+}
+
+// ============================================================================
+// WORKER STATUS
+// ============================================================================
+
+message WorkerStatusRequest {}
+
+message WorkerStatusResponse {
+  bool is_running = 1;         // Is worker thread active
+  int64 started_at = 2;        // When worker started (Unix timestamp)
+  int64 last_poll_at = 3;      // Last time worker polled (Unix timestamp)
+  int32 poll_interval_sec = 4; // Polling interval in seconds
+  WorkerMetrics metrics = 5;
+}
+
+message WorkerMetrics {
+  int64 total_processed = 1;   // Lifetime processed events
+  int64 total_failed = 2;      // Lifetime failed events
+  int32 pending_count = 3;     // Current pending events in outbox
+  int32 retry_count = 4;       // Events in retry state
+  double avg_processing_time_ms = 5; // Average processing time
+}
+
+// ============================================================================
+// INTERNAL EVENT TYPES (for reference, not gRPC messages)
+// ============================================================================
+
+// Event types stored in outbox.event_type:
+// - "inventory.update"  : Update inventory stock after transaction
+// - "accounting.create" : Create journal entry for transaction
+// - "notification.send" : Send notification (future)
+// - "analytics.track"   : Track analytics event (future)
+
+// Payload structure (JSON) for inventory.update:
+// {
+//   "transaksi_id": "uuid",
+//   "tenant_id": "string",
+//   "items": [
+//     {
+//       "produk_id": "uuid",
+//       "jumlah_movement": float,
+//       "stok_setelah": float,
+//       "lokasi_gudang": "string"
+//     }
+//   ]
+// }
+
+// Payload structure (JSON) for accounting.create:
+// {
+//   "transaksi_id": "uuid",
+//   "tenant_id": "string",
+//   "jenis_transaksi": "string",
+//   "total_nominal": int64,
+//   "periode_pelaporan": "YYYY-MM"
+// }
