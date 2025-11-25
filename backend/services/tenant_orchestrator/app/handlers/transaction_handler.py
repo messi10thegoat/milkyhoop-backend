@@ -12,11 +12,14 @@ Adapted from setup_orchestrator for tenant mode:
 import logging
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 
 import transaction_service_pb2
 import inventory_service_pb2
+
+# WIB Timezone (UTC+7)
+WIB = timezone(timedelta(hours=7))
 
 
 logger = logging.getLogger(__name__)
@@ -141,39 +144,37 @@ async def lookup_or_create_product(tenant_id: str, nama_produk: str, client_mana
     logger.debug(f"[{trace_id}] 💾 Product cache MISS: {nama_produk}")
 
     try:
-        # Try to find existing product by name
-        search_req = inventory_service_pb2.SearchProductRequest(
+        # Try to find existing product by name (fuzzy search)
+        search_req = inventory_service_pb2.SearchProductsRequest(
             tenant_id=tenant_id,
             query=nama_produk,
             limit=1
         )
-        search_resp = await client_manager.stubs['inventory'].SearchProduct(search_req)
+        search_resp = await client_manager.stubs['inventory'].SearchProducts(search_req)
 
-        if search_resp.products and len(search_resp.products) > 0:
-            produk_id = search_resp.products[0].id
-            logger.info(f"[{trace_id}] ✅ Product found: {nama_produk} → {produk_id}")
+        if search_resp.matches and len(search_resp.matches) > 0:
+            # Use exact or high-confidence match
+            match = search_resp.matches[0]
+            if match.similarity_score >= 80:  # Only use if high confidence
+                produk_id = match.produk_id
+                logger.info(f"[{trace_id}] ✅ Product found: {nama_produk} → {produk_id} (score={match.similarity_score}%)")
 
-            # PHASE 1.2: Cache the result
-            _product_cache[cache_key] = produk_id
+                # PHASE 1.2: Cache the result
+                _product_cache[cache_key] = produk_id
 
-            return produk_id
+                return produk_id
 
-        # Product not found, create new
-        import uuid
-        new_produk_id = str(uuid.uuid4())
-
+        # Product not found or low confidence, create new
         create_req = inventory_service_pb2.CreateProductRequest(
             tenant_id=tenant_id,
-            id=new_produk_id,
             nama_produk=nama_produk,
             satuan="pcs",  # default unit
-            harga_jual=0,
-            harga_beli=0,
-            is_tracked=True
+            harga_jual=0
         )
         create_resp = await client_manager.stubs['inventory'].CreateProduct(create_req)
 
-        if create_resp.success:
+        if create_resp.success and create_resp.product_id:
+            new_produk_id = create_resp.product_id
             logger.info(f"[{trace_id}] ✨ Product created: {nama_produk} → {new_produk_id}")
 
             # PHASE 1.2: Cache the newly created product
@@ -181,7 +182,7 @@ async def lookup_or_create_product(tenant_id: str, nama_produk: str, client_mana
 
             return new_produk_id
         else:
-            logger.error(f"[{trace_id}] ❌ Failed to create product: {nama_produk}")
+            logger.error(f"[{trace_id}] ❌ Failed to create product: {nama_produk} - {create_resp.message}")
             return ""
 
     except Exception as e:
@@ -273,7 +274,13 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
                     "nama_produk": form_data.get("product_name", ""),
                     "jumlah": form_data.get("quantity", 0),
                     "satuan": form_data.get("unit", "pcs"),
-                    "harga_satuan": form_data.get("price_per_unit", 0)
+                    "harga_satuan": form_data.get("price_per_unit", 0),
+                    # HPP & Margin fields (V006)
+                    "hpp_per_unit": form_data.get("hpp_per_unit"),
+                    "harga_jual": form_data.get("harga_jual"),
+                    "margin": form_data.get("margin"),
+                    "margin_percent": form_data.get("margin_percent"),
+                    "retail_unit": form_data.get("retail_unit")  # Unit terkecil untuk label HPP
                 }],
                 "metode_pembayaran": payment_method_map.get(
                     form_data.get("payment_method", "tunai"),
@@ -546,9 +553,7 @@ class TransactionHandler:
         # Check if transaction has all required fields
         # If incomplete → save draft + ask question
         # ============================================
-        import sys
-        sys.path.insert(0, '/app/services')
-        from field_validator import field_validator
+        from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
         # CRITICAL FIX: Flatten items array into entities for field validation
         # field_validator expects flat structure: entities['nama_produk'], entities['jumlah']
@@ -1100,7 +1105,12 @@ class TransactionHandler:
                         quantity=int(item.get("jumlah", 0)),
                         unit=item.get("satuan", "pcs"),
                         unit_price=int(item.get("harga_satuan", 0)),
-                        subtotal=int(item.get("subtotal", 0))
+                        subtotal=int(item.get("subtotal", 0)),
+                        # HPP & Margin fields (V006)
+                        hpp_per_unit=float(item.get("hpp_per_unit") or 0),
+                        harga_jual=float(item.get("harga_jual") or 0),
+                        margin=float(item.get("margin") or 0),
+                        margin_percent=float(item.get("margin_percent") or 0)
                     )
                     items_pembelian.append(item_proto)
 
@@ -1580,6 +1590,13 @@ class TransactionHandler:
                     # Extract data for HTML receipt
                     first_item = items[0] if items else {}
                     product_name = first_item.get("nama_produk", "Produk")
+                    # Get product_id from transaction_entities or inventory_impact
+                    product_id = transaction_entities.get("produk_id", "")
+                    if not product_id:
+                        # Try to get from inventory_impact items
+                        inventory_impact_data = transaction_entities.get("inventory_impact", {})
+                        if inventory_impact_data and inventory_impact_data.get("items_inventory"):
+                            product_id = inventory_impact_data["items_inventory"][0].get("produk_id", "")
                     quantity = first_item.get("jumlah", 0)
                     unit = first_item.get("satuan", "pcs")
                     unit_price = first_item.get("harga_satuan", 0)
@@ -1588,6 +1605,13 @@ class TransactionHandler:
                     vendor_name = pihak if pihak else ""
                     notes = transaction_entities.get("keterangan", "")
                     transaction_type = jenis_transaksi.upper() if jenis_transaksi else "PEMBELIAN"
+
+                    # Extract HPP & Margin fields (V006)
+                    hpp_per_unit = first_item.get("hppPerUnit") or first_item.get("hpp_per_unit")
+                    harga_jual = first_item.get("hargaJual") or first_item.get("harga_jual")
+                    margin = first_item.get("margin")
+                    margin_percent = first_item.get("marginPercent") or first_item.get("margin_percent")
+                    retail_unit = first_item.get("retailUnit") or first_item.get("retail_unit") or unit
 
                     # Get discount/PPN values from calculated entities
                     subtotal_before_discount = transaction_entities.get('subtotal_before_discount', subtotal)
@@ -1627,9 +1651,23 @@ class TransactionHandler:
                     if vat_amount > 0:
                         vat_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#666">PPN 11%</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(vat_amount)}</td></tr>'
 
+                    # Build HPP & Margin rows (V006)
+                    hpp_row = ''
+                    if hpp_per_unit and hpp_per_unit > 0:
+                        hpp_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">💰 HPP per {retail_unit}</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(int(hpp_per_unit))}</td></tr>'
+
+                    harga_jual_row = ''
+                    if harga_jual and harga_jual > 0:
+                        harga_jual_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">🏷️ Harga Jual</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(int(harga_jual))}</td></tr>'
+
+                    margin_row = ''
+                    if margin and harga_jual and margin > 0:
+                        margin_pct = margin_percent if margin_percent else 0
+                        margin_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#e8f5e9"><td style="padding:8px 0;color:#2e7d32;font-weight:500">📊 Margin Profit</td><td style="padding:8px 0;text-align:right;font-weight:600;color:#2e7d32">{format_rupiah(int(margin))} ({margin_pct:.1f}%)</td></tr>'
+
                     # Map transaction type to display label
                     type_display_map = {
-                        "PEMBELIAN": "Pembelian",
+                        "PEMBELIAN": "Kulakan",
                         "PENJUALAN": "Penjualan",
                         "BEBAN": "Beban",
                         "MODAL": "Modal"
@@ -1639,18 +1677,68 @@ class TransactionHandler:
                     # Use grand_total for final display
                     final_total = grand_total if (discount_amount > 0 or vat_amount > 0) else int(total_nominal)
 
+                    # Format datetime with WIB timezone
+                    wib_time = datetime.now(WIB)
+                    date_str = wib_time.strftime('%d %b %Y • %H:%M') + ' WIB'
+
+                    # Build barcode status element
+                    # Query product's barcode from database
+                    product_barcode = None
+                    logger.info(f"[{trace_id}] 🔍 Barcode lookup: product_id={product_id}, product_name={product_name}")
+
+                    try:
+                        from prisma import Prisma
+                        db = Prisma()
+                        await db.connect()
+
+                        # First try by product_id if available
+                        if product_id:
+                            product_record = await db.product.find_unique(
+                                where={"id": product_id}
+                            )
+                            if product_record and product_record.barcode:
+                                product_barcode = product_record.barcode
+                                logger.info(f"[{trace_id}] ✅ Found barcode by ID: {product_barcode}")
+
+                        # Fallback: search by product name if no barcode found yet
+                        if not product_barcode and product_name:
+                            # Get tenant_id from context
+                            tenant_id_for_query = transaction_entities.get("tenant_id", tenant_id)
+                            product_by_name = await db.product.find_first(
+                                where={
+                                    "tenant_id": tenant_id_for_query,
+                                    "nama_produk": product_name
+                                }
+                            )
+                            if product_by_name:
+                                if product_by_name.barcode:
+                                    product_barcode = product_by_name.barcode
+                                    logger.info(f"[{trace_id}] ✅ Found barcode by name: {product_barcode}")
+                                # Also update product_id if we found a match
+                                if not product_id:
+                                    product_id = str(product_by_name.id)
+                                    logger.info(f"[{trace_id}] 📝 Updated product_id from name lookup: {product_id}")
+
+                        await db.disconnect()
+                    except Exception as e:
+                        logger.warning(f"[{trace_id}] Could not fetch product barcode: {e}")
+
+                    # Show registered barcode or registration button
+                    if product_barcode:
+                        barcode_element = f'<div style="font-size:12px;color:#10b981;margin-top:4px">✅ Barcode: {product_barcode}</div>'
+                    else:
+                        barcode_element = f'<div data-product-id="{product_id}" data-product-name="{product_name}" style="font-size:12px;color:#f59e0b;cursor:pointer;margin-top:4px" class="barcode-register-btn">❎ Daftarkan Barcode</div>'
+
                     html_receipt = f"""
-<div style="font-family:-apple-system,sans-serif;max-width:100%">
+<div style="font-family:-apple-system,sans-serif;max-width:100%" class="milky-receipt">
   <div style="text-align:center;padding-bottom:12px;border-bottom:2px solid #e5e5e5;margin-bottom:12px">
-    <div style="font-size:15px;font-weight:600;color:#333;margin-bottom:4px">✅ {type_display} Berhasil Dicatat</div>
-    <div style="font-size:12px;color:#888">{datetime.now().strftime('%d %b %Y • %H:%M')}</div>
+    <div style="font-size:14px;font-weight:500;color:#666;margin-bottom:2px">{type_display}</div>
+    <div style="font-size:16px;font-weight:700;color:#333;margin-bottom:6px">{product_name}</div>
+    {barcode_element}
+    <div style="font-size:12px;color:#888;margin-top:6px">{date_str}</div>
   </div>
   <table style="width:100%;border-collapse:collapse;font-size:13px">
     {supplier_row}
-    <tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:8px 0;color:#666">Produk</td>
-      <td style="padding:8px 0;text-align:right;font-weight:500">{product_name}</td>
-    </tr>
     <tr style="border-bottom:1px solid #f0f0f0">
       <td style="padding:8px 0;color:#666">Jumlah</td>
       <td style="padding:8px 0;text-align:right;font-weight:500">{quantity} {unit}</td>
@@ -1666,6 +1754,9 @@ class TransactionHandler:
     {discount_row}
     {after_discount_row}
     {vat_row}
+    {hpp_row}
+    {harga_jual_row}
+    {margin_row}
     <tr style="border-bottom:1px solid #f0f0f0">
       <td style="padding:8px 0;color:#666">Pembayaran</td>
       <td style="padding:8px 0;text-align:right;font-weight:500">{payment_method}</td>

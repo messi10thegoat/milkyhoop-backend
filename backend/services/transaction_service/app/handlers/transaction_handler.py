@@ -336,6 +336,11 @@ class TransactionHandler:
                         'subtotal': item.subtotal,       # Proto: subtotal -> DB: subtotal
                         'produkId': None,
                         'keterangan': None,
+                        # HPP & Margin fields (V006)
+                        'hppPerUnit': item.hpp_per_unit if item.hpp_per_unit else None,
+                        'hargaJual': item.harga_jual if item.harga_jual else None,
+                        'margin': item.margin if item.margin else None,
+                        'marginPercent': item.margin_percent if item.margin_percent else None,
                     }
                     items_data.append(item_data)
 

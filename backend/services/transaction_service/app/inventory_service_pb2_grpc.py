@@ -78,6 +78,16 @@ class InventoryServiceStub(object):
                 request_serializer=inventory__service__pb2.GetInventoryValuationRequest.SerializeToString,
                 response_deserializer=inventory__service__pb2.InventoryValuationResponse.FromString,
                 _registered_method=True)
+        self.SearchProducts = channel.unary_unary(
+                '/inventory_service.InventoryService/SearchProducts',
+                request_serializer=inventory__service__pb2.SearchProductsRequest.SerializeToString,
+                response_deserializer=inventory__service__pb2.SearchProductsResponse.FromString,
+                _registered_method=True)
+        self.CreateProduct = channel.unary_unary(
+                '/inventory_service.InventoryService/CreateProduct',
+                request_serializer=inventory__service__pb2.CreateProductRequest.SerializeToString,
+                response_deserializer=inventory__service__pb2.CreateProductResponse.FromString,
+                _registered_method=True)
         self.ValidateStockAvailability = channel.unary_unary(
                 '/inventory_service.InventoryService/ValidateStockAvailability',
                 request_serializer=inventory__service__pb2.ValidateStockRequest.SerializeToString,
@@ -156,6 +166,20 @@ class InventoryServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SearchProducts(self, request, context):
+        """Search products by name with fuzzy matching (for product resolution)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateProduct(self, request, context):
+        """Create new product in Products table (for new product flow)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ValidateStockAvailability(self, request, context):
         """========================================
         STOCK OPERATIONS
@@ -225,6 +249,16 @@ def add_InventoryServiceServicer_to_server(servicer, server):
                     servicer.GetInventoryValuation,
                     request_deserializer=inventory__service__pb2.GetInventoryValuationRequest.FromString,
                     response_serializer=inventory__service__pb2.InventoryValuationResponse.SerializeToString,
+            ),
+            'SearchProducts': grpc.unary_unary_rpc_method_handler(
+                    servicer.SearchProducts,
+                    request_deserializer=inventory__service__pb2.SearchProductsRequest.FromString,
+                    response_serializer=inventory__service__pb2.SearchProductsResponse.SerializeToString,
+            ),
+            'CreateProduct': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateProduct,
+                    request_deserializer=inventory__service__pb2.CreateProductRequest.FromString,
+                    response_serializer=inventory__service__pb2.CreateProductResponse.SerializeToString,
             ),
             'ValidateStockAvailability': grpc.unary_unary_rpc_method_handler(
                     servicer.ValidateStockAvailability,
@@ -399,6 +433,60 @@ class InventoryService(object):
             '/inventory_service.InventoryService/GetInventoryValuation',
             inventory__service__pb2.GetInventoryValuationRequest.SerializeToString,
             inventory__service__pb2.InventoryValuationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SearchProducts(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/inventory_service.InventoryService/SearchProducts',
+            inventory__service__pb2.SearchProductsRequest.SerializeToString,
+            inventory__service__pb2.SearchProductsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateProduct(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/inventory_service.InventoryService/CreateProduct',
+            inventory__service__pb2.CreateProductRequest.SerializeToString,
+            inventory__service__pb2.CreateProductResponse.FromString,
             options,
             channel_credentials,
             insecure,

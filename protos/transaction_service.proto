@@ -344,6 +344,12 @@ message ItemPembelian {
   string unit = 4;
   int64 unit_price = 5;
   int64 subtotal = 6;
+
+  // HPP & Margin fields (V006)
+  double hpp_per_unit = 7;      // HPP per satuan kecil (calculated: unit_price / units_per_pack)
+  double harga_jual = 8;        // Selling price per unit
+  double margin = 9;            // Profit margin (harga_jual - hpp_per_unit)
+  double margin_percent = 10;   // Margin percentage ((margin / hpp_per_unit) * 100)
 }
 
 // ============================================

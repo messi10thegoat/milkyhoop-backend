@@ -424,6 +424,12 @@ model ItemTransaksi {
   hargaSatuan BigInt @map("harga_satuan")
   subtotal    BigInt @map("subtotal")
 
+  // HPP & Margin fields (V006)
+  hppPerUnit    Float? @map("hpp_per_unit")      // HPP per satuan kecil
+  hargaJual     Float? @map("harga_jual")        // Selling price per unit
+  margin        Float? @map("margin")            // Profit margin (hargaJual - hppPerUnit)
+  marginPercent Float? @map("margin_percent")    // Margin percentage
+
   // Optional references
   produkId   String? @map("produk_id") @db.VarChar(100)
   keterangan String? @map("keterangan") @db.Text
@@ -525,6 +531,7 @@ model Products {
   kategori    String?  @db.VarChar(100)                       // Product category (optional)
   hargaJual   Float?   @map("harga_jual")                    // Default selling price (optional)
   deskripsi   String?  @db.Text                              // Product description (optional)
+  barcode     String?  @unique                               // Product barcode for scanning (V006)
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -536,6 +543,7 @@ model Products {
   @@unique([tenantId, namaProduk])  // Prevent duplicate product names per tenant
   @@index([tenantId])
   @@index([tenantId, namaProduk])
+  @@index([barcode])
   @@map("products")
 }
 

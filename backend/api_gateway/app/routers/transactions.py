@@ -35,6 +35,12 @@ class PurchaseTransactionRequest(BaseModel):
     purchase_type: Optional[str] = None
     purchase_date: Optional[str] = None
     due_date: Optional[str] = None
+    # HPP & Margin fields (V006)
+    hpp_per_unit: Optional[float] = None      # HPP per satuan kecil
+    harga_jual: Optional[float] = None        # Selling price per unit
+    margin: Optional[float] = None            # Profit margin
+    margin_percent: Optional[float] = None    # Margin percentage
+    retail_unit: Optional[str] = None         # Retail unit for HPP display (e.g., "pcs" instead of "dus")
 
 
 class TransactionResponse(BaseModel):
@@ -150,7 +156,13 @@ async def create_purchase_transaction(
                 "units_per_pack": body.units_per_pack,
                 "purchase_type": body.purchase_type,
                 "purchase_date": body.purchase_date,
-                "due_date": body.due_date
+                "due_date": body.due_date,
+                # HPP & Margin fields (V006)
+                "hpp_per_unit": body.hpp_per_unit,
+                "harga_jual": body.harga_jual,
+                "margin": body.margin,
+                "margin_percent": body.margin_percent,
+                "retail_unit": body.retail_unit
             }
         })
 

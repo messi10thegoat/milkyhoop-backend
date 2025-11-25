@@ -923,9 +923,7 @@ class TenantOrchestratorServicer(pb_grpc.TenantOrchestratorServicer):
                     draft_data.pop("awaiting", None)
 
                     # Check if transaction is now complete
-                    import sys
-                    sys.path.insert(0, '/app/services')
-                    from field_validator import field_validator
+                    from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
                     jenis_transaksi = draft_data.get("jenis_transaksi", "")
                     missing_fields = field_validator.detect_missing_fields(jenis_transaksi, entities)
@@ -1063,9 +1061,7 @@ class TenantOrchestratorServicer(pb_grpc.TenantOrchestratorServicer):
                         draft_data.pop("awaiting", None)
 
                         # Check if transaction is now complete
-                        import sys
-                        sys.path.insert(0, '/app/services')
-                        from field_validator import field_validator
+                        from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
                         jenis_transaksi = draft_data.get("jenis_transaksi", "")
                         missing_fields = field_validator.detect_missing_fields(jenis_transaksi, entities)
@@ -1218,9 +1214,7 @@ class TenantOrchestratorServicer(pb_grpc.TenantOrchestratorServicer):
                     draft_data.pop("awaiting", None)
 
                     # Check if transaction is now complete
-                    import sys
-                    sys.path.insert(0, '/app/services')
-                    from field_validator import field_validator
+                    from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
                     jenis_transaksi = draft_data.get("jenis_transaksi", "")
                     missing_fields = field_validator.detect_missing_fields(jenis_transaksi, entities)
@@ -1309,9 +1303,7 @@ class TenantOrchestratorServicer(pb_grpc.TenantOrchestratorServicer):
                     jenis_transaksi = updated_draft.get("jenis_transaksi", "")
 
                     # Import field validator
-                    import sys
-                    sys.path.insert(0, '/app/services')
-                    from field_validator import field_validator
+                    from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
                     extracted_data = updated_draft.get("entities", {})
 
@@ -1588,8 +1580,7 @@ class TenantOrchestratorServicer(pb_grpc.TenantOrchestratorServicer):
         try:
             # Import field validator
             import sys
-            sys.path.insert(0, '/app/services')
-            from field_validator import field_validator
+            from backend.services.tenant_orchestrator.app.services.field_validator import field_validator
 
             jenis_transaksi = draft_data.get("jenis_transaksi", "")
             entities = draft_data.get("entities", {})

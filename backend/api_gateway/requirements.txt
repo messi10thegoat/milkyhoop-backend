@@ -48,3 +48,6 @@ websockets==15.0.1
 
 # Rate Limiting (Added Week 2 Day 4)
 slowapi==0.1.9
+
+# Database (asyncpg for direct PostgreSQL access)
+asyncpg==0.30.0
