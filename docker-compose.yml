@@ -986,7 +986,33 @@ services:
         max-size: "10m"
         max-file: "3"
 
-
+  barcode_service:
+    build:
+      context: ./backend/services/barcode_service
+    container_name: milkyhoop-dev-barcode_service-1
+    ports:
+      - "8085:8080"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build:
