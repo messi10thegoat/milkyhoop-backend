@@ -261,8 +261,51 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
         payment_method_map = {
             "tunai": "tunai",
             "transfer": "transfer",
-            "kredit": "kredit"
+            "kredit": "kredit",
+            "qris": "qris"  # Added for POS
         }
+
+        # ============================================
+        # HANDLE BOTH FORMATS:
+        # 1. Kulakan (single-item): {product_name, quantity, unit, price_per_unit}
+        # 2. POS (multi-item): {items: [{nama_produk, jumlah, satuan, harga_satuan}, ...]}
+        # ============================================
+        items = []
+
+        if "items" in form_data and isinstance(form_data["items"], list):
+            # POS Format: Multi-item array
+            logger.info(f"[{trace_id}] 🛒 POS FORMAT: {len(form_data['items'])} items")
+            for item in form_data["items"]:
+                items.append({
+                    "nama_produk": item.get("nama_produk", ""),
+                    "product_id": item.get("product_id"),  # POS sends product_id
+                    "barcode": item.get("barcode"),
+                    "jumlah": item.get("jumlah", 0),
+                    "satuan": item.get("satuan", "pcs"),
+                    "harga_satuan": item.get("harga_satuan", 0),
+                    "subtotal": item.get("subtotal", 0),
+                    # HPP fields (if present)
+                    "hpp_per_unit": item.get("hpp_per_unit"),
+                    "harga_jual": item.get("harga_jual"),
+                    "margin": item.get("margin"),
+                    "margin_percent": item.get("margin_percent"),
+                    "retail_unit": item.get("retail_unit")
+                })
+        else:
+            # Kulakan Format: Single item
+            logger.info(f"[{trace_id}] 📦 KULAKAN FORMAT: Single item")
+            items.append({
+                "nama_produk": form_data.get("product_name", ""),
+                "jumlah": form_data.get("quantity", 0),
+                "satuan": form_data.get("unit", "pcs"),
+                "harga_satuan": form_data.get("price_per_unit", 0),
+                # HPP & Margin fields (V006)
+                "hpp_per_unit": form_data.get("hpp_per_unit"),
+                "harga_jual": form_data.get("harga_jual"),
+                "margin": form_data.get("margin"),
+                "margin_percent": form_data.get("margin_percent"),
+                "retail_unit": form_data.get("retail_unit")
+            })
 
         # Build extracted entities in the same format as LLM parser output
         # NOTE: Use "nama_pihak" (not "pihak") to match existing handler expectations
@@ -270,18 +313,7 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
             "intent": "transaction_record",
             "entities": {
                 "jenis_transaksi": form_data.get("transaction_type", "pembelian"),
-                "items": [{
-                    "nama_produk": form_data.get("product_name", ""),
-                    "jumlah": form_data.get("quantity", 0),
-                    "satuan": form_data.get("unit", "pcs"),
-                    "harga_satuan": form_data.get("price_per_unit", 0),
-                    # HPP & Margin fields (V006)
-                    "hpp_per_unit": form_data.get("hpp_per_unit"),
-                    "harga_jual": form_data.get("harga_jual"),
-                    "margin": form_data.get("margin"),
-                    "margin_percent": form_data.get("margin_percent"),
-                    "retail_unit": form_data.get("retail_unit")  # Unit terkecil untuk label HPP
-                }],
+                "items": items,
                 "metode_pembayaran": payment_method_map.get(
                     form_data.get("payment_method", "tunai"),
                     "tunai"
@@ -291,13 +323,16 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
                 "total_nilai": form_data.get("total", 0),
                 "total_nominal": form_data.get("total", 0),  # Alias for compatibility
                 # Discount & PPN fields (V005)
-                "discount_type": form_data.get("discount_type"),  # 'percentage' or 'nominal'
+                "discount_type": form_data.get("discount_type"),
                 "discount_value": form_data.get("discount_value", 0),
-                "include_vat": form_data.get("include_vat", False)
+                "include_vat": form_data.get("include_vat", False),
+                # POS-specific fields
+                "payment_amount": form_data.get("payment_amount"),
+                "change": form_data.get("change")
             }
         }
 
-        logger.info(f"[{trace_id}] ✅ Form data extracted: {json.dumps(extracted, ensure_ascii=False)[:200]}...")
+        logger.info(f"[{trace_id}] ✅ Form data extracted ({len(items)} items): {json.dumps(extracted, ensure_ascii=False)[:300]}...")
 
         return extracted
 
@@ -1686,40 +1721,35 @@ class TransactionHandler:
                     product_barcode = None
                     logger.info(f"[{trace_id}] 🔍 Barcode lookup: product_id={product_id}, product_name={product_name}")
 
+                    # Tenant display name for receipt header
+                    tenant_display_name = None
+
                     try:
-                        from prisma import Prisma
-                        db = Prisma()
-                        await db.connect()
+                        # Use raw SQL via asyncpg (bypasses Prisma "client not generated" issue)
+                        from app.database import fetch_product_barcode, update_product_harga_jual, fetch_tenant_display_name
 
-                        # First try by product_id if available
-                        if product_id:
-                            product_record = await db.product.find_unique(
-                                where={"id": product_id}
-                            )
-                            if product_record and product_record.barcode:
-                                product_barcode = product_record.barcode
-                                logger.info(f"[{trace_id}] ✅ Found barcode by ID: {product_barcode}")
+                        # Get tenant_id from context (use request.tenant_id as fallback)
+                        tenant_id_for_query = transaction_entities.get("tenant_id", request.tenant_id)
 
-                        # Fallback: search by product name if no barcode found yet
-                        if not product_barcode and product_name:
-                            # Get tenant_id from context
-                            tenant_id_for_query = transaction_entities.get("tenant_id", tenant_id)
-                            product_by_name = await db.product.find_first(
-                                where={
-                                    "tenant_id": tenant_id_for_query,
-                                    "nama_produk": product_name
-                                }
-                            )
-                            if product_by_name:
-                                if product_by_name.barcode:
-                                    product_barcode = product_by_name.barcode
-                                    logger.info(f"[{trace_id}] ✅ Found barcode by name: {product_barcode}")
-                                # Also update product_id if we found a match
-                                if not product_id:
-                                    product_id = str(product_by_name.id)
-                                    logger.info(f"[{trace_id}] 📝 Updated product_id from name lookup: {product_id}")
+                        # Fetch tenant display_name for receipt header
+                        tenant_display_name = await fetch_tenant_display_name(tenant_id_for_query)
+                        if tenant_display_name:
+                            logger.info(f"[{trace_id}] ✅ Found tenant display_name: {tenant_display_name}")
 
-                        await db.disconnect()
+                        # Fetch barcode using raw SQL
+                        product_barcode = await fetch_product_barcode(
+                            product_id=product_id,
+                            product_name=product_name,
+                            tenant_id=tenant_id_for_query
+                        )
+                        if product_barcode:
+                            logger.info(f"[{trace_id}] ✅ Found barcode: {product_barcode}")
+
+                        # V007: Update product's harga_jual if provided from Kulakan form
+                        if product_id and harga_jual and harga_jual > 0:
+                            await update_product_harga_jual(product_id, float(harga_jual))
+                            logger.info(f"[{trace_id}] ✅ Updated product harga_jual: {product_id} -> {harga_jual}")
+
                     except Exception as e:
                         logger.warning(f"[{trace_id}] Could not fetch product barcode: {e}")
 
@@ -1729,49 +1759,76 @@ class TransactionHandler:
                     else:
                         barcode_element = f'<div data-product-id="{product_id}" data-product-name="{product_name}" style="font-size:12px;color:#f59e0b;cursor:pointer;margin-top:4px" class="barcode-register-btn">❎ Daftarkan Barcode</div>'
 
+                    # Use tenant display_name as header, fallback to type_display
+                    receipt_header = tenant_display_name if tenant_display_name else type_display
+
                     html_receipt = f"""
-<div style="font-family:-apple-system,sans-serif;max-width:100%" class="milky-receipt">
-  <div style="text-align:center;padding-bottom:12px;border-bottom:2px solid #e5e5e5;margin-bottom:12px">
-    <div style="font-size:14px;font-weight:500;color:#666;margin-bottom:2px">{type_display}</div>
-    <div style="font-size:16px;font-weight:700;color:#333;margin-bottom:6px">{product_name}</div>
-    {barcode_element}
-    <div style="font-size:12px;color:#888;margin-top:6px">{date_str}</div>
+<div style="background:#FAFAF9;border-radius:12px;padding:20px;font-family:'Hiragino Kaku Gothic ProN',-apple-system,sans-serif;max-width:400px" class="milky-receipt">
+  <!-- Store Header -->
+  <div style="text-align:center;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #E5E5E5">
+    <div style="font-weight:700;font-size:18px;color:#262626">{receipt_header}</div>
+    <div style="font-size:13px;color:#737373;margin-top:4px">{type_display}</div>
   </div>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    {supplier_row}
-    <tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:8px 0;color:#666">Jumlah</td>
-      <td style="padding:8px 0;text-align:right;font-weight:500">{quantity} {unit}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:8px 0;color:#666">Harga per {unit}</td>
-      <td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(unit_price)}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:8px 0;color:#666">Subtotal</td>
-      <td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(subtotal_before_discount)}</td>
-    </tr>
-    {discount_row}
-    {after_discount_row}
-    {vat_row}
-    {hpp_row}
-    {harga_jual_row}
-    {margin_row}
-    <tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:8px 0;color:#666">Pembayaran</td>
-      <td style="padding:8px 0;text-align:right;font-weight:500">{payment_method}</td>
-    </tr>
-    {notes_row}
-    <tr style="background:#f9f9f9">
-      <td style="padding:12px 0;color:#333;font-weight:700;font-size:14px">GRAND TOTAL</td>
-      <td style="padding:12px 0;text-align:right;color:#6366f1;font-weight:700;font-size:16px">{format_rupiah(final_total)}</td>
-    </tr>
+
+  <!-- Item Details -->
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <thead>
+      <tr style="border-bottom:1px solid #E5E5E5">
+        <th style="text-align:left;padding:8px 0;color:#737373;font-weight:500;width:30px">No.</th>
+        <th style="text-align:left;padding:8px 0;color:#737373;font-weight:500">Item</th>
+        <th style="text-align:right;padding:8px 0;color:#737373;font-weight:500">Harga (Rp)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="vertical-align:top;padding:8px 0;color:#525252">01.</td>
+        <td style="padding:8px 0">
+          <div style="font-weight:500;color:#262626">{product_name}</div>
+          {barcode_element}
+          <div style="font-size:12px;color:#737373">{format_rupiah(unit_price)} x {quantity} {unit}</div>
+        </td>
+        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_rupiah(subtotal_before_discount)}</td>
+      </tr>
+    </tbody>
   </table>
-  <div style="text-align:center;padding-top:12px;margin-top:12px;border-top:1px solid #e5e5e5">
-    <div style="font-size:11px;color:#aaa;font-weight:600;margin-bottom:4px">ID TRANSAKSI</div>
-    <div style="font-size:12px;color:#6366f1;font-weight:600;font-family:monospace;margin-bottom:12px">{transaction_id[:8]}</div>
-    <div style="font-size:13px;color:#666;font-style:italic">{closing_message}</div>
+
+  <!-- Totals -->
+  <div style="border-top:1px solid #E5E5E5;margin-top:12px;padding-top:12px">
+    <table style="width:100%;font-size:14px">
+      {supplier_row}
+      {discount_row}
+      {after_discount_row}
+      {vat_row}
+      {hpp_row}
+      {harga_jual_row}
+      {margin_row}
+      <tr>
+        <td style="padding:4px 0;color:#737373">Total</td>
+        <td style="padding:4px 0;text-align:right;font-weight:600;color:#262626">{format_rupiah(final_total)}</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 0;color:#737373">{payment_method}</td>
+        <td style="padding:4px 0;text-align:right;color:#262626">{format_rupiah(final_total)}</td>
+      </tr>
+      {notes_row}
+    </table>
   </div>
+
+  <!-- Transaction Info -->
+  <div style="border-top:1px solid #E5E5E5;margin-top:12px;padding-top:12px;text-align:center;font-size:13px;color:#737373">
+    <div>ID Transaksi {transaction_id[:8]}</div>
+    <div style="margin-top:4px">{date_str}</div>
+    <div style="margin-top:8px;font-style:italic;color:#666">{closing_message}</div>
+  </div>
+</div>
+
+<!-- Insight placeholder (non-clickable) - OUTSIDE receipt -->
+<div style="display:flex;align-items:center;gap:12px;background:white;border-radius:12px;padding:12px 16px;margin-top:12px;box-shadow:0 1px 2px rgba(0,0,0,0.05)">
+  <div style="width:40px;height:40px;background:#22D3EE;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+    <span style="font-size:20px">💡</span>
+  </div>
+  <span style="flex:1;font-size:14px;color:#404040">Cek produk paling laris 30 hari terakhir</span>
+  <span style="color:#A3A3A3;font-size:20px">›</span>
 </div>
 """
                     return html_receipt

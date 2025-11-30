@@ -12,11 +12,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# POS Product Search Response (for selling - needs id, barcode, harga_jual)
+class POSProductItem(BaseModel):
+    id: str
+    name: str
+    barcode: Optional[str] = None
+    harga_jual: int  # Selling price
+    stok: Optional[int] = None
+
+
+class POSProductSearchResponse(BaseModel):
+    products: List[POSProductItem]
+
+
 class ProductSuggestion(BaseModel):
     name: str
     unit: str
     last_price: Optional[int] = None
     usage_count: int
+    # Auto-fill fields from last transaction
+    harga_jual: Optional[int] = None  # Selling price
+    units_per_pack: Optional[int] = None  # Units per pack (derived from hpp)
 
 
 class ProductSearchResponse(BaseModel):
@@ -38,6 +54,10 @@ class BarcodeProduct(BaseModel):
     price: Optional[float] = None
     description: Optional[str] = None
     barcode: str
+    # Auto-fill fields for Kulakan form (from last transaction)
+    units_per_pack: Optional[int] = None
+    harga_jual: Optional[int] = None
+    last_price: Optional[int] = None
 
 
 class RegisterBarcodeRequest(BaseModel):
@@ -108,17 +128,57 @@ async def get_product_by_barcode(
                     detail=f"Product with barcode '{barcode}' not found"
                 )
 
+            product_name = row['name']
+
+            # Also fetch last transaction data for auto-fill (Bug #5: include satuan from history)
+            last_tx_query = """
+                SELECT
+                    it.satuan as last_unit,
+                    it.harga_satuan as last_price,
+                    it.harga_jual,
+                    it.hpp_per_unit
+                FROM public.item_transaksi it
+                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                WHERE th.tenant_id = $1
+                  AND it.nama_produk = $2
+                  AND th.jenis_transaksi = 'pembelian'
+                ORDER BY th.created_at DESC
+                LIMIT 1
+            """
+            last_tx = await conn.fetchrow(last_tx_query, tenant_id, product_name)
+
+            # Compute units_per_pack from last_price / hpp_per_unit
+            units_per_pack = None
+            harga_jual = None
+            last_price = None
+            last_unit = None  # Bug #5: Get unit from last purchase transaction
+
+            if last_tx:
+                last_price = int(last_tx['last_price']) if last_tx['last_price'] else None
+                harga_jual = int(last_tx['harga_jual']) if last_tx['harga_jual'] else None
+                last_unit = last_tx['last_unit']  # Bug #5: Satuan from history
+                if last_tx['hpp_per_unit'] and last_tx['hpp_per_unit'] > 0 and last_tx['last_price']:
+                    computed = last_tx['last_price'] / last_tx['hpp_per_unit']
+                    if computed >= 1:
+                        units_per_pack = int(round(computed))
+
+            # Bug #5: Use last_unit from history if available (for Kulakan), fallback to product unit
+            effective_unit = last_unit if last_unit else (row['unit'] or 'pcs')
+
             result = BarcodeProduct(
                 id=str(row['id']),
                 name=row['name'],
-                unit=row['unit'] or 'pcs',
+                unit=effective_unit,
                 category=row['category'],
                 price=float(row['price']) if row['price'] else None,
                 description=row['description'],
-                barcode=row['barcode']
+                barcode=row['barcode'],
+                units_per_pack=units_per_pack,
+                harga_jual=harga_jual,
+                last_price=last_price
             )
 
-            logger.info(f"Barcode lookup: barcode={barcode}, tenant={tenant_id}, found={result.name}")
+            logger.info(f"Barcode lookup: barcode={barcode}, tenant={tenant_id}, found={result.name}, units_per_pack={units_per_pack}, harga_jual={harga_jual}")
 
             return result
 
@@ -235,34 +295,63 @@ async def search_products(
 
         try:
             # Query products from item_transaksi with usage count
-            # Use parameterized query for security
+            # Include harga_jual and computed units_per_pack for auto-fill
+            # Uses window function to get the latest transaction's data
             query = """
+                WITH ranked AS (
+                    SELECT
+                        it.nama_produk as name,
+                        it.satuan as unit,
+                        it.harga_satuan as price,
+                        it.harga_jual,
+                        it.hpp_per_unit,
+                        th.created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY it.nama_produk, it.satuan
+                            ORDER BY th.created_at DESC
+                        ) as rn
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND LOWER(it.nama_produk) LIKE LOWER($2)
+                )
                 SELECT
-                    it.nama_produk as name,
-                    it.satuan as unit,
-                    MAX(it.harga_satuan) as last_price,
-                    COUNT(*) as usage_count
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                WHERE th.tenant_id = $1
-                  AND LOWER(it.nama_produk) LIKE LOWER($2)
-                GROUP BY it.nama_produk, it.satuan
-                ORDER BY usage_count DESC, it.nama_produk ASC
+                    r.name,
+                    r.unit,
+                    r.price as last_price,
+                    r.harga_jual,
+                    r.hpp_per_unit,
+                    (SELECT COUNT(*) FROM public.item_transaksi it2
+                     JOIN public.transaksi_harian th2 ON it2.transaksi_id = th2.id
+                     WHERE th2.tenant_id = $1
+                       AND it2.nama_produk = r.name
+                       AND it2.satuan = r.unit) as usage_count
+                FROM ranked r
+                WHERE r.rn = 1
+                ORDER BY usage_count DESC, r.name ASC
                 LIMIT $3
             """
 
             search_pattern = f"%{q}%"
             rows = await conn.fetch(query, tenant_id, search_pattern, limit)
 
-            suggestions = [
-                ProductSuggestion(
+            suggestions = []
+            for row in rows:
+                # Compute units_per_pack from price / hpp_per_unit
+                units_per_pack = None
+                if row['hpp_per_unit'] and row['hpp_per_unit'] > 0 and row['last_price']:
+                    computed = row['last_price'] / row['hpp_per_unit']
+                    if computed >= 1:
+                        units_per_pack = int(round(computed))
+
+                suggestions.append(ProductSuggestion(
                     name=row['name'],
                     unit=row['unit'] or 'pcs',
                     last_price=int(row['last_price']) if row['last_price'] else None,
-                    usage_count=int(row['usage_count'])
-                )
-                for row in rows
-            ]
+                    usage_count=int(row['usage_count']),
+                    harga_jual=int(row['harga_jual']) if row['harga_jual'] else None,
+                    units_per_pack=units_per_pack
+                ))
 
             logger.info(f"Product search: q='{q}', tenant={tenant_id}, found={len(suggestions)}")
 
@@ -276,6 +365,169 @@ async def search_products(
     except Exception as e:
         logger.error(f"Product search error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search failed")
+
+
+@router.get("/search/pos", response_model=POSProductSearchResponse)
+async def search_products_for_pos(
+    request: Request,
+    q: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    Search products for POS (selling)
+
+    Source: Products table (actual inventory)
+    Returns: id, name, barcode, harga_jual (selling price), stok
+
+    Only products with harga_jual > 0 can be sold
+    """
+    try:
+        # Get user from auth middleware
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Connect to database
+        conn = await asyncpg.connect(
+            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="postgres"
+        )
+
+        try:
+            # Query products from products table (actual inventory)
+            # Only include products with harga_jual set
+            # Note: stok is in persediaan table, not needed for search
+            query = """
+                SELECT
+                    id,
+                    nama_produk as name,
+                    barcode,
+                    COALESCE(harga_jual, 0) as harga_jual
+                FROM public.products
+                WHERE tenant_id = $1
+                  AND LOWER(nama_produk) LIKE LOWER($2)
+                  AND harga_jual IS NOT NULL
+                  AND harga_jual > 0
+                ORDER BY nama_produk ASC
+                LIMIT $3
+            """
+
+            search_pattern = f"%{q}%"
+            rows = await conn.fetch(query, tenant_id, search_pattern, limit)
+
+            products = [
+                POSProductItem(
+                    id=str(row['id']),
+                    name=row['name'],
+                    barcode=row['barcode'],
+                    harga_jual=int(row['harga_jual']),
+                    stok=None  # Stock lookup not needed for search
+                )
+                for row in rows
+            ]
+
+            logger.info(f"POS product search: q='{q}', tenant={tenant_id}, found={len(products)}")
+
+            return POSProductSearchResponse(products=products)
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"POS product search error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
+class RecentSalesProduct(BaseModel):
+    id: str
+    name: str
+    barcode: Optional[str] = None
+    price: int
+
+
+class RecentSalesResponse(BaseModel):
+    products: List[RecentSalesProduct]
+
+
+@router.get("/recent-sales", response_model=RecentSalesResponse)
+async def get_recent_sales_products(
+    request: Request,
+    limit: int = Query(5, ge=1, le=20),
+    tenant_id: str = Query(None, description="Optional tenant_id override")
+):
+    """
+    Get recently sold products for quick-add in POS.
+    Returns products sorted by most recent sale.
+    """
+    try:
+        # Get user from auth middleware
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        effective_tenant = tenant_id or request.state.user.get("tenant_id")
+        if not effective_tenant:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Connect to database
+        conn = await asyncpg.connect(
+            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="postgres"
+        )
+
+        try:
+            # Query recent sales from item_transaksi
+            query = """
+                SELECT DISTINCT ON (p.id)
+                    p.id,
+                    p.nama_produk as name,
+                    p.barcode,
+                    COALESCE(p.harga_jual, it.harga_satuan, 0) as price
+                FROM public.item_transaksi it
+                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                JOIN public.products p ON it.product_id = p.id
+                WHERE th.tenant_id = $1
+                  AND th.jenis_transaksi = 'penjualan'
+                  AND p.harga_jual IS NOT NULL
+                  AND p.harga_jual > 0
+                ORDER BY p.id, th.created_at DESC
+                LIMIT $2
+            """
+
+            rows = await conn.fetch(query, effective_tenant, limit)
+
+            products = [
+                RecentSalesProduct(
+                    id=str(row['id']),
+                    name=row['name'],
+                    barcode=row['barcode'],
+                    price=int(row['price'])
+                )
+                for row in rows
+            ]
+
+            logger.info(f"Recent sales: tenant={effective_tenant}, found={len(products)}")
+
+            return RecentSalesResponse(products=products)
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Recent sales error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch recent sales")
 
 
 @router.patch("/{product_id}/barcode", response_model=RegisterBarcodeResponse)
