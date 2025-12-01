@@ -10,3 +10,4 @@ fastapi
 uvicorn[standard]
 prometheus-client
 prisma==0.15.0
+redis>=5.0.0

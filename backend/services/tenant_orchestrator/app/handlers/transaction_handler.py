@@ -12,11 +12,18 @@ Adapted from setup_orchestrator for tenant mode:
 import logging
 import json
 import random
+import time
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 
 import transaction_service_pb2
 import inventory_service_pb2
+
+# Atomic transaction imports
+from backend.services.tenant_orchestrator.app.database import (
+    get_tenant_config,
+    create_transaction_atomic
+)
 
 # WIB Timezone (UTC+7)
 WIB = timezone(timedelta(hours=7))
@@ -209,6 +216,41 @@ def format_rupiah(rupiah_amount):
     return f"Rp{formatted}"
 
 
+def format_number(amount):
+    """
+    Format number with thousand separator (no Rp prefix)
+
+    Args:
+        amount: Amount in rupiah (integer)
+
+    Returns:
+        Formatted string: "300.000" (titik sebagai pemisah ribuan)
+    """
+    return f"{int(amount):,}".replace(",", ".")
+
+
+def wrap_product_name(name: str, max_words: int = 3) -> str:
+    """
+    Wrap product name after max_words words.
+    If name has more than max_words, split into two lines.
+
+    Args:
+        name: Product name string
+        max_words: Maximum words before wrapping (default 3)
+
+    Returns:
+        HTML string with <br> for line break if needed
+    """
+    words = name.split()
+    if len(words) <= max_words:
+        return name
+
+    # Split into first line (3 words) and second line (rest)
+    first_line = ' '.join(words[:max_words])
+    second_line = ' '.join(words[max_words:])
+    return f"{first_line}<br><span style='font-weight:400;font-size:12px;color:#737373'>{second_line}</span>"
+
+
 # ============================================
 # FORM MODE: DIRECT DATA EXTRACTION
 # ============================================
@@ -318,10 +360,10 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
                     form_data.get("payment_method", "tunai"),
                     "tunai"
                 ),
-                "nama_pihak": form_data.get("vendor_name", ""),
+                "nama_pihak": form_data.get("vendor_name", "") or form_data.get("supplier_name", ""),
                 "keterangan": form_data.get("notes", ""),
-                "total_nilai": form_data.get("total", 0),
-                "total_nominal": form_data.get("total", 0),  # Alias for compatibility
+                "total_nilai": form_data.get("total", 0) or form_data.get("total_amount", 0),
+                "total_nominal": form_data.get("total", 0) or form_data.get("total_amount", 0),  # Alias for compatibility
                 # Discount & PPN fields (V005)
                 "discount_type": form_data.get("discount_type"),
                 "discount_value": form_data.get("discount_value", 0),
@@ -532,6 +574,7 @@ class TransactionHandler:
         Handle financial transaction recording - returns string response
         Route to transaction_service for SAK EMKM compliant transaction creation
         """
+        t_handler_start = time.perf_counter()
         logger.info(f"[{trace_id}] Handling transaction_record intent")
 
         # ============================================
@@ -559,10 +602,12 @@ class TransactionHandler:
         # FORM MODE: Try direct extraction first
         # This bypasses LLM parser for better accuracy and speed
         # ============================================
+        t_form_extract = time.perf_counter()
         form_extracted = extract_form_data_directly(
             conversation_context=request.conversation_context,
             trace_id=trace_id
         )
+        logger.info(f"[{trace_id}] [PERF] form_extract: {(time.perf_counter() - t_form_extract)*1000:.0f}ms")
 
         if form_extracted:
             # Use directly extracted form data (bypasses LLM parser)
@@ -630,12 +675,14 @@ class TransactionHandler:
             logger.info(f"[{trace_id}] 📝 FORM MODE: Auto-creating product '{nama_produk}'")
 
             try:
+                t_product_lookup = time.perf_counter()
                 produk_id = await lookup_or_create_product(
                     tenant_id=request.tenant_id,
                     nama_produk=nama_produk,
                     client_manager=client_manager,
                     trace_id=trace_id
                 )
+                logger.info(f"[{trace_id}] [PERF] product_lookup_or_create: {(time.perf_counter() - t_product_lookup)*1000:.0f}ms")
 
                 if produk_id:
                     transaction_entities['produk_id'] = produk_id
@@ -1555,14 +1602,129 @@ class TransactionHandler:
                 return f"Maaf, jenis transaksi '{jenis_transaksi}' belum didukung."
             
             logger.info(f"[{trace_id}] DEBUG: CreateTransactionRequest built - inventory_impact={'SET' if inventory_impact_proto else 'NULL'}")
-            
+
             # ============================================================
-            # CALL TRANSACTION SERVICE
+            # PHASE 2: CHECK FEATURE FLAG FOR ATOMIC FUNCTION
+            # If enabled, bypass gRPC and call DB directly (~10ms vs ~3000ms)
             # ============================================================
-            trans_response = await client_manager.stubs['transaction'].CreateTransaction(
-                create_request
-            )
-            
+            t_create_tx = time.perf_counter()
+
+            tenant_config = await get_tenant_config(request.tenant_id)
+            use_atomic = tenant_config.get("use_atomic_function", False)
+
+            logger.info(f"[{trace_id}] 🔧 Tenant config: use_atomic_function={use_atomic}")
+
+            if use_atomic and is_form_mode and jenis_transaksi in ["pembelian", "penjualan"]:
+                # ============================================================
+                # ATOMIC PATH: Direct DB call (~10ms)
+                # ============================================================
+                logger.info(f"[{trace_id}] ⚡ ATOMIC PATH: Using create_transaction_atomic()")
+
+                import uuid
+                tx_id = f"tx_{uuid.uuid4().hex[:5]}"
+
+                # Build items array for atomic function
+                items_for_atomic = []
+                for item in items:
+                    items_for_atomic.append({
+                        "id": str(uuid.uuid4()),
+                        "nama_produk": item.get("nama_produk", ""),
+                        "jumlah": float(item.get("jumlah", 0)),
+                        "satuan": item.get("satuan", "pcs"),
+                        "harga_satuan": int(item.get("harga_satuan", 0)),
+                        "subtotal": int(item.get("jumlah", 0) * item.get("harga_satuan", 0)),
+                        "produk_id": item.get("produk_id") or transaction_entities.get("produk_id"),
+                        "keterangan": item.get("keterangan"),
+                        "hpp_per_unit": item.get("hpp_per_unit"),
+                        "harga_jual": item.get("harga_jual"),
+                        "margin": item.get("margin"),
+                        "margin_percent": item.get("margin_percent")
+                    })
+
+                # Build outbox events
+                outbox_events = [
+                    {
+                        "event_type": "inventory.update",
+                        "payload": {
+                            "transaksi_id": tx_id,
+                            "tenant_id": request.tenant_id,
+                            "jenis_movement": "masuk" if jenis_transaksi == "pembelian" else "keluar",
+                            "items": items_for_atomic
+                        }
+                    },
+                    {
+                        "event_type": "accounting.create",
+                        "payload": {
+                            "transaksi_id": tx_id,
+                            "tenant_id": request.tenant_id,
+                            "jenis_transaksi": jenis_transaksi,
+                            "total_nominal": int(total_nominal)
+                        }
+                    }
+                ]
+
+                # Build payload dict
+                payload_dict = {
+                    "items": items,
+                    "metode_pembayaran": metode,
+                    "nama_pihak": pihak,
+                    "keterangan": transaction_entities.get("keterangan", "")
+                }
+
+                atomic_result = await create_transaction_atomic(
+                    tx_id=tx_id,
+                    tenant_id=request.tenant_id,
+                    created_by=request.user_id,
+                    actor_role="owner",
+                    jenis_transaksi=jenis_transaksi,
+                    payload=payload_dict,
+                    total_nominal=int(total_nominal),
+                    metode_pembayaran=metode or "tunai",
+                    nama_pihak=pihak or "",
+                    keterangan=transaction_entities.get("keterangan", ""),
+                    idempotency_key=idempotency_key,
+                    items=items_for_atomic,
+                    outbox_events=outbox_events,
+                    discount_type=transaction_entities.get('discount_type'),
+                    discount_value=float(transaction_entities.get('discount_value', 0) or 0),
+                    discount_amount=int(transaction_entities.get('discount_amount', 0)),
+                    subtotal_before_discount=int(transaction_entities.get('subtotal_before_discount', 0)),
+                    subtotal_after_discount=int(transaction_entities.get('subtotal_after_discount', 0)),
+                    include_vat=bool(transaction_entities.get('include_vat', False)),
+                    vat_amount=int(transaction_entities.get('vat_amount', 0)),
+                    grand_total=int(transaction_entities.get('grand_total', 0) or total_nominal)
+                )
+
+                logger.info(f"[{trace_id}] [PERF] ATOMIC_CreateTransaction: {(time.perf_counter() - t_create_tx)*1000:.0f}ms (DB: {atomic_result.get('execution_time_ms', 0):.1f}ms)")
+
+                if atomic_result.get("success"):
+                    # Build fake trans_response for compatibility with existing code
+                    class FakeTransaction:
+                        def __init__(self):
+                            self.id = atomic_result["transaction_id"]
+                            self.created_at = atomic_result["created_at"]
+
+                    class FakeResponse:
+                        def __init__(self):
+                            self.success = True
+                            self.transaction = FakeTransaction()
+
+                    trans_response = FakeResponse()
+                else:
+                    logger.error(f"[{trace_id}] ❌ Atomic function failed: {atomic_result.get('error')}")
+                    # Fallback to gRPC
+                    trans_response = await client_manager.stubs['transaction'].CreateTransaction(create_request)
+            else:
+                # ============================================================
+                # LEGACY PATH: gRPC call to transaction_service (~3000ms)
+                # ============================================================
+                logger.info(f"[{trace_id}] 📡 LEGACY PATH: Using gRPC CreateTransaction")
+                trans_response = await client_manager.stubs['transaction'].CreateTransaction(
+                    create_request
+                )
+
+            logger.info(f"[{trace_id}] [PERF] gRPC_CreateTransaction: {(time.perf_counter() - t_create_tx)*1000:.0f}ms")
+
             trans_duration = (datetime.now() - trans_start).total_seconds() * 1000
             service_calls.append({
                 "service_name": "transaction",
@@ -1636,7 +1798,7 @@ class TransactionHandler:
                     unit = first_item.get("satuan", "pcs")
                     unit_price = first_item.get("harga_satuan", 0)
                     subtotal = quantity * unit_price
-                    payment_method = metode.upper() if metode else "TUNAI"
+                    payment_method = metode.capitalize() if metode else "Tunai"
                     vendor_name = pihak if pihak else ""
                     notes = transaction_entities.get("keterangan", "")
                     transaction_type = jenis_transaksi.upper() if jenis_transaksi else "PEMBELIAN"
@@ -1674,31 +1836,31 @@ class TransactionHandler:
                             discount_label = f"Diskon ({int(discount_value)}%)"
                         else:
                             discount_label = "Diskon"
-                        discount_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#e11d48">{discount_label}</td><td style="padding:8px 0;text-align:right;font-weight:500;color:#e11d48">-{format_rupiah(discount_amount)}</td></tr>'
+                        discount_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#e11d48">{discount_label}</td><td style="padding:8px 0;text-align:right;font-weight:500;color:#e11d48">-{format_number(discount_amount)}</td></tr>'
 
                     # Build subtotal after discount row if there's a discount
                     after_discount_row = ''
                     if discount_amount > 0:
-                        after_discount_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#666">Setelah Diskon</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(subtotal_after_discount)}</td></tr>'
+                        after_discount_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#666">Setelah Diskon</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_number(subtotal_after_discount)}</td></tr>'
 
                     # Build VAT row if applicable
                     vat_row = ''
                     if vat_amount > 0:
-                        vat_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#666">PPN 11%</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(vat_amount)}</td></tr>'
+                        vat_row = f'<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 0;color:#666">PPN 11%</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_number(vat_amount)}</td></tr>'
 
                     # Build HPP & Margin rows (V006)
                     hpp_row = ''
                     if hpp_per_unit and hpp_per_unit > 0:
-                        hpp_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">💰 HPP per {retail_unit}</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(int(hpp_per_unit))}</td></tr>'
+                        hpp_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">💰 HPP per {retail_unit}</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_number(int(hpp_per_unit))}</td></tr>'
 
                     harga_jual_row = ''
                     if harga_jual and harga_jual > 0:
-                        harga_jual_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">🏷️ Harga Jual</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_rupiah(int(harga_jual))}</td></tr>'
+                        harga_jual_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#f8f9fa"><td style="padding:8px 0;color:#666">🏷️ Harga Jual</td><td style="padding:8px 0;text-align:right;font-weight:500">{format_number(int(harga_jual))}</td></tr>'
 
                     margin_row = ''
                     if margin and harga_jual and margin > 0:
                         margin_pct = margin_percent if margin_percent else 0
-                        margin_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#e8f5e9"><td style="padding:8px 0;color:#2e7d32;font-weight:500">📊 Margin Profit</td><td style="padding:8px 0;text-align:right;font-weight:600;color:#2e7d32">{format_rupiah(int(margin))} ({margin_pct:.1f}%)</td></tr>'
+                        margin_row = f'<tr style="border-bottom:1px solid #f0f0f0;background:#e8f5e9"><td style="padding:8px 0;color:#2e7d32;font-weight:500">📊 Margin Profit</td><td style="padding:8px 0;text-align:right;font-weight:600;color:#2e7d32">{format_number(int(margin))} ({margin_pct:.1f}%)</td></tr>'
 
                     # Map transaction type to display label
                     type_display_map = {
@@ -1763,7 +1925,7 @@ class TransactionHandler:
                     receipt_header = tenant_display_name if tenant_display_name else type_display
 
                     html_receipt = f"""
-<div style="background:#FAFAF9;border-radius:12px;padding:20px;font-family:'Hiragino Kaku Gothic ProN',-apple-system,sans-serif;max-width:400px" class="milky-receipt">
+<div style="background:transparent;font-family:'Hiragino Kaku Gothic ProN',-apple-system,sans-serif;max-width:400px" class="milky-receipt">
   <!-- Store Header -->
   <div style="text-align:center;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #E5E5E5">
     <div style="font-weight:700;font-size:18px;color:#262626">{receipt_header}</div>
@@ -1783,11 +1945,11 @@ class TransactionHandler:
       <tr>
         <td style="vertical-align:top;padding:8px 0;color:#525252">01.</td>
         <td style="padding:8px 0">
-          <div style="font-weight:500;color:#262626">{product_name}</div>
+          <div style="font-weight:500;color:#262626">{wrap_product_name(product_name)}</div>
           {barcode_element}
-          <div style="font-size:12px;color:#737373">{format_rupiah(unit_price)} x {quantity} {unit}</div>
+          <div style="font-size:12px;color:#737373">{format_number(unit_price)} x {quantity} {unit}</div>
         </td>
-        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_rupiah(subtotal_before_discount)}</td>
+        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_number(subtotal_before_discount)}</td>
       </tr>
     </tbody>
   </table>
@@ -1804,11 +1966,11 @@ class TransactionHandler:
       {margin_row}
       <tr>
         <td style="padding:4px 0;color:#737373">Total</td>
-        <td style="padding:4px 0;text-align:right;font-weight:600;color:#262626">{format_rupiah(final_total)}</td>
+        <td style="padding:4px 0;text-align:right;font-weight:600;color:#262626">{format_number(final_total)}</td>
       </tr>
       <tr>
         <td style="padding:4px 0;color:#737373">{payment_method}</td>
-        <td style="padding:4px 0;text-align:right;color:#262626">{format_rupiah(final_total)}</td>
+        <td style="padding:4px 0;text-align:right;color:#262626">{format_number(final_total)}</td>
       </tr>
       {notes_row}
     </table>
@@ -1821,24 +1983,19 @@ class TransactionHandler:
     <div style="margin-top:8px;font-style:italic;color:#666">{closing_message}</div>
   </div>
 </div>
-
-<!-- Insight placeholder (non-clickable) - OUTSIDE receipt -->
-<div style="display:flex;align-items:center;gap:12px;background:white;border-radius:12px;padding:12px 16px;margin-top:12px;box-shadow:0 1px 2px rgba(0,0,0,0.05)">
-  <div style="width:40px;height:40px;background:#22D3EE;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-    <span style="font-size:20px">💡</span>
-  </div>
-  <span style="flex:1;font-size:14px;color:#404040">Cek produk paling laris 30 hari terakhir</span>
-  <span style="color:#A3A3A3;font-size:20px">›</span>
-</div>
 """
+                    logger.info(f"[{trace_id}] [PERF] HANDLER_TOTAL: {(time.perf_counter() - t_handler_start)*1000:.0f}ms")
                     return html_receipt
 
+                logger.info(f"[{trace_id}] [PERF] HANDLER_TOTAL: {(time.perf_counter() - t_handler_start)*1000:.0f}ms")
                 return milky_response
             else:
+                logger.info(f"[{trace_id}] [PERF] HANDLER_TOTAL: {(time.perf_counter() - t_handler_start)*1000:.0f}ms (error)")
                 return f"⚠️ Gagal catat transaksi: {trans_response.message}"
-            
+
         except Exception as e:
             logger.error(f"[{trace_id}] Transaction creation failed: {e}")
+            logger.info(f"[{trace_id}] [PERF] HANDLER_TOTAL: {(time.perf_counter() - t_handler_start)*1000:.0f}ms (exception)")
             return f"Maaf, ada kendala catat transaksi. Error: {str(e)[:100]}"
     
     @staticmethod

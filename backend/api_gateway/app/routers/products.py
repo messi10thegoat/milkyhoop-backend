@@ -7,9 +7,22 @@ from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncpg
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Database connection helper - uses local PostgreSQL
+async def get_db_connection():
+    """Get database connection to local PostgreSQL"""
+    return await asyncpg.connect(
+        host="postgres",  # Docker service name
+        port=5432,
+        user="postgres",
+        password="Proyek771977",
+        database="milkydb"
+    )
 
 
 # POS Product Search Response (for selling - needs id, barcode, harga_jual)
@@ -95,13 +108,7 @@ async def get_product_by_barcode(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query product by barcode for this tenant
@@ -214,13 +221,7 @@ async def get_all_products(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query ALL products from item_transaksi with usage count
@@ -285,13 +286,7 @@ async def search_products(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query products from item_transaksi with usage count
@@ -391,13 +386,7 @@ async def search_products_for_pos(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query products from products table (actual inventory)
@@ -477,13 +466,7 @@ async def get_recent_sales_products(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query recent sales from item_transaksi
@@ -570,13 +553,7 @@ async def register_barcode(
             raise HTTPException(status_code=400, detail=f"Barcode harus 13 digit (EAN-13). Anda memasukkan {len(barcode)} digit.")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Step 1: Check if product exists and belongs to tenant

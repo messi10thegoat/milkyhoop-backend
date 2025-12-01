@@ -16,6 +16,7 @@ from google.protobuf import json_format
 from google.protobuf import empty_pb2
 
 from app.prisma_rls_extension import RLSPrismaClient
+from app.prisma_client import prisma as singleton_prisma
 
 logger = logging.getLogger(__name__)
 
@@ -182,16 +183,20 @@ class TransactionHandler:
         7. ✨ NEW: Process inventory impact (if inventory tracked)
         8. Return success response
         """
+        t_svc_start = time.perf_counter()
         logger.info(f"📥 CreateTransaction: tenant={request.tenant_id}, type={request.jenis_transaksi}")
-        
-        # Initialize RLS-aware Prisma client for this request
+
+        # Initialize RLS-aware Prisma client using SINGLETON (no connection overhead!)
+        t_connect = time.perf_counter()
         rls_prisma = RLSPrismaClient(
             tenant_id=request.tenant_id,
-            bypass_rls=True
+            bypass_rls=True,
+            prisma_client=singleton_prisma  # ← Use shared singleton!
         )
-        
+        # Note: No await rls_prisma.connect() needed - singleton already connected!
+        logger.info(f"[PERF] prisma_get_client: {(time.perf_counter() - t_connect)*1000:.0f}ms")
+
         try:
-            await rls_prisma.connect()
             
             # Step 1: Idempotency check
             if request.idempotency_key:
@@ -447,7 +452,8 @@ class TransactionHandler:
             time_before_return = time.time()
             total_handler_duration = (time_before_return - time_before_db) * 1000
             logger.info(f"⏱️ [TIMING] Total handler duration: {total_handler_duration:.0f}ms (from DB write to return)")
-            
+            logger.info(f"[PERF] TX_SERVICE_TOTAL: {(time.perf_counter() - t_svc_start)*1000:.0f}ms")
+
             return pb.TransactionResponse(
                 success=True,
                 message=f"Transaction created successfully: {tx_id}",

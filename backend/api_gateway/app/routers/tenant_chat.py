@@ -39,13 +39,13 @@ async def get_tenant_info(tenant_id: str):
     import asyncpg
     
     try:
-        # Connect to Supabase PostgreSQL
+        # Connect to local PostgreSQL
         conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
+            host="postgres",  # Docker service name
             port=5432,
             user="postgres",
             password="Proyek771977",
-            database="postgres"
+            database="milkydb"
         )
         
         # Query tenant data

@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Database connection helper - uses local PostgreSQL
+async def get_db_connection():
+    """Get database connection to local PostgreSQL"""
+    return await asyncpg.connect(
+        host="postgres",  # Docker service name
+        port=5432,
+        user="postgres",
+        password="Proyek771977",
+        database="milkydb"
+    )
+
+
 class SupplierSuggestion(BaseModel):
     name: str
     usage_count: int
@@ -43,13 +55,7 @@ async def get_all_suppliers(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query ALL distinct supplier names with usage count
@@ -113,13 +119,7 @@ async def search_suppliers(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Connect to database
-        conn = await asyncpg.connect(
-            host="db.ltrqrejrkbusvmknpnwb.supabase.co",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="postgres"
-        )
+        conn = await get_db_connection()
 
         try:
             # Query distinct vendor/supplier names (nama_pihak) with usage count

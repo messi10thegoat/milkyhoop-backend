@@ -9,6 +9,7 @@ Based on:
 - AWS Multi-tenant SaaS Guide
 
 FIXED: Uses model name string from __getattr__ instead of _model_name attribute
+OPTIMIZED: Now supports singleton Prisma client to eliminate 650ms connection overhead
 """
 
 from typing import Any, Dict, Optional
@@ -18,30 +19,36 @@ from milkyhoop_prisma import Prisma
 class RLSPrismaClient:
     """
     Wrapper for Prisma client with automatic RLS context setting.
-    
-    Usage:
-        rls_client = RLSPrismaClient(tenant_id="konsultanpsikologi")
-        await rls_client.connect()
-        
-        # All queries automatically wrapped with RLS context
+
+    Usage (NEW - with singleton, no connection overhead):
+        from app.prisma_client import prisma
+        rls_client = RLSPrismaClient(tenant_id="tenant1", prisma_client=prisma)
+        # No need to call connect() - already connected!
+        result = await rls_client.transaksiharian.create(...)
+
+    Usage (OLD - creates new connection, 650ms overhead):
+        rls_client = RLSPrismaClient(tenant_id="tenant1")
+        await rls_client.connect()  # 650ms overhead!
         result = await rls_client.transaksiharian.create(...)
     """
-    
-    def __init__(self, tenant_id: str, bypass_rls: bool = True):
+
+    def __init__(self, tenant_id: str, bypass_rls: bool = True, prisma_client: Optional[Prisma] = None):
         self.tenant_id = tenant_id
         self.bypass_rls = bypass_rls
-        self._prisma = Prisma()
-        self._connected = False
-    
+        self._owns_connection = prisma_client is None  # Track if we own the connection
+        self._prisma = prisma_client if prisma_client else Prisma()
+        self._connected = prisma_client.is_connected() if prisma_client else False
+
     async def connect(self):
-        """Connect to database"""
+        """Connect to database (only if we own the connection)"""
         if not self._connected:
             await self._prisma.connect()
             self._connected = True
-    
+
     async def disconnect(self):
-        """Disconnect from database"""
-        if self._connected:
+        """Disconnect from database (only if we own the connection)"""
+        # Don't disconnect if using shared singleton
+        if self._owns_connection and self._connected:
             await self._prisma.disconnect()
             self._connected = False
     

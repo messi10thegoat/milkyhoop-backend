@@ -4,6 +4,7 @@ Converts structured form input to orchestrator query
 """
 import grpc
 import json
+import time
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -75,6 +76,8 @@ async def create_purchase_transaction(
         Input: {product_name: "Sepatu", quantity: 10, unit: "pcs", price_per_unit: 50000}
         Message: "Beli 10 pcs Sepatu harga 50rb per pcs bayar tunai"
     """
+    t_request_start = time.perf_counter()
+
     try:
         # ===== 1. GET USER FROM AUTH MIDDLEWARE =====
         # AuthMiddleware already validates token and sets request.state.user
@@ -179,7 +182,10 @@ async def create_purchase_transaction(
         )
 
         # Call tenant_orchestrator
+        t_grpc = time.perf_counter()
         grpc_response = await stub.ProcessTenantQuery(grpc_request)
+        grpc_duration_ms = (time.perf_counter() - t_grpc) * 1000
+        logger.info(f"[PERF] gRPC_TenantOrchestrator: {grpc_duration_ms:.0f}ms")
 
         # Close channel
         await channel.close()
@@ -209,12 +215,18 @@ async def create_purchase_transaction(
 
             logger.info(f"Extracted transaction_id: {transaction_id}")
 
+            total_ms = (time.perf_counter() - t_request_start) * 1000
+            logger.info(f"[PERF] API_GATEWAY_TOTAL: {total_ms:.0f}ms")
+
             return TransactionResponse(
                 status="success",
                 message=milky_response or "Transaksi berhasil dicatat",
                 transaction_id=transaction_id
             )
         else:
+            total_ms = (time.perf_counter() - t_request_start) * 1000
+            logger.info(f"[PERF] API_GATEWAY_TOTAL: {total_ms:.0f}ms (error)")
+
             return TransactionResponse(
                 status="error",
                 message=milky_response or "Gagal mencatat transaksi"

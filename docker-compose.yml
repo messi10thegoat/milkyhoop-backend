@@ -100,7 +100,7 @@ services:
     networks:
       - internal
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - CHATBOT_GRPC_HOST=chatbot_service
       - RAG_GRPC_HOST=ragcrud_service
@@ -140,7 +140,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5002
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
       - .env
@@ -265,7 +265,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5001
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - PRISMA_QUERY_ENGINE_BINARY=/app/prisma-query-engine-debian-openssl-3.0.x
     env_file:
       - .env
@@ -296,7 +296,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5006
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -326,7 +326,7 @@ services:
     environment:
       - GRPC_PORT=5000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -379,7 +379,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5000
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -412,7 +412,7 @@ services:
     environment:
       - GRPC_PORT=5002
       - SERVICE_NAME=ConversationService
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -445,7 +445,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5007
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -477,7 +477,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5008
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
       - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
     env_file:
@@ -510,7 +510,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5013
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
       - CONTEXT_SERVICE_HOST=cust_context
       - CONTEXT_SERVICE_PORT=5008
@@ -548,7 +548,7 @@ services:
     environment:
       - SERVICE_PORT=8013  # ← CHANGE 2: dari GRPC_PORT=5004
       - HTTP_PORT=8000
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - JWT_SECRET=fe9e6b579ad0d194aea51b325e6f0790ace8b2bd3d91c059a016abd2c0e54de2  # ← CHANGE 3: new secret
       - REDIS_URL=redis://redis:6379
     env_file:
@@ -582,7 +582,7 @@ services:
     environment:
       - GRPC_PORT=5014
       - SERVICE_NAME=SetupOrchestrator
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - REDIS_URL=redis://redis:6379
       - INTENT_PARSER_GRPC_HOST=intent_parser
@@ -628,7 +628,7 @@ services:
     environment:
       - GRPC_PORT=5016
       - SERVICE_NAME=ConversationManager
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -662,7 +662,7 @@ services:
       - GRPC_PORT=5015
       - SERVICE_NAME=BusinessExtractor
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -694,7 +694,7 @@ services:
     environment:
       - GRPC_PORT=7020
       - SERVICE_NAME=TransactionService
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -729,7 +729,7 @@ services:
     environment:
       - GRPC_PORT=7030
       - SERVICE_NAME=ReportingService
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -765,7 +765,7 @@ services:
     environment:
       - GRPC_PORT=7040
       - SERVICE_NAME=InventoryService
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -801,7 +801,7 @@ services:
     environment:
       - GRPC_PORT=7050
       - SERVICE_NAME=AccountingService
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     env_file:
       - .env
     volumes:
@@ -839,7 +839,7 @@ services:
     environment:
       - GRPC_PORT=5017
       - SERVICE_NAME=TenantOrchestrator
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - BUSINESS_PARSER_GRPC_HOST=business_parser
       - BUSINESS_PARSER_GRPC_PORT=5018
       - RULE_ENGINE_GRPC_HOST=rule_engine
@@ -926,7 +926,7 @@ services:
     environment:
       - GRPC_PORT=5070
       - SERVICE_NAME=RuleEngine
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - CACHE_TTL_SECONDS=300
       - LOG_LEVEL=INFO
     env_file:
@@ -962,7 +962,7 @@ services:
     environment:
       - GRPC_PORT=5060
       - SERVICE_NAME=OutboxWorker
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
       - POLL_INTERVAL=2
     env_file:
       - .env
