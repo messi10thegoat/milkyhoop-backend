@@ -1784,8 +1784,13 @@ class TransactionHandler:
                 # FORM MODE: Return HTML Receipt
                 # ============================================
                 if is_form_mode:
-                    # Extract data for HTML receipt
+                    # Extract data for HTML receipt - support multiple items
                     first_item = items[0] if items else {}
+
+                    # For single item transactions (Kulakan), use first_item details
+                    # For multi-item transactions (POS Sales), build all items
+                    is_multi_item = len(items) > 1
+
                     product_name = first_item.get("nama_produk", "Produk")
                     # Get product_id from transaction_entities or inventory_impact
                     product_id = transaction_entities.get("produk_id", "")
@@ -1803,7 +1808,28 @@ class TransactionHandler:
                     notes = transaction_entities.get("keterangan", "")
                     transaction_type = jenis_transaksi.upper() if jenis_transaksi else "PEMBELIAN"
 
-                    # Extract HPP & Margin fields (V006)
+                    # Build items HTML for multi-item transactions
+                    items_html_rows = ""
+                    items_subtotal = 0
+                    for idx, item in enumerate(items):
+                        item_name = item.get("nama_produk", f"Item #{idx+1}")
+                        item_qty = item.get("jumlah", 1)
+                        item_unit = item.get("satuan", "pcs")
+                        item_price = item.get("harga_satuan", 0)
+                        item_subtotal = item_qty * item_price
+                        items_subtotal += item_subtotal
+
+                        items_html_rows += f"""
+      <tr>
+        <td style="vertical-align:top;padding:8px 0;color:#525252">{str(idx+1).zfill(2)}.</td>
+        <td style="padding:8px 0">
+          <div style="font-weight:500;color:#262626">{wrap_product_name(item_name)}</div>
+          <div style="font-size:12px;color:#737373">{format_number(item_price)} x {item_qty} {item_unit}</div>
+        </td>
+        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_number(item_subtotal)}</td>
+      </tr>"""
+
+                    # Extract HPP & Margin fields (V006) - only for single item
                     hpp_per_unit = first_item.get("hppPerUnit") or first_item.get("hpp_per_unit")
                     harga_jual = first_item.get("hargaJual") or first_item.get("harga_jual")
                     margin = first_item.get("margin")
@@ -1924,6 +1950,20 @@ class TransactionHandler:
                     # Use tenant display_name as header, fallback to type_display
                     receipt_header = tenant_display_name if tenant_display_name else type_display
 
+                    # Pre-compute items table body (multi-item vs single-item)
+                    if is_multi_item:
+                        items_table_body = items_html_rows
+                    else:
+                        items_table_body = f'''<tr>
+        <td style="vertical-align:top;padding:8px 0;color:#525252">01.</td>
+        <td style="padding:8px 0">
+          <div style="font-weight:500;color:#262626">{wrap_product_name(product_name)}</div>
+          {barcode_element}
+          <div style="font-size:12px;color:#737373">{format_number(unit_price)} x {quantity} {unit}</div>
+        </td>
+        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_number(subtotal_before_discount)}</td>
+      </tr>'''
+
                     html_receipt = f"""
 <div style="background:transparent;font-family:'Hiragino Kaku Gothic ProN',-apple-system,sans-serif;max-width:400px" class="milky-receipt">
   <!-- Store Header -->
@@ -1942,15 +1982,7 @@ class TransactionHandler:
       </tr>
     </thead>
     <tbody>
-      <tr>
-        <td style="vertical-align:top;padding:8px 0;color:#525252">01.</td>
-        <td style="padding:8px 0">
-          <div style="font-weight:500;color:#262626">{wrap_product_name(product_name)}</div>
-          {barcode_element}
-          <div style="font-size:12px;color:#737373">{format_number(unit_price)} x {quantity} {unit}</div>
-        </td>
-        <td style="vertical-align:top;padding:8px 0;text-align:right;color:#262626">{format_number(subtotal_before_discount)}</td>
-      </tr>
+      {items_table_body}
     </tbody>
   </table>
 

@@ -332,6 +332,8 @@ class SalesTransactionRequest(BaseModel):
     kembalian: int
     paymentMethod: Literal["CASH", "TRANSFER", "QRIS"] = "CASH"
     proofImage: Optional[str] = None  # Base64 image for TRANSFER/QRIS
+    discount: Optional[int] = 0  # Discount percentage
+    hutang: Optional[int] = 0  # Amount owed (for hutang payment)
 
 
 class SalesTransactionResponse(BaseModel):
@@ -403,6 +405,8 @@ async def create_sales_transaction(
                 "payment_method": payment_text,
                 "payment_amount": body.paymentAmount,
                 "change": body.kembalian,
+                "discount": body.discount or 0,
+                "hutang": body.hutang or 0,
                 # Optional: proof image for non-cash
                 "proof_image": body.proofImage if body.proofImage else None
             }
