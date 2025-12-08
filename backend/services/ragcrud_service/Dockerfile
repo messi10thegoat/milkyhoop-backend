@@ -31,6 +31,9 @@ RUN poetry config virtualenvs.create false && poetry install --no-root
 # ✅ Copy service source code
 COPY backend/services/ragcrud_service /app/backend/services/ragcrud_service
 
+# ✅ Copy milkyhoop_prisma lib (shared Prisma client)
+COPY backend/api_gateway/libs /app/backend/api_gateway/libs
+
 # ✅ Copy protos & scripts
 COPY protos /app/protos
 COPY scripts /app/scripts

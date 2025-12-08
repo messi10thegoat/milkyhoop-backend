@@ -9,6 +9,44 @@ from milkyhoop_protos import auth_service_pb2_grpc, auth_service_pb2 as auth_pb2
 
 logger = logging.getLogger(__name__)
 
+# TLS Configuration from environment
+GRPC_TLS_ENABLED = os.getenv("GRPC_TLS_ENABLED", "false").lower() == "true"
+GRPC_TLS_CERT_PATH = os.getenv("GRPC_TLS_CERT_PATH", "/etc/ssl/certs/grpc-ca.crt")
+
+
+def _get_grpc_channel_options():
+    """Get gRPC channel options for keepalive"""
+    return [
+        ('grpc.keepalive_time_ms', 10000),
+        ('grpc.keepalive_timeout_ms', 5000),
+        ('grpc.keepalive_permit_without_calls', True),
+        ('grpc.http2.max_pings_without_data', 0),
+    ]
+
+
+def _create_channel(target: str) -> grpc.aio.Channel:
+    """Create gRPC channel with TLS if enabled"""
+    options = _get_grpc_channel_options()
+
+    if GRPC_TLS_ENABLED:
+        try:
+            # Load TLS credentials
+            with open(GRPC_TLS_CERT_PATH, 'rb') as f:
+                trusted_certs = f.read()
+            credentials = grpc.ssl_channel_credentials(root_certificates=trusted_certs)
+            logger.info(f"Creating secure gRPC channel to {target}")
+            return grpc.aio.secure_channel(target, credentials, options=options)
+        except FileNotFoundError:
+            logger.error(f"TLS cert not found at {GRPC_TLS_CERT_PATH}, falling back to insecure")
+        except Exception as e:
+            logger.error(f"Failed to load TLS credentials: {e}, falling back to insecure")
+
+    # Fallback to insecure channel (development only)
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        logger.warning("Using insecure gRPC channel in production - this is a security risk!")
+    return grpc.aio.insecure_channel(target, options=options)
+
+
 class AuthClient:
     def __init__(self, host: str = "milkyhoop-dev-auth_service-1", port: int = 8013, timeout: float = 60.0):
         self.target = f"{host}:{port}"
@@ -21,15 +59,7 @@ class AuthClient:
         """Connect to auth service with persistent channel"""
         async with self._connect_lock:
             if self.channel is None or self.stub is None:
-                self.channel = grpc.aio.insecure_channel(
-                    self.target,
-                    options=[
-                        ('grpc.keepalive_time_ms', 10000),
-                        ('grpc.keepalive_timeout_ms', 5000),
-                        ('grpc.keepalive_permit_without_calls', True),
-                        ('grpc.http2.max_pings_without_data', 0),
-                    ]
-                )
+                self.channel = _create_channel(self.target)
                 self.stub = auth_service_pb2_grpc.AuthServiceStub(self.channel)
                 logger.info(f"Connected to Auth gRPC service at {self.target}")
 

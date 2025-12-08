@@ -24,6 +24,18 @@ logging.basicConfig(
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 
+def mask_email(email: str) -> str:
+    """Mask email for logging - shows first 2 chars and domain only"""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked_local = "*" * len(local)
+    else:
+        masked_local = local[:2] + "*" * (len(local) - 2)
+    return f"{masked_local}@{domain}"
+
+
 class AuthServiceServicer(pb_grpc.AuthServiceServicer):
     """Enterprise Authentication Service Implementation"""
     
@@ -108,7 +120,7 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
                 tenant_id="default"
             )
             
-            logger.info(f"User registered successfully: {new_user.email}")
+            logger.info(f"User registered successfully: {mask_email(new_user.email)}")
             
             return pb.RegisterResponse(
                 success=True,
@@ -126,12 +138,12 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
     
     async def Login(self, request, context):
         """User authentication with session management"""
-        logger.info(f"Login request for email: {request.email}")
+        logger.info(f"Login request for email: {mask_email(request.email)}")
         
         try:
             # Validate email format
             if not self._validate_email(request.email):
-                logger.warning(f"Invalid email format: {request.email}")
+                logger.warning(f"Invalid email format: {mask_email(request.email)}")
                 context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                 return pb.LoginResponse(
                     success=False,
@@ -144,7 +156,7 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
             )
             
             if not user:
-                logger.warning(f"User not found: {request.email}")
+                logger.warning(f"User not found: {mask_email(request.email)}")
                 context.set_code(grpc.StatusCode.UNAUTHENTICATED)
                 return pb.LoginResponse(
                     success=False,
@@ -153,7 +165,7 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
             
             # Verify password
             if not user.passwordHash:
-                logger.error(f"User has no password hash: {request.email}")
+                logger.error(f"User has no password hash: {mask_email(request.email)}")
                 context.set_code(grpc.StatusCode.INTERNAL)
                 return pb.LoginResponse(
                     success=False,
@@ -166,7 +178,7 @@ class AuthServiceServicer(pb_grpc.AuthServiceServicer):
             )
             
             if not is_valid:
-                logger.warning(f"Invalid password for user: {request.email}")
+                logger.warning(f"Invalid password for user: {mask_email(request.email)}")
                 context.set_code(grpc.StatusCode.UNAUTHENTICATED)
                 return pb.LoginResponse(
                     success=False,

@@ -12,17 +12,32 @@ import os
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Global connection pool for fast queries
+_db_pool: Optional[asyncpg.Pool] = None
 
-# Database connection helper - uses local PostgreSQL
+
+async def get_db_pool() -> asyncpg.Pool:
+    """Get or create database connection pool"""
+    global _db_pool
+    if _db_pool is None:
+        _db_pool = await asyncpg.create_pool(
+            host="postgres",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="milkydb",
+            min_size=5,      # Keep 5 connections ready
+            max_size=20,     # Max 20 concurrent
+            command_timeout=5,
+        )
+        logger.info("✅ Database pool created (5-20 connections)")
+    return _db_pool
+
+
 async def get_db_connection():
-    """Get database connection to local PostgreSQL"""
-    return await asyncpg.connect(
-        host="postgres",  # Docker service name
-        port=5432,
-        user="postgres",
-        password="Proyek771977",
-        database="milkydb"
-    )
+    """Get connection from pool (fast!)"""
+    pool = await get_db_pool()
+    return await pool.acquire()
 
 
 # POS Product Search Response (for selling - needs id, barcode, harga_jual)
@@ -369,7 +384,7 @@ async def search_products_for_pos(
     limit: int = Query(10, ge=1, le=50)
 ):
     """
-    Search products for POS (selling)
+    Search products for POS (selling) - OPTIMIZED FOR SPEED
 
     Source: Products table (actual inventory)
     Returns: id, name, barcode, harga_jual (selling price), stok
@@ -385,25 +400,21 @@ async def search_products_for_pos(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        # Connect to database
-        conn = await get_db_connection()
+        # Use connection pool (fast - no connection overhead!)
+        pool = await get_db_pool()
 
-        try:
-            # Query products from products table (actual inventory)
-            # Only include products with harga_jual set
-            # Note: stok is in persediaan table, not needed for search
+        async with pool.acquire() as conn:
+            # Optimized query - using ILIKE for case-insensitive
             query = """
                 SELECT
                     id,
                     nama_produk as name,
                     barcode,
-                    COALESCE(harga_jual, 0) as harga_jual
+                    COALESCE(harga_jual, 0)::int as harga_jual
                 FROM public.products
                 WHERE tenant_id = $1
-                  AND LOWER(nama_produk) LIKE LOWER($2)
-                  AND harga_jual IS NOT NULL
+                  AND nama_produk ILIKE $2
                   AND harga_jual > 0
-                ORDER BY nama_produk ASC
                 LIMIT $3
             """
 
@@ -415,18 +426,13 @@ async def search_products_for_pos(
                     id=str(row['id']),
                     name=row['name'],
                     barcode=row['barcode'],
-                    harga_jual=int(row['harga_jual']),
-                    stok=None  # Stock lookup not needed for search
+                    harga_jual=row['harga_jual'],
+                    stok=None
                 )
                 for row in rows
             ]
 
-            logger.info(f"POS product search: q='{q}', tenant={tenant_id}, found={len(products)}")
-
             return POSProductSearchResponse(products=products)
-
-        finally:
-            await conn.close()
 
     except HTTPException:
         raise

@@ -1,26 +1,52 @@
-version: "3.8"
+# ==============================================
+# DOCKER SECURITY HARDENING
+# Industry-standard container security
+# ==============================================
+x-security-defaults: &security-defaults
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+    nproc:
+      soft: 4096
+      hard: 4096
 
 services:
   # Core Infrastructure
   postgres:
     image: postgres:14
     restart: always
+    # Note: postgres needs capabilities for file ownership, using minimal security
+    security_opt:
+      - no-new-privileges:true
     environment:
-      POSTGRES_USER: milkyadmin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: milkydb
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_NAME:-milkydb}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"  # Bind to localhost only
     networks:
       - internal
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./logs/postgres:/var/log/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U milkyadmin"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -29,20 +55,29 @@ services:
 
   redis:
     image: redis:latest
-    command: redis-server --requirepass MilkyRedis2025Secure
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     restart: always
+    <<: *security-defaults
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"  # Bind to localhost only
     networks:
       - internal
     volumes:
       - redis_data:/data
       - ./logs/redis:/var/log/redis
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     logging:
       driver: "json-file"
       options:
@@ -51,14 +86,23 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.2
+    <<: *security-defaults
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - "7181:2181"
+      - "127.0.0.1:7181:2181"  # Bind to localhost only
     networks:
       - internal
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -67,10 +111,11 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.3.2
+    <<: *security-defaults
     depends_on:
       - zookeeper
     ports:
-      - "7092:9092"
+      - "127.0.0.1:7092:9092"  # Bind to localhost only
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -84,6 +129,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -95,12 +148,13 @@ services:
     build:
       context: .
       dockerfile: backend/api_gateway/Dockerfile
+    <<: *security-defaults
     ports:
-      - "8001:8000"
+      - "8001:8000"  # Public API - keep accessible
     networks:
       - internal
     environment:
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - CHATBOT_GRPC_HOST=chatbot_service
       - RAG_GRPC_HOST=ragcrud_service
@@ -108,11 +162,11 @@ services:
       - RAGLLM_GRPC_HOST=ragllm_service
       - INTENT_PARSER_GRPC_HOST=intent_parser
       - FLOW_EXECUTOR_HOST=http://flow-executor:8088
-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
     env_file:
       - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
+      - ./backend/api_gateway:/app/backend/api_gateway:ro  # Read-only mount
       - ./logs/api_gateway:/var/log
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
@@ -124,6 +178,14 @@ services:
       - postgres
       - chatbot_service
       - ragcrud_service
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     logging:
       driver: "json-file"
       options:
@@ -140,7 +202,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5002
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
       - .env
@@ -296,7 +358,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5006
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
@@ -326,7 +388,7 @@ services:
     environment:
       - GRPC_PORT=5000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
@@ -379,7 +441,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5000
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -412,7 +474,7 @@ services:
     environment:
       - GRPC_PORT=5002
       - SERVICE_NAME=ConversationService
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -445,7 +507,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5007
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -477,7 +539,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5008
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
       - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
     env_file:
@@ -510,7 +572,7 @@ services:
       - internal
     environment:
       - GRPC_PORT=5013
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
       - CONTEXT_SERVICE_HOST=cust_context
       - CONTEXT_SERVICE_PORT=5008
@@ -541,22 +603,23 @@ services:
     build:
       context: .
       dockerfile: backend/services/auth_service/Dockerfile
+    <<: *security-defaults
     ports:
-      - "8014:8013"  # ← CHANGE 1: dari 7004:5004
+      - "127.0.0.1:8014:8013"  # Bind to localhost only - internal service
     networks:
       - internal
     environment:
-      - SERVICE_PORT=8013  # ← CHANGE 2: dari GRPC_PORT=5004
+      - SERVICE_PORT=8013
       - HTTP_PORT=8000
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
-      - JWT_SECRET=fe9e6b579ad0d194aea51b325e6f0790ace8b2bd3d91c059a016abd2c0e54de2  # ← CHANGE 3: new secret
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
     volumes:
       - ./logs/auth_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:8013"]  # ← CHANGE 4: dari 5004
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:8013"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -564,6 +627,14 @@ services:
     depends_on:
       - postgres
       - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -582,7 +653,7 @@ services:
     environment:
       - GRPC_PORT=5014
       - SERVICE_NAME=SetupOrchestrator
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - REDIS_URL=redis://redis:6379
       - INTENT_PARSER_GRPC_HOST=intent_parser
@@ -628,7 +699,7 @@ services:
     environment:
       - GRPC_PORT=5016
       - SERVICE_NAME=ConversationManager
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
@@ -662,7 +733,7 @@ services:
       - GRPC_PORT=5015
       - SERVICE_NAME=BusinessExtractor
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
@@ -687,20 +758,21 @@ services:
       context: .
       dockerfile: backend/services/transaction_service/Dockerfile
     container_name: milkyhoop-dev-transaction_service-1
+    <<: *security-defaults
     ports:
-      - "7020:7020"
+      - "127.0.0.1:7020:7020"  # Bind to localhost only - financial data
     networks:
       - internal
     environment:
       - GRPC_PORT=7020
       - SERVICE_NAME=TransactionService
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
-      - ./backend/services/transaction_service:/app/backend/services/transaction_service
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
+      - ./backend/services/transaction_service:/app/backend/services/transaction_service:ro
+      - ./database/schemas:/app/database/schemas:ro
+      - ./protos:/app/protos:ro
       - ./logs/transaction_service:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:7020"]
@@ -710,6 +782,14 @@ services:
     restart: always
     depends_on:
       - postgres
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -729,7 +809,7 @@ services:
     environment:
       - GRPC_PORT=7030
       - SERVICE_NAME=ReportingService
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
@@ -765,7 +845,7 @@ services:
     environment:
       - GRPC_PORT=7040
       - SERVICE_NAME=InventoryService
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
@@ -794,20 +874,21 @@ services:
       context: .
       dockerfile: backend/services/accounting_service/Dockerfile
     container_name: milkyhoop-dev-accounting_service-1
+    <<: *security-defaults
     ports:
-      - "7050:7050"
+      - "127.0.0.1:7050:7050"  # Bind to localhost only - financial data
     networks:
       - internal
     environment:
       - GRPC_PORT=7050
       - SERVICE_NAME=AccountingService
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
       - .env
     volumes:
-      - ./backend/services/accounting_service:/app/backend/services/accounting_service
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
+      - ./backend/services/accounting_service:/app/backend/services/accounting_service:ro
+      - ./database/schemas:/app/database/schemas:ro
+      - ./protos:/app/protos:ro
       - ./logs/accounting_service:/var/log
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=localhost:7050"]
@@ -818,6 +899,14 @@ services:
     depends_on:
       - postgres
       - transaction_service
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -839,7 +928,7 @@ services:
     environment:
       - GRPC_PORT=5017
       - SERVICE_NAME=TenantOrchestrator
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - BUSINESS_PARSER_GRPC_HOST=business_parser
       - BUSINESS_PARSER_GRPC_PORT=5018
       - RULE_ENGINE_GRPC_HOST=rule_engine
@@ -926,7 +1015,7 @@ services:
     environment:
       - GRPC_PORT=5070
       - SERVICE_NAME=RuleEngine
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - CACHE_TTL_SECONDS=300
       - LOG_LEVEL=INFO
     env_file:
@@ -962,7 +1051,7 @@ services:
     environment:
       - GRPC_PORT=5060
       - SERVICE_NAME=OutboxWorker
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
       - POLL_INTERVAL=2
     env_file:
       - .env
@@ -1018,13 +1107,116 @@ services:
     build:
       context: ./frontend
     container_name: milkyhoop-dev-frontend-1
+    # Note: nginx needs some caps, so using minimal security instead
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "3001:80"
+      - "3001:80"  # Public frontend - keep accessible
     depends_on:
       - api_gateway
     networks:
       - internal
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================
+  # LOG AGGREGATION STACK (Loki + Promtail)
+  # Industry-standard centralized logging
+  # ==============================================
+  loki:
+    image: grafana/loki:2.9.0
+    <<: *security-defaults
+    command: -config.file=/etc/loki/loki-config.yaml
+    ports:
+      - "127.0.0.1:3100:3100"  # Bind to localhost only
+    volumes:
+      - ./config/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - internal
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    <<: *security-defaults
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./config/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs:/var/log/milkyhoop:ro
+    networks:
+      - internal
+    depends_on:
+      - loki
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================
+  # MONITORING DASHBOARD (Grafana)
+  # ==============================================
+  grafana:
+    image: grafana/grafana:10.2.0
+    <<: *security-defaults
+    ports:
+      - "127.0.0.1:3000:3000"  # Bind to localhost only
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-milkyhoop2025}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - internal
+    depends_on:
+      - loki
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -1034,6 +1226,8 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  loki_data:
+  grafana_data:
 
 networks:
   internal:

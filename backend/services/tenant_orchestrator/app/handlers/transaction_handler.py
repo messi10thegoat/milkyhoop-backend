@@ -22,7 +22,8 @@ import inventory_service_pb2
 # Atomic transaction imports
 from backend.services.tenant_orchestrator.app.database import (
     get_tenant_config,
-    create_transaction_atomic
+    create_transaction_atomic,
+    update_inventory_for_transaction
 )
 
 # WIB Timezone (UTC+7)
@@ -304,8 +305,44 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
             "tunai": "tunai",
             "transfer": "transfer",
             "kredit": "kredit",
+            "kas_kecil": "kas_kecil",
             "qris": "qris"  # Added for POS
         }
+
+        transaction_type = form_data.get("transaction_type", "pembelian")
+
+        # ============================================
+        # BEBAN (EXPENSE) FORMAT:
+        # {transaction_type: "beban", category, amount, description, recipient, ...}
+        # ============================================
+        if transaction_type == "beban":
+            logger.info(f"[{trace_id}] 💰 BEBAN FORMAT: Expense transaction")
+
+            extracted = {
+                "intent": "transaction_record",
+                "entities": {
+                    "jenis_transaksi": "beban",
+                    "kategori_beban": form_data.get("category", "beban_lainnya"),
+                    "total_nilai": form_data.get("amount", 0) or form_data.get("total_amount", 0),
+                    "total_nominal": form_data.get("amount", 0) or form_data.get("total_amount", 0),
+                    "metode_pembayaran": payment_method_map.get(
+                        form_data.get("payment_method", "tunai"),
+                        "tunai"
+                    ),
+                    "nama_pihak": form_data.get("recipient", ""),
+                    "keterangan": form_data.get("description", "") or form_data.get("notes", ""),
+                    # Gaji-specific fields
+                    "detail_karyawan": form_data.get("detail_karyawan", ""),
+                    "periode_gaji": form_data.get("periode_gaji", ""),
+                    # Due date for kredit
+                    "jatuh_tempo": form_data.get("due_date"),
+                    # Empty items for expense (no line items)
+                    "items": [],
+                }
+            }
+
+            logger.info(f"[{trace_id}] ✅ Beban data extracted: {json.dumps(extracted, ensure_ascii=False)[:300]}...")
+            return extracted
 
         # ============================================
         # HANDLE BOTH FORMATS:
@@ -1698,6 +1735,24 @@ class TransactionHandler:
                 logger.info(f"[{trace_id}] [PERF] ATOMIC_CreateTransaction: {(time.perf_counter() - t_create_tx)*1000:.0f}ms (DB: {atomic_result.get('execution_time_ms', 0):.1f}ms)")
 
                 if atomic_result.get("success"):
+                    # ============================================================
+                    # SYNC INVENTORY UPDATE: Update stock and log to kartu_stok
+                    # ============================================================
+                    try:
+                        inventory_result = await update_inventory_for_transaction(
+                            tenant_id=request.tenant_id,
+                            transaksi_id=atomic_result["transaction_id"],
+                            jenis_transaksi=jenis_transaksi,
+                            items=items_for_atomic,
+                            created_by=request.user_id
+                        )
+                        logger.info(f"[{trace_id}] 📦 Inventory update: {inventory_result['updated_count']} items | errors={len(inventory_result['errors'])}")
+                        if inventory_result.get("details"):
+                            for detail in inventory_result["details"]:
+                                logger.info(f"[{trace_id}]    → {detail['nama_produk']}: {detail['saldo_sebelum']} → {detail['saldo_setelah']}")
+                    except Exception as inv_err:
+                        logger.error(f"[{trace_id}] ⚠️ Inventory update failed (non-blocking): {inv_err}")
+
                     # Build fake trans_response for compatibility with existing code
                     class FakeTransaction:
                         def __init__(self):

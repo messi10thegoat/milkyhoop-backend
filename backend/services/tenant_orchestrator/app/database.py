@@ -283,3 +283,130 @@ async def create_transaction_atomic(
         elapsed_ms = (time.perf_counter() - t_start) * 1000
         logger.error(f"❌ Atomic transaction error: {e} (after {elapsed_ms:.1f}ms)")
         return {"success": False, "error": str(e)}
+
+
+async def update_inventory_for_transaction(
+    tenant_id: str,
+    transaksi_id: str,
+    jenis_transaksi: str,  # 'pembelian' or 'penjualan'
+    items: list,
+    created_by: str = None
+) -> dict:
+    """
+    Update inventory for each item in a transaction.
+    - pembelian (purchase): adds stock (+qty)
+    - penjualan (sale): reduces stock (-qty)
+
+    Also logs to kartu_stok for audit trail.
+
+    Args:
+        tenant_id: Tenant identifier
+        transaksi_id: Transaction ID for reference
+        jenis_transaksi: 'pembelian' or 'penjualan'
+        items: List of items with product_id/produk_id, jumlah, harga_satuan
+        created_by: User who created the transaction
+
+    Returns:
+        {
+            "success": bool,
+            "updated_count": int,
+            "details": [{"product_id": str, "saldo_sebelum": float, "saldo_setelah": float}],
+            "errors": [str]
+        }
+    """
+    import time
+    t_start = time.perf_counter()
+
+    results = {
+        "success": True,
+        "updated_count": 0,
+        "details": [],
+        "errors": []
+    }
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for item in items:
+                # Get product_id (could be UUID string or product name)
+                product_id = item.get("product_id") or item.get("produk_id")
+                jumlah = float(item.get("jumlah", 0))
+                harga_satuan = float(item.get("harga_satuan", 0))
+                nama_produk = item.get("nama_produk", "")
+
+                # If product_id is not a UUID, lookup by name
+                if product_id and len(product_id) != 36:  # Not a UUID
+                    row = await conn.fetchrow(
+                        "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2",
+                        tenant_id, product_id
+                    )
+                    if row:
+                        product_id = str(row['id'])
+                    else:
+                        # Try by nama_produk field
+                        row = await conn.fetchrow(
+                            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2",
+                            tenant_id, nama_produk
+                        )
+                        if row:
+                            product_id = str(row['id'])
+
+                if not product_id:
+                    results["errors"].append(f"Product not found: {nama_produk}")
+                    continue
+
+                # Calculate qty: positive for purchase, negative for sale
+                qty = jumlah if jenis_transaksi == "pembelian" else -jumlah
+
+                # Call the update_inventory_with_log function
+                try:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT * FROM update_inventory_with_log(
+                            p_tenant_id := $1,
+                            p_product_id := $2::UUID,
+                            p_transaksi_id := $3,
+                            p_jenis_transaksi := $4,
+                            p_qty := $5::DOUBLE PRECISION,
+                            p_nilai_per_unit := $6::DOUBLE PRECISION,
+                            p_referensi := $7,
+                            p_keterangan := $8,
+                            p_created_by := $9
+                        )
+                        """,
+                        tenant_id, product_id, transaksi_id, jenis_transaksi,
+                        qty, harga_satuan, transaksi_id,
+                        f"{jenis_transaksi}: {nama_produk} x {jumlah}",
+                        created_by
+                    )
+
+                    if row and row['success']:
+                        results["updated_count"] += 1
+                        results["details"].append({
+                            "product_id": product_id,
+                            "nama_produk": nama_produk,
+                            "saldo_sebelum": row['saldo_sebelum'],
+                            "saldo_setelah": row['saldo_setelah']
+                        })
+                        logger.info(f"📦 Inventory updated: {nama_produk} | {row['saldo_sebelum']} → {row['saldo_setelah']}")
+                    else:
+                        msg = row['message'] if row else 'Unknown error'
+                        results["errors"].append(f"{nama_produk}: {msg}")
+                        logger.warning(f"⚠️ Inventory update failed: {nama_produk} - {msg}")
+
+                except Exception as item_error:
+                    results["errors"].append(f"{nama_produk}: {str(item_error)}")
+                    logger.error(f"❌ Inventory update error for {nama_produk}: {item_error}")
+
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        results["success"] = len(results["errors"]) == 0
+
+        logger.info(f"📊 Inventory update complete: {results['updated_count']} items in {elapsed_ms:.1f}ms")
+        return results
+
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        logger.error(f"❌ Inventory update error: {e} (after {elapsed_ms:.1f}ms)")
+        results["success"] = False
+        results["errors"].append(str(e))
+        return results

@@ -17,6 +17,8 @@ from .routers import customer
 from .routers import transactions
 from .routers import products
 from .routers import suppliers
+from .routers import inventory
+from .routers import members
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -26,8 +28,24 @@ from backend.api_gateway.app.routers import setup_chat
 from backend.api_gateway.app.routers import public_chat
 from backend.api_gateway.app.routers import tenant_chat
 
-# Import authentication middleware
+# Import middleware
 from .middleware.auth_middleware import AuthMiddleware
+from .middleware.rate_limit_middleware import RateLimitMiddleware
+from .middleware.rbac_middleware import RBACMiddleware
+from .middleware.security_headers_middleware import SecurityHeadersMiddleware
+from .middleware.account_lockout_middleware import AccountLockoutMiddleware
+from .middleware.request_id_middleware import RequestIDMiddleware
+from .middleware.waf_middleware import WAFMiddleware
+
+# Import FLE middleware (optional - for PII encryption)
+try:
+    from .services.crypto.fle_middleware import FLEMiddleware, PIIMaskingMiddleware
+    FLE_AVAILABLE = True
+except ImportError:
+    FLE_AVAILABLE = False
+
+# Import centralized config
+from .config import settings
 
 # Import tenant_orchestrator proto stubs
 from backend.api_gateway.libs.milkyhoop_protos import tenant_orchestrator_pb2, tenant_orchestrator_pb2_grpc
@@ -83,16 +101,52 @@ app = FastAPI(
     lifespan=prisma_lifespan
 )
 
-# Add Authentication Middleware
+# Validate configuration on startup
+config_errors = settings.validate()
+if config_errors and settings.ENVIRONMENT == "production":
+    for error in config_errors:
+        print(f"CONFIG ERROR: {error}")
+    # In production, fail fast if secrets not configured
+    # raise RuntimeError("Missing required configuration. Check environment variables.")
+
+# ===========================================
+# MIDDLEWARE CHAIN (order matters - last added runs first)
+# ===========================================
+
+# 0. FLE Middleware (Field-Level Encryption for PII) - Optional
+if FLE_AVAILABLE and settings.FLE_ENABLED:
+    app.add_middleware(FLEMiddleware, enabled=True)
+    app.add_middleware(PIIMaskingMiddleware)
+    print("FLE Middleware enabled - PII encryption active")
+
+# 1. Security Headers (runs last, adds headers to response)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# 2. Request ID Tracking (for audit trail)
+app.add_middleware(RequestIDMiddleware)
+
+# 3. WAF (Web Application Firewall - blocks attacks)
+app.add_middleware(WAFMiddleware, enabled=True, strict_mode=False)
+
+# 4. Rate Limiting (outermost protection)
+app.add_middleware(RateLimitMiddleware)
+
+# 5. Account Lockout (brute force protection)
+app.add_middleware(AccountLockoutMiddleware)
+
+# 6. RBAC (role-based access control)
+app.add_middleware(RBACMiddleware)
+
+# 7. Authentication (validates tokens)
 app.add_middleware(AuthMiddleware)
 
-# Add CORS Middleware for Frontend
+# 7. CORS (handles cross-origin requests)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://milkyhoop.com", "https://dev.milkyhoop.com", "http://localhost:3001"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=settings.CORS_ALLOW_HEADERS,  # Explicit list, not "*"
 )
 
 @app.on_event("startup")
@@ -139,6 +193,12 @@ app.include_router(transactions.router, prefix="/api/transactions", tags=["trans
 app.include_router(products.router, prefix="/api/products", tags=["products"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"])
 
+# Inventory management router
+app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"])
+
+# Members/Customer management router (for POS)
+app.include_router(members.router, prefix="/api/members", tags=["members"])
+
 @app.get("/")
 async def root():
     return {
@@ -147,10 +207,11 @@ async def root():
         "phase": "Phase 2 - Authentication Active",
         "features": {
             "authentication": "Active - JWT + Session Management",
-            "session_management": "Active - Redis Storage", 
+            "session_management": "Active - Redis Storage",
             "middleware": "Active - Path-based Access Control",
             "multi_tenant": "Active",
-            "chatbot_services": "Active"
+            "chatbot_services": "Active",
+            "field_level_encryption": "Active" if (FLE_AVAILABLE and settings.FLE_ENABLED) else "Disabled"
         },
         "endpoints": {
             "protected": ["/chat/", "/api/setup/", "/api/test/", "/api/auth/"],

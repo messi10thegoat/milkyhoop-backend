@@ -1,0 +1,9 @@
+# ==============================================
+# SOPS Configuration for MilkyHoop
+# Secrets Management with age encryption
+# ==============================================
+
+creation_rules:
+  # Encrypt all files by default
+  - path_regex: .*
+    age: age1ha44p0556qhxmhqt46c6jj8xat0n0kwulesr4a3dngulv9vsmq6qnkwvgn
