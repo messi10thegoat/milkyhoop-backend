@@ -25,7 +25,8 @@ class PurchaseTransactionRequest(BaseModel):
     quantity: int
     unit: str  # pcs, kg, karton, etc.
     price_per_unit: int  # in rupiah (integer)
-    payment_method: Literal["tunai", "transfer", "kredit"] = "tunai"
+    # Accept both lowercase (backend) and uppercase (Kulakan frontend) payment methods
+    payment_method: Literal["tunai", "transfer", "kredit", "CASH", "TRANSFER", "TEMPO"] = "tunai"
     vendor_name: Optional[str] = None
     notes: Optional[str] = None
     # Discount & PPN fields (V005)
@@ -43,6 +44,20 @@ class PurchaseTransactionRequest(BaseModel):
     margin: Optional[float] = None            # Profit margin
     margin_percent: Optional[float] = None    # Margin percentage
     retail_unit: Optional[str] = None         # Retail unit for HPP display (e.g., "pcs" instead of "dus")
+    # Kulakan frontend additional fields (aliases and extras)
+    transaction_type: Optional[str] = None    # 'pembelian'
+    product_barcode: Optional[str] = None     # barcode from scanner
+    supplier_name: Optional[str] = None       # alias for vendor_name
+    catatan: Optional[str] = None             # alias for notes (Indonesian)
+    content_unit: Optional[str] = None        # unit for contents (e.g., 'pcs' in 'karton isi 24 pcs')
+    total_amount: Optional[int] = None        # total price (quantity * price_per_unit)
+    harga_pokok: Optional[float] = None       # alias for hpp_per_unit
+    has_discount: Optional[bool] = False      # whether discount is applied
+    has_ppn: Optional[bool] = False           # alias for include_vat
+    is_wholesale: Optional[bool] = False      # wholesale mode
+    is_tempo: Optional[bool] = False          # credit payment
+    is_new_product: Optional[bool] = False    # new product flag
+    category: Optional[str] = None            # product category
 
 
 class TransactionResponse(BaseModel):
@@ -93,7 +108,19 @@ async def create_purchase_transaction(
 
         logger.info(f"Purchase request from user {user_id} in tenant {tenant_id}")
 
-        # ===== 2. BUILD NATURAL LANGUAGE MESSAGE =====
+        # ===== 2. NORMALIZE FIELD ALIASES =====
+        # Handle both frontend (Kulakan) and backend naming conventions
+        payment_method_map = {
+            "CASH": "tunai", "TRANSFER": "transfer", "TEMPO": "kredit",
+            "tunai": "tunai", "transfer": "transfer", "kredit": "kredit"
+        }
+        normalized_payment = payment_method_map.get(body.payment_method, "tunai")
+        vendor = body.vendor_name or body.supplier_name or ""
+        notes_text = body.notes or body.catatan or ""
+        use_vat = body.include_vat or body.has_ppn or False
+        hpp = body.hpp_per_unit or body.harga_pokok
+
+        # ===== 3. BUILD NATURAL LANGUAGE MESSAGE =====
         # Convert form to conversational message that orchestrator understands
         # Add [FORM] flag so orchestrator skips clarification flow
 
@@ -106,20 +133,20 @@ async def create_purchase_transaction(
         ]
 
         # Add payment method
-        if body.payment_method == "tunai":
+        if normalized_payment == "tunai":
             message_parts.append("bayar tunai")
-        elif body.payment_method == "transfer":
+        elif normalized_payment == "transfer":
             message_parts.append("bayar transfer")
-        elif body.payment_method == "kredit":
+        elif normalized_payment == "kredit":
             message_parts.append("bayar kredit")
 
         # Add vendor if specified
-        if body.vendor_name:
-            message_parts.append(f"dari {body.vendor_name}")
+        if vendor:
+            message_parts.append(f"dari {vendor}")
 
         # Add notes if specified
-        if body.notes:
-            message_parts.append(f"catatan: {body.notes}")
+        if notes_text:
+            message_parts.append(f"catatan: {notes_text}")
 
         message = " ".join(message_parts)
 
@@ -144,25 +171,32 @@ async def create_purchase_transaction(
         form_data_json = json.dumps({
             "form_data": {
                 "product_name": body.product_name,
+                "product_barcode": body.product_barcode or "",
                 "quantity": body.quantity,
                 "unit": body.unit,
                 "price_per_unit": body.price_per_unit,
-                "total": body.quantity * body.price_per_unit,
-                "payment_method": body.payment_method,
-                "vendor_name": body.vendor_name or "",
-                "notes": body.notes or "",
-                "transaction_type": "pembelian",
+                "total": body.total_amount or (body.quantity * body.price_per_unit),
+                "payment_method": normalized_payment,  # Use normalized value
+                "vendor_name": vendor,  # Use normalized value (vendor_name or supplier_name)
+                "notes": notes_text,  # Use normalized value (notes or catatan)
+                "transaction_type": body.transaction_type or "pembelian",
                 # Discount & PPN fields (V005)
                 "discount_type": backend_discount_type,
                 "discount_value": body.discount_value or 0,
-                "include_vat": body.include_vat,
+                "include_vat": use_vat,  # Use normalized value (include_vat or has_ppn)
+                "has_discount": body.has_discount or False,
                 # Additional metadata
                 "units_per_pack": body.units_per_pack,
+                "content_unit": body.content_unit,  # Kulakan: unit for contents
                 "purchase_type": body.purchase_type,
                 "purchase_date": body.purchase_date,
                 "due_date": body.due_date,
+                "is_tempo": body.is_tempo or False,
+                "is_wholesale": body.is_wholesale or False,
+                "is_new_product": body.is_new_product or False,
+                "category": body.category,
                 # HPP & Margin fields (V006)
-                "hpp_per_unit": body.hpp_per_unit,
+                "hpp_per_unit": hpp,  # Use normalized value (hpp_per_unit or harga_pokok)
                 "harga_jual": body.harga_jual,
                 "margin": body.margin,
                 "margin_percent": body.margin_percent,

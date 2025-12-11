@@ -27,6 +27,7 @@ from backend.api_gateway.app.routers import onboarding
 from backend.api_gateway.app.routers import setup_chat
 from backend.api_gateway.app.routers import public_chat
 from backend.api_gateway.app.routers import tenant_chat
+from .routers import reports
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -36,6 +37,7 @@ from .middleware.security_headers_middleware import SecurityHeadersMiddleware
 from .middleware.account_lockout_middleware import AccountLockoutMiddleware
 from .middleware.request_id_middleware import RequestIDMiddleware
 from .middleware.waf_middleware import WAFMiddleware
+from .middleware.tenant_validation_middleware import TenantValidationMiddleware
 
 # Import FLE middleware (optional - for PII encryption)
 try:
@@ -134,13 +136,16 @@ app.add_middleware(RateLimitMiddleware)
 # 5. Account Lockout (brute force protection)
 app.add_middleware(AccountLockoutMiddleware)
 
-# 6. RBAC (role-based access control)
+# 6. Tenant Validation (prevents IDOR attacks - runs after Auth sets user)
+app.add_middleware(TenantValidationMiddleware)
+
+# 7. RBAC (role-based access control)
 app.add_middleware(RBACMiddleware)
 
-# 7. Authentication (validates tokens)
+# 8. Authentication (validates tokens)
 app.add_middleware(AuthMiddleware)
 
-# 7. CORS (handles cross-origin requests)
+# 9. CORS (handles cross-origin requests)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -198,6 +203,9 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"]
 
 # Members/Customer management router (for POS)
 app.include_router(members.router, prefix="/api/members", tags=["members"])
+
+# SAK EMKM Financial Reports router
+app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 
 @app.get("/")
 async def root():

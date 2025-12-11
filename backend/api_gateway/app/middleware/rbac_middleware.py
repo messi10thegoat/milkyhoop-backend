@@ -3,6 +3,7 @@ Role-Based Access Control (RBAC) Middleware
 Enforces role requirements on protected endpoints
 """
 import logging
+import re
 from typing import Dict, List, Set, Optional
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -30,6 +31,10 @@ class RBACMiddleware(BaseHTTPMiddleware):
         "FREE": 1,
     }
 
+    # Regex pattern for barcode registration: /api/products/{uuid}/barcode
+    # Allows FREE tier to register barcodes to their products
+    BARCODE_REGISTER_PATTERN = re.compile(r'^/api/products/[^/]+/barcode$')
+
     def __init__(self, app):
         super().__init__(app)
 
@@ -50,16 +55,16 @@ class RBACMiddleware(BaseHTTPMiddleware):
             "/api/tenant/chat": "FREE",
             "/api/products/search/pos": "FREE",  # Autocomplete for POS
             "/api/products/barcode/": "FREE",    # Barcode lookup for POS
+            "/api/inventory/": "FREE",           # Inventory access for FREE tier
+            "/api/members/": "FREE",             # Customer/Members access for FREE tier
 
-            # Standard user endpoints
-            "/api/inventory/": "USER",
-            "/api/transactions/": "USER",
+            # Standard user endpoints (FREE tier can also do transactions)
+            "/api/transactions/": "FREE",
             "/api/products/": "USER",
             "/api/customers/": "USER",
             "/api/kasbank/": "USER",
             "/api/debt/": "USER",
             "/api/insight/": "USER",
-            "/api/members/": "USER",
         }
 
         # Endpoints that bypass RBAC (handled by auth middleware)
@@ -87,6 +92,11 @@ class RBACMiddleware(BaseHTTPMiddleware):
         for public_path in self.public_paths:
             if path.startswith(public_path):
                 return None
+
+        # Special case: barcode registration endpoint for FREE tier
+        # Pattern: /api/products/{product_id}/barcode
+        if self.BARCODE_REGISTER_PATTERN.match(path):
+            return "FREE"
 
         # Check protected routes
         for route_prefix, required_role in self.protected_routes.items():
