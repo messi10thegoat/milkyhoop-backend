@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncpg
-import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,8 +25,8 @@ async def get_db_pool() -> asyncpg.Pool:
             user="postgres",
             password="Proyek771977",
             database="milkydb",
-            min_size=5,      # Keep 5 connections ready
-            max_size=20,     # Max 20 concurrent
+            min_size=5,  # Keep 5 connections ready
+            max_size=20,  # Max 20 concurrent
             command_timeout=5,
         )
         logger.info("✅ Database pool created (5-20 connections)")
@@ -75,6 +74,7 @@ class ProductItem(BaseModel):
 
 class BarcodeProduct(BaseModel):
     """Product details returned from barcode lookup"""
+
     id: str
     name: str
     unit: str
@@ -90,11 +90,13 @@ class BarcodeProduct(BaseModel):
 
 class RegisterBarcodeRequest(BaseModel):
     """Request to register barcode to product"""
+
     barcode: str
 
 
 class RegisterBarcodeResponse(BaseModel):
     """Response from barcode registration"""
+
     success: bool
     product: dict
     name_changed: bool = False
@@ -103,10 +105,7 @@ class RegisterBarcodeResponse(BaseModel):
 
 
 @router.get("/barcode/{barcode}")
-async def get_product_by_barcode(
-    request: Request,
-    barcode: str
-):
+async def get_product_by_barcode(request: Request, barcode: str):
     """
     Lookup product by barcode (EAN-13, UPC, etc.)
 
@@ -115,7 +114,7 @@ async def get_product_by_barcode(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -147,10 +146,10 @@ async def get_product_by_barcode(
                 logger.info(f"Barcode not found: barcode={barcode}, tenant={tenant_id}")
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Product with barcode '{barcode}' not found"
+                    detail=f"Product with barcode '{barcode}' not found",
                 )
 
-            product_name = row['name']
+            product_name = row["name"]
 
             # Also fetch last transaction data for auto-fill (Bug #5: include satuan from history)
             last_tx_query = """
@@ -176,31 +175,41 @@ async def get_product_by_barcode(
             last_unit = None  # Bug #5: Get unit from last purchase transaction
 
             if last_tx:
-                last_price = int(last_tx['last_price']) if last_tx['last_price'] else None
-                harga_jual = int(last_tx['harga_jual']) if last_tx['harga_jual'] else None
-                last_unit = last_tx['last_unit']  # Bug #5: Satuan from history
-                if last_tx['hpp_per_unit'] and last_tx['hpp_per_unit'] > 0 and last_tx['last_price']:
-                    computed = last_tx['last_price'] / last_tx['hpp_per_unit']
+                last_price = (
+                    int(last_tx["last_price"]) if last_tx["last_price"] else None
+                )
+                harga_jual = (
+                    int(last_tx["harga_jual"]) if last_tx["harga_jual"] else None
+                )
+                last_unit = last_tx["last_unit"]  # Bug #5: Satuan from history
+                if (
+                    last_tx["hpp_per_unit"]
+                    and last_tx["hpp_per_unit"] > 0
+                    and last_tx["last_price"]
+                ):
+                    computed = last_tx["last_price"] / last_tx["hpp_per_unit"]
                     if computed >= 1:
                         units_per_pack = int(round(computed))
 
             # Bug #5: Use last_unit from history if available (for Kulakan), fallback to product unit
-            effective_unit = last_unit if last_unit else (row['unit'] or 'pcs')
+            effective_unit = last_unit if last_unit else (row["unit"] or "pcs")
 
             result = BarcodeProduct(
-                id=str(row['id']),
-                name=row['name'],
+                id=str(row["id"]),
+                name=row["name"],
                 unit=effective_unit,
-                category=row['category'],
-                price=float(row['price']) if row['price'] else None,
-                description=row['description'],
-                barcode=row['barcode'],
+                category=row["category"],
+                price=float(row["price"]) if row["price"] else None,
+                description=row["description"],
+                barcode=row["barcode"],
                 units_per_pack=units_per_pack,
                 harga_jual=harga_jual,
-                last_price=last_price
+                last_price=last_price,
             )
 
-            logger.info(f"Barcode lookup: barcode={barcode}, tenant={tenant_id}, found={result.name}, units_per_pack={units_per_pack}, harga_jual={harga_jual}")
+            logger.info(
+                f"Barcode lookup: barcode={barcode}, tenant={tenant_id}, found={result.name}, units_per_pack={units_per_pack}, harga_jual={harga_jual}"
+            )
 
             return result
 
@@ -214,11 +223,145 @@ async def get_product_by_barcode(
         raise HTTPException(status_code=500, detail="Barcode lookup failed")
 
 
-@router.get("/all")
-async def get_all_products(
+class LastPurchaseResponse(BaseModel):
+    """Response from last purchase lookup - for auto-fill in Pembelian form"""
+
+    product_name: str
+    last_unit: Optional[str] = None  # Wholesale unit (karton, dus, slop)
+    content_unit: Optional[str] = None  # Retail unit name (pcs, bungkus, batang)
+    units_per_pack: Optional[int] = None  # How many retail units per wholesale
+    last_price: Optional[int] = None  # Price per wholesale unit
+    harga_jual: Optional[int] = None  # Selling price (per retail unit)
+    hpp_per_unit: Optional[float] = None  # Cost per retail unit
+    is_wholesale: bool = True  # Whether last purchase was wholesale
+
+
+# Wholesale units - satuan grosir
+WHOLESALE_UNITS = {
+    "karton",
+    "dus",
+    "box",
+    "slop",
+    "bal",
+    "koli",
+    "pack",
+    "lusin",
+    "rim",
+    "gross",
+    "sak",
+}
+
+
+@router.get("/last-purchase")
+async def get_last_purchase(
     request: Request,
-    limit: int = Query(1000, ge=1, le=2000)
+    product_name: str = Query(..., description="Product name to lookup"),
 ):
+    """
+    Get last purchase transaction for a product by name.
+    Used for auto-filling form fields in Pembelian page.
+
+    Returns: unit, units_per_pack, price_per_unit from last transaction
+    """
+    try:
+        # Get user from auth middleware
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Connect to database
+        conn = await get_db_connection()
+
+        try:
+            # Query last purchase transaction for this product
+            purchase_query = """
+                SELECT
+                    it.satuan as last_unit,
+                    it.harga_satuan as last_price,
+                    it.harga_jual,
+                    it.hpp_per_unit
+                FROM public.item_transaksi it
+                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                WHERE th.tenant_id = $1
+                  AND LOWER(it.nama_produk) = LOWER($2)
+                  AND th.jenis_transaksi = 'pembelian'
+                ORDER BY th.created_at DESC
+                LIMIT 1
+            """
+
+            row = await conn.fetchrow(purchase_query, tenant_id, product_name)
+
+            if not row:
+                # No history found - return empty response (not error)
+                logger.info(
+                    f"No purchase history for: {product_name}, tenant={tenant_id}"
+                )
+                return LastPurchaseResponse(product_name=product_name)
+
+            # Compute units_per_pack from price / hpp
+            units_per_pack = None
+            if row["hpp_per_unit"] and row["hpp_per_unit"] > 0 and row["last_price"]:
+                computed = row["last_price"] / row["hpp_per_unit"]
+                if computed >= 1:
+                    units_per_pack = int(round(computed))
+
+            # Determine if wholesale based on unit name
+            last_unit = row["last_unit"] or ""
+            is_wholesale = last_unit.lower() in WHOLESALE_UNITS
+
+            # Query for retail unit from sales transactions (penjualan)
+            # Sales are typically done in retail units (pcs, bungkus, etc.)
+            content_unit = None
+            if is_wholesale:
+                retail_query = """
+                    SELECT DISTINCT it.satuan
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND LOWER(it.nama_produk) = LOWER($2)
+                      AND th.jenis_transaksi = 'penjualan'
+                      AND LOWER(it.satuan) NOT IN ('karton', 'dus', 'box', 'slop', 'bal', 'koli', 'pack', 'lusin', 'rim', 'gross', 'sak')
+                    ORDER BY it.satuan
+                    LIMIT 1
+                """
+                retail_row = await conn.fetchrow(retail_query, tenant_id, product_name)
+                if retail_row and retail_row["satuan"]:
+                    content_unit = retail_row["satuan"]
+
+            result = LastPurchaseResponse(
+                product_name=product_name,
+                last_unit=last_unit,
+                content_unit=content_unit,
+                units_per_pack=units_per_pack,
+                last_price=int(row["last_price"]) if row["last_price"] else None,
+                harga_jual=int(row["harga_jual"]) if row["harga_jual"] else None,
+                hpp_per_unit=float(row["hpp_per_unit"])
+                if row["hpp_per_unit"]
+                else None,
+                is_wholesale=is_wholesale,
+            )
+
+            logger.info(
+                f"Last purchase lookup: product={product_name}, unit={result.last_unit}, content_unit={result.content_unit}, price={result.last_price}, units_per_pack={result.units_per_pack}, is_wholesale={result.is_wholesale}"
+            )
+
+            return result
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Last purchase lookup error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Last purchase lookup failed")
+
+
+@router.get("/all")
+async def get_all_products(request: Request, limit: int = Query(1000, ge=1, le=2000)):
     """
     Fetch ALL products for client-side filtering (instant autocomplete).
     Returns products from item_transaksi ordered by usage frequency.
@@ -228,7 +371,7 @@ async def get_all_products(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -258,9 +401,9 @@ async def get_all_products(
 
             results = [
                 {
-                    "name": row['name'],
-                    "unit": row['unit'] or 'pcs',
-                    "last_price": int(row['last_price']) if row['last_price'] else None
+                    "name": row["name"],
+                    "unit": row["unit"] or "pcs",
+                    "last_price": int(row["last_price"]) if row["last_price"] else None,
                 }
                 for row in rows
             ]
@@ -283,7 +426,7 @@ async def get_all_products(
 async def search_products(
     request: Request,
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(10, ge=1, le=50)
+    limit: int = Query(10, ge=1, le=50),
 ):
     """
     Search products by name (autocomplete)
@@ -293,7 +436,7 @@ async def search_products(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -349,21 +492,33 @@ async def search_products(
             for row in rows:
                 # Compute units_per_pack from price / hpp_per_unit
                 units_per_pack = None
-                if row['hpp_per_unit'] and row['hpp_per_unit'] > 0 and row['last_price']:
-                    computed = row['last_price'] / row['hpp_per_unit']
+                if (
+                    row["hpp_per_unit"]
+                    and row["hpp_per_unit"] > 0
+                    and row["last_price"]
+                ):
+                    computed = row["last_price"] / row["hpp_per_unit"]
                     if computed >= 1:
                         units_per_pack = int(round(computed))
 
-                suggestions.append(ProductSuggestion(
-                    name=row['name'],
-                    unit=row['unit'] or 'pcs',
-                    last_price=int(row['last_price']) if row['last_price'] else None,
-                    usage_count=int(row['usage_count']),
-                    harga_jual=int(row['harga_jual']) if row['harga_jual'] else None,
-                    units_per_pack=units_per_pack
-                ))
+                suggestions.append(
+                    ProductSuggestion(
+                        name=row["name"],
+                        unit=row["unit"] or "pcs",
+                        last_price=int(row["last_price"])
+                        if row["last_price"]
+                        else None,
+                        usage_count=int(row["usage_count"]),
+                        harga_jual=int(row["harga_jual"])
+                        if row["harga_jual"]
+                        else None,
+                        units_per_pack=units_per_pack,
+                    )
+                )
 
-            logger.info(f"Product search: q='{q}', tenant={tenant_id}, found={len(suggestions)}")
+            logger.info(
+                f"Product search: q='{q}', tenant={tenant_id}, found={len(suggestions)}"
+            )
 
             return ProductSearchResponse(suggestions=suggestions)
 
@@ -381,10 +536,13 @@ async def search_products(
 async def search_products_for_pos(
     request: Request,
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(10, ge=1, le=50)
+    limit: int = Query(10, ge=1, le=50),
 ):
     """
-    Search products for POS (selling) - OPTIMIZED FOR SPEED
+    Search products for POS (selling) - HYBRID FUZZY SEARCH
+
+    Uses pg_trgm for fuzzy matching + ILIKE for exact substring
+    Handles typos like "akua" → "Aqua", "milo" → "Milo"
 
     Source: Products table (actual inventory)
     Returns: id, name, barcode, harga_jual (selling price), stok
@@ -393,7 +551,7 @@ async def search_products_for_pos(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -404,33 +562,61 @@ async def search_products_for_pos(
         pool = await get_db_pool()
 
         async with pool.acquire() as conn:
-            # Optimized query - using ILIKE for case-insensitive
+            # Hybrid search: combines ILIKE (exact substring) + pg_trgm (fuzzy)
+            # Priority: exact match > prefix match > contains > fuzzy similarity
             query = """
-                SELECT
-                    id,
-                    nama_produk as name,
-                    barcode,
-                    COALESCE(harga_jual, 0)::int as harga_jual
-                FROM public.products
-                WHERE tenant_id = $1
-                  AND nama_produk ILIKE $2
-                  AND harga_jual > 0
+                WITH search_results AS (
+                    SELECT
+                        id,
+                        nama_produk as name,
+                        barcode,
+                        COALESCE(harga_jual, 0)::int as harga_jual,
+                        -- Scoring: higher = better match
+                        CASE
+                            -- Exact match (case-insensitive)
+                            WHEN LOWER(nama_produk) = LOWER($2) THEN 100
+                            -- Starts with query
+                            WHEN LOWER(nama_produk) LIKE LOWER($2) || '%' THEN 80
+                            -- Contains query as word boundary
+                            WHEN LOWER(nama_produk) LIKE '% ' || LOWER($2) || '%' THEN 60
+                            -- Contains query anywhere
+                            WHEN LOWER(nama_produk) LIKE '%' || LOWER($2) || '%' THEN 40
+                            -- Fuzzy match via pg_trgm (scaled to 0-30)
+                            ELSE similarity(LOWER(nama_produk), LOWER($2)) * 30
+                        END as score
+                    FROM public.products
+                    WHERE tenant_id = $1
+                      AND harga_jual > 0
+                      AND (
+                          -- ILIKE match (substring)
+                          nama_produk ILIKE '%' || $2 || '%'
+                          -- OR fuzzy match with low threshold (catches typos)
+                          OR similarity(LOWER(nama_produk), LOWER($2)) > 0.1
+                      )
+                )
+                SELECT id, name, barcode, harga_jual, score
+                FROM search_results
+                WHERE score > 0
+                ORDER BY score DESC, name ASC
                 LIMIT $3
             """
 
-            search_pattern = f"%{q}%"
-            rows = await conn.fetch(query, tenant_id, search_pattern, limit)
+            rows = await conn.fetch(query, tenant_id, q, limit)
 
             products = [
                 POSProductItem(
-                    id=str(row['id']),
-                    name=row['name'],
-                    barcode=row['barcode'],
-                    harga_jual=row['harga_jual'],
-                    stok=None
+                    id=str(row["id"]),
+                    name=row["name"],
+                    barcode=row["barcode"],
+                    harga_jual=row["harga_jual"],
+                    stok=None,
                 )
                 for row in rows
             ]
+
+            logger.info(
+                f"POS fuzzy search: q='{q}', tenant={tenant_id}, found={len(products)}"
+            )
 
             return POSProductSearchResponse(products=products)
 
@@ -456,7 +642,7 @@ class RecentSalesResponse(BaseModel):
 async def get_recent_sales_products(
     request: Request,
     limit: int = Query(5, ge=1, le=20),
-    tenant_id: str = Query(None, description="Optional tenant_id override")
+    tenant_id: str = Query(None, description="Optional tenant_id override"),
 ):
     """
     Get recently sold products for quick-add in POS.
@@ -464,7 +650,7 @@ async def get_recent_sales_products(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         effective_tenant = tenant_id or request.state.user.get("tenant_id")
@@ -497,15 +683,17 @@ async def get_recent_sales_products(
 
             products = [
                 RecentSalesProduct(
-                    id=str(row['id']),
-                    name=row['name'],
-                    barcode=row['barcode'],
-                    price=int(row['price'])
+                    id=str(row["id"]),
+                    name=row["name"],
+                    barcode=row["barcode"],
+                    price=int(row["price"]),
                 )
                 for row in rows
             ]
 
-            logger.info(f"Recent sales: tenant={effective_tenant}, found={len(products)}")
+            logger.info(
+                f"Recent sales: tenant={effective_tenant}, found={len(products)}"
+            )
 
             return RecentSalesResponse(products=products)
 
@@ -521,9 +709,7 @@ async def get_recent_sales_products(
 
 @router.patch("/{product_id}/barcode", response_model=RegisterBarcodeResponse)
 async def register_barcode(
-    request: Request,
-    product_id: str,
-    body: RegisterBarcodeRequest
+    request: Request, product_id: str, body: RegisterBarcodeRequest
 ):
     """
     Register barcode to existing product.
@@ -539,7 +725,7 @@ async def register_barcode(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -553,10 +739,15 @@ async def register_barcode(
             raise HTTPException(status_code=400, detail="Barcode cannot be empty")
 
         if not barcode.isdigit():
-            raise HTTPException(status_code=400, detail="Barcode harus berupa angka saja")
+            raise HTTPException(
+                status_code=400, detail="Barcode harus berupa angka saja"
+            )
 
         if len(barcode) != 13:
-            raise HTTPException(status_code=400, detail=f"Barcode harus 13 digit (EAN-13). Anda memasukkan {len(barcode)} digit.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Barcode harus 13 digit (EAN-13). Anda memasukkan {len(barcode)} digit.",
+            )
 
         # Connect to database
         conn = await get_db_connection()
@@ -573,10 +764,10 @@ async def register_barcode(
             if not product:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Product '{product_id}' not found or does not belong to your tenant"
+                    detail=f"Product '{product_id}' not found or does not belong to your tenant",
                 )
 
-            original_name = product['nama_produk']
+            original_name = product["nama_produk"]
 
             # Step 2: Check if barcode is already used by another product
             duplicate_query = """
@@ -589,7 +780,7 @@ async def register_barcode(
             if duplicate:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Barcode '{barcode}' already registered to product '{duplicate['nama_produk']}'"
+                    detail=f"Barcode '{barcode}' already registered to product '{duplicate['nama_produk']}'",
                 )
 
             # Step 3: Update product with barcode
@@ -607,16 +798,20 @@ async def register_barcode(
 
             # Build response
             result_product = {
-                "id": str(updated['id']),
-                "nama_produk": updated['nama_produk'],
-                "satuan": updated['satuan'] or 'pcs',
-                "kategori": updated['kategori'],
-                "harga_jual": float(updated['harga_jual']) if updated['harga_jual'] else None,
-                "deskripsi": updated['deskripsi'],
-                "barcode": updated['barcode']
+                "id": str(updated["id"]),
+                "nama_produk": updated["nama_produk"],
+                "satuan": updated["satuan"] or "pcs",
+                "kategori": updated["kategori"],
+                "harga_jual": float(updated["harga_jual"])
+                if updated["harga_jual"]
+                else None,
+                "deskripsi": updated["deskripsi"],
+                "barcode": updated["barcode"],
             }
 
-            logger.info(f"Barcode registered: product={product_id}, barcode={barcode}, tenant={tenant_id}")
+            logger.info(
+                f"Barcode registered: product={product_id}, barcode={barcode}, tenant={tenant_id}"
+            )
 
             # Step 4: Update chat history to replace "Daftarkan Barcode" buttons with registered barcode
             # This ensures persistence across page refreshes
@@ -634,7 +829,9 @@ async def register_barcode(
             """
             try:
                 await conn.execute(update_chat_query, product_id, barcode, tenant_id)
-                logger.info(f"Chat history updated for barcode registration: product={product_id}")
+                logger.info(
+                    f"Chat history updated for barcode registration: product={product_id}"
+                )
             except Exception as chat_err:
                 # Non-fatal: log but don't fail the request
                 logger.warning(f"Failed to update chat history: {chat_err}")
@@ -644,7 +841,7 @@ async def register_barcode(
                 product=result_product,
                 name_changed=False,  # Will be True in Phase 2 when central lookup is implemented
                 original_name=original_name,
-                message=f"Barcode '{barcode}' berhasil didaftarkan ke produk '{updated['nama_produk']}'"
+                message=f"Barcode '{barcode}' berhasil didaftarkan ke produk '{updated['nama_produk']}'",
             )
 
         finally:
@@ -654,7 +851,9 @@ async def register_barcode(
         raise
     except Exception as e:
         logger.error(f"Register barcode error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to register barcode: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to register barcode: {str(e)}"
+        )
 
 
 @router.get("/health")

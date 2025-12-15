@@ -1,0 +1,74 @@
+# ==================================================
+# MilkyHoop Gitleaks Configuration
+# Secret Detection Rules
+# ISO 27001:2022 Compliant (A.5.33 Information Confidentiality)
+# ==================================================
+
+title = "MilkyHoop Secret Detection"
+
+[extend]
+# Use default gitleaks rules as base
+useDefault = true
+
+# Custom allowlist for false positives
+[allowlist]
+description = "MilkyHoop-specific allowlist"
+
+# Paths to ignore (test fixtures, examples, docs)
+paths = [
+    '''\.env\.example''',
+    '''\.env\.template''',
+    '''credentials\.env\.template''',
+    '''backups/.*\.backup.*''',
+    '''node_modules/''',
+    '''\.git/''',
+    '''docs/.*\.md''',
+]
+
+# Regex patterns to ignore (example values, placeholders)
+regexes = [
+    '''REPLACE_WITH_''',
+    '''your_.*_here''',
+    '''example\.com''',
+    '''placeholder''',
+    '''xxxxxxxx''',
+    '''INSERT_.*_HERE''',
+    '''<your-.*>''',
+]
+
+# Custom rules for MilkyHoop-specific secrets
+[[rules]]
+id = "milkyhoop-jwt-secret"
+description = "MilkyHoop JWT Secret Key"
+regex = '''JWT_SECRET_KEY\s*=\s*["']?([A-Za-z0-9+/=]{32,})["']?'''
+tags = ["jwt", "secret", "critical"]
+
+[[rules]]
+id = "milkyhoop-fle-key"
+description = "MilkyHoop Field-Level Encryption Key"
+regex = '''FLE_.*_KEK\s*=\s*["']?([A-Za-z0-9+/=]{32,})["']?'''
+tags = ["encryption", "secret", "critical"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API Key"
+regex = '''sk-[a-zA-Z0-9]{48}'''
+tags = ["openai", "api-key", "critical"]
+
+[[rules]]
+id = "digitalocean-spaces-key"
+description = "DigitalOcean Spaces Access Key"
+regex = '''DO[0-9A-Z]{20}'''
+tags = ["digitalocean", "api-key"]
+
+[[rules]]
+id = "database-password"
+description = "Database Password in URL"
+regex = '''postgresql://[^:]+:([^@]{8,})@'''
+tags = ["database", "password", "critical"]
+
+[[rules]]
+id = "grpc-credentials"
+description = "gRPC Service Credentials"
+regex = '''GRPC_.*_(PASSWORD|SECRET|KEY)\s*=\s*["']?([^"'\s]{8,})["']?'''
+tags = ["grpc", "credentials"]

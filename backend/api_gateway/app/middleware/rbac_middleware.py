@@ -4,7 +4,7 @@ Enforces role requirements on protected endpoints
 """
 import logging
 import re
-from typing import Dict, List, Set, Optional
+from typing import Dict, Set, Optional
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -33,7 +33,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
 
     # Regex pattern for barcode registration: /api/products/{uuid}/barcode
     # Allows FREE tier to register barcodes to their products
-    BARCODE_REGISTER_PATTERN = re.compile(r'^/api/products/[^/]+/barcode$')
+    BARCODE_REGISTER_PATTERN = re.compile(r"^/api/products/[^/]+/barcode$")
 
     def __init__(self, app):
         super().__init__(app)
@@ -44,20 +44,19 @@ class RBACMiddleware(BaseHTTPMiddleware):
         self.protected_routes: Dict[str, str] = {
             # Admin-only endpoints
             "/api/admin/": "ADMIN",
-
             # Owner/Admin endpoints (tenant management)
             "/api/tenant/settings": "OWNER",
             "/api/tenant/users": "OWNER",
             "/api/tenant/billing": "OWNER",
-
             # Free tier endpoints (MUST be before /api/products/)
             "/api/chat/": "FREE",
             "/api/tenant/chat": "FREE",
             "/api/products/search/pos": "FREE",  # Autocomplete for POS
-            "/api/products/barcode/": "FREE",    # Barcode lookup for POS
-            "/api/inventory/": "FREE",           # Inventory access for FREE tier
-            "/api/members/": "FREE",             # Customer/Members access for FREE tier
-
+            "/api/products/barcode/": "FREE",  # Barcode lookup for POS
+            "/api/products/last-purchase": "FREE",  # Auto-fill from last purchase for Pembelian
+            "/api/products/all": "FREE",  # Product list for autocomplete
+            "/api/inventory/": "FREE",  # Inventory access for FREE tier
+            "/api/members/": "FREE",  # Customer/Members access for FREE tier
             # Standard user endpoints (FREE tier can also do transactions)
             "/api/transactions/": "FREE",
             "/api/products/": "USER",
@@ -139,7 +138,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
                     "message": f"This action requires {required_role} role or higher.",
                     "required_role": required_role,
                     "your_role": user_role,
-                }
+                },
             )
 
         return await call_next(request)

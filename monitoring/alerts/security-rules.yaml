@@ -1,0 +1,158 @@
+# ============================================
+# MilkyHoop Security Alerting Rules
+# ISO 27001:2022 - A.8.15, A.8.16 Logging & Monitoring
+# ============================================
+# Used with Loki Ruler or custom alerting script
+
+groups:
+  - name: security_alerts
+    rules:
+      # Authentication Security
+      - alert: HighFailedLoginRate
+        expr: |
+          sum(rate({job="api_gateway"} |= "login" |= "failed" [5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+          category: authentication
+        annotations:
+          summary: "High rate of failed login attempts"
+          description: "More than 5 failed logins in 5 minutes - possible brute force attack"
+
+      - alert: AccountLockout
+        expr: |
+          count_over_time({job="api_gateway"} |= "account locked" [5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+          category: authentication
+        annotations:
+          summary: "Multiple account lockouts detected"
+          description: "3+ accounts locked in 5 minutes - possible credential stuffing"
+
+      - alert: MFAFailures
+        expr: |
+          count_over_time({job="api_gateway"} |= "MFA" |= "failed" [10m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          category: authentication
+        annotations:
+          summary: "Multiple MFA failures detected"
+          description: "Possible MFA bypass attempt or compromised token"
+
+      # WAF & Attack Detection
+      - alert: WAFBlocks
+        expr: |
+          sum(rate({job="api_gateway"} |= "Blocked:" [5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          category: waf
+        annotations:
+          summary: "High rate of WAF blocks"
+          description: "Multiple attack attempts blocked by WAF"
+
+      - alert: SQLInjectionAttempt
+        expr: |
+          count_over_time({job="api_gateway"} |= "SQL injection" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: attack
+        annotations:
+          summary: "SQL Injection attempt detected"
+          description: "Immediate investigation required"
+
+      - alert: XSSAttempt
+        expr: |
+          count_over_time({job="api_gateway"} |= "XSS" |= "blocked" [5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+          category: attack
+        annotations:
+          summary: "Multiple XSS attempts detected"
+          description: "Cross-site scripting attacks being blocked"
+
+      # Rate Limiting
+      - alert: RateLimitExceeded
+        expr: |
+          sum(rate({job="api_gateway"} |= "429" [5m])) > 20
+        for: 2m
+        labels:
+          severity: warning
+          category: dos
+        annotations:
+          summary: "High rate of 429 responses"
+          description: "Possible DoS attack or misconfigured client"
+
+      # Error Monitoring
+      - alert: HighErrorRate
+        expr: |
+          sum(rate({job="api_gateway"} |= "ERROR" [5m])) / sum(rate({job="api_gateway"} [5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: "Error rate exceeds 5%"
+          description: "Application error rate is unusually high"
+
+      - alert: ServiceDown
+        expr: |
+          count_over_time({job="api_gateway"} |= "health" |= "unhealthy" [2m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Service health check failing"
+          description: "One or more services are unhealthy"
+
+      # Data Security
+      - alert: UnauthorizedDataAccess
+        expr: |
+          count_over_time({job="api_gateway"} |= "Unauthorized" |= "tenant" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: data_breach
+        annotations:
+          summary: "Unauthorized cross-tenant access attempt"
+          description: "IDOR attack detected - immediate investigation required"
+
+      - alert: BulkDataExport
+        expr: |
+          count_over_time({job="api_gateway"} |= "export" |= "bulk" [10m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          category: data_exfiltration
+        annotations:
+          summary: "Multiple bulk data exports detected"
+          description: "Possible data exfiltration - verify authorization"
+
+      # Privilege Escalation
+      - alert: AdminActionOutsideHours
+        expr: |
+          count_over_time({job="api_gateway"} |= "admin" |= "action" [5m]) > 0
+          and hour() < 7 or hour() > 22
+        for: 0m
+        labels:
+          severity: warning
+          category: insider_threat
+        annotations:
+          summary: "Admin action outside business hours"
+          description: "Administrative action performed outside normal hours"
+
+      - alert: RoleEscalationAttempt
+        expr: |
+          count_over_time({job="api_gateway"} |= "role" |= "escalation" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: privilege_escalation
+        annotations:
+          summary: "Privilege escalation attempt detected"
+          description: "Unauthorized role change attempt"

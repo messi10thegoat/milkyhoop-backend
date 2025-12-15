@@ -51,6 +51,7 @@ model User {
   transaksiApproved TransaksiHarian[]   @relation("TransaksiApprover")
   refreshTokens     RefreshToken[]
   chatMessages      ChatMessage[]
+  devices           UserDevice[]        // QR Login - linked devices
 }
 
 model Account {
@@ -100,13 +101,19 @@ model RefreshToken {
 }
 
 model UserSecurity {
-  id               String  @id @default(uuid())
-  userId           String  @unique
-  passwordHash     String?
-  twoFactorEnabled Boolean @default(false)
-  oauthId          String?
-  oauthProvider    String?
-  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(uuid())
+  userId              String    @unique
+  passwordHash        String?
+  twoFactorEnabled    Boolean   @default(false)
+  oauthId             String?
+  oauthProvider       String?
+  // MFA Fields - ISO 27001:2022 A.8.5
+  totpSecret          String?   @db.VarChar(64)
+  totpVerified        Boolean   @default(false)
+  mfaBackupCodes      String[]  @default([])
+  mfaEnabledAt        DateTime?
+  lastMfaVerification DateTime?
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model UserProfile {
@@ -126,6 +133,22 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+}
+
+// ============================================
+// MFA AUDIT LOG - ISO 27001:2022 A.8.15
+// ============================================
+model MfaAuditLog {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  action    String   @db.VarChar(50) // setup, verify, disable, backup_used
+  success   Boolean
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("mfa_audit_log")
 }
 
 // ============================================
@@ -246,6 +269,7 @@ model Tenant {
   refreshTokens   RefreshToken[]
   chatMessages    ChatMessage[]
   tenantRules     TenantRule[]
+  devices         UserDevice[]      // QR Login - linked devices
 }
 
 model Order {
@@ -774,6 +798,72 @@ model JurnalDetail {
   @@index([jurnalEntryId])
   @@index([akunId])
   @@map("jurnal_detail")
+}
+
+// ============================================
+// QR LOGIN TOKEN - Temporary QR Login Flow (WhatsApp-style)
+// ============================================
+model QRLoginToken {
+  id              String    @id @default(uuid())
+  token           String    @unique                    // Random 32-char token
+  status          String    @default("pending")        // pending|scanned|approved|rejected|expired
+
+  // Web device info (captured at QR generation)
+  webFingerprint  String?   @map("web_fingerprint")
+  webUserAgent    String?   @map("web_user_agent")
+  webIp           String?   @map("web_ip")
+  browserId       String?   @map("browser_id")         // Browser profile ID for single session
+
+  // Mobile approval
+  approvedByUserId String?  @map("approved_by_user_id")
+  approvedByTenantId String? @map("approved_by_tenant_id")
+  approvedAt      DateTime? @map("approved_at")
+
+  // Lifecycle
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime  @map("expires_at")         // 2 minutes from creation
+
+  @@index([token])
+  @@index([status, expiresAt])
+  @@map("qr_login_tokens")
+}
+
+// ============================================
+// USER DEVICE - Linked Devices Registry (QR Login)
+// ============================================
+model UserDevice {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  tenantId        String    @map("tenant_id")
+
+  // Device info
+  deviceType      String    @map("device_type")        // 'mobile' | 'web'
+  deviceName      String?   @map("device_name")        // "iPhone 12" | "Chrome - Windows"
+  deviceFingerprint String? @map("device_fingerprint")
+  userAgent       String?   @map("user_agent")
+  browserId       String    @map("browser_id")         // Browser profile ID for single session
+
+  // Auth
+  refreshTokenHash String?  @map("refresh_token_hash")
+
+  // Status
+  isActive        Boolean   @default(true) @map("is_active")
+  isPrimary       Boolean   @default(false) @map("is_primary")
+
+  // Tracking
+  lastActiveAt    DateTime  @default(now()) @map("last_active_at")
+  lastIp          String?   @map("last_ip")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime? @map("expires_at")         // Web sessions expire (30 days)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([userId, tenantId])
+  @@index([deviceFingerprint])
+  @@index([isActive])
+  @@index([browserId])
+  @@map("user_devices")
 }
 
 enum Role {

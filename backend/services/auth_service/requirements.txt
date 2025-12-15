@@ -70,3 +70,6 @@ urllib3==2.5.0
 uvicorn==0.29.0
 virtualenv==20.34.0
 zipp==3.23.0
+pyotp==2.9.0
+qrcode[pil]==7.4.2
+Pillow==10.4.0

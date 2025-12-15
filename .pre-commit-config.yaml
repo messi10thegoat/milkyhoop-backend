@@ -1,0 +1,112 @@
+# ==================================================
+# MilkyHoop Pre-commit Configuration
+# Local Security Checks Before Commit
+# ISO 27001:2022 Compliant (A.8.28 Secure Coding)
+# ==================================================
+#
+# Installation:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Manual run:
+#   pre-commit run --all-files
+#
+# ==================================================
+
+repos:
+  # Secret Detection - Gitleaks
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with Gitleaks
+        args: ['--config', '.gitleaks.toml']
+
+  # Python Security - Bandit
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.7
+    hooks:
+      - id: bandit
+        name: Python Security Check (Bandit)
+        args: ['-c', 'pyproject.toml', '-r', 'backend/']
+        exclude: |
+          (?x)^(
+            .*test.*|
+            .*backup.*|
+            node_modules/
+          )$
+
+  # Python Linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.9
+    hooks:
+      - id: ruff
+        name: Python Linting (Ruff)
+        args: ['--fix']
+      - id: ruff-format
+        name: Python Formatting (Ruff)
+
+  # YAML validation
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.33.0
+    hooks:
+      - id: yamllint
+        name: YAML Lint
+        args: ['-d', '{extends: default, rules: {line-length: disable, truthy: disable}}']
+        exclude: |
+          (?x)^(
+            node_modules/|
+            backups/
+          )$
+
+  # Dockerfile linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        name: Dockerfile Lint (Hadolint)
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        name: Check for large files
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+      - id: check-json
+        name: Validate JSON
+      - id: check-yaml
+        name: Validate YAML
+        exclude: |
+          (?x)^(
+            node_modules/
+          )$
+      - id: detect-private-key
+        name: Detect private keys
+      - id: end-of-file-fixer
+        name: Fix end of files
+      - id: trailing-whitespace
+        name: Fix trailing whitespace
+
+  # Security-focused checks
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets (Yelp)
+        args: ['--baseline', '.secrets.baseline']
+        exclude: |
+          (?x)^(
+            \.env\.example|
+            \.env\.template|
+            credentials\.env\.template|
+            package-lock\.json|
+            poetry\.lock
+          )$
+
+# CI configuration
+ci:
+  autofix_prs: false
+  autoupdate_schedule: weekly

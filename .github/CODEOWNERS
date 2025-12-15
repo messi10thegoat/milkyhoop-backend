@@ -1,0 +1,32 @@
+# ==================================================
+# MilkyHoop Code Owners
+# Security-sensitive files require review
+# ISO 27001:2022 Compliant (A.8.4 Access to Source Code)
+# ==================================================
+
+# Security configurations - require security team review
+.github/workflows/security-scan.yml @security-team
+.github/dependabot.yml @security-team
+.gitleaks.toml @security-team
+
+# Authentication & Authorization
+backend/api_gateway/app/middleware/auth_middleware.py @security-team
+backend/api_gateway/app/middleware/rbac_middleware.py @security-team
+backend/api_gateway/app/middleware/waf_middleware.py @security-team
+backend/api_gateway/app/services/auth_client.py @security-team
+backend/services/auth_service/ @security-team
+
+# Encryption & Secrets
+backend/api_gateway/app/services/crypto/ @security-team
+.env* @security-team
+
+# Infrastructure
+docker-compose.yml @infrastructure-team
+Dockerfile* @infrastructure-team
+nginx*.conf @infrastructure-team
+
+# Database migrations
+backend/migrations/ @database-team @security-team
+
+# Backup & Recovery
+backups/*.sh @infrastructure-team @security-team

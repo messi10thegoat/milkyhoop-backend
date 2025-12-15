@@ -1,0 +1,217 @@
+# ==================================================
+# MilkyHoop Security Scanning Pipeline
+# ISO 27001:2022 Compliant (A.8.28 Secure Coding)
+# ==================================================
+# Runs on: Every push, PR, and daily schedule
+# Tools: Semgrep (SAST), Trivy (Container/Deps), Gitleaks (Secrets)
+# ==================================================
+
+name: Security Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Daily scan at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ==================================================
+  # SAST: Semgrep Static Analysis
+  # ==================================================
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep \
+            --config auto \
+            --config p/python \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            --config p/jwt \
+            --config p/sql-injection \
+            --config p/xss \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error \
+            --severity ERROR \
+            --exclude "node_modules" \
+            --exclude "*.min.js" \
+            --exclude "backups" \
+            --exclude "*.backup*" \
+            .
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+
+  # ==================================================
+  # Container & Dependency Scanning: Trivy
+  # ==================================================
+  trivy:
+    name: Trivy Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy (Filesystem)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      - name: Upload Trivy FS results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-filesystem'
+
+      - name: Run Trivy (Config)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          skip-dirs: 'node_modules,backups'
+
+  # ==================================================
+  # Secret Detection: Gitleaks
+  # ==================================================
+  gitleaks:
+    name: Gitleaks Secret Detection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ==================================================
+  # Python Dependency Audit
+  # ==================================================
+  python-deps:
+    name: Python Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install safety
+        run: pip install safety
+
+      - name: Find and scan requirements files
+        run: |
+          echo "Scanning Python dependencies for vulnerabilities..."
+          find . -name "requirements*.txt" -type f | while read req; do
+            echo "Checking: $req"
+            safety check -r "$req" --full-report || true
+          done
+
+      - name: Scan poetry.lock files
+        run: |
+          find . -name "poetry.lock" -type f | while read lock; do
+            echo "Checking: $lock"
+            dir=$(dirname "$lock")
+            if [ -f "$dir/pyproject.toml" ]; then
+              cd "$dir"
+              pip install poetry
+              poetry export -f requirements.txt --without-hashes -o /tmp/req.txt 2>/dev/null || true
+              safety check -r /tmp/req.txt --full-report || true
+              cd -
+            fi
+          done
+
+  # ==================================================
+  # JavaScript/Node Dependency Audit
+  # ==================================================
+  node-deps:
+    name: Node.js Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Audit frontend dependencies
+        working-directory: frontend/web
+        run: |
+          npm audit --audit-level=high || true
+        continue-on-error: true
+
+  # ==================================================
+  # Security Summary
+  # ==================================================
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [semgrep, trivy, gitleaks, python-deps, node-deps]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "=== Security Scan Summary ==="
+          echo "Semgrep: ${{ needs.semgrep.result }}"
+          echo "Trivy: ${{ needs.trivy.result }}"
+          echo "Gitleaks: ${{ needs.gitleaks.result }}"
+          echo "Python Deps: ${{ needs.python-deps.result }}"
+          echo "Node Deps: ${{ needs.node-deps.result }}"
+
+          if [ "${{ needs.semgrep.result }}" == "failure" ] || \
+             [ "${{ needs.trivy.result }}" == "failure" ] || \
+             [ "${{ needs.gitleaks.result }}" == "failure" ]; then
+            echo ""
+            echo "CRITICAL: Security issues detected!"
+            exit 1
+          fi
+
+          echo ""
+          echo "All critical security checks passed."

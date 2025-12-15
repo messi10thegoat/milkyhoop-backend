@@ -3,6 +3,8 @@ import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { isAuthenticated, getUserEmail, logout } from '../utils/auth';
 import { checkTenantAccess, sendTenantMessage } from '../utils/api';
 import LoginModal from './LoginModal';
+import DeviceManagement from './DeviceManagement';
+import { isMobileBrowser } from '../utils/device';
 
 // API base URL from environment variable
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
@@ -31,6 +33,7 @@ const GenericTenantChat = () => {
   const [isTenantMode, setIsTenantMode] = useState(false);
   const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showDeviceManagement, setShowDeviceManagement] = useState(false);
   const [tenantInfo, setTenantInfo] = useState<any>(null);
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -55,7 +58,7 @@ const GenericTenantChat = () => {
   const adjustTextareaHeight = () => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    
+
     textarea.style.height = 'auto';
     const newHeight = Math.min(Math.max(textarea.scrollHeight, 48), 200);
     textarea.style.height = `${newHeight}px`;
@@ -65,17 +68,17 @@ const GenericTenantChat = () => {
   const getRelativeTime = (timestamp: Date) => {
     const now = new Date();
     const diffInSeconds = Math.floor((now.getTime() - timestamp.getTime()) / 1000);
-    
+
     if (diffInSeconds < 60) return 'Baru saja';
     if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} menit lalu`;
     if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} jam lalu`;
-    
+
     // Show date if different day
     const isSameDay = now.toDateString() === timestamp.toDateString();
     if (!isSameDay) {
       return timestamp.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
     }
-    
+
     return timestamp.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
   };
 
@@ -87,7 +90,7 @@ const GenericTenantChat = () => {
         setInputMessage('');
         textareaRef.current?.blur();
       }
-      
+
       // Ctrl+K to focus input
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
@@ -146,7 +149,7 @@ const GenericTenantChat = () => {
         setIsCheckingAccess(false);
         return;
       }
-      
+
       if (isAuthenticated()) {
         try {
           const hasAccess = await checkTenantAccess(tenantId);
@@ -160,7 +163,7 @@ const GenericTenantChat = () => {
       }
       setIsCheckingAccess(false);
     };
-    
+
     checkAccess();
   }, [tenantId]);
 
@@ -177,10 +180,10 @@ const GenericTenantChat = () => {
     const handleLogoutEvent = (event: any) => {
       const reason = event.detail?.reason || 'unknown';
       console.log(`[GenericTenantChat] Logout detected, reason: ${reason}`);
-      
+
       setIsTenantMode(false);
       setShowLoginModal(false);
-      
+
       // Show notification for non-manual logouts
       if (reason !== 'manual') {
         const messages = {
@@ -230,7 +233,7 @@ const GenericTenantChat = () => {
 
     try {
       let response;
-      
+
       if (isTenantMode) {
         // Use tenant mode API with auth
         response = await sendTenantMessage(tenantId, messageText);
@@ -296,7 +299,7 @@ const GenericTenantChat = () => {
       {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-          <button 
+          <button
             onClick={() => navigate(`/${tenantId}`)}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
           >
@@ -313,15 +316,29 @@ const GenericTenantChat = () => {
             )}
           </div>
           {isTenantMode ? (
-            <button 
-              onClick={handleLogout} 
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 min-w-[44px] min-h-[44px]"
-            >
-              Logout
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Device Management button (mobile only) */}
+              {isMobileBrowser() && (
+                <button
+                  onClick={() => setShowDeviceManagement(true)}
+                  className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+                  title="Perangkat Terhubung"
+                >
+                  <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </button>
+              )}
+              <button
+                onClick={handleLogout}
+                className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 min-w-[44px] min-h-[44px]"
+              >
+                Logout
+              </button>
+            </div>
           ) : (
-            <button 
-              onClick={() => setShowLoginModal(true)} 
+            <button
+              onClick={() => setShowLoginModal(true)}
               className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 min-w-[44px] min-h-[44px]"
             >
               Login
@@ -367,7 +384,7 @@ const GenericTenantChat = () => {
       )}
 
       {/* Messages */}
-      <div 
+      <div
         ref={messagesContainerRef}
         className="flex-1 overflow-y-auto px-4 py-6"
       >
@@ -391,7 +408,7 @@ const GenericTenantChat = () => {
               </div>
             </div>
           ))}
-          
+
           {isLoading && (
             <div className="flex justify-start">
               <div className="bg-white rounded-2xl px-4 py-3 shadow-sm">
@@ -403,7 +420,7 @@ const GenericTenantChat = () => {
               </div>
             </div>
           )}
-          
+
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -460,6 +477,12 @@ const GenericTenantChat = () => {
           }
           setIsCheckingAccess(false);
         }}
+      />
+
+      {/* Device Management Modal (for QR Login) */}
+      <DeviceManagement
+        isOpen={showDeviceManagement}
+        onClose={() => setShowDeviceManagement(false)}
       />
     </div>
   );

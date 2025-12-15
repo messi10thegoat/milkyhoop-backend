@@ -8,48 +8,29 @@ from builtins import bool as _bool
 from builtins import int as _int
 from builtins import float as _float
 from builtins import str as _str
-import sys
-import decimal
 import datetime
 from typing import (
-    TYPE_CHECKING,
     Optional,
     Iterable,
-    Iterator,
-    Sequence,
-    Callable,
-    ClassVar,
-    NoReturn,
-    TypeVar,
-    Generic,
     Mapping,
-    Tuple,
-    Union,
     List,
     Dict,
-    Type,
     Any,
     Set,
-    overload,
     cast,
 )
-from typing_extensions import TypedDict, Literal
 
 
 LiteralString = str
 # -- template models.py.jinja --
 import os
 import logging
-import inspect
 import warnings
 from collections import OrderedDict
 
-from pydantic import BaseModel, Field
 
 from . import types, enums, errors, fields, bases
-from ._types import FuncType
-from ._compat import model_rebuild, field_validator
-from ._builder import serialize_base64
+from ._compat import model_rebuild
 from .generator import partial_models_ctx, PartialModelField
 
 
@@ -94,6 +75,7 @@ class User(bases.BaseUser):
     transaksiApproved: Optional[List['models.TransaksiHarian']] = None
     refreshTokens: Optional[List['models.RefreshToken']] = None
     chatMessages: Optional[List['models.ChatMessage']] = None
+    devices: Optional[List['models.UserDevice']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -2098,6 +2080,7 @@ class Tenant(bases.BaseTenant):
     refreshTokens: Optional[List['models.RefreshToken']] = None
     chatMessages: Optional[List['models.ChatMessage']] = None
     tenantRules: Optional[List['models.TenantRule']] = None
+    devices: Optional[List['models.UserDevice']] = None
 
     # take *args and **kwargs so that other metaclasses can define arguments
     def __init_subclass__(
@@ -4679,6 +4662,265 @@ class JurnalDetail(bases.BaseJurnalDetail):
         _created_partial_types.add(name)
 
 
+class QRLoginToken(bases.BaseQRLoginToken):
+    """Represents a QRLoginToken record"""
+
+    id: _str
+    token: _str
+    status: _str
+    webFingerprint: Optional[_str] = None
+    webUserAgent: Optional[_str] = None
+    webIp: Optional[_str] = None
+    browserId: Optional[_str] = None
+    approvedByUserId: Optional[_str] = None
+    approvedByTenantId: Optional[_str] = None
+    approvedAt: Optional[datetime.datetime] = None
+    createdAt: datetime.datetime
+    expiresAt: datetime.datetime
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.QRLoginTokenKeys']] = None,
+        exclude: Optional[Iterable['types.QRLoginTokenKeys']] = None,
+        required: Optional[Iterable['types.QRLoginTokenKeys']] = None,
+        optional: Optional[Iterable['types.QRLoginTokenKeys']] = None,
+        relations: Optional[Mapping['types.QRLoginTokenRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.QRLoginTokenKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _QRLoginToken_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _QRLoginToken_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _QRLoginToken_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _QRLoginToken_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+
+            if relations:
+                raise ValueError('Model: "QRLoginToken" has no relational fields.')
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid QRLoginToken / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'QRLoginToken',
+            }
+        )
+        _created_partial_types.add(name)
+
+
+class UserDevice(bases.BaseUserDevice):
+    """Represents a UserDevice record"""
+
+    id: _str
+    userId: _str
+    tenantId: _str
+    deviceType: _str
+    deviceName: Optional[_str] = None
+    deviceFingerprint: Optional[_str] = None
+    userAgent: Optional[_str] = None
+    browserId: _str
+    refreshTokenHash: Optional[_str] = None
+    isActive: _bool
+    isPrimary: _bool
+    lastActiveAt: datetime.datetime
+    lastIp: Optional[_str] = None
+    createdAt: datetime.datetime
+    expiresAt: Optional[datetime.datetime] = None
+    user: Optional['models.User'] = None
+    tenant: Optional['models.Tenant'] = None
+
+    # take *args and **kwargs so that other metaclasses can define arguments
+    def __init_subclass__(
+        cls,
+        *args: Any,
+        warn_subclass: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__()
+        if warn_subclass is not None:
+            warnings.warn(
+                'The `warn_subclass` argument is deprecated as it is no longer necessary and will be removed in the next release',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+
+    @staticmethod
+    def create_partial(
+        name: str,
+        include: Optional[Iterable['types.UserDeviceKeys']] = None,
+        exclude: Optional[Iterable['types.UserDeviceKeys']] = None,
+        required: Optional[Iterable['types.UserDeviceKeys']] = None,
+        optional: Optional[Iterable['types.UserDeviceKeys']] = None,
+        relations: Optional[Mapping['types.UserDeviceRelationalFieldKeys', str]] = None,
+        exclude_relational_fields: bool = False,
+    ) -> None:
+        if not os.environ.get('PRISMA_GENERATOR_INVOCATION'):
+            raise RuntimeError(
+                'Attempted to create a partial type outside of client generation.'
+            )
+
+        if name in _created_partial_types:
+            raise ValueError(f'Partial type "{name}" has already been created.')
+
+        if include is not None:
+            if exclude is not None:
+                raise TypeError('Exclude and include are mutually exclusive.')
+            if exclude_relational_fields is True:
+                raise TypeError('Include and exclude_relational_fields=True are mutually exclusive.')
+
+        if required and optional:
+            shared = set(required) & set(optional)
+            if shared:
+                raise ValueError(f'Cannot make the same field(s) required and optional {shared}')
+
+        if exclude_relational_fields and relations:
+            raise ValueError(
+                'exclude_relational_fields and relations are mutually exclusive'
+            )
+
+        fields: Dict['types.UserDeviceKeys', PartialModelField] = OrderedDict()
+
+        try:
+            if include:
+                for field in include:
+                    fields[field] = _UserDevice_fields[field].copy()
+            elif exclude:
+                for field in exclude:
+                    if field not in _UserDevice_fields:
+                        raise KeyError(field)
+
+                fields = {
+                    key: data.copy()
+                    for key, data in _UserDevice_fields.items()
+                    if key not in exclude
+                }
+            else:
+                fields = {
+                    key: data.copy()
+                    for key, data in _UserDevice_fields.items()
+                }
+
+            if required:
+                for field in required:
+                    fields[field]['optional'] = False
+
+            if optional:
+                for field in optional:
+                    fields[field]['optional'] = True
+
+            if exclude_relational_fields:
+                fields = {
+                    key: data
+                    for key, data in fields.items()
+                    if key not in _UserDevice_relational_fields
+                }
+
+            if relations:
+                for field, type_ in relations.items():
+                    if field not in _UserDevice_relational_fields:
+                        raise errors.UnknownRelationalFieldError('UserDevice', field)
+
+                    # TODO: this method of validating types is not ideal
+                    # as it means we cannot two create partial types that
+                    # reference each other
+                    if type_ not in _created_partial_types:
+                        raise ValueError(
+                            f'Unknown partial type: "{type_}". '
+                            f'Did you remember to generate the {type_} type before this one?'
+                        )
+
+                    # TODO: support non prisma.partials models
+                    info = fields[field]
+                    if info['is_list']:
+                        info['type'] = f'List[\'partials.{type_}\']'
+                    else:
+                        info['type'] = f'\'partials.{type_}\''
+        except KeyError as exc:
+            raise ValueError(
+                f'{exc.args[0]} is not a valid UserDevice / {name} field.'
+            ) from None
+
+        models = partial_models_ctx.get()
+        models.append(
+            {
+                'name': name,
+                'fields': cast(Mapping[str, PartialModelField], fields),
+                'from_model': 'UserDevice',
+            }
+        )
+        _created_partial_types.add(name)
+
+
 
 _User_relational_fields: Set[str] = {
         'tenant',
@@ -4697,6 +4939,7 @@ _User_relational_fields: Set[str] = {
         'transaksiApproved',
         'refreshTokens',
         'chatMessages',
+        'devices',
     }
 _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
     [
@@ -4977,6 +5220,14 @@ _User_fields: Dict['types.UserKeys', PartialModelField] = OrderedDict(
             'is_list': True,
             'optional': True,
             'type': 'List[\'models.ChatMessage\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('devices', {
+            'name': 'devices',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.UserDevice\']',
             'is_relational': True,
             'documentation': None,
         }),
@@ -5940,6 +6191,7 @@ _Tenant_relational_fields: Set[str] = {
         'refreshTokens',
         'chatMessages',
         'tenantRules',
+        'devices',
     }
 _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
     [
@@ -6092,6 +6344,14 @@ _Tenant_fields: Dict['types.TenantKeys', PartialModelField] = OrderedDict(
             'is_list': True,
             'optional': True,
             'type': 'List[\'models.TenantRule\']',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('devices', {
+            'name': 'devices',
+            'is_list': True,
+            'optional': True,
+            'type': 'List[\'models.UserDevice\']',
             'is_relational': True,
             'documentation': None,
         }),
@@ -8196,11 +8456,242 @@ _JurnalDetail_fields: Dict['types.JurnalDetailKeys', PartialModelField] = Ordere
     ],
 )
 
+_QRLoginToken_relational_fields: Set[str] = set()  # pyright: ignore[reportUnusedVariable]
+_QRLoginToken_fields: Dict['types.QRLoginTokenKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('token', {
+            'name': 'token',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('status', {
+            'name': 'status',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('webFingerprint', {
+            'name': 'webFingerprint',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('webUserAgent', {
+            'name': 'webUserAgent',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('webIp', {
+            'name': 'webIp',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('approvedByUserId', {
+            'name': 'approvedByUserId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('approvedByTenantId', {
+            'name': 'approvedByTenantId',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('approvedAt', {
+            'name': 'approvedAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('expiresAt', {
+            'name': 'expiresAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+    ],
+)
+
+_UserDevice_relational_fields: Set[str] = {
+        'user',
+        'tenant',
+    }
+_UserDevice_fields: Dict['types.UserDeviceKeys', PartialModelField] = OrderedDict(
+    [
+        ('id', {
+            'name': 'id',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('userId', {
+            'name': 'userId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('tenantId', {
+            'name': 'tenantId',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('deviceType', {
+            'name': 'deviceType',
+            'is_list': False,
+            'optional': False,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('deviceName', {
+            'name': 'deviceName',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('deviceFingerprint', {
+            'name': 'deviceFingerprint',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('userAgent', {
+            'name': 'userAgent',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('refreshTokenHash', {
+            'name': 'refreshTokenHash',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isActive', {
+            'name': 'isActive',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('isPrimary', {
+            'name': 'isPrimary',
+            'is_list': False,
+            'optional': False,
+            'type': '_bool',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lastActiveAt', {
+            'name': 'lastActiveAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('lastIp', {
+            'name': 'lastIp',
+            'is_list': False,
+            'optional': True,
+            'type': '_str',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('createdAt', {
+            'name': 'createdAt',
+            'is_list': False,
+            'optional': False,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('expiresAt', {
+            'name': 'expiresAt',
+            'is_list': False,
+            'optional': True,
+            'type': 'datetime.datetime',
+            'is_relational': False,
+            'documentation': None,
+        }),
+        ('user', {
+            'name': 'user',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.User',
+            'is_relational': True,
+            'documentation': None,
+        }),
+        ('tenant', {
+            'name': 'tenant',
+            'is_list': False,
+            'optional': True,
+            'type': 'models.Tenant',
+            'is_relational': True,
+            'documentation': None,
+        }),
+    ],
+)
+
 
 
 # we have to import ourselves as relation types are namespaced to models
 # e.g. models.Post
-from . import models, actions
+from . import models
 
 # required to support relationships between models
 model_rebuild(User)
@@ -8237,3 +8728,5 @@ model_rebuild(TaxInfo)
 model_rebuild(BaganAkun)
 model_rebuild(JurnalEntry)
 model_rebuild(JurnalDetail)
+model_rebuild(QRLoginToken)
+model_rebuild(UserDevice)

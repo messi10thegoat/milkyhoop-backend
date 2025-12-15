@@ -28,6 +28,9 @@ from backend.api_gateway.app.routers import setup_chat
 from backend.api_gateway.app.routers import public_chat
 from backend.api_gateway.app.routers import tenant_chat
 from .routers import reports
+from .routers import qr_auth
+from .routers import device
+from .routers import mfa
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -42,6 +45,7 @@ from .middleware.tenant_validation_middleware import TenantValidationMiddleware
 # Import FLE middleware (optional - for PII encryption)
 try:
     from .services.crypto.fle_middleware import FLEMiddleware, PIIMaskingMiddleware
+
     FLE_AVAILABLE = True
 except ImportError:
     FLE_AVAILABLE = False
@@ -50,7 +54,6 @@ except ImportError:
 from .config import settings
 
 # Import tenant_orchestrator proto stubs
-from backend.api_gateway.libs.milkyhoop_protos import tenant_orchestrator_pb2, tenant_orchestrator_pb2_grpc
 
 # Import auth_client singleton from separate module (avoids circular import)
 from backend.api_gateway.app.services.auth_instance import auth_client
@@ -61,18 +64,21 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.dev.ConsoleRenderer(),
     ],
-    logger_factory=structlog.PrintLoggerFactory(file=sys.stdout)
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
 )
 
 logger = structlog.get_logger()
 
 # Prisma binary path
-os.environ["PRISMA_QUERY_ENGINE_BINARY"] = "/app/backend/api_gateway/libs/milkyhoop_prisma/engine/query-engine-debian-openssl-3.5.x"
+os.environ[
+    "PRISMA_QUERY_ENGINE_BINARY"
+] = "/app/backend/api_gateway/libs/milkyhoop_prisma/engine/query-engine-debian-openssl-3.5.x"
 
 # Prisma client (Python)
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
 prisma = Prisma()
+
 
 # Prisma lifecycle (startup & shutdown)
 @asynccontextmanager
@@ -95,12 +101,20 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         print(f"Error disconnecting Prisma: {e}")
 
-# FastAPI app
+
+# FastAPI app with environment-aware configuration
+# Disable OpenAPI/Swagger in production for security
+_is_production = settings.ENVIRONMENT == "production"
+
 app = FastAPI(
     title="MilkyHoop API Gateway",
     description="Enterprise Multi-Tenant Chatbot Platform with Phase 2 Authentication",
     version="3.0.0",
-    lifespan=prisma_lifespan
+    lifespan=prisma_lifespan,
+    # Security: Disable interactive docs in production
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # Validate configuration on startup
@@ -154,6 +168,7 @@ app.add_middleware(
     allow_headers=settings.CORS_ALLOW_HEADERS,  # Explicit list, not "*"
 )
 
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize auth service connection on startup"""
@@ -163,6 +178,7 @@ async def startup_event():
         logger.info("Connected to Auth Service successfully")
     except Exception as e:
         logger.error(f"Failed to connect to Auth Service: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -174,6 +190,7 @@ async def shutdown_event():
     except Exception as e:
         logger.error(f"Error closing Auth Service connection: {e}")
 
+
 # Include routers - Industry Standard Route Structure
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
@@ -181,8 +198,10 @@ app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(session.router, tags=["authentication"])
 app.include_router(customer.router, prefix="", tags=["customer"])
 app.include_router(ragcrud_test.router, prefix="/api/test/ragcrud", tags=["ragcrud"])
-app.include_router(ragllm_test.router, prefix="/api/test/ragllm", tags=["ragllm"]) 
-app.include_router(raginject_test.router, prefix="/api/test/raginject", tags=["raginject"])
+app.include_router(ragllm_test.router, prefix="/api/test/ragllm", tags=["ragllm"])
+app.include_router(
+    raginject_test.router, prefix="/api/test/raginject", tags=["raginject"]
+)
 app.include_router(flow.router, prefix="/api/flow", tags=["flow"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboarding"])
 
@@ -192,7 +211,9 @@ app.include_router(public_chat.router, prefix="", tags=["public"])
 app.include_router(tenant_chat.router, prefix="/api/tenant", tags=["tenant"])
 
 # Transaction form-based router
-app.include_router(transactions.router, prefix="/api/transactions", tags=["transactions"])
+app.include_router(
+    transactions.router, prefix="/api/transactions", tags=["transactions"]
+)
 
 # Autocomplete routers
 app.include_router(products.router, prefix="/api/products", tags=["products"])
@@ -207,6 +228,14 @@ app.include_router(members.router, prefix="/api/members", tags=["members"])
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 
+# QR Login System (Phase: QR Auth)
+app.include_router(qr_auth.router, tags=["qr-auth"])
+app.include_router(device.router, tags=["devices"])
+
+# MFA (Multi-Factor Authentication) - ISO 27001:2022 A.8.5
+app.include_router(mfa.router, tags=["mfa"])
+
+
 @app.get("/")
 async def root():
     return {
@@ -219,19 +248,26 @@ async def root():
             "middleware": "Active - Path-based Access Control",
             "multi_tenant": "Active",
             "chatbot_services": "Active",
-            "field_level_encryption": "Active" if (FLE_AVAILABLE and settings.FLE_ENABLED) else "Disabled"
+            "field_level_encryption": "Active"
+            if (FLE_AVAILABLE and settings.FLE_ENABLED)
+            else "Disabled",
         },
         "endpoints": {
             "protected": ["/chat/", "/api/setup/", "/api/test/", "/api/auth/"],
             "public": ["/health", "/healthz", "/docs", "/", "/{tenant_id}/chat"],
-            "session": ["/api/auth/logout", "/api/auth/logout-all", "/api/auth/sessions"]
+            "session": [
+                "/api/auth/logout",
+                "/api/auth/logout-all",
+                "/api/auth/sessions",
+            ],
         },
         "routes": {
             "setup_mode": "POST /api/setup/chat (authenticated)",
             "customer_mode": "POST /{tenant_id}/chat (public)",
-            "tenant_mode": "POST /api/tenant/{tenant_id}/chat (authenticated)"
-        }
+            "tenant_mode": "POST /api/tenant/{tenant_id}/chat (authenticated)",
+        },
     }
+
 
 @app.get("/healthz")
 async def healthz():
