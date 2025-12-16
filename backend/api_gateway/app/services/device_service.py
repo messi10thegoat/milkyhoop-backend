@@ -268,9 +268,7 @@ class DeviceService:
                         except Exception:
                             pass
                 except Exception:
-                    logger.debug(
-                        f"[Device] deactivate ignore for {existing.id[:8]}..."
-                    )
+                    logger.debug(f"[Device] deactivate ignore for {existing.id[:8]}...")
 
             # 5) Create new mobile device
             try:
