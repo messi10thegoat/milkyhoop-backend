@@ -189,7 +189,90 @@ class DeviceService:
             raise RuntimeError("Failed to register device after retries")
 
         else:
-            # Mobile device registration (unchanged)
+            # Mobile device registration with SINGLE SESSION ENFORCEMENT + CASCADE
+            # 1 User = 1 Mobile Session + CASCADE kicks all web sessions
+
+            # 1) Find ALL active mobile sessions
+            existing_mobile = await self.prisma.userdevice.find_many(
+                where={
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "deviceType": "mobile",
+                    "isActive": True,
+                }
+            )
+
+            # 2) Find ALL active web sessions (for CASCADE logout)
+            existing_web = await self.prisma.userdevice.find_many(
+                where={
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "deviceType": "web",
+                    "isActive": True,
+                }
+            )
+
+            all_existing = existing_mobile + existing_web
+
+            # 3) Notify ALL via WebSocket FIRST (side-effect OUTSIDE transaction)
+            if all_existing:
+                logger.warning(
+                    f"🔄 Mobile login: kicking {len(existing_mobile)} mobile + {len(existing_web)} web sessions for user={user_id[:8]}..."
+                )
+                for existing in existing_mobile:
+                    try:
+                        tabs_notified = await websocket_hub.force_logout_device(
+                            existing.id, "Session digantikan oleh login baru"
+                        )
+                        logger.info(
+                            f"Force logout sent to {tabs_notified} tabs for mobile device {existing.id[:8]}..."
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            f"[Device] WS force_logout failed for mobile {existing.id[:8]}...: {e}"
+                        )
+
+                for existing in existing_web:
+                    try:
+                        tabs_notified = await websocket_hub.force_logout_device(
+                            existing.id, "Sesi web dihentikan karena login mobile baru"
+                        )
+                        logger.info(
+                            f"Force logout sent to {tabs_notified} tabs for web device {existing.id[:8]}..."
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            f"[Device] WS force_logout failed for web {existing.id[:8]}...: {e}"
+                        )
+
+                # Grace period for clients to react
+                await asyncio.sleep(GRACE_SECONDS)
+
+            # 4) Deactivate ALL existing sessions (mobile + web)
+            for existing in all_existing:
+                try:
+                    await self.prisma.userdevice.update(
+                        where={"id": existing.id},
+                        data={
+                            "isActive": False,
+                            "expiresAt": datetime.now(timezone.utc),
+                        },
+                    )
+                    # Revoke refresh token
+                    if existing.refreshTokenHash:
+                        try:
+                            await self.prisma.refreshtoken.update_many(
+                                where={"tokenHash": existing.refreshTokenHash},
+                                data={"revokedAt": datetime.now(timezone.utc)},
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    logger.debug(
+                        f"[Device] deactivate ignore for {existing.id[:8]}..."
+                    )
+
+            # 5) Create new mobile device
             try:
                 device = await self.prisma.userdevice.create(
                     data={
@@ -256,7 +339,9 @@ class DeviceService:
             logger.error(f"Failed to list devices: {e}")
             return []
 
-    async def logout_device(self, device_id: str, user_id: str, tenant_id: str) -> bool:
+    async def logout_device(
+        self, device_id: str, user_id: str, tenant_id: str, cascade: bool = True
+    ) -> bool:
         """
         Logout a specific device
 
@@ -264,6 +349,7 @@ class DeviceService:
             device_id: ID of device to logout
             user_id: User ID (for authorization)
             tenant_id: Tenant ID (for authorization)
+            cascade: If True and device is mobile, also logout all web sessions
 
         Returns:
             True if successful
@@ -283,10 +369,12 @@ class DeviceService:
                 logger.warning(f"Device not found or unauthorized: {device_id[:8]}...")
                 return False
 
-            # Cannot logout primary (mobile) device from here
-            if device.isPrimary:
-                logger.warning(f"Cannot logout primary device: {device_id[:8]}...")
-                return False
+            # If mobile (primary) device logs out, CASCADE logout all web sessions first
+            if device.isPrimary and device.deviceType == "mobile" and cascade:
+                logger.warning(
+                    f"🔴 Mobile logout: cascading to all web sessions for user {user_id[:8]}..."
+                )
+                await self.logout_all_web_devices(user_id, tenant_id)
 
             # Notify device via WebSocket FIRST
             tabs_notified = await websocket_hub.force_logout_device(

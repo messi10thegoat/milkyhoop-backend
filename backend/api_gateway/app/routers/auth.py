@@ -1,13 +1,28 @@
 import asyncio
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
+from backend.api_gateway.app.services.device_service import DeviceService
+from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Prisma client for device management
+prisma = Prisma()
+
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP address from request"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 
 # Initialize auth client
 
@@ -24,6 +39,8 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+    browser_id: Optional[str] = None  # Browser profile ID for device tracking
+    device_fingerprint: Optional[str] = None  # Browser fingerprint
 
 class ValidateTokenRequest(BaseModel):
     access_token: str
@@ -93,19 +110,48 @@ async def register_user(request: RegisterRequest, http_request: Request):
 
 @router.post("/login", response_model=AuthResponse)
 async def login_user(request: LoginRequest, http_request: Request):
-    """User login endpoint"""
+    """
+    User login endpoint with device registration for single session enforcement.
+
+    Mobile web login will:
+    1. Authenticate user via auth_service
+    2. Register device (kicks existing mobile sessions + cascade kicks web sessions)
+    3. Return tokens + device_id for WebSocket connection
+    """
     try:
         logger.info(f"Login request for email: {request.email}")
-        
+
         # Connect to auth service
-        
+
         # Call login service
         result = await auth_client.login_user(
             email=request.email,
             password=request.password
         )
-        
+
         if result["success"]:
+            # Register mobile device for single session enforcement
+            device_id = None
+            try:
+                await prisma.connect()
+                device_service = DeviceService(prisma)
+                device_id = await device_service.register_device(
+                    user_id=result["user_id"],
+                    tenant_id=result["tenant_id"],
+                    device_type="mobile",  # Mobile web = primary device
+                    browser_id=request.browser_id or str(uuid.uuid4()),
+                    device_fingerprint=request.device_fingerprint,
+                    user_agent=http_request.headers.get("User-Agent"),
+                    refresh_token_hash=DeviceService.hash_refresh_token(result["refresh_token"]),
+                    ip_address=get_client_ip(http_request),
+                )
+                logger.info(f"Mobile device registered: {device_id[:8]}... for user {result['user_id'][:8]}...")
+            except Exception as e:
+                logger.error(f"Device registration failed (non-blocking): {e}")
+                # Continue login even if device registration fails
+            finally:
+                await prisma.disconnect()
+
             # Log successful login
             await log_auth_event(
                 event_type=AuditEventType.LOGIN,
@@ -115,10 +161,11 @@ async def login_user(request: LoginRequest, http_request: Request):
                 success=True,
                 metadata={
                     "email": result["email"],
-                    "tenant_id": result.get("tenant_id")
+                    "tenant_id": result.get("tenant_id"),
+                    "device_id": device_id
                 }
             )
-            
+
             return AuthResponse(
                 success=True,
                 message="Login successful",
@@ -129,7 +176,8 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "role": result["role"],
                     "tenant_id": result["tenant_id"],
                     "access_token": result["access_token"],
-                    "refresh_token": result["refresh_token"]
+                    "refresh_token": result["refresh_token"],
+                    "device_id": device_id  # For WebSocket force logout connection
                 }
             )
         else:
