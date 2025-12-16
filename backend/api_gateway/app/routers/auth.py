@@ -1,11 +1,13 @@
 import logging
 import uuid
+import jwt
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
+from backend.api_gateway.app.services.session_manager import session_manager
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
 logger = logging.getLogger(__name__)
@@ -126,23 +128,37 @@ async def login_user(request: LoginRequest, http_request: Request):
     try:
         logger.info(f"Login request for email: {request.email}")
 
-        # Connect to auth service
+        # Generate device_id BEFORE calling auth_service
+        # This ensures device_id is embedded in JWT
+        device_id = str(uuid.uuid4())
+        device_type = "mobile"  # Mobile web = primary device
 
-        # Call login service
+        # Call login service with device claims
         result = await auth_client.login_user(
-            email=request.email, password=request.password
+            email=request.email,
+            password=request.password,
+            device_id=device_id,
+            device_type=device_type,
         )
 
         if result["success"]:
-            # Register mobile device for single session enforcement
-            device_id = None
+            # ===== ATOMIC SESSION ENFORCEMENT =====
+            # Set mobile session + cascade kill web session (no race condition)
+            session_manager.activate_mobile_device(
+                user_id=result["user_id"], device_id=device_id
+            )
+            logger.info(
+                f"✅ Session activated: user={result['user_id'][:8]}..., device={device_id[:8]}..., type={device_type}"
+            )
+
+            # Register device in database (for tracking, non-blocking)
             try:
                 await prisma.connect()
                 device_service = DeviceService(prisma)
-                device_id = await device_service.register_device(
+                await device_service.register_device(
                     user_id=result["user_id"],
                     tenant_id=result["tenant_id"],
-                    device_type="mobile",  # Mobile web = primary device
+                    device_type=device_type,
                     browser_id=request.browser_id or str(uuid.uuid4()),
                     device_fingerprint=request.device_fingerprint,
                     user_agent=http_request.headers.get("User-Agent"),
@@ -151,12 +167,8 @@ async def login_user(request: LoginRequest, http_request: Request):
                     ),
                     ip_address=get_client_ip(http_request),
                 )
-                logger.info(
-                    f"Mobile device registered: {device_id[:8]}... for user {result['user_id'][:8]}..."
-                )
             except Exception as e:
-                logger.error(f"Device registration failed (non-blocking): {e}")
-                # Continue login even if device registration fails
+                logger.error(f"Device DB registration failed (non-blocking): {e}")
             finally:
                 await prisma.disconnect()
 
@@ -171,6 +183,7 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "email": result["email"],
                     "tenant_id": result.get("tenant_id"),
                     "device_id": device_id,
+                    "device_type": device_type,
                 },
             )
 
@@ -185,7 +198,8 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "tenant_id": result["tenant_id"],
                     "access_token": result["access_token"],
                     "refresh_token": result["refresh_token"],
-                    "device_id": device_id,  # For WebSocket force logout connection
+                    "device_id": device_id,
+                    "device_type": device_type,
                 },
             )
         else:
@@ -351,9 +365,39 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
         - access_token: New JWT access token
         - refresh_token: New refresh token
         - expires_at: Token expiration timestamp
+
+    Security:
+        - Checks session authority before allowing refresh
+        - Prevents zombie sessions from refreshing tokens
     """
     try:
         logger.info("Token refresh request received")
+
+        # ===== SESSION AUTHORITY CHECK (KRITIS) =====
+        # Decode refresh token to get device info (unsafe decode, signature verified by auth_service)
+        try:
+            decoded = jwt.decode(
+                data.refresh_token, options={"verify_signature": False}
+            )
+            user_id = decoded.get("user_id")
+            device_id = decoded.get("device_id")
+            device_type = decoded.get("device_type")
+
+            # If token has device claims, verify session is still valid
+            if device_id and device_type and user_id:
+                if not session_manager.is_session_valid(
+                    user_id, device_type, device_id
+                ):
+                    logger.warning(
+                        f"🚫 Refresh blocked: session replaced for user {user_id[:8]}..., type={device_type}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Session telah digantikan di perangkat lain",
+                    )
+        except jwt.DecodeError:
+            logger.warning("Could not decode refresh token for session check")
+            # Continue - let auth_service validate the token
 
         # Call auth service
         result = await auth_client.refresh_token(data.refresh_token)
@@ -496,7 +540,7 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
 @router.post("/logout", response_model=AuthResponse)
 async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
     """
-    Logout user - revoke refresh token(s)
+    Logout user - revoke refresh token(s) + session
 
     Query Parameters:
         - user_id: User ID (from JWT token in production)
@@ -513,7 +557,20 @@ async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
     try:
         logger.info(f"Logout request for user: {user_id}")
 
-        # Call auth service
+        # Get device type from request state (set by auth middleware)
+        device_type = getattr(http_request.state, "user", {}).get("device_type", "web")
+
+        # ===== SESSION REVOCATION =====
+        if data.logout_all_devices or device_type == "mobile":
+            # CASCADE: Mobile logout or logout_all kills all sessions
+            session_manager.revoke_all(user_id)
+            logger.info(f"✅ All sessions revoked for user {user_id[:8]}...")
+        else:
+            # Desktop logout only kills desktop session
+            session_manager.revoke_device(user_id, "web")
+            logger.info(f"✅ Web session revoked for user {user_id[:8]}...")
+
+        # Call auth service to revoke refresh tokens
         result = await auth_client.logout(
             user_id=user_id,
             refresh_token=data.refresh_token,
@@ -532,6 +589,7 @@ async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
                 success=True,
                 metadata={
                     "logout_all_devices": data.logout_all_devices,
+                    "device_type": device_type,
                     "revoked_tokens": result.get("revoked_tokens", 0),
                 },
             )

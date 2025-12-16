@@ -2,22 +2,23 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:15
+    image: postgres:14  # Must match production data version
     container_name: milkyhoop-dev-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: milkyhoop_dev
+      POSTGRES_PASSWORD: Proyek771977
+      POSTGRES_DB: milkydb
     ports:
       - "6432:5432"
     volumes:
-      - postgres_dev_data:/var/lib/postgresql/data
+      - milkyhoop-dev_postgres_data:/var/lib/postgresql/data  # Use production volume
     networks:
       - milkyhoop_dev_network
 
   redis:
     image: redis:7
     container_name: milkyhoop-dev-redis
+    command: redis-server --requirepass MilkyRedis2025Secure
     ports:
       - "7379:6379"
     networks:
@@ -30,10 +31,14 @@ services:
     container_name: milkyhoop-dev-api_gateway
     ports:
       - "9000:8000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=development
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
+      - REDIS_PASSWORD=MilkyRedis2025Secure
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
     depends_on:
       - postgres
       - redis
@@ -42,7 +47,9 @@ services:
 
 networks:
   milkyhoop_dev_network:
-    driver: bridge
+    external: true
+    name: milkyhoop_dev_network
 
 volumes:
-  postgres_dev_data:
+  milkyhoop-dev_postgres_data:
+    external: true  # Use existing production volume with chat history data

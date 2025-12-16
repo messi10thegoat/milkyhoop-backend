@@ -117,12 +117,23 @@ class AuthClient:
                 "refresh_token": None,
             }
 
-    async def login_user(self, email: str, password: str) -> Dict[str, Any]:
-        """Login user - returns tokens"""
+    async def login_user(
+        self, email: str, password: str, device_id: str = None, device_type: str = None
+    ) -> Dict[str, Any]:
+        """Login user - returns tokens with device claims embedded"""
         try:
             await self.ensure_connected()
 
-            request = auth_pb2.LoginRequest(email=email, password=password)
+            # Pass device_id and device_type via metadata field
+            metadata = {}
+            if device_id:
+                metadata["device_id"] = device_id
+            if device_type:
+                metadata["device_type"] = device_type
+
+            request = auth_pb2.LoginRequest(
+                email=email, password=password, metadata=metadata
+            )
 
             response = await self.stub.Login(request)
 
@@ -162,14 +173,14 @@ class AuthClient:
         await self.close()
 
     async def validate_token(self, token: str) -> Dict[str, Any]:
-        """Validate JWT token"""
+        """Validate JWT token - includes device claims for session enforcement"""
         try:
             await self.ensure_connected()
 
             request = auth_pb2.ValidateTokenRequest(access_token=token)
             response = await self.stub.ValidateToken(request)
 
-            return {
+            result = {
                 "valid": response.valid if hasattr(response, "valid") else False,
                 "user_id": response.user_id if hasattr(response, "user_id") else None,
                 "tenant_id": response.tenant_id
@@ -182,6 +193,24 @@ class AuthClient:
                 else None,
                 "message": response.message if hasattr(response, "message") else None,
             }
+
+            # Extract device claims from JWT locally for session enforcement
+            # This is needed because proto doesn't have device_id/device_type fields
+            if result["valid"]:
+                try:
+                    import jwt
+
+                    decoded = jwt.decode(token, options={"verify_signature": False})
+                    result["device_id"] = decoded.get("device_id")
+                    result["device_type"] = decoded.get("device_type")
+                except Exception as decode_error:
+                    logger.warning(
+                        f"Could not decode JWT for device claims: {decode_error}"
+                    )
+                    result["device_id"] = None
+                    result["device_type"] = None
+
+            return result
 
         except Exception as e:
             # Log full error for debugging, but sanitize response

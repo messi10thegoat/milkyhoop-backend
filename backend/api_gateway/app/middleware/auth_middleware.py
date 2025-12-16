@@ -1,5 +1,10 @@
 """
-Authentication Middleware with Real Token Validation
+Authentication Middleware with Real Token Validation + Session Authority (KILL SWITCH)
+
+Enterprise Single Session Enforcement:
+- JWT validation (credential check)
+- Redis session authority check (session validity)
+- FAIL-CLOSED: Missing device claims = invalid session
 """
 import logging
 import re
@@ -7,6 +12,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from backend.api_gateway.app.services.auth_instance import auth_client
+from backend.api_gateway.app.services.session_manager import session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +106,39 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         content={"error": "Invalid token", "code": "INVALID_TOKEN"},
                     )
 
+                # Extract claims from JWT validation result
+                user_id = validation_result.get("user_id")
+                device_id = validation_result.get("device_id")
+                device_type = validation_result.get("device_type")
+
+                # ===== SESSION AUTHORITY CHECK (KILL SWITCH) =====
+                # FAIL-CLOSED: Missing device claims = invalid session
+                # This prevents legacy JWTs (without device_id) from bypassing session enforcement
+                if device_id and device_type:
+                    # Check Redis session authority
+                    if not session_manager.is_session_valid(
+                        user_id, device_type, device_id
+                    ):
+                        logger.warning(
+                            f"🚫 Session replaced for user {user_id[:8]}..., device_type={device_type}"
+                        )
+                        return JSONResponse(
+                            status_code=401,
+                            content={
+                                "error": "Session telah digantikan di perangkat lain",
+                                "code": "SESSION_REPLACED",
+                                "force_logout": True,
+                            },
+                        )
+
                 request.state.user = {
-                    "user_id": validation_result.get("user_id"),
+                    "user_id": user_id,
                     "tenant_id": validation_result.get("tenant_id", "default"),
                     "role": validation_result.get("role", "USER"),
                     "email": validation_result.get("email"),
                     "username": validation_result.get("username"),
+                    "device_id": device_id,
+                    "device_type": device_type,
                 }
 
             except Exception as e:
