@@ -67,6 +67,9 @@ class DeviceService:
         user_agent: Optional[str] = None,
         refresh_token_hash: Optional[str] = None,
         ip_address: Optional[str] = None,
+        device_id: Optional[
+            str
+        ] = None,  # Pre-generated device_id for consistent ID across JWT/Redis/WS
     ) -> str:
         """
         Register a new device for a user (1 USER = 1 WEB SESSION TOTAL)
@@ -147,23 +150,26 @@ class DeviceService:
                     expires_at = datetime.now(timezone.utc) + timedelta(
                         days=WEB_SESSION_TTL_DAYS
                     )
-                    device = await self.prisma.userdevice.create(
-                        data={
-                            "userId": user_id,
-                            "tenantId": tenant_id,
-                            "deviceType": device_type,
-                            "browserId": browser_id,  # For identification only
-                            "deviceName": device_name
-                            or self._generate_device_name(user_agent),
-                            "deviceFingerprint": device_fingerprint,
-                            "userAgent": user_agent,
-                            "refreshTokenHash": refresh_token_hash,
-                            "isActive": True,
-                            "isPrimary": False,
-                            "lastIp": ip_address,
-                            "expiresAt": expires_at,
-                        }
-                    )
+                    # Build create data - include device_id if provided
+                    create_data = {
+                        "userId": user_id,
+                        "tenantId": tenant_id,
+                        "deviceType": device_type,
+                        "browserId": browser_id,  # For identification only
+                        "deviceName": device_name
+                        or self._generate_device_name(user_agent),
+                        "deviceFingerprint": device_fingerprint,
+                        "userAgent": user_agent,
+                        "refreshTokenHash": refresh_token_hash,
+                        "isActive": True,
+                        "isPrimary": False,
+                        "lastIp": ip_address,
+                        "expiresAt": expires_at,
+                    }
+                    # Use provided device_id as DB record ID for consistent ID across JWT/Redis/WS
+                    if device_id:
+                        create_data["id"] = device_id
+                    device = await self.prisma.userdevice.create(data=create_data)
 
                     logger.info(
                         f"✅ Device registered: {device.id[:8]}... (web) browser={browser_id[:8]}... for user {user_id[:8]}..."
@@ -272,23 +278,25 @@ class DeviceService:
 
             # 5) Create new mobile device
             try:
-                device = await self.prisma.userdevice.create(
-                    data={
-                        "userId": user_id,
-                        "tenantId": tenant_id,
-                        "deviceType": device_type,
-                        "browserId": browser_id,
-                        "deviceName": device_name
-                        or self._generate_device_name(user_agent),
-                        "deviceFingerprint": device_fingerprint,
-                        "userAgent": user_agent,
-                        "refreshTokenHash": refresh_token_hash,
-                        "isActive": True,
-                        "isPrimary": True,
-                        "lastIp": ip_address,
-                        "expiresAt": None,  # Mobile doesn't expire
-                    }
-                )
+                # Build create data - include device_id if provided
+                create_data = {
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "deviceType": device_type,
+                    "browserId": browser_id,
+                    "deviceName": device_name or self._generate_device_name(user_agent),
+                    "deviceFingerprint": device_fingerprint,
+                    "userAgent": user_agent,
+                    "refreshTokenHash": refresh_token_hash,
+                    "isActive": True,
+                    "isPrimary": True,
+                    "lastIp": ip_address,
+                    "expiresAt": None,  # Mobile doesn't expire
+                }
+                # Use provided device_id as DB record ID for consistent ID across JWT/Redis/WS
+                if device_id:
+                    create_data["id"] = device_id
+                device = await self.prisma.userdevice.create(data=create_data)
 
                 logger.info(
                     f"✅ Device registered: {device.id[:8]}... (mobile) for user {user_id[:8]}..."
@@ -336,6 +344,27 @@ class DeviceService:
         except Exception as e:
             logger.error(f"Failed to list devices: {e}")
             return []
+
+    async def get_mobile_device(self, user_id: str, tenant_id: str):
+        """
+        Get the active mobile device for a user (for Remote Scanner)
+
+        Returns:
+            Mobile device record or None
+        """
+        try:
+            device = await self.prisma.userdevice.find_first(
+                where={
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "deviceType": "mobile",
+                    "isActive": True,
+                }
+            )
+            return device
+        except Exception as e:
+            logger.error(f"Failed to get mobile device: {e}")
+            return None
 
     async def logout_device(
         self, device_id: str, user_id: str, tenant_id: str, cascade: bool = True

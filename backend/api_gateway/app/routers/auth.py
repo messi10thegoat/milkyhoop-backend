@@ -3,6 +3,7 @@ import uuid
 import jwt
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, status, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
@@ -142,20 +143,13 @@ async def login_user(request: LoginRequest, http_request: Request):
         )
 
         if result["success"]:
-            # ===== ATOMIC SESSION ENFORCEMENT =====
-            # Set mobile session + cascade kill web session (no race condition)
-            session_manager.activate_mobile_device(
-                user_id=result["user_id"], device_id=device_id
-            )
-            logger.info(
-                f"✅ Session activated: user={result['user_id'][:8]}..., device={device_id[:8]}..., type={device_type}"
-            )
-
-            # Register device in database (for tracking, non-blocking)
+            # ===== DEVICE REGISTRATION (BLOCKING) =====
+            # Register device FIRST to send WebSocket force_logout to existing sessions
+            # Pass the same device_id so DB record ID matches JWT/Redis/WebSocket
             try:
                 await prisma.connect()
                 device_service = DeviceService(prisma)
-                await device_service.register_device(
+                db_device_id = await device_service.register_device(
                     user_id=result["user_id"],
                     tenant_id=result["tenant_id"],
                     device_type=device_type,
@@ -166,11 +160,25 @@ async def login_user(request: LoginRequest, http_request: Request):
                         result["refresh_token"]
                     ),
                     ip_address=get_client_ip(http_request),
+                    device_id=device_id,  # Pass same device_id for consistent ID
+                )
+                logger.info(
+                    f"✅ Device registered in DB: {db_device_id[:8]}... (should match JWT device_id)"
                 )
             except Exception as e:
-                logger.error(f"Device DB registration failed (non-blocking): {e}")
+                logger.error(f"Device registration failed (BLOCKING): {e}")
+                # Continue even if device registration fails - session enforcement via Redis still works
             finally:
                 await prisma.disconnect()
+
+            # ===== ATOMIC SESSION ENFORCEMENT =====
+            # Set mobile session + cascade kill web session (no race condition)
+            session_manager.activate_mobile_device(
+                user_id=result["user_id"], device_id=device_id
+            )
+            logger.info(
+                f"✅ Session activated: user={result['user_id'][:8]}..., device={device_id[:8]}..., type={device_type}"
+            )
 
             # Log successful login
             await log_auth_event(
@@ -328,6 +336,26 @@ async def auth_health_check():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Auth service unavailable",
         )
+
+
+@router.get("/verify", status_code=204)
+async def verify_session(request: Request):
+    """
+    Lightweight session verification endpoint (204 No Content).
+
+    Used by frontend visibilitychange listener to check if session is still valid.
+    Auth middleware handles the actual validation:
+    - Validates JWT signature & expiration
+    - Checks device_id in JWT against Redis session authority
+    - Returns 401 SESSION_REPLACED if session was taken over
+
+    If request reaches this endpoint, session is valid.
+    Returns 204 (no body) for minimal overhead.
+    """
+    logger.debug(
+        f"Session verify ping from user: {getattr(request.state, 'user', {}).get('user_id', 'unknown')[:8]}..."
+    )
+    return Response(status_code=204)
 
 
 # =====================================================

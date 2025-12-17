@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import HomePage from './components/HomePage';
 import SetupModeChat from './components/SetupModeChat';
@@ -10,7 +10,7 @@ import GenericTenantLanding from './components/GenericTenantLanding';
 import GenericTenantChat from './components/GenericTenantChat';
 import QRLoginPage from './components/QRLoginPage';
 import { isDesktopBrowser } from './utils/device';
-import { isAuthenticated } from './utils/auth';
+import { isAuthenticated, setupSessionEnforcement } from './utils/auth';
 import './App.css';
 
 // Desktop login guard - redirects desktop users to QR login if not authenticated
@@ -50,6 +50,12 @@ const HomeRoute: React.FC = () => {
 };
 
 function App() {
+  // Setup session enforcement on app init
+  useEffect(() => {
+    const cleanup = setupSessionEnforcement();
+    return cleanup;
+  }, []);
+
   return (
     <Router>
       <div className="App">

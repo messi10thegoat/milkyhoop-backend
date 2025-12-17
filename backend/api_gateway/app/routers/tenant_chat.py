@@ -107,26 +107,16 @@ def parse_sales_intent(message: str) -> Optional[Dict[str, Any]]:
     # Unit pattern for reuse
     UNITS = r"(pcs|botol|bungkus|kg|gram|g|dus|box|karton|lusin|liter|l|pack|sachet|biji|buah|unit)"
 
-    # Pattern 1: product_name quantity unit (e.g., "Aqua 2 botol", "beras 25 kg")
-    PATTERN_PRODUCT_FIRST = (
-        r"([A-Za-z][A-Za-z\s]{0,20}?)\s+(\d+(?:[.,]\d+)?)\s*" + UNITS + r"?"
-    )
-
-    # Pattern 2: quantity unit product_name (e.g., "10 Aqua", "40 botol kongbap")
-    PATTERN_QTY_FIRST = (
-        r"(\d+(?:[.,]\d+)?)\s*" + UNITS + r"?\s+([A-Za-z][A-Za-z0-9\s]{0,25})"
-    )
-
     def add_item(product_name, quantity, unit):
         """Helper to add item if valid"""
-        # Clean product name - remove skip words
+        # Clean product name - remove skip words and extra spaces
         product_words = product_name.split()
         product_words = [w for w in product_words if w.lower() not in skip_words]
         product_name = " ".join(product_words).strip()
 
         # Skip if empty or already seen
         if not product_name or product_name.lower() in seen_products:
-            return
+            return False
 
         seen_products.add(product_name.lower())
         items.append(
@@ -136,20 +126,139 @@ def parse_sales_intent(message: str) -> Optional[Dict[str, Any]]:
                 "unit": unit,
             }
         )
+        return True
 
-    # Try Pattern 1: product first (e.g., "Aqua 2 botol")
-    for match in re.finditer(PATTERN_PRODUCT_FIRST, cleaned_message, re.IGNORECASE):
-        product_name = match.group(1).strip()
-        quantity = float(match.group(2).replace(",", "."))
-        unit = match.group(3) if match.group(3) else "pcs"
-        add_item(product_name, quantity, unit)
+    # ========== PARSING APPROACH: Check for separators first ==========
+    has_separators = bool(re.search(r"[,\n]|\s+dan\s+|\s+and\s+", cleaned_message))
 
-    # Try Pattern 2: qty first (e.g., "10 Aqua", "40 kongbap")
-    for match in re.finditer(PATTERN_QTY_FIRST, cleaned_message, re.IGNORECASE):
-        quantity = float(match.group(1).replace(",", "."))
-        unit = match.group(2) if match.group(2) else "pcs"
-        product_name = match.group(3).strip()
-        add_item(product_name, quantity, unit)
+    if has_separators:
+        # Split by comma, newline, or "dan"/"and"
+        segments = re.split(r"[,\n]|\s+dan\s+|\s+and\s+", cleaned_message)
+
+        for segment in segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+
+            # Remove payment keywords from segment for item parsing
+            segment_clean = segment
+            for pay_word in [
+                "cash",
+                "tunai",
+                "qris",
+                "bon",
+                "hutang",
+                "transfer",
+                "tf",
+                "kontan",
+            ]:
+                segment_clean = re.sub(
+                    r"\b" + pay_word + r"\b", "", segment_clean, flags=re.IGNORECASE
+                )
+            segment_clean = segment_clean.strip()
+
+            if not segment_clean:
+                continue
+
+            # Pattern A: product_name quantity unit (e.g., "esse 5", "aqua 2 botol")
+            pattern_a = (
+                r"^([A-Za-z][A-Za-z\s]*?)\s+(\d+(?:[.,]\d+)?)\s*" + UNITS + r"?$"
+            )
+            match_a = re.match(pattern_a, segment_clean, re.IGNORECASE)
+
+            if match_a:
+                product_name = match_a.group(1).strip()
+                quantity = float(match_a.group(2).replace(",", "."))
+                unit = match_a.group(3) if match_a.group(3) else "pcs"
+                if add_item(product_name, quantity, unit):
+                    continue
+
+            # Pattern B: quantity unit product_name (e.g., "5 esse", "2 botol aqua")
+            # IMPORTANT: Product name should NOT contain digits (stop at first digit)
+            pattern_b = r"^(\d+(?:[.,]\d+)?)\s*" + UNITS + r"?\s+([A-Za-z][A-Za-z\s]*)$"
+            match_b = re.match(pattern_b, segment_clean, re.IGNORECASE)
+
+            if match_b:
+                quantity = float(match_b.group(1).replace(",", "."))
+                unit = match_b.group(2) if match_b.group(2) else "pcs"
+                product_name = match_b.group(3).strip()
+                if add_item(product_name, quantity, unit):
+                    continue
+
+            # Pattern C: Just product name (e.g., "esse") - default qty=1
+            pattern_c = r"^([A-Za-z][A-Za-z\s]*)$"
+            match_c = re.match(pattern_c, segment_clean, re.IGNORECASE)
+
+            if match_c:
+                product_name = match_c.group(1).strip()
+                add_item(product_name, 1, "pcs")
+
+    # ========== SPACE-SEPARATED: Parse "5 esse 6 kongbap" or "esse 5 kongbap 6" ==========
+    if not items:
+        # Try to parse "5 esse 6 kongbap" style (alternating qty-product)
+        # This handles cases without explicit separators
+        tokens = cleaned_message.split()
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Skip payment/skip words
+            if token.lower() in skip_words or token.lower() in [
+                "cash",
+                "tunai",
+                "qris",
+                "bon",
+                "hutang",
+                "transfer",
+                "tf",
+            ]:
+                i += 1
+                continue
+
+            # Check if current token is a number
+            qty_match = re.match(r"^(\d+(?:[.,]\d+)?)$", token)
+            if qty_match and i + 1 < len(tokens):
+                # qty-first: "5 esse"
+                quantity = float(qty_match.group(1).replace(",", "."))
+                # Check next token for unit or product
+                next_token = tokens[i + 1]
+                unit_match = re.match(UNITS, next_token, re.IGNORECASE)
+                if unit_match and i + 2 < len(tokens):
+                    # "5 botol esse"
+                    unit = unit_match.group(1)
+                    product_name = tokens[i + 2]
+                    add_item(product_name, quantity, unit)
+                    i += 3
+                else:
+                    # "5 esse"
+                    product_name = next_token
+                    # Check if product_name is actually a unit
+                    if not re.match(UNITS, product_name, re.IGNORECASE):
+                        add_item(product_name, quantity, "pcs")
+                    i += 2
+            elif re.match(r"^[A-Za-z]", token):
+                # product-first: "esse 5"
+                product_name = token
+                if i + 1 < len(tokens):
+                    next_token = tokens[i + 1]
+                    qty_match = re.match(r"^(\d+(?:[.,]\d+)?)$", next_token)
+                    if qty_match:
+                        quantity = float(qty_match.group(1).replace(",", "."))
+                        # Check for unit after quantity
+                        if i + 2 < len(tokens):
+                            unit_match = re.match(UNITS, tokens[i + 2], re.IGNORECASE)
+                            if unit_match:
+                                add_item(product_name, quantity, unit_match.group(1))
+                                i += 3
+                                continue
+                        add_item(product_name, quantity, "pcs")
+                        i += 2
+                        continue
+                # No quantity found - default to 1
+                add_item(product_name, 1, "pcs")
+                i += 1
+            else:
+                i += 1
 
     # Pattern 3: Product name only WITHOUT quantity (e.g., "jual esse", "kasir aqua")
     # Default quantity to 1 pcs

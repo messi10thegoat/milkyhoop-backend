@@ -1,15 +1,21 @@
 """
 Device Management Router
-Handles linked devices for QR Login system
+Handles linked devices for QR Login system and Remote Scanner
 
 Endpoints:
 - GET /api/devices - List all linked devices
 - DELETE /api/devices/{device_id} - Logout specific device
 - POST /api/devices/logout-all-web - Logout all web sessions
-- WS /api/devices/ws/{device_id} - WebSocket for force logout notifications
+- WS /api/devices/ws/{device_id} - WebSocket for force logout + remote scan
+
+Remote Scanner Endpoints:
+- POST /api/devices/remote-scan/request - Desktop triggers scan on mobile
+- POST /api/devices/remote-scan/result - Mobile sends scan result
+- POST /api/devices/remote-scan/cancel - Cancel active scan
 """
 import logging
-from typing import List
+import uuid
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -48,6 +54,46 @@ class LogoutAllResponse(BaseModel):
     success: bool
     message: str
     count: int  # Number of devices logged out
+
+
+# ================================
+# REMOTE SCANNER MODELS
+# ================================
+
+
+class RemoteScanRequest(BaseModel):
+    """Request to trigger remote scan on mobile"""
+
+    tab_id: str  # Desktop tab requesting the scan
+
+
+class RemoteScanRequestResponse(BaseModel):
+    """Response after requesting remote scan"""
+
+    success: bool
+    scan_id: Optional[str] = None
+    message: str
+
+
+class RemoteScanResultRequest(BaseModel):
+    """Mobile sending scan result back"""
+
+    scan_id: str
+    barcode: Optional[str] = None  # None if cancelled
+    error: Optional[str] = None  # Error message if scan failed
+
+
+class RemoteScanResultResponse(BaseModel):
+    """Response after sending scan result"""
+
+    success: bool
+    message: str
+
+
+class RemoteScanCancelRequest(BaseModel):
+    """Cancel active scan request"""
+
+    scan_id: str
 
 
 # ================================
@@ -238,6 +284,158 @@ async def get_device_stats(request: Request):
     except Exception as e:
         logger.error(f"Failed to get device stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get stats")
+
+
+# ================================
+# REMOTE SCANNER ENDPOINTS
+# ================================
+
+
+@router.post("/remote-scan/request", response_model=RemoteScanRequestResponse)
+async def request_remote_scan(request: Request, body: RemoteScanRequest):
+    """
+    Desktop triggers barcode scan on paired mobile device
+
+    Flow:
+    1. Desktop calls this endpoint with tab_id
+    2. Server sends WebSocket event to mobile: remote_scan:request
+    3. Mobile opens camera scanner
+    4. Mobile sends result via POST /remote-scan/result
+    5. Server routes result back to desktop via WebSocket
+
+    Requirements:
+    - User must be logged in on both desktop AND mobile
+    - Mobile must have active WebSocket connection
+    """
+    try:
+        user = get_user_from_request(request)
+        service = get_device_service(request)
+
+        # Get desktop device_id from token (stored in request.state.user by auth middleware)
+        desktop_device_id = (
+            request.state.user.get("device_id")
+            if hasattr(request.state, "user")
+            else None
+        )
+        if not desktop_device_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Device ID tidak ditemukan. Login ulang diperlukan.",
+            )
+
+        # Find mobile device for this user
+        mobile_device = await service.get_mobile_device(
+            user_id=user["user_id"], tenant_id=user["tenant_id"]
+        )
+
+        if not mobile_device:
+            raise HTTPException(
+                status_code=400,
+                detail="Tidak ada perangkat mobile yang terhubung",
+            )
+
+        # Check if mobile is online
+        if not websocket_hub.is_mobile_online(mobile_device.id):
+            return RemoteScanRequestResponse(
+                success=False,
+                message="Mobile tidak online. Buka aplikasi di HP untuk scan.",
+            )
+
+        # Generate unique scan ID
+        scan_id = str(uuid.uuid4())
+
+        # Send request to mobile
+        sent = await websocket_hub.send_remote_scan_request(
+            mobile_device_id=mobile_device.id,
+            scan_id=scan_id,
+            desktop_device_id=desktop_device_id,
+            desktop_tab_id=body.tab_id,
+        )
+
+        if not sent:
+            return RemoteScanRequestResponse(
+                success=False,
+                message="Gagal mengirim request ke mobile. Coba lagi.",
+            )
+
+        return RemoteScanRequestResponse(
+            success=True,
+            scan_id=scan_id,
+            message="Scan request terkirim ke mobile",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remote scan request failed: {e}")
+        raise HTTPException(status_code=500, detail="Gagal meminta scan")
+
+
+@router.post("/remote-scan/result", response_model=RemoteScanResultResponse)
+async def send_remote_scan_result(request: Request, body: RemoteScanResultRequest):
+    """
+    Mobile sends barcode scan result back to desktop
+
+    Called by mobile after scanning barcode or cancelling
+    """
+    try:
+        # Mobile must be authenticated
+        user = get_user_from_request(request)
+
+        # Send result to desktop via WebSocket
+        sent = await websocket_hub.send_remote_scan_result(
+            scan_id=body.scan_id,
+            barcode=body.barcode,
+            error=body.error,
+        )
+
+        if not sent:
+            return RemoteScanResultResponse(
+                success=False,
+                message="Desktop tidak terhubung atau scan sudah expired",
+            )
+
+        return RemoteScanResultResponse(
+            success=True,
+            message="Hasil scan terkirim ke desktop",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remote scan result failed: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengirim hasil scan")
+
+
+@router.post("/remote-scan/cancel", response_model=RemoteScanResultResponse)
+async def cancel_remote_scan(request: Request, body: RemoteScanCancelRequest):
+    """
+    Cancel an active remote scan session
+
+    Can be called by either desktop or mobile
+    """
+    try:
+        user = get_user_from_request(request)
+
+        # Cancel the scan session
+        cancelled = await websocket_hub.cancel_remote_scan(body.scan_id)
+
+        if not cancelled:
+            return RemoteScanResultResponse(
+                success=False,
+                message="Scan session tidak ditemukan atau sudah selesai",
+            )
+
+        return RemoteScanResultResponse(
+            success=True,
+            message="Scan dibatalkan",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remote scan cancel failed: {e}")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan scan")
 
 
 # ================================

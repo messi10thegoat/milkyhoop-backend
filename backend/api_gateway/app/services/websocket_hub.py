@@ -1,30 +1,46 @@
 """
 WebSocket Hub Service
-Manages WebSocket connections for QR Login and device communication
+Manages WebSocket connections for QR Login, device communication, and Remote Scanner
 
 Connections are managed in two pools:
 1. qr_connections: token -> WebSocket (for QR login flow)
-2. device_connections: device_id -> tab_id -> WebSocket (for force logout)
+2. device_connections: device_id -> tab_id -> WebSocket (for force logout + remote scan)
    - Multiple tabs can be connected per device_id
    - Force logout broadcasts to ALL tabs of a device
+   - Remote scan: desktop triggers → mobile receives → mobile sends result
+
+Remote Scanner Flow:
+1. Desktop (web) sends remote_scan:request to mobile via WebSocket
+2. Mobile opens camera, scans barcode
+3. Mobile sends remote_scan:result back to desktop
+4. Desktop receives barcode and processes it
 """
 import logging
 import asyncio
-from typing import Dict
+import time
+from typing import Dict, Optional
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
+
+# Remote scan request timeout (15 seconds)
+REMOTE_SCAN_TIMEOUT = 15
 
 
 class WebSocketHub:
     """
     Singleton WebSocket connection manager
-    Handles QR login status updates and device force logout
+    Handles QR login status updates, device force logout, and remote scanner
 
     Device connections support multi-tab:
     - Each browser tab has unique tab_id (from sessionStorage)
     - Same device_id can have multiple tab connections
     - Force logout broadcasts to ALL tabs of a device
+
+    Remote Scanner:
+    - Paired desktop can trigger barcode scan on mobile
+    - Uses same device_connections with remote_scan:* events
+    - 1 mobile + 1 desktop per user (enforced by session management)
     """
 
     def __init__(self):
@@ -32,6 +48,8 @@ class WebSocketHub:
         self.qr_connections: Dict[str, WebSocket] = {}
         # Device ID -> Tab ID -> WebSocket (multi-tab support)
         self.device_connections: Dict[str, Dict[str, WebSocket]] = {}
+        # Remote scan sessions: scan_id -> {device_id, tab_id, requested_at}
+        self.remote_scan_sessions: Dict[str, dict] = {}
         # Lock for thread safety
         self._lock = asyncio.Lock()
 
@@ -244,6 +262,7 @@ class WebSocketHub:
                 self.device_connections
             ),  # Number of unique devices
             "total_tabs": total_tabs,  # Total WebSocket connections (multi-tab)
+            "active_remote_scans": len(self.remote_scan_sessions),
         }
 
     async def cleanup_stale_connections(self) -> int:
@@ -292,6 +311,224 @@ class WebSocketHub:
             logger.info(f"Cleaned up {cleaned} stale WebSocket connections")
 
         return cleaned
+
+    # ================================
+    # REMOTE SCANNER METHODS
+    # ================================
+
+    async def send_remote_scan_request(
+        self,
+        mobile_device_id: str,
+        scan_id: str,
+        desktop_device_id: str,
+        desktop_tab_id: str,
+    ) -> bool:
+        """
+        Send remote scan request from desktop to mobile
+
+        Args:
+            mobile_device_id: Mobile device ID to send request to
+            scan_id: Unique scan session ID
+            desktop_device_id: Requesting desktop device ID (for result routing)
+            desktop_tab_id: Requesting desktop tab ID
+
+        Returns:
+            True if request was sent, False if mobile not connected
+        """
+        async with self._lock:
+            if mobile_device_id not in self.device_connections:
+                logger.warning(
+                    f"📸 Remote scan FAILED: mobile {mobile_device_id[:8]}... not connected"
+                )
+                return False
+
+            # Get mobile WebSocket (mobile only has one "tab")
+            mobile_tabs = self.device_connections[mobile_device_id]
+            if not mobile_tabs:
+                return False
+
+            # Store scan session for result routing
+            self.remote_scan_sessions[scan_id] = {
+                "mobile_device_id": mobile_device_id,
+                "desktop_device_id": desktop_device_id,
+                "desktop_tab_id": desktop_tab_id,
+                "requested_at": time.time(),
+            }
+
+            # Get first (and only) mobile connection
+            mobile_ws = list(mobile_tabs.values())[0]
+
+        try:
+            await mobile_ws.send_json(
+                {
+                    "event": "remote_scan:request",
+                    "scan_id": scan_id,
+                }
+            )
+            logger.info(
+                f"📸 Remote scan REQUEST sent: scan={scan_id[:8]}... -> mobile={mobile_device_id[:8]}..."
+            )
+            return True
+        except Exception as e:
+            logger.error(f"📸 Remote scan request FAILED: {e}")
+            # Clean up failed session
+            async with self._lock:
+                if scan_id in self.remote_scan_sessions:
+                    del self.remote_scan_sessions[scan_id]
+            return False
+
+    async def send_remote_scan_result(
+        self, scan_id: str, barcode: Optional[str], error: Optional[str] = None
+    ) -> bool:
+        """
+        Send scan result from mobile back to desktop
+
+        Args:
+            scan_id: The scan session ID
+            barcode: Scanned barcode (None if cancelled or error)
+            error: Error message if scan failed
+
+        Returns:
+            True if result was sent, False if desktop not connected
+        """
+        async with self._lock:
+            if scan_id not in self.remote_scan_sessions:
+                logger.warning(
+                    f"📸 Remote scan result: unknown scan_id {scan_id[:8]}..."
+                )
+                return False
+
+            session = self.remote_scan_sessions.pop(scan_id)
+            desktop_device_id = session["desktop_device_id"]
+            desktop_tab_id = session["desktop_tab_id"]
+
+            # Find desktop WebSocket
+            if desktop_device_id not in self.device_connections:
+                logger.warning(
+                    f"📸 Remote scan result DROPPED: desktop {desktop_device_id[:8]}... disconnected"
+                )
+                return False
+
+            tabs = self.device_connections[desktop_device_id]
+            if desktop_tab_id not in tabs:
+                logger.warning(
+                    f"📸 Remote scan result DROPPED: tab {desktop_tab_id[:8]}... closed"
+                )
+                return False
+
+            desktop_ws = tabs[desktop_tab_id]
+
+        try:
+            if error:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:error",
+                        "scan_id": scan_id,
+                        "error": error,
+                    }
+                )
+                logger.info(f"📸 Remote scan ERROR sent: {scan_id[:8]}... -> {error}")
+            elif barcode:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:result",
+                        "scan_id": scan_id,
+                        "barcode": barcode,
+                    }
+                )
+                logger.info(
+                    f"📸 Remote scan RESULT sent: {scan_id[:8]}... -> {barcode[:20]}..."
+                )
+            else:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:cancelled",
+                        "scan_id": scan_id,
+                    }
+                )
+                logger.info(f"📸 Remote scan CANCELLED: {scan_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"📸 Remote scan result FAILED: {e}")
+            return False
+
+    async def cancel_remote_scan(self, scan_id: str) -> bool:
+        """
+        Cancel an active remote scan session (desktop cancelled)
+
+        Sends cancel event to mobile to close scanner UI
+        """
+        async with self._lock:
+            if scan_id not in self.remote_scan_sessions:
+                return False
+
+            session = self.remote_scan_sessions.pop(scan_id)
+            mobile_device_id = session["mobile_device_id"]
+
+            if mobile_device_id not in self.device_connections:
+                return False
+
+            mobile_tabs = self.device_connections[mobile_device_id]
+            if not mobile_tabs:
+                return False
+
+            mobile_ws = list(mobile_tabs.values())[0]
+
+        try:
+            await mobile_ws.send_json(
+                {
+                    "event": "remote_scan:cancel",
+                    "scan_id": scan_id,
+                }
+            )
+            logger.info(f"📸 Remote scan CANCEL sent to mobile: {scan_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"📸 Remote scan cancel FAILED: {e}")
+            return False
+
+    async def cleanup_expired_scan_sessions(self) -> int:
+        """
+        Clean up expired remote scan sessions
+        Should be called periodically
+        """
+        cleaned = 0
+        now = time.time()
+
+        async with self._lock:
+            expired = [
+                scan_id
+                for scan_id, session in self.remote_scan_sessions.items()
+                if now - session["requested_at"] > REMOTE_SCAN_TIMEOUT
+            ]
+
+            for scan_id in expired:
+                session = self.remote_scan_sessions.pop(scan_id)
+                cleaned += 1
+
+                # Notify desktop about timeout
+                desktop_device_id = session["desktop_device_id"]
+                desktop_tab_id = session["desktop_tab_id"]
+
+                if desktop_device_id in self.device_connections:
+                    tabs = self.device_connections[desktop_device_id]
+                    if desktop_tab_id in tabs:
+                        try:
+                            await tabs[desktop_tab_id].send_json(
+                                {
+                                    "event": "remote_scan:timeout",
+                                    "scan_id": scan_id,
+                                }
+                            )
+                            logger.info(f"📸 Remote scan TIMEOUT: {scan_id[:8]}...")
+                        except Exception:
+                            pass
+
+        return cleaned
+
+    def is_mobile_online(self, mobile_device_id: str) -> bool:
+        """Check if mobile device is connected for remote scanning"""
+        return mobile_device_id in self.device_connections
 
 
 # Singleton instance

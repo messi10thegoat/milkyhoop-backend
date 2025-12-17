@@ -45,7 +45,7 @@ const QRScanner: React.FC<QRScannerProps> = ({ isOpen, onClose, onScanSuccess })
       }
 
       setStatus('scanning');
-      setMessage('Arahkan kamera ke QR code');
+      setMessage('Find a QR code to Scan');
 
       // Start scanning for QR codes
       startQRScanning();
@@ -89,15 +89,6 @@ const QRScanner: React.FC<QRScannerProps> = ({ isOpen, onClose, onScanSuccess })
       canvas.height = videoRef.current.videoHeight;
       ctx.drawImage(videoRef.current, 0, 0);
 
-      // Get image data for QR detection
-      // In production, use a library like jsQR or ZXing
-      // For now, we'll use manual input as fallback
-      // This is a simplified implementation
-
-      const imageData = canvas.toDataURL('image/jpeg', 0.8);
-
-      // Try to decode QR via API (if you have a QR decode endpoint)
-      // Or use a client-side library like jsQR
       try {
         // Check if we have the jsQR library
         if (typeof (window as any).jsQR !== 'undefined') {
@@ -256,6 +247,15 @@ const QRScanner: React.FC<QRScannerProps> = ({ isOpen, onClose, onScanSuccess })
     }
   };
 
+  // Retry scanning
+  const handleRetry = () => {
+    setStatus('scanning');
+    setMessage('Find a QR code to Scan');
+    setApprovalData(null);
+    setCameraError(null);
+    startQRScanning();
+  };
+
   // Start camera when opened
   useEffect(() => {
     if (isOpen) {
@@ -276,70 +276,91 @@ const QRScanner: React.FC<QRScannerProps> = ({ isOpen, onClose, onScanSuccess })
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b">
-          <h2 className="text-lg font-bold text-gray-900">
-            {status === 'scanned' && approvalData ? 'Konfirmasi Login' : 'Scan QR Code'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+    <div className="fixed inset-0 z-50 bg-black">
+      {/* Camera as fullscreen background */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute inset-0 w-full h-full object-cover"
+      />
+
+      {/* Close button - glassmorphism circle */}
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 z-20 w-11 h-11 rounded-full
+                   bg-neutral-900/60 backdrop-blur-md
+                   flex items-center justify-center
+                   active:bg-neutral-800/60 transition-colors"
+      >
+        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+
+      {/* Scanning frame - center (only show when scanning) */}
+      {status === 'scanning' && (
+        <div className="absolute inset-0 flex items-center justify-center z-10">
+          <div
+            className="w-64 h-64 relative"
+            style={{ animation: 'scan-breathe 1s ease-in-out infinite' }}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+            {/* Top-left corner */}
+            <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-2xl" />
+            {/* Top-right corner */}
+            <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-2xl" />
+            {/* Bottom-left corner */}
+            <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-2xl" />
+            {/* Bottom-right corner */}
+            <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-2xl" />
+          </div>
         </div>
+      )}
 
-        {/* Content */}
-        <div className="p-4">
-          {/* Camera view */}
-          {status === 'scanning' && !approvalData && (
-            <div className="relative aspect-square bg-black rounded-lg overflow-hidden mb-4">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover"
-              />
-              {/* Scanning overlay */}
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-48 h-48 border-2 border-white rounded-lg relative">
-                  <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-purple-500 rounded-tl-lg" />
-                  <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-purple-500 rounded-tr-lg" />
-                  <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-purple-500 rounded-bl-lg" />
-                  <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-purple-500 rounded-br-lg" />
-                  {/* Scan line animation */}
-                  <div className="absolute left-0 right-0 h-0.5 bg-purple-500 animate-pulse" style={{ top: '50%' }} />
-                </div>
-              </div>
+      {/* Keyframes for breathing animation */}
+      <style>{`
+        @keyframes scan-breathe {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.08); }
+        }
+      `}</style>
+
+      {/* Nav button - glassmorphism pill (only show when scanning) */}
+      {status === 'scanning' && (
+        <div className="absolute bottom-8 inset-x-4 flex justify-center z-10">
+          <div className="px-6 py-4 rounded-full bg-neutral-900/60 backdrop-blur-md">
+            <span className="text-white font-medium">Find a QR code to Scan</span>
+          </div>
+        </div>
+      )}
+
+      {/* Camera error overlay */}
+      {cameraError && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/80">
+          <div className="text-center px-8">
+            <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
             </div>
-          )}
+            <p className="text-white font-medium text-lg mb-2">{cameraError}</p>
+            <p className="text-neutral-400 text-sm mb-6">Pastikan browser memiliki izin kamera</p>
+            <button
+              onClick={startCamera}
+              className="px-6 py-3 rounded-full bg-neutral-900/60 backdrop-blur-md text-white font-medium"
+            >
+              Coba Lagi
+            </button>
+          </div>
+        </div>
+      )}
 
-          {/* Camera error */}
-          {cameraError && (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <p className="text-red-600 font-medium">{cameraError}</p>
-              <button
-                onClick={startCamera}
-                className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
-              >
-                Coba Lagi
-              </button>
-            </div>
-          )}
-
-          {/* Approval confirmation */}
-          {status === 'scanned' && approvalData && (
-            <div className="text-center py-4">
+      {/* Approval confirmation overlay */}
+      {status === 'scanned' && approvalData && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full mx-4 overflow-hidden">
+            <div className="p-6 text-center">
               <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg className="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -354,111 +375,79 @@ const QRScanner: React.FC<QRScannerProps> = ({ isOpen, onClose, onScanSuccess })
               <div className="flex gap-3">
                 <button
                   onClick={handleReject}
-                  className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200"
+                  className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium active:bg-gray-200"
                 >
                   Batal
                 </button>
                 <button
                   onClick={handleApprove}
-                  className="flex-1 px-4 py-3 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700"
+                  className="flex-1 px-4 py-3 bg-purple-600 text-white rounded-xl font-medium active:bg-purple-700"
                 >
                   Setuju
                 </button>
               </div>
             </div>
-          )}
-
-          {/* Approving status */}
-          {status === 'approving' && (
-            <div className="text-center py-8">
-              <div className="animate-spin w-12 h-12 border-4 border-purple-200 border-t-purple-600 rounded-full mx-auto mb-4" />
-              <p className="text-gray-600">{message}</p>
-            </div>
-          )}
-
-          {/* Success status */}
-          {status === 'approved' && (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <p className="text-green-600 font-medium">{message}</p>
-            </div>
-          )}
-
-          {/* Rejected status */}
-          {status === 'rejected' && (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </div>
-              <p className="text-gray-600 font-medium">{message}</p>
-            </div>
-          )}
-
-          {/* Error status */}
-          {status === 'error' && !cameraError && (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <p className="text-red-600 font-medium">{message}</p>
-              <button
-                onClick={() => {
-                  setStatus('scanning');
-                  setMessage('Arahkan kamera ke QR code');
-                  setApprovalData(null);
-                  startQRScanning();
-                }}
-                className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
-              >
-                Scan Ulang
-              </button>
-            </div>
-          )}
-
-          {/* Status message for scanning */}
-          {status === 'scanning' && (
-            <p className="text-center text-gray-600 text-sm">{message}</p>
-          )}
-
-          {/* Manual input fallback */}
-          {status === 'scanning' && (
-            <div className="mt-4 pt-4 border-t">
-              <p className="text-xs text-gray-500 text-center mb-2">
-                Tidak bisa scan? Masukkan kode token:
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Token atau URL QR"
-                  className="flex-1 px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleManualInput((e.target as HTMLInputElement).value);
-                    }
-                  }}
-                />
-                <button
-                  onClick={(e) => {
-                    const input = e.currentTarget.previousElementSibling as HTMLInputElement;
-                    handleManualInput(input.value);
-                  }}
-                  className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700"
-                >
-                  OK
-                </button>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Approving status overlay */}
+      {status === 'approving' && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="text-center">
+            <div className="animate-spin w-12 h-12 border-4 border-white/30 border-t-white rounded-full mx-auto mb-4" />
+            <p className="text-white font-medium">{message}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Success status overlay */}
+      {status === 'approved' && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="text-center">
+            <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-10 h-10 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <p className="text-white font-medium text-lg">{message}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Rejected status overlay */}
+      {status === 'rejected' && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="text-center">
+            <div className="w-20 h-20 bg-neutral-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-10 h-10 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <p className="text-white font-medium text-lg">{message}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error status overlay (non-camera errors) */}
+      {status === 'error' && !cameraError && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="text-center px-8">
+            <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <p className="text-white font-medium text-lg mb-6">{message}</p>
+            <button
+              onClick={handleRetry}
+              className="px-6 py-3 rounded-full bg-neutral-900/60 backdrop-blur-md text-white font-medium"
+            >
+              Scan Ulang
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
