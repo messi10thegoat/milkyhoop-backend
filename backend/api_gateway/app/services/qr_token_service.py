@@ -291,6 +291,9 @@ class QRTokenService:
         - When same browser_id logs in again, OLD session is kicked
         - Different browsers (incognito, other browser) = different sessions allowed
         - This is WhatsApp-style single session enforcement
+
+        IMPORTANT: Device is registered FIRST to get device_id, then tokens are
+        generated WITH device_id included. This ensures remote scanner can work.
         """
         # Import here to avoid circular imports
         from backend.api_gateway.app.services.auth_instance import auth_client
@@ -306,17 +309,7 @@ class QRTokenService:
             if not user:
                 raise ValueError(f"User not found: {user_id}")
 
-            # Generate tokens via auth service
             device_info = f"Web - {qr_token.webUserAgent[:50] if qr_token.webUserAgent else 'Unknown'}"
-
-            response = await auth_client.generate_tokens_for_qr_login(
-                user_id=user_id,
-                tenant_id=tenant_id,
-                email=user.email,
-                role=user.role,
-                username=user.username,
-                device_info=device_info,
-            )
 
             # Get browser_id from QR token (or generate fallback)
             browser_id = qr_token.browserId or str(uuid.uuid4())
@@ -325,7 +318,7 @@ class QRTokenService:
                     f"No browser_id in QR token, generated fallback: {browser_id[:8]}..."
                 )
 
-            # Register web device with browser_id for single session enforcement
+            # STEP 1: Register web device FIRST to get device_id
             # DeviceService.register_device() will kick same browser_id sessions
             device_service = DeviceService(self.prisma)
             device_id = await device_service.register_device(
@@ -336,17 +329,36 @@ class QRTokenService:
                 device_name=device_info,
                 device_fingerprint=qr_token.webFingerprint,
                 user_agent=qr_token.webUserAgent,
-                refresh_token_hash=device_service.hash_refresh_token(
-                    response.refresh_token
-                )
-                if response.refresh_token
-                else None,
+                refresh_token_hash=None,  # Will update after token generation
                 ip_address=qr_token.webIp,
             )
 
             logger.info(
                 f"Web device {device_id[:8]}... registered for user {user_id[:8]}... browser={browser_id[:8]}..."
             )
+
+            # STEP 2: Generate tokens WITH device_id included
+            response = await auth_client.generate_tokens_for_qr_login(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                email=user.email,
+                role=user.role,
+                username=user.username,
+                device_info=device_info,
+                device_id=device_id,
+                device_type="web",
+            )
+
+            # STEP 3: Update device with refresh_token_hash
+            if response.refresh_token:
+                await self.prisma.userdevice.update(
+                    where={"id": device_id},
+                    data={
+                        "refreshTokenHash": device_service.hash_refresh_token(
+                            response.refresh_token
+                        )
+                    },
+                )
 
             return {
                 "access_token": response.access_token,

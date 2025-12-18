@@ -148,6 +148,7 @@ services:
     build:
       context: .
       dockerfile: backend/api_gateway/Dockerfile
+    container_name: milkyhoop-dev-api_gateway  # Explicit name for nginx proxy resolution
     <<: *security-defaults
     ports:
       - "8001:8000"  # Public API - keep accessible
@@ -596,9 +597,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-
-
-
   auth_service:
     build:
       context: .
@@ -912,9 +910,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-
-
 
   tenant_orchestrator:
     build:

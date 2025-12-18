@@ -423,6 +423,8 @@ class AuthClient:
         role: str,
         username: str = None,
         device_info: str = None,
+        device_id: str = None,
+        device_type: str = "web",
     ) -> Dict[str, Any]:
         """
         Generate tokens for QR login flow (desktop session)
@@ -437,6 +439,8 @@ class AuthClient:
             role: User role
             username: Username (optional)
             device_info: Device info string (optional)
+            device_id: Device ID for session enforcement (optional)
+            device_type: Device type, defaults to "web"
 
         Returns:
             Dict containing access_token and refresh_token
@@ -446,13 +450,37 @@ class AuthClient:
 
             # Use CreateTokens RPC if available, otherwise fall back to internal generation
             try:
+                # If device_id is provided, use local generation since gRPC doesn't support it
+                # This ensures device_id is included in the token for session enforcement
+                if device_id:
+                    logger.info(
+                        f"device_id provided ({device_id[:8]}...), using local JWT generation"
+                    )
+                    return await self._generate_tokens_locally(
+                        user_id,
+                        tenant_id,
+                        email,
+                        role,
+                        username,
+                        device_info,
+                        device_id,
+                        device_type,
+                    )
+
                 # Check if CreateTokensRequest exists in proto
                 if not hasattr(auth_pb2, "CreateTokensRequest"):
                     logger.info(
                         "CreateTokensRequest not in proto, using local JWT generation"
                     )
                     return await self._generate_tokens_locally(
-                        user_id, tenant_id, email, role, username, device_info
+                        user_id,
+                        tenant_id,
+                        email,
+                        role,
+                        username,
+                        device_info,
+                        device_id,
+                        device_type,
                     )
 
                 request = auth_pb2.CreateTokensRequest(
@@ -488,7 +516,14 @@ class AuthClient:
                         "CreateTokens RPC not available, using local JWT generation"
                     )
                     return await self._generate_tokens_locally(
-                        user_id, tenant_id, email, role, username, device_info
+                        user_id,
+                        tenant_id,
+                        email,
+                        role,
+                        username,
+                        device_info,
+                        device_id,
+                        device_type,
                     )
                 raise
 
@@ -496,7 +531,14 @@ class AuthClient:
             logger.error(f"Error generating QR login tokens: {str(e)}")
             # Fall back to local generation
             return await self._generate_tokens_locally(
-                user_id, tenant_id, email, role, username, device_info
+                user_id,
+                tenant_id,
+                email,
+                role,
+                username,
+                device_info,
+                device_id,
+                device_type,
             )
 
     async def _generate_tokens_locally(
@@ -507,6 +549,8 @@ class AuthClient:
         role: str,
         username: str = None,
         device_info: str = None,
+        device_id: str = None,
+        device_type: str = None,
     ):
         """
         Generate JWT tokens locally as fallback
@@ -524,16 +568,18 @@ class AuthClient:
 
         now = datetime.now(timezone.utc)
 
-        # Access token (15 min expiry)
+        # Access token (7 days expiry for web sessions)
         access_payload = {
             "user_id": user_id,
             "tenant_id": tenant_id,
             "role": role,
             "email": email,
             "username": username or email.split("@")[0],
+            "device_id": device_id,
+            "device_type": device_type or "web",
             "token_type": "access",
             "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(minutes=15)).timestamp()),
+            "exp": int((now + timedelta(days=7)).timestamp()),
             "nbf": int(now.timestamp()),
         }
         access_token = jwt.encode(access_payload, jwt_secret, algorithm="HS256")

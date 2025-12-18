@@ -62,3 +62,15 @@ poetry.lock
 # Temporary files
 tmp/
 temp/
+
+# Node cache (never commit - industry standard)
+**/node_modules/.cache/
+**/.eslintcache
+**/tsconfig.tsbuildinfo
+
+# Prisma generated client (regenerate with: prisma generate)
+**/.prisma/client/
+**/node_modules/.prisma/
+
+# Large backup files (store in separate backup system)
+backups/*.sql.gz.age

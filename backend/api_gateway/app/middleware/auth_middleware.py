@@ -56,6 +56,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return True
         return False
 
+    def _is_device_ws_endpoint(self, path: str) -> bool:
+        """Check if path matches Device WebSocket endpoint"""
+        # /api/devices/ws/{device_id} - WebSocket for remote scan & force logout
+        # WebSocket connections can't send Authorization headers in handshake
+        # Auth validated via device_id matching (device_id from authenticated login)
+        return bool(re.match(r"^/api/devices/ws/[^/]+/?$", path))
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
@@ -77,6 +84,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Allow QR login public endpoints (no auth for desktop)
             if self._is_qr_public_endpoint(path):
                 logger.info(f"Bypassing auth for QR login endpoint: {path}")
+                return await call_next(request)
+
+            # Allow Device WebSocket endpoint (auth via device_id in path)
+            if self._is_device_ws_endpoint(path):
+                logger.info(f"Bypassing auth for Device WebSocket: {path}")
                 return await call_next(request)
 
             # Require authentication for all other paths

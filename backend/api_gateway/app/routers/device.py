@@ -96,6 +96,14 @@ class RemoteScanCancelRequest(BaseModel):
     scan_id: str
 
 
+class MobileStatusResponse(BaseModel):
+    """Response for mobile connection status"""
+
+    success: bool
+    is_online: bool
+    message: str
+
+
 # ================================
 # HELPER FUNCTIONS
 # ================================
@@ -266,7 +274,7 @@ async def get_device_stats(request: Request):
     Get device statistics for monitoring (admin only)
     """
     try:
-        user = get_user_from_request(request)
+        _user = get_user_from_request(request)  # Auth check
 
         # Check if user has admin/owner role
         role = request.state.user.get("role", "FREE")
@@ -289,6 +297,45 @@ async def get_device_stats(request: Request):
 # ================================
 # REMOTE SCANNER ENDPOINTS
 # ================================
+
+
+@router.get("/mobile-status", response_model=MobileStatusResponse)
+async def get_mobile_status(request: Request):
+    """
+    Check if user's mobile device is online and ready for remote scanning
+
+    Called by desktop to show connection status before attempting scan
+    """
+    try:
+        user = get_user_from_request(request)
+        service = get_device_service(request)
+
+        # Find mobile device for this user
+        mobile_device = await service.get_mobile_device(
+            user_id=user["user_id"], tenant_id=user["tenant_id"]
+        )
+
+        if not mobile_device:
+            return MobileStatusResponse(
+                success=True,
+                is_online=False,
+                message="Tidak ada perangkat mobile yang terhubung",
+            )
+
+        # Check if mobile is online
+        is_online = websocket_hub.is_mobile_online(mobile_device.id)
+
+        return MobileStatusResponse(
+            success=True,
+            is_online=is_online,
+            message="Mobile online" if is_online else "Mobile offline",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mobile status: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengecek status mobile")
 
 
 @router.post("/remote-scan/request", response_model=RemoteScanRequestResponse)
@@ -380,7 +427,7 @@ async def send_remote_scan_result(request: Request, body: RemoteScanResultReques
     """
     try:
         # Mobile must be authenticated
-        user = get_user_from_request(request)
+        _user = get_user_from_request(request)  # Auth check
 
         # Send result to desktop via WebSocket
         sent = await websocket_hub.send_remote_scan_result(
@@ -415,7 +462,7 @@ async def cancel_remote_scan(request: Request, body: RemoteScanCancelRequest):
     Can be called by either desktop or mobile
     """
     try:
-        user = get_user_from_request(request)
+        _user = get_user_from_request(request)  # Auth check
 
         # Cancel the scan session
         cancelled = await websocket_hub.cancel_remote_scan(body.scan_id)

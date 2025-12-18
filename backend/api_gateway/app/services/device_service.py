@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 from backend.api_gateway.app.services.websocket_hub import websocket_hub
+from backend.api_gateway.app.services.session_manager import session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,13 @@ class DeviceService:
                     logger.info(
                         f"✅ Device registered: {device.id[:8]}... (web) browser={browser_id[:8]}... for user {user_id[:8]}..."
                     )
+
+                    # CRITICAL: Set session in Redis for auth middleware validation
+                    session_manager.set_active_device(user_id, device_type, device.id)
+                    logger.info(
+                        f"✅ Session set in Redis: user={user_id[:8]}... device_type={device_type} device_id={device.id[:8]}..."
+                    )
+
                     return device.id
 
                 except Exception as e:
