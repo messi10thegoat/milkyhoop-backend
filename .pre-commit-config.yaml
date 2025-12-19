@@ -28,7 +28,7 @@ repos:
     hooks:
       - id: bandit
         name: Python Security Check (Bandit)
-        args: ['-c', 'pyproject.toml', '-r', 'backend/']
+        args: ['-r', 'backend/']
         exclude: |
           (?x)^(
             .*test.*|
