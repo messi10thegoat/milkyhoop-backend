@@ -17,7 +17,7 @@ OWASP Top 10 compliant.
 import re
 import logging
 from typing import Set, List, Pattern, Optional
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -46,14 +46,19 @@ class WAFMiddleware(BaseHTTPMiddleware):
         re.compile(r"(\bDROP\s+(TABLE|DATABASE)\b)", re.IGNORECASE),
         # Boolean-based injection
         re.compile(r"(\b(OR|AND)\s+[\'\"]?\d+[\'\"]?\s*=\s*[\'\"]?\d+)", re.IGNORECASE),
-        re.compile(r"(\bOR\s+[\'\"]?[\w]+[\'\"]?\s*=\s*[\'\"]?[\w]+[\'\"]?\s*--)", re.IGNORECASE),
+        re.compile(
+            r"(\bOR\s+[\'\"]?[\w]+[\'\"]?\s*=\s*[\'\"]?[\w]+[\'\"]?\s*--)",
+            re.IGNORECASE,
+        ),
         # Comment-based injection (specific patterns)
         re.compile(r"(--\s*$|--\s+)", re.IGNORECASE),
         re.compile(r"(/\*.*\*/)", re.IGNORECASE),
         # Time-based injection
         re.compile(r"(\bWAITFOR\s+DELAY|\bBENCHMARK\s*\(|\bSLEEP\s*\()", re.IGNORECASE),
         # System table access
-        re.compile(r"(INFORMATION_SCHEMA|sysobjects|syscolumns|pg_catalog)", re.IGNORECASE),
+        re.compile(
+            r"(INFORMATION_SCHEMA|sysobjects|syscolumns|pg_catalog)", re.IGNORECASE
+        ),
         # Dangerous functions
         re.compile(r"(\bEXEC\s*\(|\bEXECUTE\s*\()", re.IGNORECASE),
     ]
@@ -98,9 +103,19 @@ class WAFMiddleware(BaseHTTPMiddleware):
 
     # Malicious user agents (security scanners only)
     BLOCKED_USER_AGENTS: Set[str] = {
-        "sqlmap", "nikto", "nmap", "masscan", "zgrab",
-        "gobuster", "dirbuster", "wfuzz", "ffuf",
-        "acunetix", "nessus", "burp", "zap",
+        "sqlmap",
+        "nikto",
+        "nmap",
+        "masscan",
+        "zgrab",
+        "gobuster",
+        "dirbuster",
+        "wfuzz",
+        "ffuf",
+        "acunetix",
+        "nessus",
+        "burp",
+        "zap",
         # Removed curl/wget - legitimate tools
     }
 
@@ -116,9 +131,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
 
     # Fast paths - skip WAF for speed-critical endpoints
     FAST_PATHS: Set[str] = {
-        "/api/products/search/pos",      # Autocomplete needs <100ms
+        "/api/products/search/pos",  # Autocomplete needs <100ms
         "/api/products/search/kulakan",  # Kulakan autocomplete
-        "/api/products/barcode/",        # Barcode lookup
+        "/api/products/barcode/",  # Barcode lookup
     }
 
     # Paths with relaxed WAF (check body only, not headers)
@@ -157,7 +172,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
         # Check user agent
         user_agent = request.headers.get("user-agent", "").lower()
         if self._is_blocked_user_agent(user_agent):
-            logger.warning(f"WAF: Blocked user agent from {request.client.host}: {user_agent[:50]}")
+            logger.warning(
+                f"WAF: Blocked user agent from {request.client.host}: {user_agent[:50]}"
+            )
             return self._block_request("Forbidden", 403)
 
         # Check URL path for attacks
@@ -175,12 +192,21 @@ class WAFMiddleware(BaseHTTPMiddleware):
                     return self._block_request("Header too large", 431)
 
                 # Skip checking certain headers
-                if header_name.lower() in ("authorization", "cookie", "content-type", "origin", "referer", "accept"):
+                if header_name.lower() in (
+                    "authorization",
+                    "cookie",
+                    "content-type",
+                    "origin",
+                    "referer",
+                    "accept",
+                ):
                     continue
 
                 threat = self._detect_threat(header_value, f"Header:{header_name}")
                 if threat:
-                    logger.warning(f"WAF: {threat} in header from {request.client.host}")
+                    logger.warning(
+                        f"WAF: {threat} in header from {request.client.host}"
+                    )
                     return self._block_request(f"Blocked: {threat}", 403)
 
         # Check request body for POST/PUT/PATCH
@@ -200,7 +226,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
                     body_str = body.decode("utf-8", errors="ignore")
                     threat = self._detect_threat(body_str, "Body")
                     if threat:
-                        logger.warning(f"WAF: {threat} in body from {request.client.host}")
+                        logger.warning(
+                            f"WAF: {threat} in body from {request.client.host}"
+                        )
                         return self._block_request(f"Blocked: {threat}", 403)
             except Exception as e:
                 logger.error(f"WAF: Error reading body: {e}")
@@ -255,11 +283,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
             content={
                 "error": "Request blocked by WAF",
                 "message": message,
-                "code": "WAF_BLOCKED"
+                "code": "WAF_BLOCKED",
             },
-            headers={
-                "X-WAF-Status": "blocked"
-            }
+            headers={"X-WAF-Status": "blocked"},
         )
 
 
@@ -291,8 +317,7 @@ class IPReputationMiddleware(BaseHTTPMiddleware):
         if self._is_ip_blocked(client_ip):
             logger.warning(f"IPReputation: Blocked IP {client_ip}")
             return JSONResponse(
-                status_code=403,
-                content={"error": "IP blocked", "code": "IP_BLOCKED"}
+                status_code=403, content={"error": "IP blocked", "code": "IP_BLOCKED"}
             )
 
         return await call_next(request)
@@ -305,6 +330,7 @@ class IPReputationMiddleware(BaseHTTPMiddleware):
 
         # Check suspicion score
         import time
+
         now = time.time()
         if ip in self._suspicious_ips:
             score, timestamp = self._suspicious_ips[ip]
@@ -319,6 +345,7 @@ class IPReputationMiddleware(BaseHTTPMiddleware):
     def mark_suspicious(self, ip: str, score: int = 1):
         """Mark an IP as suspicious"""
         import time
+
         now = time.time()
 
         if ip in self._suspicious_ips:

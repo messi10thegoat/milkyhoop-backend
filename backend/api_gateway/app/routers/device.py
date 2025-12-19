@@ -35,7 +35,19 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 # ================================
 
 # Wholesale unit names (for detecting if last purchase was wholesale)
-WHOLESALE_UNITS = {"karton", "dus", "box", "slop", "bal", "koli", "pack", "lusin", "rim", "gross", "sak"}
+WHOLESALE_UNITS = {
+    "karton",
+    "dus",
+    "box",
+    "slop",
+    "bal",
+    "koli",
+    "pack",
+    "lusin",
+    "rim",
+    "gross",
+    "sak",
+}
 
 
 async def _get_db_connection():
@@ -105,8 +117,14 @@ async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[d
                 result["hpp_per_unit"] = last_tx["hpp_per_unit"]
 
                 # Compute units_per_pack (qty per wholesale unit)
-                if last_tx["last_price"] and last_tx["hpp_per_unit"] and last_tx["hpp_per_unit"] > 0:
-                    result["units_per_pack"] = int(last_tx["last_price"] / last_tx["hpp_per_unit"])
+                if (
+                    last_tx["last_price"]
+                    and last_tx["hpp_per_unit"]
+                    and last_tx["hpp_per_unit"] > 0
+                ):
+                    result["units_per_pack"] = int(
+                        last_tx["last_price"] / last_tx["hpp_per_unit"]
+                    )
 
                 logger.info(
                     f"📸 Last pembelian: unit={last_tx['last_unit']}, "
@@ -134,7 +152,9 @@ async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[d
 
                 if retail_tx:
                     result["content_unit"] = retail_tx["content_unit"]
-                    logger.info(f"📸 Content unit from penjualan: {retail_tx['content_unit']}")
+                    logger.info(
+                        f"📸 Content unit from penjualan: {retail_tx['content_unit']}"
+                    )
 
             return result
         finally:
@@ -564,7 +584,9 @@ async def send_remote_scan_result(request: Request, body: RemoteScanResultReques
         # LATENCY OPTIMIZATION: Lookup product before sending to desktop
         product = None
         if body.barcode and not body.error:
-            product = await _lookup_product_by_barcode(session["tenant_id"], body.barcode)
+            product = await _lookup_product_by_barcode(
+                session["tenant_id"], body.barcode
+            )
             if product:
                 logger.info(f"📸 Product pre-fetched: {product.get('name', 'unknown')}")
             else:

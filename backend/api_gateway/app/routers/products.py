@@ -54,7 +54,9 @@ class POSProductSearchResponse(BaseModel):
 
 # Kulakan (Pembelian) Product Search Response - combined products + transaction history
 class KulakanProductItem(BaseModel):
-    id: Optional[str] = None  # May be None if product only exists in transaction history
+    id: Optional[
+        str
+    ] = None  # May be None if product only exists in transaction history
     name: str
     barcode: Optional[str] = None
     category: Optional[str] = None

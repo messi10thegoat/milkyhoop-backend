@@ -12,7 +12,6 @@ Features:
 - Graceful fallback to in-memory if Redis unavailable
 """
 import time
-import asyncio
 import logging
 from collections import defaultdict
 from typing import Dict, Tuple, Optional
@@ -27,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Try to import redis, fallback to in-memory if not available
 try:
     import redis.asyncio as redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
@@ -56,7 +56,7 @@ class RedisRateLimiter:
                 decode_responses=True,
                 socket_timeout=5,
                 socket_connect_timeout=5,
-                retry_on_timeout=True
+                retry_on_timeout=True,
             )
             # Test connection
             await self._client.ping()
@@ -75,10 +75,7 @@ class RedisRateLimiter:
             self._connected = False
 
     async def is_rate_limited(
-        self,
-        key: str,
-        max_requests: int,
-        window_seconds: int
+        self, key: str, max_requests: int, window_seconds: int
     ) -> Tuple[bool, int, int]:
         """
         Check if key is rate limited using Redis sorted set.
@@ -136,20 +133,14 @@ class InMemoryRateLimiter:
         self._last_cleanup = time.time()
 
     def is_rate_limited(
-        self,
-        key: str,
-        max_requests: int,
-        window_seconds: int
+        self, key: str, max_requests: int, window_seconds: int
     ) -> Tuple[bool, int, int]:
         """Check if key is rate limited using sliding window"""
         current_time = time.time()
         window_start = current_time - window_seconds
 
         # Clean old requests outside window
-        self._requests[key] = [
-            ts for ts in self._requests[key]
-            if ts > window_start
-        ]
+        self._requests[key] = [ts for ts in self._requests[key] if ts > window_start]
 
         request_count = len(self._requests[key])
 
@@ -177,8 +168,7 @@ class InMemoryRateLimiter:
         keys_to_delete = []
         for key, timestamps in self._requests.items():
             self._requests[key] = [
-                ts for ts in timestamps
-                if current_time - ts < max_window
+                ts for ts in timestamps if current_time - ts < max_window
             ]
             if not self._requests[key]:
                 keys_to_delete.append(key)
@@ -221,9 +211,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Fast paths - skip rate limit for speed-critical endpoints
         self.fast_paths = {
-            "/api/products/search/pos",      # Autocomplete <100ms
+            "/api/products/search/pos",  # Autocomplete <100ms
             "/api/products/search/kulakan",  # Kulakan autocomplete
-            "/api/products/barcode/",        # Barcode lookup
+            "/api/products/barcode/",  # Barcode lookup
         }
 
     async def _ensure_initialized(self):
@@ -274,9 +264,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW
 
     async def _check_rate_limit(
-        self,
-        client_key: str,
-        path: str
+        self, client_key: str, path: str
     ) -> Tuple[bool, int, int]:
         """Check rate limit using appropriate backend"""
         max_requests, window_seconds = self._get_limits(path)
@@ -313,7 +301,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         await self._ensure_initialized()
 
         client_key = self._get_client_key(request)
-        is_limited, remaining, retry_after = await self._check_rate_limit(client_key, path)
+        is_limited, remaining, retry_after = await self._check_rate_limit(
+            client_key, path
+        )
 
         if is_limited:
             logger.warning(
@@ -322,8 +312,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "client": client_key,
                     "path": path,
                     "retry_after": retry_after,
-                    "event_type": "RATE_LIMITED"
-                }
+                    "event_type": "RATE_LIMITED",
+                },
             )
             return JSONResponse(
                 status_code=429,
@@ -331,12 +321,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "error": "Too many requests",
                     "code": "RATE_LIMIT_EXCEEDED",
                     "retry_after": retry_after,
-                    "message": f"Rate limit exceeded. Please retry after {retry_after} seconds."
+                    "message": f"Rate limit exceeded. Please retry after {retry_after} seconds.",
                 },
                 headers={
                     "Retry-After": str(retry_after),
                     "X-RateLimit-Remaining": "0",
-                }
+                },
             )
 
         # Add rate limit headers to response

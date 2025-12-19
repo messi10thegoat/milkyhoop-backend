@@ -12,9 +12,18 @@ from typing import Optional, Literal, List
 import logging
 import uuid
 
-from backend.api_gateway.libs.milkyhoop_protos import tenant_orchestrator_pb2, tenant_orchestrator_pb2_grpc
-from backend.api_gateway.libs.milkyhoop_protos import conversation_service_pb2, conversation_service_pb2_grpc
-from backend.api_gateway.app.utils.conversational_parser import parse_conversational_input, validate_parsed_input
+from backend.api_gateway.libs.milkyhoop_protos import (
+    tenant_orchestrator_pb2,
+    tenant_orchestrator_pb2_grpc,
+)
+from backend.api_gateway.libs.milkyhoop_protos import (
+    conversation_service_pb2,
+    conversation_service_pb2_grpc,
+)
+from backend.api_gateway.app.utils.conversational_parser import (
+    parse_conversational_input,
+    validate_parsed_input,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,7 +38,7 @@ async def save_to_chat_history(
     message: str,
     response: str,
     intent: str = "transaction",
-    metadata: dict = None
+    metadata: dict = None,
 ) -> bool:
     """
     Save message to chat_messages table via conversation_service.
@@ -45,7 +54,7 @@ async def save_to_chat_history(
             message=message,
             response=response,
             intent=intent,
-            metadata_json=json.dumps(metadata or {})
+            metadata_json=json.dumps(metadata or {}),
         )
 
         save_response = await stub.SaveMessage(request)
@@ -55,7 +64,9 @@ async def save_to_chat_history(
             logger.info(f"[ChatHistory] Message saved: {save_response.message_id}")
             return True
         else:
-            logger.warning(f"[ChatHistory] Save returned non-success: {save_response.status}")
+            logger.warning(
+                f"[ChatHistory] Save returned non-success: {save_response.status}"
+            )
             return False
 
     except Exception as e:
@@ -65,12 +76,15 @@ async def save_to_chat_history(
 
 class PurchaseTransactionRequest(BaseModel):
     """Purchase transaction from frontend form"""
+
     product_name: str
     quantity: int
     unit: str  # pcs, kg, karton, etc.
     price_per_unit: int  # in rupiah (integer)
     # Accept both lowercase (backend) and uppercase (Kulakan frontend) payment methods
-    payment_method: Literal["tunai", "transfer", "kredit", "CASH", "TRANSFER", "TEMPO"] = "tunai"
+    payment_method: Literal[
+        "tunai", "transfer", "kredit", "CASH", "TRANSFER", "TEMPO"
+    ] = "tunai"
     vendor_name: Optional[str] = None
     notes: Optional[str] = None
     # Discount & PPN fields (V005)
@@ -83,25 +97,29 @@ class PurchaseTransactionRequest(BaseModel):
     purchase_date: Optional[str] = None
     due_date: Optional[str] = None
     # HPP & Margin fields (V006)
-    hpp_per_unit: Optional[float] = None      # HPP per satuan kecil
-    harga_jual: Optional[float] = None        # Selling price per unit
-    margin: Optional[float] = None            # Profit margin
-    margin_percent: Optional[float] = None    # Margin percentage
-    retail_unit: Optional[str] = None         # Retail unit for HPP display (e.g., "pcs" instead of "dus")
+    hpp_per_unit: Optional[float] = None  # HPP per satuan kecil
+    harga_jual: Optional[float] = None  # Selling price per unit
+    margin: Optional[float] = None  # Profit margin
+    margin_percent: Optional[float] = None  # Margin percentage
+    retail_unit: Optional[
+        str
+    ] = None  # Retail unit for HPP display (e.g., "pcs" instead of "dus")
     # Kulakan frontend additional fields (aliases and extras)
-    transaction_type: Optional[str] = None    # 'pembelian'
-    product_barcode: Optional[str] = None     # barcode from scanner
-    supplier_name: Optional[str] = None       # alias for vendor_name
-    catatan: Optional[str] = None             # alias for notes (Indonesian)
-    content_unit: Optional[str] = None        # unit for contents (e.g., 'pcs' in 'karton isi 24 pcs')
-    total_amount: Optional[int] = None        # total price (quantity * price_per_unit)
-    harga_pokok: Optional[float] = None       # alias for hpp_per_unit
-    has_discount: Optional[bool] = False      # whether discount is applied
-    has_ppn: Optional[bool] = False           # alias for include_vat
-    is_wholesale: Optional[bool] = False      # wholesale mode
-    is_tempo: Optional[bool] = False          # credit payment
-    is_new_product: Optional[bool] = False    # new product flag
-    category: Optional[str] = None            # product category
+    transaction_type: Optional[str] = None  # 'pembelian'
+    product_barcode: Optional[str] = None  # barcode from scanner
+    supplier_name: Optional[str] = None  # alias for vendor_name
+    catatan: Optional[str] = None  # alias for notes (Indonesian)
+    content_unit: Optional[
+        str
+    ] = None  # unit for contents (e.g., 'pcs' in 'karton isi 24 pcs')
+    total_amount: Optional[int] = None  # total price (quantity * price_per_unit)
+    harga_pokok: Optional[float] = None  # alias for hpp_per_unit
+    has_discount: Optional[bool] = False  # whether discount is applied
+    has_ppn: Optional[bool] = False  # alias for include_vat
+    is_wholesale: Optional[bool] = False  # wholesale mode
+    is_tempo: Optional[bool] = False  # credit payment
+    is_new_product: Optional[bool] = False  # new product flag
+    category: Optional[str] = None  # product category
 
 
 class TransactionResponse(BaseModel):
@@ -122,8 +140,7 @@ def format_rupiah(amount: int) -> str:
 
 @router.post("/purchase", response_model=TransactionResponse)
 async def create_purchase_transaction(
-    request: Request,
-    body: PurchaseTransactionRequest
+    request: Request, body: PurchaseTransactionRequest
 ):
     """
     Create purchase transaction from form
@@ -140,7 +157,7 @@ async def create_purchase_transaction(
     try:
         # ===== 1. GET USER FROM AUTH MIDDLEWARE =====
         # AuthMiddleware already validates token and sets request.state.user
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         user = request.state.user
@@ -148,15 +165,22 @@ async def create_purchase_transaction(
         user_id = user.get("user_id")
 
         if not tenant_id or not user_id:
-            raise HTTPException(status_code=401, detail="Invalid user context: missing tenant_id or user_id")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid user context: missing tenant_id or user_id",
+            )
 
         logger.info(f"Purchase request from user {user_id} in tenant {tenant_id}")
 
         # ===== 2. NORMALIZE FIELD ALIASES =====
         # Handle both frontend (Kulakan) and backend naming conventions
         payment_method_map = {
-            "CASH": "tunai", "TRANSFER": "transfer", "TEMPO": "kredit",
-            "tunai": "tunai", "transfer": "transfer", "kredit": "kredit"
+            "CASH": "tunai",
+            "TRANSFER": "transfer",
+            "TEMPO": "kredit",
+            "tunai": "tunai",
+            "transfer": "transfer",
+            "kredit": "kredit",
         }
         normalized_payment = payment_method_map.get(body.payment_method, "tunai")
         vendor = body.vendor_name or body.supplier_name or ""
@@ -173,7 +197,7 @@ async def create_purchase_transaction(
         # Build base message with [FORM] flag
         message_parts = [
             f"[FORM] Beli {body.quantity} {body.unit} {body.product_name}",
-            f"harga {price_str} per {body.unit}"
+            f"harga {price_str} per {body.unit}",
         ]
 
         # Add payment method
@@ -212,41 +236,43 @@ async def create_purchase_transaction(
         elif body.discount_type == "percentage":
             backend_discount_type = "percentage"
 
-        form_data_json = json.dumps({
-            "form_data": {
-                "product_name": body.product_name,
-                "product_barcode": body.product_barcode or "",
-                "quantity": body.quantity,
-                "unit": body.unit,
-                "price_per_unit": body.price_per_unit,
-                "total": body.total_amount or (body.quantity * body.price_per_unit),
-                "payment_method": normalized_payment,  # Use normalized value
-                "vendor_name": vendor,  # Use normalized value (vendor_name or supplier_name)
-                "notes": notes_text,  # Use normalized value (notes or catatan)
-                "transaction_type": body.transaction_type or "pembelian",
-                # Discount & PPN fields (V005)
-                "discount_type": backend_discount_type,
-                "discount_value": body.discount_value or 0,
-                "include_vat": use_vat,  # Use normalized value (include_vat or has_ppn)
-                "has_discount": body.has_discount or False,
-                # Additional metadata
-                "units_per_pack": body.units_per_pack,
-                "content_unit": body.content_unit,  # Kulakan: unit for contents
-                "purchase_type": body.purchase_type,
-                "purchase_date": body.purchase_date,
-                "due_date": body.due_date,
-                "is_tempo": body.is_tempo or False,
-                "is_wholesale": body.is_wholesale or False,
-                "is_new_product": body.is_new_product or False,
-                "category": body.category,
-                # HPP & Margin fields (V006)
-                "hpp_per_unit": hpp,  # Use normalized value (hpp_per_unit or harga_pokok)
-                "harga_jual": body.harga_jual,
-                "margin": body.margin,
-                "margin_percent": body.margin_percent,
-                "retail_unit": body.retail_unit
+        form_data_json = json.dumps(
+            {
+                "form_data": {
+                    "product_name": body.product_name,
+                    "product_barcode": body.product_barcode or "",
+                    "quantity": body.quantity,
+                    "unit": body.unit,
+                    "price_per_unit": body.price_per_unit,
+                    "total": body.total_amount or (body.quantity * body.price_per_unit),
+                    "payment_method": normalized_payment,  # Use normalized value
+                    "vendor_name": vendor,  # Use normalized value (vendor_name or supplier_name)
+                    "notes": notes_text,  # Use normalized value (notes or catatan)
+                    "transaction_type": body.transaction_type or "pembelian",
+                    # Discount & PPN fields (V005)
+                    "discount_type": backend_discount_type,
+                    "discount_value": body.discount_value or 0,
+                    "include_vat": use_vat,  # Use normalized value (include_vat or has_ppn)
+                    "has_discount": body.has_discount or False,
+                    # Additional metadata
+                    "units_per_pack": body.units_per_pack,
+                    "content_unit": body.content_unit,  # Kulakan: unit for contents
+                    "purchase_type": body.purchase_type,
+                    "purchase_date": body.purchase_date,
+                    "due_date": body.due_date,
+                    "is_tempo": body.is_tempo or False,
+                    "is_wholesale": body.is_wholesale or False,
+                    "is_new_product": body.is_new_product or False,
+                    "category": body.category,
+                    # HPP & Margin fields (V006)
+                    "hpp_per_unit": hpp,  # Use normalized value (hpp_per_unit or harga_pokok)
+                    "harga_jual": body.harga_jual,
+                    "margin": body.margin,
+                    "margin_percent": body.margin_percent,
+                    "retail_unit": body.retail_unit,
+                }
             }
-        })
+        )
 
         logger.info(f"Form data JSON: {form_data_json}")
 
@@ -256,7 +282,7 @@ async def create_purchase_transaction(
             user_id=user_id,
             session_id=session_id,
             message=message,
-            conversation_context=form_data_json
+            conversation_context=form_data_json,
         )
 
         # Call tenant_orchestrator
@@ -268,7 +294,9 @@ async def create_purchase_transaction(
         # Close channel
         await channel.close()
 
-        logger.info(f"Orchestrator response: status={grpc_response.status}, response={grpc_response.milky_response[:100]}")
+        logger.info(
+            f"Orchestrator response: status={grpc_response.status}, response={grpc_response.milky_response[:100]}"
+        )
 
         # ===== 4. PARSE RESPONSE =====
         milky_response = grpc_response.milky_response or ""
@@ -279,15 +307,22 @@ async def create_purchase_transaction(
 
             # 1. Try entities_json first
             try:
-                entities = json.loads(grpc_response.entities_json) if grpc_response.entities_json else {}
-                transaction_id = entities.get("transaksi_id") or entities.get("transaction_id")
+                entities = (
+                    json.loads(grpc_response.entities_json)
+                    if grpc_response.entities_json
+                    else {}
+                )
+                transaction_id = entities.get("transaksi_id") or entities.get(
+                    "transaction_id"
+                )
             except:
                 pass
 
             # 2. Try parsing from milky_response (fallback)
             if not transaction_id and milky_response:
                 import re
-                match = re.search(r'ID:\s*([a-zA-Z0-9_]+)', milky_response)
+
+                match = re.search(r"ID:\s*([a-zA-Z0-9_]+)", milky_response)
                 if match:
                     transaction_id = match.group(1)
 
@@ -307,8 +342,8 @@ async def create_purchase_transaction(
                     "product": body.product_name,
                     "quantity": body.quantity,
                     "unit": body.unit,
-                    "total": body.total_amount or (body.quantity * body.price_per_unit)
-                }
+                    "total": body.total_amount or (body.quantity * body.price_per_unit),
+                },
             )
 
             total_ms = (time.perf_counter() - t_request_start) * 1000
@@ -317,15 +352,14 @@ async def create_purchase_transaction(
             return TransactionResponse(
                 status="success",
                 message=milky_response or "Transaksi berhasil dicatat",
-                transaction_id=transaction_id
+                transaction_id=transaction_id,
             )
         else:
             total_ms = (time.perf_counter() - t_request_start) * 1000
             logger.info(f"[PERF] API_GATEWAY_TOTAL: {total_ms:.0f}ms (error)")
 
             return TransactionResponse(
-                status="error",
-                message=milky_response or "Gagal mencatat transaksi"
+                status="error", message=milky_response or "Gagal mencatat transaksi"
             )
 
     except HTTPException:
@@ -340,11 +374,13 @@ async def create_purchase_transaction(
 
 class GuidedInputRequest(BaseModel):
     """Guided conversational input"""
+
     input_text: str
 
 
 class ParsedTransaction(BaseModel):
     """Parsed transaction data"""
+
     keyword: Optional[str] = None
     product_name: Optional[str] = None
     quantity: Optional[int] = None
@@ -364,16 +400,14 @@ class ParsedTransaction(BaseModel):
 
 class ParseGuidedResponse(BaseModel):
     """Response from parse-guided endpoint"""
+
     status: str
     parsed: ParsedTransaction
     validation: dict
 
 
 @router.post("/parse-guided", response_model=ParseGuidedResponse)
-async def parse_guided_input(
-    request: Request,
-    body: GuidedInputRequest
-):
+async def parse_guided_input(request: Request, body: GuidedInputRequest):
     """
     Parse guided conversational input using REGEX (NO LLM).
     Returns structured transaction data for preview/confirmation.
@@ -383,7 +417,7 @@ async def parse_guided_input(
     """
     try:
         # Get user from auth middleware
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -396,12 +430,14 @@ async def parse_guided_input(
         # Validate required fields
         validation = validate_parsed_input(parsed)
 
-        logger.info(f"Parsed guided input: tenant={tenant_id}, product={parsed.get('product_name')}, valid={validation['is_valid']}")
+        logger.info(
+            f"Parsed guided input: tenant={tenant_id}, product={parsed.get('product_name')}, valid={validation['is_valid']}"
+        )
 
         return ParseGuidedResponse(
             status="success" if validation["is_valid"] else "incomplete",
             parsed=ParsedTransaction(**parsed),
-            validation=validation
+            validation=validation,
         )
 
     except HTTPException:
@@ -413,6 +449,7 @@ async def parse_guided_input(
 
 class SalesItemRequest(BaseModel):
     """Single item in sales cart"""
+
     productId: str
     name: Optional[str] = None  # Product name for display
     barcode: Optional[str] = None
@@ -422,6 +459,7 @@ class SalesItemRequest(BaseModel):
 
 class SalesTransactionRequest(BaseModel):
     """Sales transaction from POS frontend"""
+
     items: List[SalesItemRequest]
     totalAmount: int
     paymentAmount: int
@@ -434,6 +472,7 @@ class SalesTransactionRequest(BaseModel):
 
 class SalesTransactionResponse(BaseModel):
     """Response for sales transaction"""
+
     status: str
     message: str
     transaction_id: Optional[str] = None
@@ -441,10 +480,7 @@ class SalesTransactionResponse(BaseModel):
 
 
 @router.post("/sales", response_model=SalesTransactionResponse)
-async def create_sales_transaction(
-    request: Request,
-    body: SalesTransactionRequest
-):
+async def create_sales_transaction(request: Request, body: SalesTransactionRequest):
     """
     Create sales transaction from POS form.
 
@@ -453,7 +489,7 @@ async def create_sales_transaction(
     """
     try:
         # ===== 1. GET USER FROM AUTH MIDDLEWARE =====
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         user = request.state.user
@@ -461,16 +497,23 @@ async def create_sales_transaction(
         user_id = user.get("user_id")
 
         if not tenant_id or not user_id:
-            raise HTTPException(status_code=401, detail="Invalid user context: missing tenant_id or user_id")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid user context: missing tenant_id or user_id",
+            )
 
-        logger.info(f"POS Sales request from user {user_id} in tenant {tenant_id}: {len(body.items)} items, total={body.totalAmount}")
+        logger.info(
+            f"POS Sales request from user {user_id} in tenant {tenant_id}: {len(body.items)} items, total={body.totalAmount}"
+        )
 
         # ===== 2. BUILD NATURAL LANGUAGE MESSAGE =====
         # [FORM] flag tells orchestrator to skip clarification flow
-        items_text = ", ".join([
-            f"{item.qty} {item.name or 'produk'} @{format_rupiah(item.price)}"
-            for item in body.items
-        ])
+        items_text = ", ".join(
+            [
+                f"{item.qty} {item.name or 'produk'} @{format_rupiah(item.price)}"
+                for item in body.items
+            ]
+        )
 
         # Map payment method
         payment_map = {"CASH": "tunai", "TRANSFER": "transfer", "QRIS": "qris"}
@@ -482,31 +525,33 @@ async def create_sales_transaction(
 
         # ===== 3. BUILD FORM DATA JSON =====
         # Same pattern as /purchase endpoint - pass structured data to orchestrator
-        form_data_json = json.dumps({
-            "form_data": {
-                "transaction_type": "penjualan",
-                "items": [
-                    {
-                        "nama_produk": item.name or f"Produk #{item.productId[:8]}",
-                        "product_id": item.productId,
-                        "barcode": item.barcode,
-                        "jumlah": item.qty,
-                        "satuan": "pcs",
-                        "harga_satuan": item.price,
-                        "subtotal": item.qty * item.price
-                    }
-                    for item in body.items
-                ],
-                "total": body.totalAmount,
-                "payment_method": payment_text,
-                "payment_amount": body.paymentAmount,
-                "change": body.kembalian,
-                "discount": body.discount or 0,
-                "hutang": body.hutang or 0,
-                # Optional: proof image for non-cash
-                "proof_image": body.proofImage if body.proofImage else None
+        form_data_json = json.dumps(
+            {
+                "form_data": {
+                    "transaction_type": "penjualan",
+                    "items": [
+                        {
+                            "nama_produk": item.name or f"Produk #{item.productId[:8]}",
+                            "product_id": item.productId,
+                            "barcode": item.barcode,
+                            "jumlah": item.qty,
+                            "satuan": "pcs",
+                            "harga_satuan": item.price,
+                            "subtotal": item.qty * item.price,
+                        }
+                        for item in body.items
+                    ],
+                    "total": body.totalAmount,
+                    "payment_method": payment_text,
+                    "payment_amount": body.paymentAmount,
+                    "change": body.kembalian,
+                    "discount": body.discount or 0,
+                    "hutang": body.hutang or 0,
+                    # Optional: proof image for non-cash
+                    "proof_image": body.proofImage if body.proofImage else None,
+                }
             }
-        })
+        )
 
         logger.info(f"Form data JSON: {form_data_json[:200]}...")
 
@@ -523,7 +568,7 @@ async def create_sales_transaction(
             user_id=user_id,
             session_id=session_id,
             message=message,
-            conversation_context=form_data_json
+            conversation_context=form_data_json,
         )
 
         # Call tenant_orchestrator
@@ -532,7 +577,9 @@ async def create_sales_transaction(
         # Close channel
         await channel.close()
 
-        logger.info(f"Orchestrator response: status={grpc_response.status}, response={grpc_response.milky_response[:100] if grpc_response.milky_response else 'empty'}")
+        logger.info(
+            f"Orchestrator response: status={grpc_response.status}, response={grpc_response.milky_response[:100] if grpc_response.milky_response else 'empty'}"
+        )
 
         # ===== 5. PARSE RESPONSE =====
         milky_response = grpc_response.milky_response or ""
@@ -544,8 +591,14 @@ async def create_sales_transaction(
 
             # 1. Try entities_json first
             try:
-                entities = json.loads(grpc_response.entities_json) if grpc_response.entities_json else {}
-                transaction_id = entities.get("transaksi_id") or entities.get("transaction_id")
+                entities = (
+                    json.loads(grpc_response.entities_json)
+                    if grpc_response.entities_json
+                    else {}
+                )
+                transaction_id = entities.get("transaksi_id") or entities.get(
+                    "transaction_id"
+                )
                 receipt_html = entities.get("receipt_html")
             except:
                 pass
@@ -553,7 +606,8 @@ async def create_sales_transaction(
             # 2. Try parsing from milky_response (fallback)
             if not transaction_id and milky_response:
                 import re
-                match = re.search(r'ID:\s*([a-zA-Z0-9_]+)', milky_response)
+
+                match = re.search(r"ID:\s*([a-zA-Z0-9_]+)", milky_response)
                 if match:
                     transaction_id = match.group(1)
 
@@ -563,20 +617,21 @@ async def create_sales_transaction(
             if not receipt_html:
                 receipt_items = [
                     {
-                        'name': item.name or f"Produk #{item.productId[:8]}",
-                        'qty': item.qty,
-                        'price': item.price,
-                        'subtotal': item.qty * item.price
+                        "name": item.name or f"Produk #{item.productId[:8]}",
+                        "qty": item.qty,
+                        "price": item.price,
+                        "subtotal": item.qty * item.price,
                     }
                     for item in body.items
                 ]
                 receipt_html = generate_sales_receipt(
-                    transaction_id=transaction_id or f"POS_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    transaction_id=transaction_id
+                    or f"POS_{datetime.now().strftime('%Y%m%d%H%M%S')}",
                     items=receipt_items,
                     total=body.totalAmount,
                     payment=body.paymentAmount,
                     change=body.kembalian,
-                    payment_method=body.paymentMethod
+                    payment_method=body.paymentMethod,
                 )
 
             # ===== 6. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
@@ -585,27 +640,29 @@ async def create_sales_transaction(
                 user_id=user_id,
                 tenant_id=tenant_id,
                 message=message,
-                response=receipt_html or milky_response or "Transaksi penjualan berhasil",
+                response=receipt_html
+                or milky_response
+                or "Transaksi penjualan berhasil",
                 intent="penjualan",
                 metadata={
                     "transaction_id": transaction_id,
                     "form_type": "penjualan",
                     "items_count": len(body.items),
                     "total": body.totalAmount,
-                    "payment_method": body.paymentMethod
-                }
+                    "payment_method": body.paymentMethod,
+                },
             )
 
             return SalesTransactionResponse(
                 status="success",
                 message=milky_response or "Transaksi penjualan berhasil",
                 transaction_id=transaction_id,
-                receipt_html=receipt_html
+                receipt_html=receipt_html,
             )
         else:
             return SalesTransactionResponse(
                 status="error",
-                message=milky_response or "Gagal mencatat transaksi penjualan"
+                message=milky_response or "Gagal mencatat transaksi penjualan",
             )
 
     except HTTPException:
@@ -618,7 +675,14 @@ async def create_sales_transaction(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-def generate_sales_receipt(transaction_id: str, items: list, total: int, payment: int, change: int, payment_method: str) -> str:
+def generate_sales_receipt(
+    transaction_id: str,
+    items: list,
+    total: int,
+    payment: int,
+    change: int,
+    payment_method: str,
+) -> str:
     """Generate HTML receipt for sales transaction"""
     now = datetime.now()
 

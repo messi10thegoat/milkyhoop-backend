@@ -552,7 +552,9 @@ class WebSocketHub:
         session = self.remote_scan_sessions.get(scan_id)
         return session.get("tenant_id") if session else None
 
-    def pop_and_validate_session(self, scan_id: str, user_tenant: str) -> Optional[dict]:
+    def pop_and_validate_session(
+        self, scan_id: str, user_tenant: str
+    ) -> Optional[dict]:
         """
         Atomically pop session and validate tenant (RACE-SAFE)
 
@@ -568,7 +570,9 @@ class WebSocketHub:
         """
         session = self.remote_scan_sessions.pop(scan_id, None)
         if not session:
-            logger.warning(f"📸 Session not found or already consumed: {scan_id[:8]}...")
+            logger.warning(
+                f"📸 Session not found or already consumed: {scan_id[:8]}..."
+            )
             return None
 
         if session.get("tenant_id") != user_tenant:
