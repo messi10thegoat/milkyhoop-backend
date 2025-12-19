@@ -322,6 +322,7 @@ class WebSocketHub:
         scan_id: str,
         desktop_device_id: str,
         desktop_tab_id: str,
+        tenant_id: str,
     ) -> bool:
         """
         Send remote scan request from desktop to mobile
@@ -331,6 +332,7 @@ class WebSocketHub:
             scan_id: Unique scan session ID
             desktop_device_id: Requesting desktop device ID (for result routing)
             desktop_tab_id: Requesting desktop tab ID
+            tenant_id: Tenant ID for isolation (stored for validation on result)
 
         Returns:
             True if request was sent, False if mobile not connected
@@ -347,8 +349,9 @@ class WebSocketHub:
             if not mobile_tabs:
                 return False
 
-            # Store scan session for result routing
+            # Store scan session for result routing (with tenant for isolation)
             self.remote_scan_sessions[scan_id] = {
+                "tenant_id": tenant_id,
                 "mobile_device_id": mobile_device_id,
                 "desktop_device_id": desktop_device_id,
                 "desktop_tab_id": desktop_tab_id,
@@ -378,7 +381,11 @@ class WebSocketHub:
             return False
 
     async def send_remote_scan_result(
-        self, scan_id: str, barcode: Optional[str], error: Optional[str] = None
+        self,
+        scan_id: str,
+        barcode: Optional[str],
+        error: Optional[str] = None,
+        product: Optional[dict] = None,
     ) -> bool:
         """
         Send scan result from mobile back to desktop
@@ -387,6 +394,7 @@ class WebSocketHub:
             scan_id: The scan session ID
             barcode: Scanned barcode (None if cancelled or error)
             error: Error message if scan failed
+            product: Pre-fetched product data for latency optimization
 
         Returns:
             True if result was sent, False if desktop not connected
@@ -434,10 +442,11 @@ class WebSocketHub:
                         "event": "remote_scan:result",
                         "scan_id": scan_id,
                         "barcode": barcode,
+                        "product": product,  # Pre-fetched for latency optimization
                     }
                 )
                 logger.info(
-                    f"📸 Remote scan RESULT sent: {scan_id[:8]}... -> {barcode[:20]}..."
+                    f"📸 Remote scan RESULT sent: {scan_id[:8]}... -> {barcode[:20]}... (product={'yes' if product else 'no'})"
                 )
             else:
                 await desktop_ws.send_json(
@@ -529,6 +538,126 @@ class WebSocketHub:
     def is_mobile_online(self, mobile_device_id: str) -> bool:
         """Check if mobile device is connected for remote scanning"""
         return mobile_device_id in self.device_connections
+
+    def get_scan_session_tenant(self, scan_id: str) -> Optional[str]:
+        """
+        Get tenant_id for a scan session (for validation before processing result)
+
+        Args:
+            scan_id: The scan session ID
+
+        Returns:
+            tenant_id if session exists, None otherwise
+        """
+        session = self.remote_scan_sessions.get(scan_id)
+        return session.get("tenant_id") if session else None
+
+    def pop_and_validate_session(self, scan_id: str, user_tenant: str) -> Optional[dict]:
+        """
+        Atomically pop session and validate tenant (RACE-SAFE)
+
+        This method combines pop + validation in one operation to prevent
+        race conditions with duplicate result calls.
+
+        Args:
+            scan_id: The scan session ID
+            user_tenant: Tenant ID from the request (to validate ownership)
+
+        Returns:
+            Session dict if valid, None if not found or tenant mismatch
+        """
+        session = self.remote_scan_sessions.pop(scan_id, None)
+        if not session:
+            logger.warning(f"📸 Session not found or already consumed: {scan_id[:8]}...")
+            return None
+
+        if session.get("tenant_id") != user_tenant:
+            logger.warning(
+                f"🔒 TENANT MISMATCH: {user_tenant} tried to access scan from {session.get('tenant_id')}"
+            )
+            return None
+
+        logger.info(f"📸 Session claimed: {scan_id[:8]}... by tenant {user_tenant}")
+        return session
+
+    async def send_scan_result_to_desktop(
+        self,
+        session: dict,
+        scan_id: str,
+        barcode: Optional[str],
+        error: Optional[str] = None,
+        product: Optional[dict] = None,
+    ) -> bool:
+        """
+        Send scan result to desktop WebSocket (session already popped)
+
+        This is called AFTER pop_and_validate_session() succeeds.
+        Does NOT pop session - that's already done atomically.
+
+        Args:
+            session: The popped session dict (from pop_and_validate_session)
+            scan_id: The scan session ID (for logging)
+            barcode: Scanned barcode (None if cancelled or error)
+            error: Error message if scan failed
+            product: Pre-fetched product data for latency optimization
+
+        Returns:
+            True if result was sent, False if desktop not connected
+        """
+        desktop_device_id = session["desktop_device_id"]
+        desktop_tab_id = session["desktop_tab_id"]
+
+        async with self._lock:
+            # Find desktop WebSocket
+            if desktop_device_id not in self.device_connections:
+                logger.warning(
+                    f"📸 Remote scan result DROPPED: desktop {desktop_device_id[:8]}... disconnected"
+                )
+                return False
+
+            tabs = self.device_connections[desktop_device_id]
+            if desktop_tab_id not in tabs:
+                logger.warning(
+                    f"📸 Remote scan result DROPPED: tab {desktop_tab_id[:8]}... closed"
+                )
+                return False
+
+            desktop_ws = tabs[desktop_tab_id]
+
+        try:
+            if error:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:error",
+                        "scan_id": scan_id,
+                        "error": error,
+                    }
+                )
+                logger.info(f"📸 Remote scan ERROR sent: {scan_id[:8]}... -> {error}")
+            elif barcode:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:result",
+                        "scan_id": scan_id,
+                        "barcode": barcode,
+                        "product": product,
+                    }
+                )
+                logger.info(
+                    f"📸 Remote scan RESULT sent: {scan_id[:8]}... -> {barcode[:20]}... (product={'yes' if product else 'no'})"
+                )
+            else:
+                await desktop_ws.send_json(
+                    {
+                        "event": "remote_scan:cancelled",
+                        "scan_id": scan_id,
+                    }
+                )
+                logger.info(f"📸 Remote scan CANCELLED: {scan_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"📸 Remote scan result send FAILED: {e}")
+            return False
 
 
 # Singleton instance

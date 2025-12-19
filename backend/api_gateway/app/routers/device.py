@@ -14,7 +14,9 @@ Remote Scanner Endpoints:
 - POST /api/devices/remote-scan/cancel - Cancel active scan
 """
 import logging
+import os
 import uuid
+import asyncpg
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -26,6 +28,120 @@ from backend.api_gateway.app.services.websocket_hub import websocket_hub
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+
+
+# ================================
+# DATABASE HELPERS (for Remote Scanner product lookup)
+# ================================
+
+# Wholesale unit names (for detecting if last purchase was wholesale)
+WHOLESALE_UNITS = {"karton", "dus", "box", "slop", "bal", "koli", "pack", "lusin", "rim", "gross", "sak"}
+
+
+async def _get_db_connection():
+    """Get async database connection for product lookup"""
+    return await asyncpg.connect(os.environ.get("DATABASE_URL"))
+
+
+async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[dict]:
+    """
+    Enhanced product lookup by barcode for Remote Scanner with last transaction data.
+    Uses tenant_id from scan session for isolation.
+
+    Returns dict with:
+    - Basic product info (name, unit, category, price, barcode)
+    - Last pembelian transaction (last_unit, last_price, hpp_per_unit, units_per_pack)
+    - Content unit from last penjualan (content_unit)
+    """
+    try:
+        conn = await _get_db_connection()
+        try:
+            # 1. Get basic product info
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    id,
+                    nama_produk as name,
+                    satuan as unit,
+                    kategori as category,
+                    harga_jual as price,
+                    barcode
+                FROM public.products
+                WHERE tenant_id = $1 AND barcode = $2
+                LIMIT 1
+                """,
+                tenant_id,
+                barcode,
+            )
+            if not row:
+                return None
+
+            result = dict(row)
+            product_name = result["name"]
+
+            # 2. Get last PEMBELIAN (purchase) transaction for this product
+            last_tx = await conn.fetchrow(
+                """
+                SELECT
+                    it.satuan as last_unit,
+                    it.harga_satuan as last_price,
+                    it.hpp_per_unit,
+                    it.kuantitas as last_qty
+                FROM public.item_transaksi it
+                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                WHERE th.tenant_id = $1
+                  AND LOWER(it.nama_produk) = LOWER($2)
+                  AND th.jenis_transaksi = 'pembelian'
+                ORDER BY th.created_at DESC
+                LIMIT 1
+                """,
+                tenant_id,
+                product_name,
+            )
+
+            if last_tx:
+                result["last_unit"] = last_tx["last_unit"]  # karton, dus, slop
+                result["last_price"] = last_tx["last_price"]
+                result["hpp_per_unit"] = last_tx["hpp_per_unit"]
+
+                # Compute units_per_pack (qty per wholesale unit)
+                if last_tx["last_price"] and last_tx["hpp_per_unit"] and last_tx["hpp_per_unit"] > 0:
+                    result["units_per_pack"] = int(last_tx["last_price"] / last_tx["hpp_per_unit"])
+
+                logger.info(
+                    f"📸 Last pembelian: unit={last_tx['last_unit']}, "
+                    f"price={last_tx['last_price']}, hpp={last_tx['hpp_per_unit']}"
+                )
+
+            # 3. Get content_unit from last PENJUALAN (retail sales) if last purchase was wholesale
+            last_unit_lower = (result.get("last_unit") or "").lower()
+            if last_unit_lower in WHOLESALE_UNITS:
+                retail_tx = await conn.fetchrow(
+                    """
+                    SELECT it.satuan as content_unit
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND LOWER(it.nama_produk) = LOWER($2)
+                      AND th.jenis_transaksi = 'penjualan'
+                      AND LOWER(it.satuan) NOT IN ('karton','dus','box','slop','bal','koli','pack','lusin','rim','gross','sak')
+                    ORDER BY th.created_at DESC
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    product_name,
+                )
+
+                if retail_tx:
+                    result["content_unit"] = retail_tx["content_unit"]
+                    logger.info(f"📸 Content unit from penjualan: {retail_tx['content_unit']}")
+
+            return result
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Product lookup failed: {e}")
+        return None
 
 
 # ================================
@@ -391,12 +507,13 @@ async def request_remote_scan(request: Request, body: RemoteScanRequest):
         # Generate unique scan ID
         scan_id = str(uuid.uuid4())
 
-        # Send request to mobile
+        # Send request to mobile (with tenant_id for isolation)
         sent = await websocket_hub.send_remote_scan_request(
             mobile_device_id=mobile_device.id,
             scan_id=scan_id,
             desktop_device_id=desktop_device_id,
             desktop_tab_id=body.tab_id,
+            tenant_id=user["tenant_id"],
         )
 
         if not sent:
@@ -424,22 +541,48 @@ async def send_remote_scan_result(request: Request, body: RemoteScanResultReques
     Mobile sends barcode scan result back to desktop
 
     Called by mobile after scanning barcode or cancelling
+
+    Uses atomic pop_and_validate_session() to prevent race conditions
+    with duplicate calls.
     """
     try:
         # Mobile must be authenticated
-        _user = get_user_from_request(request)  # Auth check
+        user = get_user_from_request(request)
+        user_tenant = user["tenant_id"]
 
-        # Send result to desktop via WebSocket
-        sent = await websocket_hub.send_remote_scan_result(
+        # ATOMIC: Pop session and validate tenant in one operation (RACE-SAFE)
+        # This prevents duplicate calls from both succeeding
+        session = websocket_hub.pop_and_validate_session(body.scan_id, user_tenant)
+        if not session:
+            # Session not found, expired, or tenant mismatch
+            # (pop_and_validate_session already logged the reason)
+            return RemoteScanResultResponse(
+                success=False,
+                message="Scan session tidak ditemukan atau sudah expired",
+            )
+
+        # LATENCY OPTIMIZATION: Lookup product before sending to desktop
+        product = None
+        if body.barcode and not body.error:
+            product = await _lookup_product_by_barcode(session["tenant_id"], body.barcode)
+            if product:
+                logger.info(f"📸 Product pre-fetched: {product.get('name', 'unknown')}")
+            else:
+                logger.info(f"📸 Product not found for barcode: {body.barcode}")
+
+        # Send result to desktop via WebSocket (session already popped)
+        sent = await websocket_hub.send_scan_result_to_desktop(
+            session=session,
             scan_id=body.scan_id,
             barcode=body.barcode,
             error=body.error,
+            product=product,
         )
 
         if not sent:
             return RemoteScanResultResponse(
                 success=False,
-                message="Desktop tidak terhubung atau scan sudah expired",
+                message="Desktop tidak terhubung",
             )
 
         return RemoteScanResultResponse(

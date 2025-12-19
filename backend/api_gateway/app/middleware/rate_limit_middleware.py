@@ -221,8 +221,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Fast paths - skip rate limit for speed-critical endpoints
         self.fast_paths = {
-            "/api/products/search/pos",  # Autocomplete <100ms
-            "/api/products/barcode/",    # Barcode lookup
+            "/api/products/search/pos",      # Autocomplete <100ms
+            "/api/products/search/kulakan",  # Kulakan autocomplete
+            "/api/products/barcode/",        # Barcode lookup
         }
 
     async def _ensure_initialized(self):

@@ -116,8 +116,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
 
     # Fast paths - skip WAF for speed-critical endpoints
     FAST_PATHS: Set[str] = {
-        "/api/products/search/pos",  # Autocomplete needs <100ms
-        "/api/products/barcode/",    # Barcode lookup
+        "/api/products/search/pos",      # Autocomplete needs <100ms
+        "/api/products/search/kulakan",  # Kulakan autocomplete
+        "/api/products/barcode/",        # Barcode lookup
     }
 
     # Paths with relaxed WAF (check body only, not headers)

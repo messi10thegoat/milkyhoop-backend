@@ -52,6 +52,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
             "/api/chat/": "FREE",
             "/api/tenant/chat": "FREE",
             "/api/products/search/pos": "FREE",  # Autocomplete for POS
+            "/api/products/search/kulakan": "FREE",  # Autocomplete for Kulakan/Pembelian
             "/api/products/barcode/": "FREE",  # Barcode lookup for POS
             "/api/products/last-purchase": "FREE",  # Auto-fill from last purchase for Pembelian
             "/api/products/all": "FREE",  # Product list for autocomplete

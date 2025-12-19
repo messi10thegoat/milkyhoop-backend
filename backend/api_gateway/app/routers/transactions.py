@@ -13,10 +13,54 @@ import logging
 import uuid
 
 from backend.api_gateway.libs.milkyhoop_protos import tenant_orchestrator_pb2, tenant_orchestrator_pb2_grpc
+from backend.api_gateway.libs.milkyhoop_protos import conversation_service_pb2, conversation_service_pb2_grpc
 from backend.api_gateway.app.utils.conversational_parser import parse_conversational_input, validate_parsed_input
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ============================================
+# CHAT HISTORY PERSISTENCE HELPER
+# ============================================
+async def save_to_chat_history(
+    user_id: str,
+    tenant_id: str,
+    message: str,
+    response: str,
+    intent: str = "transaction",
+    metadata: dict = None
+) -> bool:
+    """
+    Save message to chat_messages table via conversation_service.
+    Non-blocking: failures are logged but don't break the transaction.
+    """
+    try:
+        channel = grpc.aio.insecure_channel("conversation_service:5002")
+        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
+
+        request = conversation_service_pb2.SaveMessageRequest(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            message=message,
+            response=response,
+            intent=intent,
+            metadata_json=json.dumps(metadata or {})
+        )
+
+        save_response = await stub.SaveMessage(request)
+        await channel.close()
+
+        if save_response.status == "success":
+            logger.info(f"[ChatHistory] Message saved: {save_response.message_id}")
+            return True
+        else:
+            logger.warning(f"[ChatHistory] Save returned non-success: {save_response.status}")
+            return False
+
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Save failed (non-blocking): {e}")
+        return False
 
 
 class PurchaseTransactionRequest(BaseModel):
@@ -248,6 +292,24 @@ async def create_purchase_transaction(
                     transaction_id = match.group(1)
 
             logger.info(f"Extracted transaction_id: {transaction_id}")
+
+            # ===== 5. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
+            # This ensures receipts persist after page refresh
+            await save_to_chat_history(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                message=message,
+                response=milky_response or "Transaksi berhasil dicatat",
+                intent="pembelian",
+                metadata={
+                    "transaction_id": transaction_id,
+                    "form_type": "pembelian",
+                    "product": body.product_name,
+                    "quantity": body.quantity,
+                    "unit": body.unit,
+                    "total": body.total_amount or (body.quantity * body.price_per_unit)
+                }
+            )
 
             total_ms = (time.perf_counter() - t_request_start) * 1000
             logger.info(f"[PERF] API_GATEWAY_TOTAL: {total_ms:.0f}ms")
@@ -516,6 +578,23 @@ async def create_sales_transaction(
                     change=body.kembalian,
                     payment_method=body.paymentMethod
                 )
+
+            # ===== 6. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
+            # This ensures receipts persist after page refresh
+            await save_to_chat_history(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                message=message,
+                response=receipt_html or milky_response or "Transaksi penjualan berhasil",
+                intent="penjualan",
+                metadata={
+                    "transaction_id": transaction_id,
+                    "form_type": "penjualan",
+                    "items_count": len(body.items),
+                    "total": body.totalAmount,
+                    "payment_method": body.paymentMethod
+                }
+            )
 
             return SalesTransactionResponse(
                 status="success",

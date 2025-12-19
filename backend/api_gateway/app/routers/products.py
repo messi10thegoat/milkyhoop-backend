@@ -52,6 +52,24 @@ class POSProductSearchResponse(BaseModel):
     products: List[POSProductItem]
 
 
+# Kulakan (Pembelian) Product Search Response - combined products + transaction history
+class KulakanProductItem(BaseModel):
+    id: Optional[str] = None  # May be None if product only exists in transaction history
+    name: str
+    barcode: Optional[str] = None
+    category: Optional[str] = None
+    harga_jual: Optional[int] = None  # Selling price (may be None)
+    # Auto-fill fields from last pembelian transaction
+    last_unit: Optional[str] = None  # Wholesale unit (karton, dus, slop)
+    last_price: Optional[int] = None  # Price per wholesale unit
+    hpp_per_unit: Optional[float] = None  # HPP per retail unit
+    units_per_pack: Optional[int] = None  # Qty per wholesale unit
+
+
+class KulakanSearchResponse(BaseModel):
+    products: List[KulakanProductItem]
+
+
 class ProductSuggestion(BaseModel):
     name: str
     unit: str
@@ -624,6 +642,159 @@ async def search_products_for_pos(
         raise
     except Exception as e:
         logger.error(f"POS product search error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
+@router.get("/search/kulakan", response_model=KulakanSearchResponse)
+async def search_products_for_kulakan(
+    request: Request,
+    q: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """
+    Search products for Kulakan (Pembelian) - COMBINED SOURCE
+
+    Sources:
+    1. Products table (inventory) - ALL products, no price filter
+    2. item_transaksi (transaction history) - for products not in inventory
+
+    Returns products + last transaction data for auto-fill.
+    Unlike /search/pos, this does NOT filter by harga_jual.
+    """
+    try:
+        # Get user from auth middleware
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Use connection pool
+        pool = await get_db_pool()
+
+        async with pool.acquire() as conn:
+            # Hybrid search: UNION of products + item_transaksi
+            # NO harga_jual filter - shows ALL inventory products
+            query = """
+                WITH combined AS (
+                    -- Source 1: Products table (inventory) - NO price filter
+                    SELECT DISTINCT
+                        p.id::text,
+                        p.nama_produk as name,
+                        p.barcode,
+                        p.kategori as category,
+                        COALESCE(p.harga_jual, 0)::int as harga_jual,
+                        'products' as source,
+                        CASE
+                            WHEN LOWER(p.nama_produk) = LOWER($2) THEN 100
+                            WHEN LOWER(p.nama_produk) LIKE LOWER($2) || '%' THEN 80
+                            WHEN LOWER(p.nama_produk) LIKE '%' || LOWER($2) || '%' THEN 40
+                            ELSE similarity(LOWER(p.nama_produk), LOWER($2)) * 30
+                        END as score
+                    FROM public.products p
+                    WHERE p.tenant_id = $1
+                      AND (
+                          p.nama_produk ILIKE '%' || $2 || '%'
+                          OR similarity(LOWER(p.nama_produk), LOWER($2)) > 0.1
+                      )
+
+                    UNION ALL
+
+                    -- Source 2: item_transaksi (products not in inventory but previously transacted)
+                    SELECT DISTINCT
+                        NULL as id,
+                        it.nama_produk as name,
+                        NULL as barcode,
+                        NULL as category,
+                        0 as harga_jual,
+                        'transaction' as source,
+                        CASE
+                            WHEN LOWER(it.nama_produk) = LOWER($2) THEN 100
+                            WHEN LOWER(it.nama_produk) LIKE LOWER($2) || '%' THEN 80
+                            WHEN LOWER(it.nama_produk) LIKE '%' || LOWER($2) || '%' THEN 40
+                            ELSE similarity(LOWER(it.nama_produk), LOWER($2)) * 30
+                        END as score
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND (
+                          it.nama_produk ILIKE '%' || $2 || '%'
+                          OR similarity(LOWER(it.nama_produk), LOWER($2)) > 0.1
+                      )
+                ),
+                -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
+                deduped AS (
+                    SELECT DISTINCT ON (LOWER(name))
+                        id, name, barcode, category, harga_jual, source, score
+                    FROM combined
+                    ORDER BY LOWER(name), source ASC, score DESC
+                )
+                SELECT * FROM deduped
+                WHERE score > 0
+                ORDER BY score DESC, name ASC
+                LIMIT $3
+            """
+
+            rows = await conn.fetch(query, tenant_id, q, limit)
+
+            # For each result, fetch last pembelian transaction for autofill
+            products = []
+            for row in rows:
+                # Get last pembelian transaction for this product (autofill data)
+                last_tx = await conn.fetchrow(
+                    """
+                    SELECT it.satuan as last_unit, it.harga_satuan as last_price,
+                           it.hpp_per_unit
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND LOWER(it.nama_produk) = LOWER($2)
+                      AND th.jenis_transaksi = 'pembelian'
+                    ORDER BY th.created_at DESC
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    row["name"],
+                )
+
+                # Build product item
+                product = KulakanProductItem(
+                    id=row["id"],
+                    name=row["name"],
+                    barcode=row["barcode"],
+                    category=row["category"],
+                    harga_jual=row["harga_jual"] if row["harga_jual"] else None,
+                )
+
+                if last_tx:
+                    product.last_unit = last_tx["last_unit"]
+                    product.last_price = (
+                        int(last_tx["last_price"]) if last_tx["last_price"] else None
+                    )
+                    product.hpp_per_unit = last_tx["hpp_per_unit"]
+                    # Compute units_per_pack
+                    if (
+                        last_tx["last_price"]
+                        and last_tx["hpp_per_unit"]
+                        and last_tx["hpp_per_unit"] > 0
+                    ):
+                        computed = last_tx["last_price"] / last_tx["hpp_per_unit"]
+                        if computed >= 1:
+                            product.units_per_pack = int(round(computed))
+
+                products.append(product)
+
+            logger.info(
+                f"Kulakan search: q='{q}', tenant={tenant_id}, found={len(products)}"
+            )
+
+            return KulakanSearchResponse(products=products)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Kulakan product search error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search failed")
 
 
