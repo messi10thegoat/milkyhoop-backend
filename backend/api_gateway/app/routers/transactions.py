@@ -24,6 +24,7 @@ from backend.api_gateway.app.utils.conversational_parser import (
     parse_conversational_input,
     validate_parsed_input,
 )
+from backend.api_gateway.app.routers.products import get_db_connection
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -327,6 +328,31 @@ async def create_purchase_transaction(
                     transaction_id = match.group(1)
 
             logger.info(f"Extracted transaction_id: {transaction_id}")
+
+            # ===== 4.5. UPDATE PRODUCT CONTENT_UNIT =====
+            # Store content_unit in products table for future autofill
+            if body.content_unit and body.product_name:
+                try:
+                    conn = await get_db_connection()
+                    try:
+                        await conn.execute(
+                            """
+                            UPDATE products
+                            SET content_unit = $1
+                            WHERE tenant_id = $2
+                              AND LOWER(nama_produk) = LOWER($3)
+                              AND (content_unit IS NULL OR content_unit = '')
+                            """,
+                            body.content_unit,
+                            tenant_id,
+                            body.product_name,
+                        )
+                        logger.info(f"Updated product content_unit: {body.product_name} -> {body.content_unit}")
+                    finally:
+                        await conn.close()
+                except Exception as e:
+                    # Don't fail the transaction if content_unit update fails
+                    logger.warning(f"Failed to update product content_unit: {e}")
 
             # ===== 5. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
             # This ensures receipts persist after page refresh

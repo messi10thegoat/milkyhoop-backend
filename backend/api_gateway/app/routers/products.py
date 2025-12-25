@@ -66,6 +66,7 @@ class KulakanProductItem(BaseModel):
     last_price: Optional[int] = None  # Price per wholesale unit
     hpp_per_unit: Optional[float] = None  # HPP per retail unit
     units_per_pack: Optional[int] = None  # Qty per wholesale unit
+    content_unit: Optional[str] = None  # Retail unit (pcs, lembar, bungkus)
 
 
 class KulakanSearchResponse(BaseModel):
@@ -106,6 +107,8 @@ class BarcodeProduct(BaseModel):
     units_per_pack: Optional[int] = None
     harga_jual: Optional[int] = None
     last_price: Optional[int] = None
+    content_unit: Optional[str] = None  # Retail unit (pcs, botol, bungkus)
+    hpp_per_unit: Optional[float] = None  # Cost per retail unit (HPP)
 
 
 class RegisterBarcodeRequest(BaseModel):
@@ -145,7 +148,7 @@ async def get_product_by_barcode(request: Request, barcode: str):
         conn = await get_db_connection()
 
         try:
-            # Query product by barcode for this tenant
+            # Query product by barcode for this tenant (include content_unit)
             query = """
                 SELECT
                     id,
@@ -154,7 +157,8 @@ async def get_product_by_barcode(request: Request, barcode: str):
                     kategori as category,
                     harga_jual as price,
                     deskripsi as description,
-                    barcode
+                    barcode,
+                    content_unit
                 FROM public.products
                 WHERE tenant_id = $1 AND barcode = $2
                 LIMIT 1
@@ -194,6 +198,7 @@ async def get_product_by_barcode(request: Request, barcode: str):
             last_price = None
             last_unit = None  # Bug #5: Get unit from last purchase transaction
 
+            hpp_per_unit_val = None
             if last_tx:
                 last_price = (
                     int(last_tx["last_price"]) if last_tx["last_price"] else None
@@ -202,6 +207,10 @@ async def get_product_by_barcode(request: Request, barcode: str):
                     int(last_tx["harga_jual"]) if last_tx["harga_jual"] else None
                 )
                 last_unit = last_tx["last_unit"]  # Bug #5: Satuan from history
+                # Extract hpp_per_unit for frontend auto-fill
+                hpp_per_unit_val = (
+                    float(last_tx["hpp_per_unit"]) if last_tx["hpp_per_unit"] else None
+                )
                 if (
                     last_tx["hpp_per_unit"]
                     and last_tx["hpp_per_unit"] > 0
@@ -214,6 +223,27 @@ async def get_product_by_barcode(request: Request, barcode: str):
             # Bug #5: Use last_unit from history if available (for Kulakan), fallback to product unit
             effective_unit = last_unit if last_unit else (row["unit"] or "pcs")
 
+            # Get content_unit from products table first (primary source)
+            content_unit = row.get("content_unit")
+
+            # Fallback: Get content_unit from last penjualan transaction if not in products table
+            if not content_unit:
+                content_tx = await conn.fetchrow(
+                    """
+                    SELECT it.satuan
+                    FROM public.item_transaksi it
+                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                    WHERE th.tenant_id = $1
+                      AND LOWER(it.nama_produk) = LOWER($2)
+                      AND th.jenis_transaksi = 'penjualan'
+                    ORDER BY th.created_at DESC
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    product_name,
+                )
+                content_unit = content_tx["satuan"] if content_tx else None
+
             result = BarcodeProduct(
                 id=str(row["id"]),
                 name=row["name"],
@@ -225,6 +255,8 @@ async def get_product_by_barcode(request: Request, barcode: str):
                 units_per_pack=units_per_pack,
                 harga_jual=harga_jual,
                 last_price=last_price,
+                content_unit=content_unit,
+                hpp_per_unit=hpp_per_unit_val,
             )
 
             logger.info(
@@ -687,6 +719,7 @@ async def search_products_for_kulakan(
                         p.barcode,
                         p.kategori as category,
                         COALESCE(p.harga_jual, 0)::int as harga_jual,
+                        p.content_unit,
                         'products' as source,
                         CASE
                             WHEN LOWER(p.nama_produk) = LOWER($2) THEN 100
@@ -710,6 +743,7 @@ async def search_products_for_kulakan(
                         NULL as barcode,
                         NULL as category,
                         0 as harga_jual,
+                        NULL as content_unit,
                         'transaction' as source,
                         CASE
                             WHEN LOWER(it.nama_produk) = LOWER($2) THEN 100
@@ -728,7 +762,7 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, source, score
+                        id, name, barcode, category, harga_jual, content_unit, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
@@ -747,7 +781,7 @@ async def search_products_for_kulakan(
                 last_tx = await conn.fetchrow(
                     """
                     SELECT it.satuan as last_unit, it.harga_satuan as last_price,
-                           it.hpp_per_unit
+                           it.hpp_per_unit, it.harga_jual
                     FROM public.item_transaksi it
                     JOIN public.transaksi_harian th ON it.transaksi_id = th.id
                     WHERE th.tenant_id = $1
@@ -784,6 +818,31 @@ async def search_products_for_kulakan(
                         computed = last_tx["last_price"] / last_tx["hpp_per_unit"]
                         if computed >= 1:
                             product.units_per_pack = int(round(computed))
+                    # Use harga_jual from last transaction (not from products table)
+                    if last_tx["harga_jual"]:
+                        product.harga_jual = int(last_tx["harga_jual"])
+
+                # Get content_unit from products table first (primary source)
+                product.content_unit = row.get("content_unit")
+
+                # Fallback: Get content_unit from last penjualan if not in products table
+                if not product.content_unit:
+                    content_tx = await conn.fetchrow(
+                        """
+                        SELECT it.satuan
+                        FROM public.item_transaksi it
+                        JOIN public.transaksi_harian th ON it.transaksi_id = th.id
+                        WHERE th.tenant_id = $1
+                          AND LOWER(it.nama_produk) = LOWER($2)
+                          AND th.jenis_transaksi = 'penjualan'
+                        ORDER BY th.created_at DESC
+                        LIMIT 1
+                        """,
+                        tenant_id,
+                        row["name"],
+                    )
+                    if content_tx:
+                        product.content_unit = content_tx["satuan"]
 
                 products.append(product)
 

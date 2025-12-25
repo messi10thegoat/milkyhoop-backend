@@ -13,6 +13,7 @@ Remote Scanner Endpoints:
 - POST /api/devices/remote-scan/result - Mobile sends scan result
 - POST /api/devices/remote-scan/cancel - Cancel active scan
 """
+import asyncio
 import logging
 import os
 import uuid
@@ -162,6 +163,40 @@ async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[d
     except Exception as e:
         logger.error(f"Product lookup failed: {e}")
         return None
+
+
+async def _send_product_followup(session: dict, scan_id: str, barcode: str) -> None:
+    """
+    Async follow-up: lookup product and send to desktop as separate message
+
+    This runs AFTER the initial scan result is delivered, so desktop gets
+    the barcode immediately and product info follows.
+    """
+    try:
+        product = await _lookup_product_by_barcode(session["tenant_id"], barcode)
+        if product:
+            logger.info(f"📸 Product follow-up: {product.get('name', 'unknown')}")
+
+            # Send product data as follow-up WebSocket message
+            desktop_device_id = session["desktop_device_id"]
+            desktop_tab_id = session["desktop_tab_id"]
+
+            if desktop_device_id in websocket_hub.device_connections:
+                tabs = websocket_hub.device_connections[desktop_device_id]
+                if desktop_tab_id in tabs:
+                    await tabs[desktop_tab_id].send_json(
+                        {
+                            "event": "remote_scan:product",
+                            "scan_id": scan_id,
+                            "product": product,
+                        }
+                    )
+                    logger.info(f"📸 Product follow-up SENT: {scan_id[:8]}...")
+        else:
+            logger.info(f"📸 Product not found for barcode: {barcode}")
+    except Exception as e:
+        # Non-critical: product lookup failed but barcode already delivered
+        logger.warning(f"📸 Product follow-up failed (non-blocking): {e}")
 
 
 # ================================
@@ -581,25 +616,22 @@ async def send_remote_scan_result(request: Request, body: RemoteScanResultReques
                 message="Scan session tidak ditemukan atau sudah expired",
             )
 
-        # LATENCY OPTIMIZATION: Lookup product before sending to desktop
-        product = None
-        if body.barcode and not body.error:
-            product = await _lookup_product_by_barcode(
-                session["tenant_id"], body.barcode
-            )
-            if product:
-                logger.info(f"📸 Product pre-fetched: {product.get('name', 'unknown')}")
-            else:
-                logger.info(f"📸 Product not found for barcode: {body.barcode}")
-
-        # Send result to desktop via WebSocket (session already popped)
+        # LATENCY FIX: Send barcode result IMMEDIATELY (no blocking)
+        # Product lookup happens ASYNC after result is delivered
         sent = await websocket_hub.send_scan_result_to_desktop(
             session=session,
             scan_id=body.scan_id,
             barcode=body.barcode,
             error=body.error,
-            product=product,
+            product=None,  # Send immediately without product
         )
+
+        # Async product lookup AFTER result delivery (non-blocking follow-up)
+        if sent and body.barcode and not body.error:
+            # Fire-and-forget: lookup product and send as follow-up
+            asyncio.create_task(
+                _send_product_followup(session, body.scan_id, body.barcode)
+            )
 
         if not sent:
             return RemoteScanResultResponse(

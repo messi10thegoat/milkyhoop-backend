@@ -122,6 +122,16 @@ class CategoryListResponse(BaseModel):
     categories: List[str]
 
 
+class InventorySummaryResponse(BaseModel):
+    """Summary counts for inventory dashboard categories"""
+    total_products: int      # All products
+    melimpah_count: int      # stok >= 24
+    menipis_count: int       # 0 < stok < 12
+    habis_count: int         # stok <= 0
+    aset_count: int          # Fixed assets (placeholder)
+    reorder_count: int       # Reorder list (placeholder)
+
+
 # ========================================
 # Endpoints
 # ========================================
@@ -623,6 +633,57 @@ async def get_categories(
     except Exception as e:
         logger.error(f"Get categories error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch categories")
+
+
+@router.get("/summary", response_model=InventorySummaryResponse)
+async def get_inventory_summary(request: Request):
+    """
+    Get summary counts for inventory dashboard categories.
+    Returns counts for: total, melimpah (>=24), menipis (0<stok<12), habis (<=0)
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+
+        try:
+            # Single query with CASE WHEN to count all categories
+            query = """
+                SELECT
+                    COUNT(*) as total_products,
+                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) >= 24 THEN 1 END) as melimpah_count,
+                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) > 0 AND COALESCE(s.jumlah, 0) < 12 THEN 1 END) as menipis_count,
+                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) <= 0 THEN 1 END) as habis_count
+                FROM public.products p
+                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                WHERE p.tenant_id = $1
+            """
+            row = await conn.fetchrow(query, tenant_id)
+
+            logger.info(f"Inventory summary: tenant={tenant_id}, total={row['total_products']}")
+
+            return InventorySummaryResponse(
+                total_products=row['total_products'] or 0,
+                melimpah_count=row['melimpah_count'] or 0,
+                menipis_count=row['menipis_count'] or 0,
+                habis_count=row['habis_count'] or 0,
+                aset_count=0,      # Placeholder - different table
+                reorder_count=0    # Placeholder - not implemented yet
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get inventory summary error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch inventory summary")
 
 
 @router.get("/health")

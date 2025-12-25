@@ -23,8 +23,8 @@ from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
-# Remote scan request timeout (15 seconds)
-REMOTE_SCAN_TIMEOUT = 15
+# Remote scan request timeout (30 seconds - allows for mobile camera startup + scanning)
+REMOTE_SCAN_TIMEOUT = 30
 
 
 class WebSocketHub:
