@@ -46,7 +46,7 @@ poetry-plugin-export==1.8.0
 prisma==0.15.0
 protobuf==5.29.5
 ptyprocess==0.7.0
-pycparser==2.22
+pycparser==2.23
 pydantic==2.11.7
 pydantic_core==2.33.2
 Pygments==2.19.2
