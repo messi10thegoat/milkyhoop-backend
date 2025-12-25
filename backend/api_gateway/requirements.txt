@@ -21,7 +21,7 @@ httptools==0.6.4
 httpx==0.28.1
 idna==3.10
 jiter==0.10.0
-nodeenv==1.9.1
+nodeenv==1.10.0
 openai==1.105.0
 prisma==0.14.0  # LOCKED: Prevent auto-generation issues
 prometheus_client==0.22.1
