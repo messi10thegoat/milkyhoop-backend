@@ -190,6 +190,7 @@ message CreateProductRequest {
   string kategori = 4;                // Optional: Product category
   double harga_jual = 5;              // Optional: Selling price
   string deskripsi = 6;               // Optional: Product description
+  string barcode = 7;                 // Optional: Product barcode from scanner
 }
 
 message CreateProductResponse {
@@ -198,6 +199,7 @@ message CreateProductResponse {
   string product_id = 3;              // UUID of created product
   string nama_produk = 4;             // Product name (confirmation)
   string satuan = 5;                  // Unit of measure (confirmation)
+  string barcode = 6;                 // Product barcode (confirmation)
 }
 
 // ========================================

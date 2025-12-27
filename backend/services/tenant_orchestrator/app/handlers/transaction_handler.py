@@ -131,7 +131,7 @@ def _get_product_cache_key(tenant_id: str, product_name: str) -> str:
 
 
 
-async def lookup_or_create_product(tenant_id: str, nama_produk: str, client_manager, trace_id: str) -> str:
+async def lookup_or_create_product(tenant_id: str, nama_produk: str, client_manager, trace_id: str, barcode: str = None) -> str:
     """
     Lookup product by name, create if not exists.
     Returns: produk_id (UUID string)
@@ -177,7 +177,8 @@ async def lookup_or_create_product(tenant_id: str, nama_produk: str, client_mana
             tenant_id=tenant_id,
             nama_produk=nama_produk,
             satuan="pcs",  # default unit
-            harga_jual=0
+            harga_jual=0,
+            barcode=barcode or ""
         )
         create_resp = await client_manager.stubs['inventory'].CreateProduct(create_req)
 
@@ -375,6 +376,7 @@ def extract_form_data_directly(conversation_context: str, trace_id: str) -> dict
             logger.info(f"[{trace_id}] 📦 KULAKAN FORMAT: Single item")
             items.append({
                 "nama_produk": form_data.get("product_name", ""),
+                "barcode": form_data.get("product_barcode"),  # Barcode from scanner
                 "jumlah": form_data.get("quantity", 0),
                 "satuan": form_data.get("unit", "pcs"),
                 "harga_satuan": form_data.get("price_per_unit", 0),
@@ -694,8 +696,10 @@ class TransactionHandler:
                 transaction_entities['harga_satuan'] = first_item.get('harga_satuan')
             elif 'harga_satuan' not in transaction_entities:
                 transaction_entities['harga_satuan'] = None  # Explicitly set None if missing
-            
-            logger.info(f"[{trace_id}] Flattened items: nama_produk={transaction_entities.get('nama_produk')}, jumlah={transaction_entities.get('jumlah')}, harga_satuan={transaction_entities.get('harga_satuan')}")
+            if 'barcode' in first_item:
+                transaction_entities['barcode'] = first_item.get('barcode')
+
+            logger.info(f"[{trace_id}] Flattened items: nama_produk={transaction_entities.get('nama_produk')}, jumlah={transaction_entities.get('jumlah')}, harga_satuan={transaction_entities.get('harga_satuan')}, barcode={transaction_entities.get('barcode')}")
 
         # ============================================
         # SPRINT 2.1: SMART PRODUCT RESOLUTION
@@ -713,11 +717,13 @@ class TransactionHandler:
 
             try:
                 t_product_lookup = time.perf_counter()
+                item_barcode = transaction_entities.get('barcode')
                 produk_id = await lookup_or_create_product(
                     tenant_id=request.tenant_id,
                     nama_produk=nama_produk,
                     client_manager=client_manager,
-                    trace_id=trace_id
+                    trace_id=trace_id,
+                    barcode=item_barcode
                 )
                 logger.info(f"[{trace_id}] [PERF] product_lookup_or_create: {(time.perf_counter() - t_product_lookup)*1000:.0f}ms")
 

@@ -50,6 +50,8 @@ class WebSocketHub:
         self.device_connections: Dict[str, Dict[str, WebSocket]] = {}
         # Remote scan sessions: scan_id -> {device_id, tab_id, requested_at}
         self.remote_scan_sessions: Dict[str, dict] = {}
+        # Device last seen timestamps for grace period (device_id -> timestamp)
+        self.device_last_seen: Dict[str, float] = {}
         # Lock for thread safety
         self._lock = asyncio.Lock()
 
@@ -146,6 +148,7 @@ class WebSocketHub:
                     pass
 
             self.device_connections[device_id][tab_id] = websocket
+            self.device_last_seen[device_id] = time.time()  # Track last seen
             total_tabs = sum(len(tabs) for tabs in self.device_connections.values())
             logger.warning(
                 f"✅ Device WebSocket registered: {device_id[:8]}... tab={tab_id[:8]}... (tabs: {len(self.device_connections[device_id])}, total: {total_tabs})"
@@ -535,9 +538,24 @@ class WebSocketHub:
 
         return cleaned
 
-    def is_mobile_online(self, mobile_device_id: str) -> bool:
-        """Check if mobile device is connected for remote scanning"""
-        return mobile_device_id in self.device_connections
+    def update_last_seen(self, device_id: str) -> None:
+        """Update last seen timestamp for device (called on ping/pong)"""
+        self.device_last_seen[device_id] = time.time()
+
+    def is_mobile_online(self, mobile_device_id: str, grace_period: int = 15) -> bool:
+        """
+        Check if mobile device is connected or recently disconnected
+
+        Uses grace period to handle brief disconnections (network blips, reconnects)
+        """
+        # Connected = definitely online
+        if mobile_device_id in self.device_connections:
+            return True
+        # Check grace period for recently disconnected
+        if mobile_device_id in self.device_last_seen:
+            elapsed = time.time() - self.device_last_seen[mobile_device_id]
+            return elapsed < grace_period
+        return False
 
     def get_scan_session_tenant(self, scan_id: str) -> Optional[str]:
         """

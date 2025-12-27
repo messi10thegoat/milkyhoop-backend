@@ -727,6 +727,7 @@ async def device_websocket(
                 data = await websocket.receive_json()
 
                 if data.get("event") == "ping":
+                    websocket_hub.update_last_seen(device_id)  # Track activity
                     await websocket.send_json({"event": "pong"})
 
             except WebSocketDisconnect as e:
