@@ -354,23 +354,8 @@ async def create_purchase_transaction(
                     # Don't fail the transaction if content_unit update fails
                     logger.warning(f"Failed to update product content_unit: {e}")
 
-            # ===== 5. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
-            # This ensures receipts persist after page refresh
-            await save_to_chat_history(
-                user_id=user_id,
-                tenant_id=tenant_id,
-                message=message,
-                response=milky_response or "Transaksi berhasil dicatat",
-                intent="pembelian",
-                metadata={
-                    "transaction_id": transaction_id,
-                    "form_type": "pembelian",
-                    "product": body.product_name,
-                    "quantity": body.quantity,
-                    "unit": body.unit,
-                    "total": body.total_amount or (body.quantity * body.price_per_unit),
-                },
-            )
+            # NOTE: Chat history save removed - orchestrator already saves via SaveMessage RPC
+            # This was causing duplicate messages in chat history
 
             total_ms = (time.perf_counter() - t_request_start) * 1000
             logger.info(f"[PERF] API_GATEWAY_TOTAL: {total_ms:.0f}ms")
@@ -639,51 +624,16 @@ async def create_sales_transaction(request: Request, body: SalesTransactionReque
 
             logger.info(f"Extracted transaction_id: {transaction_id}")
 
-            # 3. Generate receipt if orchestrator didn't provide one
-            if not receipt_html:
-                receipt_items = [
-                    {
-                        "name": item.name or f"Produk #{item.productId[:8]}",
-                        "qty": item.qty,
-                        "price": item.price,
-                        "subtotal": item.qty * item.price,
-                    }
-                    for item in body.items
-                ]
-                receipt_html = generate_sales_receipt(
-                    transaction_id=transaction_id
-                    or f"POS_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                    items=receipt_items,
-                    total=body.totalAmount,
-                    payment=body.paymentAmount,
-                    change=body.kembalian,
-                    payment_method=body.paymentMethod,
-                )
+            # NOTE: Fallback receipt generation removed - use orchestrator receipt only
 
-            # ===== 6. SAVE TO CHAT HISTORY FOR PERSISTENCE =====
-            # This ensures receipts persist after page refresh
-            await save_to_chat_history(
-                user_id=user_id,
-                tenant_id=tenant_id,
-                message=message,
-                response=receipt_html
-                or milky_response
-                or "Transaksi penjualan berhasil",
-                intent="penjualan",
-                metadata={
-                    "transaction_id": transaction_id,
-                    "form_type": "penjualan",
-                    "items_count": len(body.items),
-                    "total": body.totalAmount,
-                    "payment_method": body.paymentMethod,
-                },
-            )
+            # NOTE: Chat history save removed - orchestrator already saves via SaveMessage RPC
+            # This was causing duplicate messages in chat history
 
             return SalesTransactionResponse(
                 status="success",
                 message=milky_response or "Transaksi penjualan berhasil",
                 transaction_id=transaction_id,
-                receipt_html=receipt_html,
+                receipt_html=milky_response,  # Use orchestrator's styled receipt
             )
         else:
             return SalesTransactionResponse(
