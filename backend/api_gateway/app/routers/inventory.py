@@ -125,11 +125,54 @@ class CategoryListResponse(BaseModel):
 class InventorySummaryResponse(BaseModel):
     """Summary counts for inventory dashboard categories"""
     total_products: int      # All products
-    melimpah_count: int      # stok >= 24
-    menipis_count: int       # 0 < stok < 12
+    melimpah_count: int      # stok > minimum_stock
+    menipis_count: int       # 0 < stok <= minimum_stock
     habis_count: int         # stok <= 0
     aset_count: int          # Fixed assets (placeholder)
     reorder_count: int       # Reorder list (placeholder)
+
+
+class SupplierItem(BaseModel):
+    """Supplier info from purchase transactions"""
+    nama_supplier: str
+    total_purchases: int
+
+
+class TransactionHistoryItem(BaseModel):
+    """Transaction history for stock card"""
+    id: str
+    tanggal: str
+    jenis_transaksi: str  # pembelian, penjualan
+    jumlah: float
+    satuan: str  # unit used in this transaction (e.g., Dus, pcs)
+    harga_satuan: float
+    subtotal: float
+    nama_pihak: Optional[str] = None
+
+
+class StockInsight(BaseModel):
+    """Aggregated insights for a product"""
+    total_masuk: float
+    total_keluar: float
+    rata_rata_penjualan: Optional[float] = None
+    jumlah_transaksi_penjualan: int
+
+
+class ProductStockCardResponse(BaseModel):
+    """Complete stock card data for a product"""
+    product: ProductListItem
+    minimum_stock: Optional[float] = None
+    suppliers: List[SupplierItem]
+    transaction_history: List[TransactionHistoryItem]
+    insight: StockInsight
+    # Unit conversion fields (V007)
+    base_unit: Optional[str] = None           # e.g., "pcs" (smallest sellable unit)
+    wholesale_unit: Optional[str] = None      # e.g., "dus" (bulk purchase unit)
+    units_per_wholesale: Optional[int] = None  # e.g., 12 (1 dus = 12 pcs)
+    # Legacy aliases for backward compatibility
+    units_per_pack: Optional[int] = None      # same as units_per_wholesale
+    content_unit: Optional[str] = None        # same as base_unit
+    stok_satuan_terkecil: Optional[float] = None  # stock already in base unit after V008
 
 
 # ========================================
@@ -653,11 +696,12 @@ async def get_inventory_summary(request: Request):
 
         try:
             # Single query with CASE WHEN to count all categories
+            # Uses minimum_stock for dynamic thresholds instead of hardcoded values
             query = """
                 SELECT
                     COUNT(*) as total_products,
-                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) >= 24 THEN 1 END) as melimpah_count,
-                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) > 0 AND COALESCE(s.jumlah, 0) < 12 THEN 1 END) as menipis_count,
+                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) > COALESCE(s.minimum_stock, 0) THEN 1 END) as melimpah_count,
+                    COUNT(CASE WHEN COALESCE(s.jumlah, 0) > 0 AND COALESCE(s.jumlah, 0) <= COALESCE(s.minimum_stock, 0) THEN 1 END) as menipis_count,
                     COUNT(CASE WHEN COALESCE(s.jumlah, 0) <= 0 THEN 1 END) as habis_count
                 FROM public.products p
                 LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
@@ -684,6 +728,177 @@ async def get_inventory_summary(request: Request):
     except Exception as e:
         logger.error(f"Get inventory summary error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch inventory summary")
+
+
+@router.get("/products/{product_id}/stock-card", response_model=ProductStockCardResponse)
+async def get_product_stock_card(request: Request, product_id: str):
+    """
+    Get comprehensive stock card data for a product.
+    Includes: product details, suppliers, transaction history, and insights.
+    """
+    try:
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+
+        try:
+            # 1. Get product details with stock info + unit conversion (V007)
+            product_query = """
+                SELECT
+                    p.id, p.nama_produk, p.satuan, p.kategori, p.barcode,
+                    p.harga_jual, s.nilai_per_unit, p.deskripsi,
+                    COALESCE(s.jumlah, 0) as stok,
+                    s.minimum_stock,
+                    (COALESCE(s.jumlah, 0) * COALESCE(s.nilai_per_unit, 0)) as total_nilai,
+                    COALESCE(s.jumlah, 0) <= COALESCE(s.minimum_stock, 0) AND COALESCE(s.jumlah, 0) > 0 as is_low_stock,
+                    s.lokasi_gudang,
+                    -- V007 unit conversion fields
+                    p.base_unit,
+                    p.wholesale_unit,
+                    p.units_per_wholesale
+                FROM public.products p
+                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                WHERE p.id = $1 AND p.tenant_id = $2
+            """
+            product_row = await conn.fetchrow(product_query, product_id, tenant_id)
+
+            if not product_row:
+                raise HTTPException(status_code=404, detail="Product not found")
+
+            product = ProductListItem(
+                id=product_row['id'],
+                nama_produk=product_row['nama_produk'],
+                satuan=product_row['satuan'],
+                kategori=product_row['kategori'],
+                barcode=product_row['barcode'],
+                harga_jual=product_row['harga_jual'],
+                stok=float(product_row['stok']),
+                nilai_per_unit=float(product_row['nilai_per_unit']) if product_row['nilai_per_unit'] else None,
+                total_nilai=float(product_row['total_nilai']) if product_row['total_nilai'] else None,
+                minimum_stock=float(product_row['minimum_stock']) if product_row['minimum_stock'] else None,
+                is_low_stock=product_row['is_low_stock'] or False,
+                lokasi_gudang=product_row['lokasi_gudang']
+            )
+            nama_produk = product_row['nama_produk']
+
+            # 2. Get suppliers from purchase transactions
+            suppliers_query = """
+                SELECT
+                    th.nama_pihak as nama_supplier,
+                    COUNT(*) as total_purchases
+                FROM public.transaksi_harian th
+                JOIN public.item_transaksi it ON th.id = it.transaksi_id
+                WHERE th.tenant_id = $1
+                    AND LOWER(it.nama_produk) = LOWER($2)
+                    AND th.jenis_transaksi = 'pembelian'
+                    AND th.nama_pihak IS NOT NULL
+                    AND th.nama_pihak != ''
+                GROUP BY th.nama_pihak
+                ORDER BY total_purchases DESC
+            """
+            supplier_rows = await conn.fetch(suppliers_query, tenant_id, nama_produk)
+            suppliers = [
+                SupplierItem(
+                    nama_supplier=row['nama_supplier'],
+                    total_purchases=row['total_purchases']
+                )
+                for row in supplier_rows
+            ]
+
+            # 3. Get transaction history (last 10)
+            history_query = """
+                SELECT
+                    th.id,
+                    TO_CHAR(th.timestamp AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD') as tanggal,
+                    th.jenis_transaksi,
+                    it.jumlah,
+                    it.satuan,
+                    it.harga_satuan,
+                    it.subtotal,
+                    th.nama_pihak
+                FROM public.transaksi_harian th
+                JOIN public.item_transaksi it ON th.id = it.transaksi_id
+                WHERE th.tenant_id = $1
+                    AND LOWER(it.nama_produk) = LOWER($2)
+                ORDER BY th.timestamp DESC
+                LIMIT 10
+            """
+            history_rows = await conn.fetch(history_query, tenant_id, nama_produk)
+            transaction_history = [
+                TransactionHistoryItem(
+                    id=row['id'],
+                    tanggal=row['tanggal'],
+                    jenis_transaksi=row['jenis_transaksi'],
+                    jumlah=float(row['jumlah']),
+                    satuan=row['satuan'] or product_row['satuan'],
+                    harga_satuan=float(row['harga_satuan']),
+                    subtotal=float(row['subtotal']),
+                    nama_pihak=row['nama_pihak']
+                )
+                for row in history_rows
+            ]
+
+            # 4. Get insight aggregates
+            insight_query = """
+                SELECT
+                    COALESCE(SUM(CASE WHEN th.jenis_transaksi = 'pembelian' THEN it.jumlah ELSE 0 END), 0) as total_masuk,
+                    COALESCE(SUM(CASE WHEN th.jenis_transaksi = 'penjualan' THEN it.jumlah ELSE 0 END), 0) as total_keluar,
+                    AVG(CASE WHEN th.jenis_transaksi = 'penjualan' THEN it.jumlah END) as rata_rata_penjualan,
+                    COUNT(CASE WHEN th.jenis_transaksi = 'penjualan' THEN 1 END) as jumlah_transaksi_penjualan
+                FROM public.transaksi_harian th
+                JOIN public.item_transaksi it ON th.id = it.transaksi_id
+                WHERE th.tenant_id = $1
+                    AND LOWER(it.nama_produk) = LOWER($2)
+            """
+            insight_row = await conn.fetchrow(insight_query, tenant_id, nama_produk)
+            insight = StockInsight(
+                total_masuk=float(insight_row['total_masuk']),
+                total_keluar=float(insight_row['total_keluar']),
+                rata_rata_penjualan=float(insight_row['rata_rata_penjualan']) if insight_row['rata_rata_penjualan'] else None,
+                jumlah_transaksi_penjualan=insight_row['jumlah_transaksi_penjualan']
+            )
+
+            # 5. Unit conversion - now from V007 fields in products table
+            # No need to calculate from transactions anymore
+            base_unit = product_row['base_unit'] or 'pcs'
+            wholesale_unit = product_row['wholesale_unit']
+            units_per_wholesale = product_row['units_per_wholesale']
+
+            # Stock is already in base unit after V008 migration
+            # So stok_satuan_terkecil = stok (no multiplication needed)
+            stok_satuan_terkecil = float(product_row['stok'])
+
+            logger.info(f"Stock card retrieved: product={nama_produk}, tenant={tenant_id}, units_per_wholesale={units_per_wholesale}, stok={stok_satuan_terkecil} {base_unit}")
+
+            return ProductStockCardResponse(
+                product=product,
+                minimum_stock=float(product_row['minimum_stock']) if product_row['minimum_stock'] else None,
+                suppliers=suppliers,
+                transaction_history=transaction_history,
+                insight=insight,
+                # V007 fields
+                base_unit=base_unit,
+                wholesale_unit=wholesale_unit,
+                units_per_wholesale=units_per_wholesale,
+                # Legacy aliases for backward compatibility
+                units_per_pack=units_per_wholesale,
+                content_unit=base_unit,
+                stok_satuan_terkecil=stok_satuan_terkecil
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get product stock card error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch product stock card")
 
 
 @router.get("/health")

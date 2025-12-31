@@ -557,6 +557,11 @@ model Products {
   deskripsi  String? @db.Text // Product description (optional)
   barcode    String? @unique // Product barcode for scanning (V006)
 
+  // Unit Conversion Fields (V007)
+  baseUnit          String? @default("pcs") @map("base_unit") @db.VarChar(50) // Smallest selling unit: pcs, botol, lembar
+  wholesaleUnit     String? @map("wholesale_unit") @db.VarChar(50) // Bulk purchase unit: dus, karton, pack
+  unitsPerWholesale Int?    @map("units_per_wholesale") // Conversion factor: 1 dus = 12 pcs
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

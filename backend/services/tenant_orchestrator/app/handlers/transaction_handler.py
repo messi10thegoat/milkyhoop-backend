@@ -23,7 +23,10 @@ import inventory_service_pb2
 from backend.services.tenant_orchestrator.app.database import (
     get_tenant_config,
     create_transaction_atomic,
-    update_inventory_for_transaction
+    update_inventory_for_transaction,
+    # Unit conversion helpers (V007)
+    get_product_unit_conversion,
+    convert_to_base_unit
 )
 
 # WIB Timezone (UTC+7)
@@ -1441,39 +1444,65 @@ class TransactionHandler:
                 for idx, item_inv in enumerate(inventory_impact_data.get("items_inventory", [])):
                     # Handle 'unknown' stok_setelah for penjualan
                     stok_setelah_value = item_inv.get("stok_setelah", 0)
-                    
+
                     # Get produk_id from parser (usually empty)
                     produk_id = item_inv.get("produk_id", "")
-                    
-                    # FIX: If produk_id empty, lookup/create from nama_produk
-                    if not produk_id and idx < len(items):
-                        nama_produk = items[idx].get("nama_produk", "")
-                        if nama_produk:
-                            try:
-                                # Try to find or create product
-                                logger.info(f"[{trace_id}] 🔍 Looking up product: {nama_produk}")
-                                
-                                # For now, create UUID from name hash (deterministic)
-                                import hashlib
-                                import uuid
-                                name_hash = hashlib.md5(f"{request.tenant_id}:{nama_produk}".encode()).hexdigest()
-                                produk_id = str(uuid.UUID(name_hash))
-                                
-                                # Update item_inv with resolved produk_id
-                                item_inv["produk_id"] = produk_id
-                                logger.info(f"[{trace_id}] ✅ Product resolved: {nama_produk} → {produk_id}")
-                                
-                            except Exception as e:
-                                logger.error(f"[{trace_id}] ❌ Failed to resolve product {nama_produk}: {e}")
-                                produk_id = ""
-                    
+
+                    # Always get nama_produk from items for conversion lookup
+                    nama_produk = items[idx].get("nama_produk", "") if idx < len(items) else ""
+
+                    # FIX: If produk_id empty, create from nama_produk
+                    if not produk_id and nama_produk:
+                        try:
+                            # Try to find or create product
+                            logger.info(f"[{trace_id}] 🔍 Looking up product: {nama_produk}")
+
+                            # For now, create UUID from name hash (deterministic)
+                            import hashlib
+                            import uuid
+                            name_hash = hashlib.md5(f"{request.tenant_id}:{nama_produk}".encode()).hexdigest()
+                            produk_id = str(uuid.UUID(name_hash))
+
+                            # Update item_inv with resolved produk_id
+                            item_inv["produk_id"] = produk_id
+                            logger.info(f"[{trace_id}] ✅ Product resolved: {nama_produk} → {produk_id}")
+
+                        except Exception as e:
+                            logger.error(f"[{trace_id}] ❌ Failed to resolve product {nama_produk}: {e}")
+                            produk_id = ""
+
+                    # ============================================================
+                    # UNIT CONVERSION FIX (V007)
+                    # Convert wholesale units (dus, karton) to base units (pcs)
+                    # ============================================================
+                    raw_jumlah = float(item_inv.get("jumlah_movement", 0))
+                    satuan = items[idx].get("satuan", "pcs") if idx < len(items) else "pcs"
+
+                    # Get unit conversion factor from database
+                    units_per_wholesale = None
+                    if nama_produk:
+                        try:
+                            conversion_info = await get_product_unit_conversion(request.tenant_id, nama_produk)
+                            units_per_wholesale = conversion_info.get("units_per_wholesale")
+                            if units_per_wholesale:
+                                logger.info(f"[{trace_id}] 📦 Product {nama_produk} has conversion: 1 {conversion_info.get('wholesale_unit')} = {units_per_wholesale} {conversion_info.get('base_unit')}")
+                        except Exception as e:
+                            logger.warning(f"[{trace_id}] ⚠️ Could not fetch conversion for {nama_produk}: {e}")
+
+                    # Apply conversion if wholesale unit
+                    converted_jumlah, was_converted = convert_to_base_unit(raw_jumlah, satuan, units_per_wholesale)
+                    if was_converted:
+                        logger.info(f"[{trace_id}] 📦 Unit conversion applied: {raw_jumlah} {satuan} × {units_per_wholesale} = {converted_jumlah} pcs")
+
+                    # Use converted quantity
+                    jumlah_movement = converted_jumlah
+
                     # If stok_setelah is 'unknown' or 0, try cache first then query
                     # FORM MODE: Skip stock check for faster response
                     if produk_id:
                         if is_form_mode:
                             # FORM MODE: Skip stock validation for faster response
                             # Set placeholder - will be calculated by outbox_worker
-                            jumlah_movement = float(item_inv.get("jumlah_movement", 0))
                             stok_setelah_value = jumlah_movement  # Just use movement as placeholder
                             logger.info(f"[{trace_id}] 📝 FORM MODE: Skipping stock check, using placeholder stok_setelah={stok_setelah_value}")
                         else:
@@ -1490,8 +1519,8 @@ class TransactionHandler:
                                 stock_resp = await client_manager.stubs['inventory'].GetStockLevel(stock_req)
                                 current_stock = stock_resp.current_stock
 
-                                # Calculate stok_setelah
-                                jumlah_movement = float(item_inv.get("jumlah_movement", 0))
+                                # Calculate stok_setelah using already-converted jumlah_movement
+                                # Note: jumlah_movement already converted to base unit above (V007 fix)
                                 stok_setelah_value = current_stock + jumlah_movement  # movement is negative for keluar
 
                                 logger.info(f"[{trace_id}] 📊 Calculated stok_setelah: {current_stock} + ({jumlah_movement}) = {stok_setelah_value}")
@@ -1502,14 +1531,15 @@ class TransactionHandler:
                     
                     # Only add to proto if produk_id is valid
                     if produk_id:
+                        # Use converted jumlah_movement (V007 fix)
                         item_inv_proto = inventory_service_pb2.ItemInventory(
                             produk_id=produk_id,
-                            jumlah_movement=float(item_inv.get("jumlah_movement", 0)),
+                            jumlah_movement=float(jumlah_movement),  # Already converted to base unit
                             stok_setelah=float(stok_setelah_value),
                             nilai_per_unit=float(item_inv.get("nilai_per_unit", 0))
                         )
                         items_inventory_proto.append(item_inv_proto)
-                        logger.info(f"[{trace_id}] DEBUG: ItemInventory created - produk_id={produk_id}, jumlah_movement={item_inv.get('jumlah_movement')}")
+                        logger.info(f"[{trace_id}] DEBUG: ItemInventory created - produk_id={produk_id}, jumlah_movement={jumlah_movement} (converted)")
                     else:
                         logger.warning(f"[{trace_id}] ⚠️ Skipping inventory item - no valid produk_id")
                 

@@ -107,6 +107,83 @@ async def close_pool():
 
 
 # ============================================
+# UNIT CONVERSION HELPERS
+# ============================================
+
+# Wholesale unit keywords for detection
+WHOLESALE_UNITS = {'dus', 'karton', 'pack', 'box', 'lusin', 'gross', 'rim'}
+
+
+async def get_product_unit_conversion(tenant_id: str, product_name: str) -> dict:
+    """
+    Get product unit conversion info.
+
+    Returns:
+        {
+            "base_unit": "pcs",
+            "wholesale_unit": "dus",
+            "units_per_wholesale": 12
+        }
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    base_unit,
+                    wholesale_unit,
+                    units_per_wholesale
+                FROM products
+                WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2)
+            """, tenant_id, product_name)
+
+            if row:
+                return {
+                    "base_unit": row["base_unit"] or "pcs",
+                    "wholesale_unit": row["wholesale_unit"],
+                    "units_per_wholesale": row["units_per_wholesale"]
+                }
+        return {"base_unit": "pcs", "wholesale_unit": None, "units_per_wholesale": None}
+    except Exception as e:
+        logger.error(f"❌ Error fetching unit conversion: {e}")
+        return {"base_unit": "pcs", "wholesale_unit": None, "units_per_wholesale": None}
+
+
+def convert_to_base_unit(
+    quantity: float,
+    satuan: str,
+    units_per_wholesale: Optional[int]
+) -> tuple[float, bool]:
+    """
+    Convert quantity to base unit if wholesale.
+
+    Args:
+        quantity: Raw quantity from transaction
+        satuan: Unit from transaction (e.g., "Dus", "pcs")
+        units_per_wholesale: Conversion factor (e.g., 12)
+
+    Returns:
+        (converted_quantity, was_converted)
+
+    Example:
+        convert_to_base_unit(13, "Dus", 12) -> (156, True)
+        convert_to_base_unit(5, "pcs", None) -> (5, False)
+    """
+    if not satuan:
+        return quantity, False
+
+    satuan_lower = satuan.lower()
+
+    # Check if it's a wholesale unit
+    if satuan_lower in WHOLESALE_UNITS and units_per_wholesale and units_per_wholesale > 1:
+        converted = quantity * units_per_wholesale
+        logger.info(f"📦 Unit conversion: {quantity} {satuan} × {units_per_wholesale} = {converted} pcs")
+        return converted, True
+
+    return quantity, False
+
+
+# ============================================
 # ATOMIC TRANSACTION FUNCTION
 # ============================================
 
