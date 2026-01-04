@@ -55,6 +55,11 @@ class ProductListItem(BaseModel):
     lokasi_gudang: Optional[str] = None
 
 
+class ProductStockItem(ProductListItem):
+    """Extended product info for stock card with updated_at"""
+    updated_at: Optional[str] = None
+
+
 class ProductListResponse(BaseModel):
     products: List[ProductListItem]
     total: int
@@ -160,7 +165,7 @@ class StockInsight(BaseModel):
 
 class ProductStockCardResponse(BaseModel):
     """Complete stock card data for a product"""
-    product: ProductListItem
+    product: ProductStockItem
     minimum_stock: Optional[float] = None
     suppliers: List[SupplierItem]
     transaction_history: List[TransactionHistoryItem]
@@ -757,6 +762,7 @@ async def get_product_stock_card(request: Request, product_id: str):
                     (COALESCE(s.jumlah, 0) * COALESCE(s.nilai_per_unit, 0)) as total_nilai,
                     COALESCE(s.jumlah, 0) <= COALESCE(s.minimum_stock, 0) AND COALESCE(s.jumlah, 0) > 0 as is_low_stock,
                     s.lokasi_gudang,
+                    p.updated_at,
                     -- V007 unit conversion fields
                     p.base_unit,
                     p.wholesale_unit,
@@ -770,7 +776,7 @@ async def get_product_stock_card(request: Request, product_id: str):
             if not product_row:
                 raise HTTPException(status_code=404, detail="Product not found")
 
-            product = ProductListItem(
+            product = ProductStockItem(
                 id=product_row['id'],
                 nama_produk=product_row['nama_produk'],
                 satuan=product_row['satuan'],
@@ -782,7 +788,8 @@ async def get_product_stock_card(request: Request, product_id: str):
                 total_nilai=float(product_row['total_nilai']) if product_row['total_nilai'] else None,
                 minimum_stock=float(product_row['minimum_stock']) if product_row['minimum_stock'] else None,
                 is_low_stock=product_row['is_low_stock'] or False,
-                lokasi_gudang=product_row['lokasi_gudang']
+                lokasi_gudang=product_row['lokasi_gudang'],
+                updated_at=product_row['updated_at'].isoformat() if product_row['updated_at'] else None
             )
             nama_produk = product_row['nama_produk']
 
@@ -814,7 +821,7 @@ async def get_product_stock_card(request: Request, product_id: str):
             history_query = """
                 SELECT
                     th.id,
-                    TO_CHAR(th.timestamp AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD') as tanggal,
+                    TO_CHAR(th.created_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD') as tanggal,
                     th.jenis_transaksi,
                     it.jumlah,
                     it.satuan,
@@ -825,7 +832,7 @@ async def get_product_stock_card(request: Request, product_id: str):
                 JOIN public.item_transaksi it ON th.id = it.transaksi_id
                 WHERE th.tenant_id = $1
                     AND LOWER(it.nama_produk) = LOWER($2)
-                ORDER BY th.timestamp DESC
+                ORDER BY th.created_at DESC
                 LIMIT 10
             """
             history_rows = await conn.fetch(history_query, tenant_id, nama_produk)
