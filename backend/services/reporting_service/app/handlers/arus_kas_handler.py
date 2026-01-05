@@ -2,10 +2,15 @@
 Arus Kas Handler
 Handles Cash Flow Statement (Laporan Arus Kas) generation
 
-Extracted from grpc_server.py - IDENTIK, no logic changes
+Supports two data sources:
+1. Legacy: transaksiharian table (Prisma)
+2. New: Accounting Kernel General Ledger (asyncpg)
+
+Set USE_ACCOUNTING_KERNEL=true to use the new data source.
 """
 
 import logging
+import os
 from datetime import datetime
 import grpc
 
@@ -13,6 +18,9 @@ from app.prisma_rls_extension import RLSPrismaClient
 from queries.financial_queries import build_where_clause
 
 logger = logging.getLogger(__name__)
+
+# Feature flag for Accounting Kernel
+USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'false').lower() == 'true'
 
 
 class ArusKasHandler:
@@ -108,24 +116,72 @@ class ArusKasHandler:
         pb
     ):
         """Generate Laporan Arus Kas (Cash Flow Statement)"""
-        logger.info(f"📊 GetArusKas: tenant={request.tenant_id}, periode={request.periode_pelaporan}")
-        
+        logger.info(f"📊 GetArusKas: tenant={request.tenant_id}, periode={request.periode_pelaporan}, use_kernel={USE_ACCOUNTING_KERNEL}")
+
+        # Use Accounting Kernel if enabled
+        if USE_ACCOUNTING_KERNEL:
+            try:
+                from adapters.accounting_kernel_adapter import get_kernel_adapter
+                adapter = await get_kernel_adapter()
+
+                data = await adapter.get_arus_kas(
+                    tenant_id=request.tenant_id,
+                    periode=request.periode_pelaporan,
+                    company_name=getattr(request, 'company_name', '')
+                )
+
+                # Map accounting kernel format to Proto format
+                result = pb.LaporanArusKas(
+                    tenant_id=data['tenant_id'],
+                    periode_pelaporan=data['periode_pelaporan'],
+                    generated_at=data['generated_at'],
+                    # Opening
+                    kas_awal_periode=data.get('kas_awal_periode', 0),
+                    # Operating Activities
+                    penerimaan_dari_pelanggan=data.get('laba_bersih', 0),  # Indirect method starts with net income
+                    pembayaran_ke_supplier=0,  # Indirect method uses adjustments
+                    pembayaran_beban_operasional=0,
+                    arus_kas_operasi=data.get('arus_kas_operasi', 0),
+                    # Investing Activities
+                    pembelian_aset_tetap=data.get('pembelian_aset', 0),
+                    penjualan_aset_tetap=data.get('penjualan_aset', 0),
+                    arus_kas_investasi=data.get('arus_kas_investasi', 0),
+                    # Financing Activities
+                    penerimaan_modal=data.get('setoran_modal', 0),
+                    penerimaan_pinjaman=data.get('pinjaman_baru', 0),
+                    pembayaran_pinjaman=data.get('pembayaran_pinjaman', 0),
+                    prive_pemilik=data.get('penarikan_prive', 0),
+                    arus_kas_pendanaan=data.get('arus_kas_pendanaan', 0),
+                    # Summary
+                    kenaikan_penurunan_kas=data.get('perubahan_kas_bersih', 0),
+                    kas_akhir_periode=data.get('kas_akhir_periode', 0),
+                    kas_actual=data.get('kas_akhir_periode', 0),
+                    is_reconciled=data.get('is_balanced', False)
+                )
+                logger.info(f"✅ Arus Kas (Kernel): kas_akhir={result.kas_akhir_periode}")
+                return result
+
+            except Exception as e:
+                logger.error(f"❌ Kernel failed, falling back to legacy: {e}")
+                # Fall through to legacy implementation
+
+        # Legacy implementation using transaksiharian
         rls_client = RLSPrismaClient(tenant_id=request.tenant_id, bypass_rls=True)
-        
+
         try:
             await rls_client.connect()
-            
+
             where = build_where_clause(
                 request.tenant_id,
                 request.periode_pelaporan,
                 request.start_date,
                 request.end_date
             )
-            
+
             result = await ArusKasHandler.query_arus_kas(rls_client, where, pb)
-            logger.info(f"✅ Arus Kas generated: kas_akhir={result.kas_akhir_periode}")
+            logger.info(f"✅ Arus Kas (Legacy): kas_akhir={result.kas_akhir_periode}")
             return result
-            
+
         except Exception as e:
             logger.error(f"❌ GetArusKas failed: {str(e)}")
             await context.abort(grpc.StatusCode.INTERNAL, f"Failed to generate report: {str(e)}")

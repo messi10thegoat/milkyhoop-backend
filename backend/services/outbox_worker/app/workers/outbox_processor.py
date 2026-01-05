@@ -7,6 +7,8 @@ Handles inventory updates and accounting journal creation
 
 Author: MilkyHoop Team
 Version: 1.0.0
+
+UPDATED: Now uses AccountingKernelBridge for double-entry bookkeeping
 """
 
 import asyncio
@@ -15,6 +17,7 @@ import time
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import os
 
 import grpc
 from milkyhoop_prisma import Prisma
@@ -25,6 +28,13 @@ from app import inventory_service_pb2_grpc
 
 from app import accounting_service_pb2
 from app import accounting_service_pb2_grpc
+
+# Import Accounting Kernel Bridge
+from app.workers.accounting_kernel_bridge import (
+    AccountingKernelBridge,
+    get_accounting_bridge,
+    close_accounting_bridge
+)
 
 
 logger = logging.getLogger(__name__)
@@ -48,41 +58,47 @@ class OutboxProcessor:
         inventory_service_host: str = "inventory_service",
         inventory_service_port: int = 7040,
         accounting_service_host: str = "accounting_service",
-        accounting_service_port: int = 7050
+        accounting_service_port: int = 7050,
+        use_accounting_kernel: bool = True  # NEW: Toggle for new accounting kernel
     ):
         """
         Initialize outbox processor.
-        
+
         Args:
             poll_interval: Seconds between polls (default: 2)
             batch_size: Max events per batch (default: 10)
             max_retries: Max retry attempts (default: 3)
+            use_accounting_kernel: Use new AccountingKernel instead of gRPC (default: True)
         """
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self.max_retries = max_retries
-        
+        self.use_accounting_kernel = use_accounting_kernel
+
         # Metrics
         self.total_processed = 0
         self.total_failed = 0
         self.started_at = None
         self.last_poll_at = None
         self.is_running = False
-        
+
         # gRPC channels
         self.inventory_channel = None
         self.accounting_channel = None
         self.inventory_stub = None
         self.accounting_stub = None
-        
+
+        # Accounting Kernel Bridge (new)
+        self.accounting_bridge: Optional[AccountingKernelBridge] = None
+
         # Service addresses
         self.inventory_address = f"{inventory_service_host}:{inventory_service_port}"
         self.accounting_address = f"{accounting_service_host}:{accounting_service_port}"
-        
+
         # Database client
         self.db = Prisma()
-        
-        logger.info(f"OutboxProcessor initialized | poll_interval={poll_interval}s | batch_size={batch_size}")
+
+        logger.info(f"OutboxProcessor initialized | poll_interval={poll_interval}s | batch_size={batch_size} | accounting_kernel={use_accounting_kernel}")
     
     async def start(self):
         """Start the background worker."""
@@ -90,15 +106,21 @@ class OutboxProcessor:
             # Connect to database
             await self.db.connect()
             logger.info("✅ Database connected")
-            
-            # Setup gRPC channels
+
+            # Setup gRPC channels for inventory
             self.inventory_channel = grpc.aio.insecure_channel(self.inventory_address)
-            self.accounting_channel = grpc.aio.insecure_channel(self.accounting_address)
-            
             self.inventory_stub = inventory_service_pb2_grpc.InventoryServiceStub(self.inventory_channel)
-            self.accounting_stub = accounting_service_pb2_grpc.AccountingServiceStub(self.accounting_channel)
-            
-            logger.info(f"✅ gRPC channels setup | inventory={self.inventory_address} | accounting={self.accounting_address}")
+
+            # Setup accounting: either kernel bridge or gRPC
+            if self.use_accounting_kernel:
+                self.accounting_bridge = await get_accounting_bridge()
+                logger.info("✅ AccountingKernelBridge initialized (double-entry bookkeeping)")
+            else:
+                self.accounting_channel = grpc.aio.insecure_channel(self.accounting_address)
+                self.accounting_stub = accounting_service_pb2_grpc.AccountingServiceStub(self.accounting_channel)
+                logger.info(f"✅ gRPC channel setup | accounting={self.accounting_address}")
+
+            logger.info(f"✅ gRPC channels setup | inventory={self.inventory_address}")
             
             self.is_running = True
             self.started_at = time.time()
@@ -123,16 +145,20 @@ class OutboxProcessor:
         """Stop the background worker gracefully."""
         logger.info("🛑 Stopping OutboxProcessor...")
         self.is_running = False
-        
+
         # Close gRPC channels
         if self.inventory_channel:
             await self.inventory_channel.close()
         if self.accounting_channel:
             await self.accounting_channel.close()
-        
+
+        # Close accounting kernel bridge
+        if self.accounting_bridge:
+            await close_accounting_bridge()
+
         # Disconnect database
         await self.db.disconnect()
-        
+
         logger.info("✅ OutboxProcessor stopped")
     
     async def _poll_and_process(self):
@@ -300,7 +326,10 @@ class OutboxProcessor:
     async def _handle_accounting_create(self, payload: Dict[str, Any]) -> bool:
         """
         Handle accounting.create event.
-        
+
+        IDEMPOTENT: Checks if journal already exists for this transaction
+        before creating a new one.
+
         Payload structure:
         {
             "transaksi_id": "uuid",
@@ -313,25 +342,35 @@ class OutboxProcessor:
         try:
             transaksi_id = payload.get("transaksi_id")
             tenant_id = payload.get("tenant_id")
-            
-            logger.info(f"📒 Creating journal entry | transaksi={transaksi_id[:12]}")
-            
-            # Call accounting service
 
+            logger.info(f"📒 Processing accounting.create | transaksi={transaksi_id[:12] if transaksi_id else 'N/A'}")
+
+            # Use Accounting Kernel Bridge (new double-entry bookkeeping)
+            if self.use_accounting_kernel and self.accounting_bridge:
+                success = await self.accounting_bridge.handle_accounting_create(payload)
+
+                if success:
+                    logger.info(f"✅ Journal entry created via AccountingKernel | tx={transaksi_id[:12] if transaksi_id else 'N/A'}")
+                else:
+                    logger.error(f"❌ AccountingKernel failed to create journal")
+
+                return success
+
+            # Fallback: Use legacy gRPC accounting_service
             request = accounting_service_pb2.ProcessTransactionRequest(
                 tenant_id=tenant_id,
                 transaksi_id=transaksi_id
             )
 
             response = await self.accounting_stub.ProcessTransaction(request, timeout=5)
-            
+
             if not response.success:
                 logger.error(f"❌ Journal creation failed: {response.message}")
                 return False
-            
-            logger.info(f"✅ Journal entry created | journal_id={response.journal_id}")
+
+            logger.info(f"✅ Journal entry created (legacy) | journal_id={response.jurnal_entry_id}")
             return True
-        
+
         except grpc.RpcError as e:
             logger.error(f"❌ gRPC error calling accounting_service: {e.code()} - {e.details()}")
             return False

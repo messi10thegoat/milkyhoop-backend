@@ -2,10 +2,15 @@
 Laba Rugi Handler
 Handles Income Statement (Laporan Laba Rugi) generation
 
-Extracted from grpc_server.py - IDENTIK, no logic changes
+Supports two data sources:
+1. Legacy: transaksiharian table (Prisma)
+2. New: Accounting Kernel General Ledger (asyncpg)
+
+Set USE_ACCOUNTING_KERNEL=true to use the new data source.
 """
 
 import logging
+import os
 from datetime import datetime
 import grpc
 
@@ -13,6 +18,9 @@ from app.prisma_rls_extension import RLSPrismaClient
 from queries.financial_queries import build_where_clause
 
 logger = logging.getLogger(__name__)
+
+# Feature flag for Accounting Kernel
+USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'false').lower() == 'true'
 
 
 class LabaRugiHandler:
@@ -189,27 +197,73 @@ class LabaRugiHandler:
         pb
     ):
         """Generate Laporan Laba Rugi (Income Statement)"""
-        logger.info(f"📊 GetLabaRugi: tenant={request.tenant_id}, periode={request.periode_pelaporan}")
-        
+        logger.info(f"📊 GetLabaRugi: tenant={request.tenant_id}, periode={request.periode_pelaporan}, use_kernel={USE_ACCOUNTING_KERNEL}")
+
+        # Use Accounting Kernel if enabled
+        if USE_ACCOUNTING_KERNEL:
+            try:
+                from adapters.accounting_kernel_adapter import get_kernel_adapter
+                adapter = await get_kernel_adapter()
+
+                data = await adapter.get_laba_rugi(
+                    tenant_id=request.tenant_id,
+                    periode=request.periode_pelaporan,
+                    company_name=getattr(request, 'company_name', '')
+                )
+
+                result = pb.LaporanLabaRugi(
+                    tenant_id=data['tenant_id'],
+                    periode_pelaporan=data['periode_pelaporan'],
+                    generated_at=data['generated_at'],
+                    pendapatan_penjualan=data['pendapatan_penjualan'],
+                    pendapatan_lainnya=data['pendapatan_lainnya'],
+                    total_pendapatan=data['total_pendapatan'],
+                    hpp_bahan_baku=data['hpp_bahan_baku'],
+                    hpp_tenaga_kerja=data['hpp_tenaga_kerja'],
+                    hpp_overhead=data['hpp_overhead'],
+                    total_hpp=data['total_hpp'],
+                    beban_gaji=data['beban_gaji'],
+                    beban_sewa=data['beban_sewa'],
+                    beban_utilitas=data['beban_utilitas'],
+                    beban_transportasi=data['beban_transportasi'],
+                    beban_penyusutan=data['beban_penyusutan'],
+                    beban_operasional_lainnya=data['beban_operasional_lainnya'],
+                    total_beban_operasional=data['total_beban_operasional'],
+                    laba_kotor=data['laba_kotor'],
+                    laba_operasional=data['laba_operasional'],
+                    beban_bunga=data['beban_bunga'],
+                    laba_bersih=data['laba_bersih'],
+                    margin_laba_kotor=data['margin_laba_kotor'],
+                    margin_laba_bersih=data['margin_laba_bersih'],
+                    jumlah_transaksi=data['jumlah_transaksi']
+                )
+                logger.info(f"✅ Laba Rugi (Kernel): laba_bersih={result.laba_bersih}")
+                return result
+
+            except Exception as e:
+                logger.error(f"❌ Kernel failed, falling back to legacy: {e}")
+                # Fall through to legacy implementation
+
+        # Legacy implementation using transaksiharian
         rls_client = RLSPrismaClient(tenant_id=request.tenant_id, bypass_rls=True)
-        
+
         try:
             await rls_client.connect()
-            
+
             # Import prisma for global access
             from app.prisma_client import prisma
-            
+
             where = build_where_clause(
                 request.tenant_id,
                 request.periode_pelaporan,
                 request.start_date,
                 request.end_date
             )
-            
+
             result = await LabaRugiHandler.query_laba_rugi(rls_client, where, pb, prisma)
-            logger.info(f"✅ Laba Rugi generated: laba_bersih={result.laba_bersih}")
+            logger.info(f"✅ Laba Rugi (Legacy): laba_bersih={result.laba_bersih}")
             return result
-            
+
         except Exception as e:
             logger.error(f"❌ GetLabaRugi failed: {str(e)}")
             await context.abort(grpc.StatusCode.INTERNAL, f"Failed to generate report: {str(e)}")
