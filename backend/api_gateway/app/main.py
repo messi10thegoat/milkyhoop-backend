@@ -28,6 +28,7 @@ from backend.api_gateway.app.routers import setup_chat
 from backend.api_gateway.app.routers import public_chat
 from backend.api_gateway.app.routers import tenant_chat
 from .routers import reports
+from .routers import dashboard
 from .routers import qr_auth
 from .routers import device
 from .routers import mfa
@@ -227,6 +228,9 @@ app.include_router(members.router, prefix="/api/members", tags=["members"])
 
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
+
+# Dashboard Summary router (aggregated KPIs)
+app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 
 # QR Login System (Phase: QR Auth)
 app.include_router(qr_auth.router, tags=["qr-auth"])
