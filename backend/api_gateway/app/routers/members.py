@@ -1,6 +1,8 @@
 """
 Members Router - Customer/Member Management for POS
 Source: customers table
+
+Round 22: Added connection pooling for better latency
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
@@ -11,17 +13,34 @@ import asyncpg
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Round 22: Global connection pool for better performance
+_pool: Optional[asyncpg.Pool] = None
 
-# Database connection helper - uses local PostgreSQL
+
+async def get_pool() -> asyncpg.Pool:
+    """Get or create database connection pool"""
+    global _pool
+    if _pool is None:
+        logger.info("Creating members database connection pool...")
+        _pool = await asyncpg.create_pool(
+            host="postgres",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="milkydb",
+            min_size=2,   # Keep 2 connections ready
+            max_size=10,  # Max 10 concurrent connections
+            command_timeout=30,
+        )
+        logger.info("Members database connection pool created")
+    return _pool
+
+
+# Legacy helper for backward compatibility
 async def get_db_connection():
-    """Get database connection to local PostgreSQL"""
-    return await asyncpg.connect(
-        host="postgres",
-        port=5432,
-        user="postgres",
-        password="Proyek771977",
-        database="milkydb"
-    )
+    """Get database connection from pool"""
+    pool = await get_pool()
+    return await pool.acquire()
 
 
 # ========================================
@@ -90,13 +109,15 @@ async def list_members(
 ):
     """
     List all members (customers) with optional filtering
+    Round 22: Uses connection pooling for faster response times.
     """
     try:
         # Get tenant_id from auth context
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        conn = await get_db_connection()
-        try:
+        # Round 22: Use connection pool for better performance
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             # Build query
             base_query = """
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
@@ -178,9 +199,6 @@ async def list_members(
                 summary=summary
             )
 
-        finally:
-            await conn.close()
-
     except Exception as e:
         logger.error(f"Error listing members: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -195,12 +213,15 @@ async def search_members(
     """
     Search members by name, phone number, or member number
     Optimized for POS autocomplete
+
+    Round 22: Uses connection pooling for faster response times.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        conn = await get_db_connection()
-        try:
+        # Round 22: Use connection pool for better performance
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             search_pattern = f"%{q}%"
 
             # Search only pelanggan (not suppliers) for POS
@@ -243,9 +264,6 @@ async def search_members(
                 query=q
             )
 
-        finally:
-            await conn.close()
-
     except Exception as e:
         logger.error(f"Error searching members: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -255,12 +273,14 @@ async def search_members(
 async def get_member(request: Request, member_id: str):
     """
     Get member detail by ID
+    Round 22: Uses connection pooling for faster response times.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        conn = await get_db_connection()
-        try:
+        # Round 22: Use connection pool for better performance
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
                        points_per_50k, total_transaksi, total_nilai, saldo_hutang,
@@ -289,9 +309,6 @@ async def get_member(request: Request, member_id: str):
                 created_at=str(row['created_at']) if row['created_at'] else None
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -304,12 +321,14 @@ async def add_points(request: Request, data: AddPointsRequest):
     """
     Add points to member based on transaction amount
     Points = floor(transaction_amount / 50000) * points_per_50k
+    Round 22: Uses connection pooling for faster response times.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        conn = await get_db_connection()
-        try:
+        # Round 22: Use connection pool for better performance
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             # Get current member data
             row = await conn.fetchrow("""
                 SELECT id, points, points_per_50k, total_transaksi, total_nilai
@@ -344,9 +363,6 @@ async def add_points(request: Request, data: AddPointsRequest):
                 points_added=points_to_add,
                 new_total_points=new_total_points
             )
-
-        finally:
-            await conn.close()
 
     except HTTPException:
         raise

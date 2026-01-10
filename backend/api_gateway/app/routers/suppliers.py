@@ -1,27 +1,46 @@
 """
 Suppliers Router - Autocomplete & Search
 Source: TransaksiHarian.vendor_name (suppliers that were used)
+
+Round 21: Added connection pooling for better latency
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import logging
 import asyncpg
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Round 21: Global connection pool for better performance
+_pool: Optional[asyncpg.Pool] = None
 
-# Database connection helper - uses local PostgreSQL
+
+async def get_pool() -> asyncpg.Pool:
+    """Get or create database connection pool"""
+    global _pool
+    if _pool is None:
+        logger.info("Creating database connection pool...")
+        _pool = await asyncpg.create_pool(
+            host="postgres",  # Docker service name
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="milkydb",
+            min_size=2,   # Keep 2 connections ready
+            max_size=10,  # Max 10 concurrent connections
+            command_timeout=30,  # Query timeout
+        )
+        logger.info("Database connection pool created")
+    return _pool
+
+
+# Legacy helper for backward compatibility
 async def get_db_connection():
-    """Get database connection to local PostgreSQL"""
-    return await asyncpg.connect(
-        host="postgres",  # Docker service name
-        port=5432,
-        user="postgres",
-        password="Proyek771977",
-        database="milkydb"
-    )
+    """Get database connection from pool"""
+    pool = await get_pool()
+    return await pool.acquire()
 
 
 class SupplierSuggestion(BaseModel):
@@ -44,6 +63,8 @@ async def get_all_suppliers(
 
     This endpoint is designed for prefetching - frontend loads all suppliers
     once on mount, then filters locally with Fuse.js for instant results.
+
+    Round 21: Uses connection pooling for faster response times.
     """
     try:
         # Get user from auth middleware
@@ -54,10 +75,10 @@ async def get_all_suppliers(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        # Connect to database
-        conn = await get_db_connection()
+        # Round 21: Use connection pool for better performance
+        pool = await get_pool()
 
-        try:
+        async with pool.acquire() as conn:
             # Query ALL distinct supplier names with usage count
             query = """
                 SELECT
@@ -87,9 +108,6 @@ async def get_all_suppliers(
 
             return results
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -108,6 +126,8 @@ async def search_suppliers(
 
     Source: TransaksiHarian.vendor_name (suppliers that were used before)
     Returns suppliers ordered by usage frequency
+
+    Round 21: Uses connection pooling for faster response times.
     """
     try:
         # Get user from auth middleware
@@ -118,10 +138,10 @@ async def search_suppliers(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        # Connect to database
-        conn = await get_db_connection()
+        # Round 21: Use connection pool for better performance
+        pool = await get_pool()
 
-        try:
+        async with pool.acquire() as conn:
             # Query distinct vendor/supplier names (nama_pihak) with usage count
             query = """
                 SELECT
@@ -151,9 +171,6 @@ async def search_suppliers(
             logger.info(f"Supplier search: q='{q}', tenant={tenant_id}, found={len(suggestions)}")
 
             return SupplierSearchResponse(suggestions=suggestions)
-
-        finally:
-            await conn.close()
 
     except HTTPException:
         raise

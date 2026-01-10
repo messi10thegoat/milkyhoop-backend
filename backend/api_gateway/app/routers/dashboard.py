@@ -46,6 +46,8 @@ class PiutangSummary(BaseModel):
     overdue_31_60: int = 0
     overdue_61_90: int = 0
     overdue_90_plus: int = 0
+    oldest_customer: Optional[str] = None  # Customer with oldest overdue
+    oldest_days: Optional[int] = None  # Days overdue for oldest
 
 
 class HutangSummary(BaseModel):
@@ -58,6 +60,8 @@ class HutangSummary(BaseModel):
     overdue_31_60: int = 0
     overdue_61_90: int = 0
     overdue_90_plus: int = 0
+    nearest_supplier: Optional[str] = None  # Supplier with nearest due date
+    nearest_days: Optional[int] = None  # Days until due (positive = future, negative = overdue)
 
 
 class BankAccount(BaseModel):
@@ -87,8 +91,92 @@ class DashboardSummaryResponse(BaseModel):
 
 
 # ========================================
+# Cash Flow Trends Models
+# ========================================
+
+class CashFlowTrend(BaseModel):
+    """Daily cash flow data point"""
+    date: str  # 'YYYY-MM-DD'
+    label: str  # Day name: 'Sen', 'Sel', 'Rab', etc.
+    kas_masuk: int
+    kas_keluar: int
+
+
+class CashFlowTrendsResponse(BaseModel):
+    """Cash flow trends response"""
+    kas_masuk: int  # Total cash inflow
+    kas_keluar: int  # Total cash outflow
+    net_flow: int  # Net cash flow
+    trends: List[CashFlowTrend]
+    trx_masuk: int = 0  # Count of inflow transactions (today)
+    trx_keluar: int = 0  # Count of outflow transactions (today)
+
+
+# ========================================
+# Top Expenses Models
+# ========================================
+
+class TopExpense(BaseModel):
+    """Expense category breakdown"""
+    category: str
+    amount: int
+    percentage: float
+
+
+class TopExpensesResponse(BaseModel):
+    """Top expenses response"""
+    expenses: List[TopExpense]
+    total: int
+
+
+# ========================================
+# Overdue Details Models
+# ========================================
+
+class OverdueInvoice(BaseModel):
+    """Overdue AR invoice detail"""
+    invoice_number: str
+    customer_name: str
+    due_date: str
+    days_overdue: int
+    outstanding: int
+
+
+class OverdueInvoicesResponse(BaseModel):
+    """Overdue invoices list response"""
+    invoices: List[OverdueInvoice]
+    total_outstanding: int
+    count: int
+
+
+class OverdueBill(BaseModel):
+    """Overdue AP bill detail"""
+    bill_number: str
+    supplier_name: str
+    due_date: str
+    days_overdue: int
+    outstanding: int
+
+
+class OverdueBillsResponse(BaseModel):
+    """Overdue bills list response"""
+    bills: List[OverdueBill]
+    total_outstanding: int
+    count: int
+
+
+# ========================================
 # Helper Functions
 # ========================================
+
+# Indonesian day name abbreviations
+DAY_NAMES = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min']
+
+
+def get_day_label(date: datetime) -> str:
+    """Get Indonesian day abbreviation for a date"""
+    return DAY_NAMES[date.weekday()]
+
 
 def get_period_dates(period: str) -> tuple:
     """
@@ -199,6 +287,18 @@ async def get_dashboard_summary(
             """
             ar_row = await conn.fetchrow(ar_query, tenant_id)
 
+            # Query oldest overdue AR invoice
+            oldest_ar_query = """
+                SELECT customer_name, CURRENT_DATE - due_date as days_overdue
+                FROM accounts_receivable
+                WHERE tenant_id = $1
+                  AND due_date < CURRENT_DATE
+                  AND status != 'PAID'
+                ORDER BY due_date ASC
+                LIMIT 1
+            """
+            oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
+
             piutang = PiutangSummary(
                 total=int(ar_row['total']) if ar_row else 0,
                 customer_count=int(ar_row['customer_count']) if ar_row else 0,
@@ -207,7 +307,9 @@ async def get_dashboard_summary(
                 overdue_1_30=int(ar_row['overdue_1_30']) if ar_row else 0,
                 overdue_31_60=int(ar_row['overdue_31_60']) if ar_row else 0,
                 overdue_61_90=int(ar_row['overdue_61_90']) if ar_row else 0,
-                overdue_90_plus=int(ar_row['overdue_90_plus']) if ar_row else 0
+                overdue_90_plus=int(ar_row['overdue_90_plus']) if ar_row else 0,
+                oldest_customer=oldest_ar['customer_name'] if oldest_ar else None,
+                oldest_days=int(oldest_ar['days_overdue']) if oldest_ar else None
             )
 
             # ============================
@@ -231,6 +333,17 @@ async def get_dashboard_summary(
             """
             ap_row = await conn.fetchrow(ap_query, tenant_id)
 
+            # Query nearest AP bill (due soonest or already overdue)
+            nearest_ap_query = """
+                SELECT supplier_name, due_date - CURRENT_DATE as days_until_due
+                FROM accounts_payable
+                WHERE tenant_id = $1
+                  AND status != 'PAID'
+                ORDER BY due_date ASC
+                LIMIT 1
+            """
+            nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
+
             hutang = HutangSummary(
                 total=int(ap_row['total']) if ap_row else 0,
                 supplier_count=int(ap_row['supplier_count']) if ap_row else 0,
@@ -239,7 +352,9 @@ async def get_dashboard_summary(
                 overdue_1_30=int(ap_row['overdue_1_30']) if ap_row else 0,
                 overdue_31_60=int(ap_row['overdue_31_60']) if ap_row else 0,
                 overdue_61_90=int(ap_row['overdue_61_90']) if ap_row else 0,
-                overdue_90_plus=int(ap_row['overdue_90_plus']) if ap_row else 0
+                overdue_90_plus=int(ap_row['overdue_90_plus']) if ap_row else 0,
+                nearest_supplier=nearest_ap['supplier_name'] if nearest_ap else None,
+                nearest_days=int(nearest_ap['days_until_due']) if nearest_ap else None
             )
 
             # ============================
@@ -568,3 +683,358 @@ async def get_kas_bank_detail(request: Request):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "dashboard_router"}
+
+
+# ========================================
+# Cash Flow Trends Endpoint
+# ========================================
+
+@router.get("/cash-flow-trends", response_model=CashFlowTrendsResponse)
+async def get_cash_flow_trends(
+    request: Request,
+    period: str = Query("7d", regex="^(7d|30d|month)$")
+):
+    """
+    Get daily cash flow trends (kas masuk/keluar) for chart visualization.
+
+    Period options:
+    - 7d: Last 7 days (default)
+    - 30d: Last 30 days
+    - month: Current month
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Calculate date range
+        now = datetime.now()
+        if period == '7d':
+            start_date = now - timedelta(days=6)  # Include today = 7 days
+        elif period == '30d':
+            start_date = now - timedelta(days=29)
+        else:  # month
+            start_date = datetime(now.year, now.month, 1)
+
+        conn = await get_db_connection()
+        try:
+            # Query daily cash flow from journal entries
+            # Kas Masuk = Debit to Cash/Bank accounts (money coming in)
+            # Kas Keluar = Credit from Cash/Bank accounts (money going out)
+            query = """
+                WITH daily_flows AS (
+                    SELECT
+                        DATE(je.journal_date) as flow_date,
+                        COALESCE(SUM(CASE
+                            WHEN jl.debit > 0 AND c.account_code LIKE '1-10%'
+                            THEN jl.debit
+                            ELSE 0
+                        END), 0) as kas_masuk,
+                        COALESCE(SUM(CASE
+                            WHEN jl.credit > 0 AND c.account_code LIKE '1-10%'
+                            THEN jl.credit
+                            ELSE 0
+                        END), 0) as kas_keluar
+                    FROM journal_entries je
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts c ON c.id = jl.account_id
+                    WHERE je.tenant_id = $1
+                      AND je.journal_date >= $2
+                      AND je.journal_date <= $3
+                      AND je.status = 'POSTED'
+                    GROUP BY DATE(je.journal_date)
+                )
+                SELECT flow_date, kas_masuk, kas_keluar
+                FROM daily_flows
+                ORDER BY flow_date
+            """
+
+            rows = await conn.fetch(query, tenant_id, start_date.date(), now.date())
+
+            # Build date range with all days (even if no transactions)
+            trends = []
+            total_masuk = 0
+            total_keluar = 0
+
+            # Create a dict for quick lookup
+            flow_by_date = {row['flow_date']: row for row in rows}
+
+            # Generate all dates in range
+            current = start_date.date()
+            end = now.date()
+            while current <= end:
+                flow = flow_by_date.get(current)
+                kas_masuk = int(flow['kas_masuk']) if flow else 0
+                kas_keluar = int(flow['kas_keluar']) if flow else 0
+
+                trends.append(CashFlowTrend(
+                    date=current.isoformat(),
+                    label=get_day_label(datetime.combine(current, datetime.min.time())),
+                    kas_masuk=kas_masuk,
+                    kas_keluar=kas_keluar
+                ))
+
+                total_masuk += kas_masuk
+                total_keluar += kas_keluar
+                current += timedelta(days=1)
+
+            # Query today's transaction counts
+            today_trx_query = """
+                SELECT
+                    COUNT(DISTINCT CASE
+                        WHEN jl.debit > 0 AND c.account_code LIKE '1-10%'
+                        THEN je.id
+                    END) as trx_masuk,
+                    COUNT(DISTINCT CASE
+                        WHEN jl.credit > 0 AND c.account_code LIKE '1-10%'
+                        THEN je.id
+                    END) as trx_keluar
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts c ON c.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.journal_date = CURRENT_DATE
+                  AND je.status = 'POSTED'
+            """
+            today_trx = await conn.fetchrow(today_trx_query, tenant_id)
+
+            return CashFlowTrendsResponse(
+                kas_masuk=total_masuk,
+                kas_keluar=total_keluar,
+                net_flow=total_masuk - total_keluar,
+                trends=trends,
+                trx_masuk=int(today_trx['trx_masuk']) if today_trx and today_trx['trx_masuk'] else 0,
+                trx_keluar=int(today_trx['trx_keluar']) if today_trx and today_trx['trx_keluar'] else 0
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cash flow trends error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get cash flow trends")
+
+
+# ========================================
+# Top Expenses Endpoint
+# ========================================
+
+@router.get("/top-expenses", response_model=TopExpensesResponse)
+async def get_top_expenses(
+    request: Request,
+    period: str = Query("30d", regex="^(7d|30d|month)$"),
+    limit: int = Query(5, ge=1, le=20)
+):
+    """
+    Get top expense categories breakdown for period.
+
+    Period options:
+    - 7d: Last 7 days
+    - 30d: Last 30 days (default)
+    - month: Current month
+
+    Limit: Number of top categories to return (1-20, default 5)
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Calculate date range
+        now = datetime.now()
+        if period == '7d':
+            start_date = now - timedelta(days=7)
+        elif period == '30d':
+            start_date = now - timedelta(days=30)
+        else:  # month
+            start_date = datetime(now.year, now.month, 1)
+
+        conn = await get_db_connection()
+        try:
+            # Query expenses grouped by account category
+            # Expense accounts typically start with 5-xxx or 6-xxx
+            query = """
+                SELECT
+                    COALESCE(c.category, c.name) as category,
+                    SUM(jl.debit) as amount
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts c ON c.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.journal_date >= $2
+                  AND je.journal_date <= $3
+                  AND je.status = 'POSTED'
+                  AND (c.account_code LIKE '5-%' OR c.account_code LIKE '6-%')
+                  AND jl.debit > 0
+                GROUP BY COALESCE(c.category, c.name)
+                ORDER BY amount DESC
+                LIMIT $4
+            """
+
+            rows = await conn.fetch(query, tenant_id, start_date.date(), now.date(), limit)
+
+            # Calculate total and percentages
+            total = sum(int(row['amount']) for row in rows)
+
+            expenses = []
+            for row in rows:
+                amount = int(row['amount'])
+                percentage = round((amount / total * 100), 1) if total > 0 else 0
+
+                expenses.append(TopExpense(
+                    category=row['category'],
+                    amount=amount,
+                    percentage=percentage
+                ))
+
+            return TopExpensesResponse(
+                expenses=expenses,
+                total=total
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Top expenses error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get top expenses")
+
+
+# ========================================
+# Overdue Invoices Endpoint
+# ========================================
+
+@router.get("/overdue-invoices", response_model=OverdueInvoicesResponse)
+async def get_overdue_invoices(request: Request):
+    """
+    Get list of overdue AR invoices (due_date < today, status != PAID).
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+        try:
+            query = """
+                SELECT
+                    invoice_number,
+                    customer_name,
+                    due_date,
+                    CURRENT_DATE - due_date as days_overdue,
+                    (amount - amount_paid) as outstanding
+                FROM accounts_receivable
+                WHERE tenant_id = $1
+                  AND due_date < CURRENT_DATE
+                  AND status != 'PAID'
+                ORDER BY days_overdue DESC, outstanding DESC
+            """
+
+            rows = await conn.fetch(query, tenant_id)
+
+            invoices = []
+            total_outstanding = 0
+
+            for row in rows:
+                outstanding = int(row['outstanding'])
+                invoices.append(OverdueInvoice(
+                    invoice_number=row['invoice_number'],
+                    customer_name=row['customer_name'],
+                    due_date=row['due_date'].isoformat() if row['due_date'] else '',
+                    days_overdue=int(row['days_overdue']),
+                    outstanding=outstanding
+                ))
+                total_outstanding += outstanding
+
+            return OverdueInvoicesResponse(
+                invoices=invoices,
+                total_outstanding=total_outstanding,
+                count=len(invoices)
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Overdue invoices error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get overdue invoices")
+
+
+# ========================================
+# Overdue Bills Endpoint
+# ========================================
+
+@router.get("/overdue-bills", response_model=OverdueBillsResponse)
+async def get_overdue_bills(request: Request):
+    """
+    Get list of overdue AP bills (due_date < today, status != PAID).
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+        try:
+            query = """
+                SELECT
+                    bill_number,
+                    supplier_name,
+                    due_date,
+                    CURRENT_DATE - due_date as days_overdue,
+                    (amount - amount_paid) as outstanding
+                FROM accounts_payable
+                WHERE tenant_id = $1
+                  AND due_date < CURRENT_DATE
+                  AND status != 'PAID'
+                ORDER BY days_overdue DESC, outstanding DESC
+            """
+
+            rows = await conn.fetch(query, tenant_id)
+
+            bills = []
+            total_outstanding = 0
+
+            for row in rows:
+                outstanding = int(row['outstanding'])
+                bills.append(OverdueBill(
+                    bill_number=row['bill_number'],
+                    supplier_name=row['supplier_name'],
+                    due_date=row['due_date'].isoformat() if row['due_date'] else '',
+                    days_overdue=int(row['days_overdue']),
+                    outstanding=outstanding
+                ))
+                total_outstanding += outstanding
+
+            return OverdueBillsResponse(
+                bills=bills,
+                total_outstanding=total_outstanding,
+                count=len(bills)
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Overdue bills error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get overdue bills")

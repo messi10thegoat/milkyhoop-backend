@@ -19,6 +19,7 @@ from .routers import products
 from .routers import suppliers
 from .routers import inventory
 from .routers import members
+from .routers import invoices
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -225,6 +226,9 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"]
 
 # Members/Customer management router (for POS)
 app.include_router(members.router, prefix="/api/members", tags=["members"])
+
+# Invoices router (Faktur Pembelian list)
+app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
 
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
