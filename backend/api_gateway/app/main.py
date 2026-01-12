@@ -20,6 +20,7 @@ from .routers import suppliers
 from .routers import inventory
 from .routers import members
 from .routers import invoices
+from .routers import bills
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -229,6 +230,9 @@ app.include_router(members.router, prefix="/api/members", tags=["members"])
 
 # Invoices router (Faktur Pembelian list)
 app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
+
+# Bills router (Faktur Pembelian CRUD + Payments)
+app.include_router(bills.router, prefix="/api/bills", tags=["bills"])
 
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])

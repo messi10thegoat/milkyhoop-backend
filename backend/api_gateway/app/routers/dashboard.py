@@ -165,6 +165,19 @@ class OverdueBillsResponse(BaseModel):
     count: int
 
 
+class APReconciliationResponse(BaseModel):
+    """AP Reconciliation status response"""
+    in_sync: bool
+    status: str  # "OK" | "WARNING"
+    bills_outstanding: int
+    ap_subledger: float
+    gl_ap_balance: float
+    variance_bills_ap: float
+    variance_ap_gl: float
+    issues_count: int
+    issues: dict
+
+
 # ========================================
 # Helper Functions
 # ========================================
@@ -334,11 +347,12 @@ async def get_dashboard_summary(
             ap_row = await conn.fetchrow(ap_query, tenant_id)
 
             # Query nearest AP bill (due soonest or already overdue)
+            # Updated to use consolidated bills table
             nearest_ap_query = """
-                SELECT supplier_name, due_date - CURRENT_DATE as days_until_due
-                FROM accounts_payable
+                SELECT vendor_name as supplier_name, due_date - CURRENT_DATE as days_until_due
+                FROM bills
                 WHERE tenant_id = $1
-                  AND status != 'PAID'
+                  AND status NOT IN ('paid', 'void')
                 ORDER BY due_date ASC
                 LIMIT 1
             """
@@ -994,17 +1008,18 @@ async def get_overdue_bills(request: Request):
 
         conn = await get_db_connection()
         try:
+            # Updated to use consolidated bills table
             query = """
                 SELECT
-                    bill_number,
-                    supplier_name,
+                    invoice_number as bill_number,
+                    vendor_name as supplier_name,
                     due_date,
                     CURRENT_DATE - due_date as days_overdue,
                     (amount - amount_paid) as outstanding
-                FROM accounts_payable
+                FROM bills
                 WHERE tenant_id = $1
                   AND due_date < CURRENT_DATE
-                  AND status != 'PAID'
+                  AND status NOT IN ('paid', 'void')
                 ORDER BY days_overdue DESC, outstanding DESC
             """
 
@@ -1038,3 +1053,121 @@ async def get_overdue_bills(request: Request):
     except Exception as e:
         logger.error(f"Overdue bills error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get overdue bills")
+
+
+# ========================================
+# AP Reconciliation Status Endpoint
+# ========================================
+
+@router.get("/reconciliation-status", response_model=APReconciliationResponse)
+async def get_reconciliation_status(request: Request):
+    """
+    Get AP reconciliation status.
+
+    Golden Rule: GL_AP_Balance == SUM(bills WHERE status NOT IN ('paid', 'void'))
+
+    This endpoint checks if Bills, AP subledger, and GL are in sync.
+    Any variance indicates a data integrity issue.
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+        try:
+            # Outstanding Bills total
+            bills_query = """
+                SELECT COALESCE(SUM(amount - amount_paid), 0) as total
+                FROM bills
+                WHERE tenant_id = $1 AND status NOT IN ('paid', 'void')
+            """
+            bills_total = await conn.fetchval(bills_query, tenant_id)
+
+            # AP Subledger total
+            ap_query = """
+                SELECT COALESCE(SUM(amount - amount_paid), 0) as total
+                FROM accounts_payable
+                WHERE tenant_id = $1 AND status IN ('OPEN', 'PARTIAL')
+            """
+            ap_total = await conn.fetchval(ap_query, tenant_id)
+
+            # GL AP Account balance (account 2-10100)
+            # Formula: SUM(credit - debit) for liability account
+            gl_query = """
+                SELECT COALESCE(SUM(jl.credit - jl.debit), 0) as balance
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                    AND je.journal_date = jl.journal_date
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND coa.code = '2-10100'
+            """
+            gl_balance = await conn.fetchval(gl_query, tenant_id)
+
+            # Find issues
+            # Bills without AP
+            bills_no_ap = await conn.fetchval("""
+                SELECT COUNT(*) FROM bills
+                WHERE tenant_id = $1 AND ap_id IS NULL AND status NOT IN ('void', 'paid')
+            """, tenant_id)
+
+            # Bills without Journal
+            bills_no_journal = await conn.fetchval("""
+                SELECT COUNT(*) FROM bills
+                WHERE tenant_id = $1 AND journal_id IS NULL AND status NOT IN ('void', 'paid')
+            """, tenant_id)
+
+            # AP without Bill
+            ap_no_bill = await conn.fetchval("""
+                SELECT COUNT(*) FROM accounts_payable ap
+                LEFT JOIN bills b ON b.ap_id = ap.id
+                WHERE ap.tenant_id = $1 AND b.id IS NULL AND ap.status NOT IN ('VOID', 'PAID')
+            """, tenant_id)
+
+            # Amount mismatch
+            amount_mismatch = await conn.fetchval("""
+                SELECT COUNT(*) FROM bills b
+                JOIN accounts_payable ap ON ap.id = b.ap_id
+                WHERE b.tenant_id = $1 AND b.amount != ap.amount::BIGINT
+                  AND b.status NOT IN ('void', 'paid')
+            """, tenant_id)
+
+            # Calculate variances
+            variance_bills_ap = float(bills_total) - float(ap_total or 0)
+            variance_ap_gl = float(ap_total or 0) - float(gl_balance or 0)
+
+            # Check if in sync (tolerance: 0.01)
+            is_in_sync = (abs(variance_bills_ap) < 0.01 and abs(variance_ap_gl) < 0.01)
+
+            total_issues = bills_no_ap + bills_no_journal + ap_no_bill + amount_mismatch
+
+            return APReconciliationResponse(
+                in_sync=is_in_sync and total_issues == 0,
+                status="OK" if (is_in_sync and total_issues == 0) else "WARNING",
+                bills_outstanding=int(bills_total),
+                ap_subledger=float(ap_total or 0),
+                gl_ap_balance=float(gl_balance or 0),
+                variance_bills_ap=variance_bills_ap,
+                variance_ap_gl=variance_ap_gl,
+                issues_count=total_issues,
+                issues={
+                    "bills_without_ap": bills_no_ap,
+                    "bills_without_journal": bills_no_journal,
+                    "ap_without_bill": ap_no_bill,
+                    "amount_mismatch": amount_mismatch
+                }
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Reconciliation status error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get reconciliation status")

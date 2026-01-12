@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/root/milkyhoop/frontend/web/src/components/app/WorkspaceSidebar",
+      "/root/milkyhoop/frontend/web/src/components/app/PurchaseInvoice"
+    ]
+  }
+}

@@ -155,6 +155,30 @@ class JournalService:
                         message="Account resolution failed"
                     )
 
+                # Validate: Block direct posting to AP account (2-10100)
+                # AP account can only be modified via Bill, Payment, or Credit Note
+                AP_ACCOUNT_CODE = settings.accounting.AP_ACCOUNT
+                ALLOWED_AP_SOURCES = (
+                    SourceType.BILL,
+                    SourceType.PAYMENT_BILL,
+                    SourceType.ADJUSTMENT,  # For void/reversal
+                    SourceType.CLOSING,     # For period closing
+                    SourceType.OPENING,     # For opening balance
+                )
+
+                for line_input, account_id in resolved_lines:
+                    if line_input.account_code == AP_ACCOUNT_CODE:
+                        if request.source_type not in ALLOWED_AP_SOURCES:
+                            return JournalResponse(
+                                success=False,
+                                errors=[
+                                    f"Direct posting to AP account ({AP_ACCOUNT_CODE}) not allowed. "
+                                    f"AP can only be modified via: Bill, Payment, Void, or Credit Note. "
+                                    f"Current source_type: {request.source_type.value}"
+                                ],
+                                message="AP account protection"
+                            )
+
                 # Create journal header
                 journal_id = uuid4()
                 source_snapshot_json = (
