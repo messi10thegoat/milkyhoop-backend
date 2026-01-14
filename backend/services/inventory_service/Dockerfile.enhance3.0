@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.4
+
+### ====== BASE BUILDER STAGE ====== ###
+FROM golang:1.22-bullseye AS builder
+
+WORKDIR /app
+
+# 1️⃣ Copy & download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 2️⃣ Copy source code
+COPY . ./
+
+# 3️⃣ Build binary
+RUN CGO_ENABLED=0 \
+    GOOS=linux \
+    go build -a -installsuffix cgo -o /visualhoop-compiler ./cmd/server/main.go
+
+### ====== FINAL RUNTIME STAGE ====== ###
+FROM gcr.io/distroless/base-debian11
+
+WORKDIR /app
+
+# 4️⃣ Copy compiled binary only
+COPY --from=builder /visualhoop-compiler /visualhoop-compiler
+
+# 5️⃣ Run binary
+ENTRYPOINT ["/visualhoop-compiler"]

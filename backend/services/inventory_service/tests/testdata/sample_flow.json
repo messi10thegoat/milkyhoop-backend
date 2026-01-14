@@ -1,0 +1,9 @@
+{
+  "intent": ["order_request"],
+  "entities": {
+    "Order / Transaction": {
+      "item_name": ["roti gandum", "brownies cokelat"],
+      "quantity": [2, 1]
+    }
+  }
+}

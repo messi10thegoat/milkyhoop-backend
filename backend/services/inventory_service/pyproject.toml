@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "inventory-service"
+version = "1.0.0"
+description = "MilkyHoop Inventory Service - Stock Management gRPC Service"
+authors = ["MilkyHoop Team <dev@milkyhoop.com>"]
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+grpcio = "^1.71.0"
+grpcio-health-checking = "^1.63.0"
+grpcio-reflection = "^1.63.0"
+protobuf = "^5.29.0"
+python-dotenv = "^1.0.1"
+structlog = "^24.1.0"
+prisma = "0.15.0"
+grpc-interceptor = "^0.15.0"
+tenacity = "^8.2.3"
+prometheus-client = "^0.20.0"
+
+[tool.poetry.dev-dependencies]
+grpcio-tools = "^1.63.0"
+pytest = "^8.1.1"
+pytest-asyncio = "^0.26.0"
+mypy = "^1.9.0"
+ruff = "^0.3.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
