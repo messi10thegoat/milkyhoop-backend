@@ -18,9 +18,17 @@ from .routers import transactions
 from .routers import products
 from .routers import suppliers
 from .routers import inventory
+from .routers import items
 from .routers import members
 from .routers import invoices
 from .routers import bills
+from .routers import vendors
+from .routers import customers
+from .routers import tax_codes
+from .routers import accounts
+from .routers import sales_invoices
+from .routers import storage_locations
+from .routers import price_lists
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -225,6 +233,9 @@ app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"]
 # Inventory management router
 app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"])
 
+# Items master data router
+app.include_router(items.router, prefix="/api", tags=["items"])
+
 # Members/Customer management router (for POS)
 app.include_router(members.router, prefix="/api/members", tags=["members"])
 
@@ -233,6 +244,27 @@ app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
 
 # Bills router (Faktur Pembelian CRUD + Payments)
 app.include_router(bills.router, prefix="/api/bills", tags=["bills"])
+
+# Vendors router (Supplier/Vendor Master Data)
+app.include_router(vendors.router, prefix="/api/vendors", tags=["vendors"])
+
+# Customers router (Customer Master Data)
+app.include_router(customers.router, prefix="/api/customers", tags=["customers"])
+
+# Tax Codes router (Tax Master Data)
+app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"])
+
+# Chart of Accounts router (CoA CRUD)
+app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
+
+# Sales Invoices router (Faktur Penjualan)
+app.include_router(sales_invoices.router, prefix="/api/invoices", tags=["invoices"])
+
+# Storage Locations router (Lokasi Penyimpanan)
+app.include_router(storage_locations.router, prefix="/api/storage-locations", tags=["storage-locations"])
+
+# Price Lists router (Daftar Harga)
+app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-lists"])
 
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])

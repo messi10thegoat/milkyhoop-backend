@@ -209,7 +209,8 @@ async def list_products(
 
         try:
             # Build query with optional filters
-            where_clauses = ["p.tenant_id = $1"]
+            # Only show items with track_inventory=true in inventory views
+            where_clauses = ["p.tenant_id = $1", "COALESCE(p.track_inventory, true) = true"]
             params = [tenant_id]
             param_idx = 2
 
@@ -702,6 +703,7 @@ async def get_inventory_summary(request: Request):
         try:
             # Single query with CASE WHEN to count all categories
             # Uses minimum_stock for dynamic thresholds instead of hardcoded values
+            # Only count items with track_inventory=true
             query = """
                 SELECT
                     COUNT(*) as total_products,
@@ -710,7 +712,7 @@ async def get_inventory_summary(request: Request):
                     COUNT(CASE WHEN COALESCE(s.jumlah, 0) <= 0 THEN 1 END) as habis_count
                 FROM public.products p
                 LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
-                WHERE p.tenant_id = $1
+                WHERE p.tenant_id = $1 AND COALESCE(p.track_inventory, true) = true
             """
             row = await conn.fetchrow(query, tenant_id)
 

@@ -28,8 +28,16 @@ from ..schemas.bills import (
     MarkPaidResponse,
     VoidBillResponse,
     BillSummaryResponse,
-    UploadAttachmentResponse
+    UploadAttachmentResponse,
+    # V2 schemas
+    CreateBillRequestV2,
+    UpdateBillRequestV2,
+    CreateBillResponseV2,
+    CalculateBillResponse,
 )
+
+# Import calculator for preview endpoint
+from ..services.bills_service import BillCalculator
 
 # Import service
 from ..services.bills_service import BillsService
@@ -524,3 +532,218 @@ async def upload_attachment(
         raise HTTPException(status_code=500, detail="Failed to upload attachment")
 
 
+# =============================================================================
+# V2 ENDPOINTS - Extended for Pharmacy
+# =============================================================================
+
+@router.post("/v2", response_model=CreateBillResponseV2, status_code=201)
+async def create_bill_v2(
+    request: Request,
+    body: CreateBillRequestV2
+):
+    """
+    Create a new pharmacy bill with extended fields (V2).
+
+    **Features:**
+    - Multi-level discounts: item, invoice, cash
+    - Tax calculation: 0%, 11%, or 12%
+    - Auto-create vendor if vendor_name provided without vendor_id
+    - Auto-generate invoice number (format: PB-YYMM-0001)
+    - Pharmacy fields: batch_no, exp_date, bonus_qty
+
+    **Status options:**
+    - `draft`: Bill saved but not posted (can be edited)
+    - `posted`: Bill posted to accounting (creates AP and journal)
+
+    **Discount rules:**
+    - invoice_discount: use percent OR amount (percent takes precedence)
+    - cash_discount: use percent OR amount (percent takes precedence)
+    """
+    try:
+        ctx = get_user_context(request)
+
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        if not body.vendor_name and not body.vendor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Either vendor_name or vendor_id is required"
+            )
+
+        service = await get_bills_service()
+        result = await service.create_bill_v2(
+            tenant_id=ctx["tenant_id"],
+            request=body.model_dump(),
+            user_id=ctx["user_id"]
+        )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating bill v2: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create bill")
+
+
+@router.post("/{bill_id}/post", response_model=CreateBillResponseV2)
+async def post_bill(
+    request: Request,
+    bill_id: UUID
+):
+    """
+    Post a draft bill to accounting.
+
+    This action:
+    - Creates an AP (Accounts Payable) record
+    - Creates a journal entry (DR Inventory/Expense, CR AP)
+    - Changes status from 'draft' to 'posted'
+
+    **Important:** Once posted, a bill cannot be edited. Void and recreate if needed.
+    """
+    try:
+        ctx = get_user_context(request)
+
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        service = await get_bills_service()
+        result = await service.post_bill(
+            tenant_id=ctx["tenant_id"],
+            bill_id=bill_id,
+            user_id=ctx["user_id"]
+        )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error posting bill {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to post bill")
+
+
+@router.patch("/v2/{bill_id}", response_model=CreateBillResponseV2)
+async def update_bill_v2(
+    request: Request,
+    bill_id: UUID,
+    body: UpdateBillRequestV2
+):
+    """
+    Update a draft bill (V2).
+
+    **Restrictions:**
+    - Only draft bills can be updated
+    - Posted, paid, or voided bills cannot be edited
+
+    If items are provided, all existing items will be replaced.
+    """
+    try:
+        ctx = get_user_context(request)
+
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        service = await get_bills_service()
+        result = await service.update_bill_v2(
+            tenant_id=ctx["tenant_id"],
+            bill_id=bill_id,
+            request=body.model_dump(exclude_unset=True),
+            user_id=ctx["user_id"]
+        )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating bill v2 {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update bill")
+
+
+@router.get("/v2/{bill_id}", response_model=BillDetailResponse)
+async def get_bill_v2(
+    request: Request,
+    bill_id: UUID
+):
+    """
+    Get detailed information for a single bill with V2 fields.
+
+    Includes:
+    - Extended calculation breakdown (subtotal, discounts, DPP, tax)
+    - Pharmacy fields (batch_no, exp_date, bonus_qty)
+    - Status v2 (draft, posted, paid, void)
+    """
+    try:
+        ctx = get_user_context(request)
+        service = await get_bills_service()
+
+        bill = await service.get_bill_v2(
+            tenant_id=ctx["tenant_id"],
+            bill_id=bill_id
+        )
+
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+
+        return {"success": True, "data": bill}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting bill v2 {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get bill")
+
+
+@router.post("/calculate", response_model=CalculateBillResponse)
+async def calculate_bill_totals(
+    request: Request,
+    body: CreateBillRequestV2
+):
+    """
+    Preview bill calculation without saving.
+
+    Use this endpoint to show calculated totals in the UI before submitting.
+    This is a read-only operation that doesn't modify any data.
+
+    **Returns:**
+    - subtotal: Sum of (qty * price) for all items
+    - item_discount_total: Sum of item-level discounts
+    - invoice_discount_total: Invoice-level discount amount
+    - cash_discount_total: Cash/early payment discount
+    - dpp: Dasar Pengenaan Pajak (tax base)
+    - tax_amount: Calculated tax
+    - grand_total: Final total
+    """
+    try:
+        get_user_context(request)  # Validate auth
+
+        from decimal import Decimal
+
+        result = BillCalculator.calculate(
+            items=[item.model_dump() for item in body.items],
+            invoice_discount_percent=body.invoice_discount_percent,
+            invoice_discount_amount=body.invoice_discount_amount,
+            cash_discount_percent=body.cash_discount_percent,
+            cash_discount_amount=body.cash_discount_amount,
+            tax_rate=body.tax_rate,
+            dpp_manual=body.dpp_manual
+        )
+
+        return {"success": True, "calculation": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calculating bill: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to calculate")
