@@ -68,9 +68,9 @@ class AccountListItem(BaseModel):
     name: str
     type: str
     normal_balance: str
-    parent_id: Optional[str] = None
+    parent_code: Optional[str] = None
     is_active: bool
-    is_system: bool
+    is_header: bool = False
     level: int = 0
 
 
@@ -92,7 +92,7 @@ class AccountTreeItem(BaseModel):
     type: str
     normal_balance: str
     is_active: bool
-    is_system: bool
+    is_header: bool = False
     children: List["AccountTreeItem"] = []
 
 
@@ -112,13 +112,14 @@ class AccountDetail(BaseModel):
     name: str
     type: str
     normal_balance: str
-    parent_id: Optional[str] = None
+    parent_code: Optional[str] = None
     parent_name: Optional[str] = None
     is_active: bool
-    is_system: bool
-    metadata: Dict[str, Any] = {}
-    created_at: str
-    updated_at: str
+    is_header: bool = False
+    description: Optional[str] = None
+    category: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class AccountDetailResponse(BaseModel):

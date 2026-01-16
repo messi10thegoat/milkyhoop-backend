@@ -79,12 +79,15 @@ class CustomerListItem(BaseModel):
     id: str
     code: Optional[str] = None
     name: str
-    contact_person: Optional[str] = None
+    type: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    payment_terms_days: int
-    is_active: bool
-    created_at: str
+    address: Optional[str] = None
+    points: Optional[int] = 0
+    total_transactions: Optional[int] = 0
+    total_value: Optional[int] = 0
+    outstanding_balance: Optional[int] = 0
+    created_at: Optional[str] = None
 
 
 class CustomerListResponse(BaseModel):
@@ -103,20 +106,19 @@ class CustomerDetail(BaseModel):
     id: str
     code: Optional[str] = None
     name: str
-    contact_person: Optional[str] = None
+    type: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
-    city: Optional[str] = None
-    province: Optional[str] = None
-    postal_code: Optional[str] = None
-    tax_id: Optional[str] = None
-    payment_terms_days: int
-    credit_limit: Optional[int] = None
-    notes: Optional[str] = None
-    is_active: bool
-    created_at: str
-    updated_at: str
+    points: Optional[int] = 0
+    points_per_50k: Optional[int] = 0
+    total_transactions: Optional[int] = 0
+    total_value: Optional[int] = 0
+    outstanding_balance: Optional[int] = 0
+    last_transaction_at: Optional[str] = None
+    default_currency_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class CustomerDetailResponse(BaseModel):

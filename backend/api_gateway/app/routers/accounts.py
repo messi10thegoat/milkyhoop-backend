@@ -61,20 +61,20 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-def build_tree(accounts: list, parent_id=None) -> list:
+def build_tree(accounts: list, parent_code=None) -> list:
     """Build hierarchical tree from flat list of accounts."""
     tree = []
     for account in accounts:
-        if account.get("parent_id") == parent_id:
-            children = build_tree(accounts, account["id"])
+        if account.get("parent_code") == parent_code:
+            children = build_tree(accounts, account["account_code"])
             item = {
                 "id": account["id"],
-                "code": account["code"],
+                "code": account["account_code"],
                 "name": account["name"],
-                "type": account["type"],
+                "type": account["account_type"],
                 "normal_balance": account["normal_balance"],
                 "is_active": account["is_active"],
-                "is_system": account["is_system"],
+                "is_header": account.get("is_header", False),
                 "children": children
             }
             tree.append(item)
@@ -113,22 +113,22 @@ async def get_account_dropdown(
             param_idx = 2
 
             if type:
-                conditions.append(f"type = ${param_idx}")
+                conditions.append(f"account_type = ${param_idx}")
                 params.append(type)
                 param_idx += 1
 
             if search:
-                conditions.append(f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})")
+                conditions.append(f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})")
                 params.append(f"%{search}%")
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
             query = f"""
-                SELECT id, code, name, type
+                SELECT id, account_code, name, account_type
                 FROM chart_of_accounts
                 WHERE {where_clause}
-                ORDER BY code ASC
+                ORDER BY account_code ASC
                 LIMIT 100
             """
             rows = await conn.fetch(query, *params)
@@ -136,10 +136,10 @@ async def get_account_dropdown(
             items = [
                 {
                     "id": str(row["id"]),
-                    "code": row["code"],
+                    "code": row["account_code"],
                     "name": row["name"],
-                    "type": row["type"],
-                    "full_name": f"{row['code']} - {row['name']}",
+                    "type": row["account_type"],
+                    "full_name": f"{row['account_code']} - {row['name']}",
                 }
                 for row in rows
             ]
@@ -179,17 +179,17 @@ async def get_accounts_tree(
                 conditions.append("is_active = true")
 
             if type:
-                conditions.append(f"type = ${param_idx}")
+                conditions.append(f"account_type = ${param_idx}")
                 params.append(type)
 
             where_clause = " AND ".join(conditions)
 
             query = f"""
-                SELECT id, code, name, type, normal_balance, parent_id,
-                       is_active, is_system
+                SELECT id, account_code, name, account_type, normal_balance, parent_code,
+                       is_active, is_header
                 FROM chart_of_accounts
                 WHERE {where_clause}
-                ORDER BY code ASC
+                ORDER BY account_code ASC
             """
             rows = await conn.fetch(query, *params)
 
@@ -197,13 +197,13 @@ async def get_accounts_tree(
             accounts = [
                 {
                     "id": str(row["id"]),
-                    "code": row["code"],
+                    "account_code": row["account_code"],
                     "name": row["name"],
-                    "type": row["type"],
+                    "account_type": row["account_type"],
                     "normal_balance": row["normal_balance"],
-                    "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "parent_code": row["parent_code"],
                     "is_active": row["is_active"],
-                    "is_system": row["is_system"],
+                    "is_header": row["is_header"],
                 }
                 for row in rows
             ]
@@ -251,13 +251,13 @@ async def list_accounts(
 
             if search:
                 conditions.append(
-                    f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                    f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
 
             if type:
-                conditions.append(f"type = ${param_idx}")
+                conditions.append(f"account_type = ${param_idx}")
                 params.append(type)
                 param_idx += 1
 
@@ -270,36 +270,25 @@ async def list_accounts(
 
             # Validate sort field
             valid_sorts = {
-                "code": "code",
+                "code": "account_code",
                 "name": "name",
-                "type": "type",
+                "type": "account_type",
                 "created_at": "created_at"
             }
-            sort_field = valid_sorts.get(sort_by, "code")
+            sort_field = valid_sorts.get(sort_by, "account_code")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
             # Get total count
             count_query = f"SELECT COUNT(*) FROM chart_of_accounts WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
 
-            # Get items with level calculation
+            # Get items - simplified query without recursive CTE for better compatibility
             query = f"""
-                WITH RECURSIVE account_tree AS (
-                    SELECT id, code, name, type, normal_balance, parent_id,
-                           is_active, is_system, 0 as level
-                    FROM chart_of_accounts
-                    WHERE {where_clause} AND parent_id IS NULL
-
-                    UNION ALL
-
-                    SELECT c.id, c.code, c.name, c.type, c.normal_balance, c.parent_id,
-                           c.is_active, c.is_system, at.level + 1
-                    FROM chart_of_accounts c
-                    INNER JOIN account_tree at ON c.parent_id = at.id
-                    WHERE c.tenant_id = $1
-                )
-                SELECT * FROM account_tree
-                ORDER BY code {sort_dir}
+                SELECT id, account_code, name, account_type, normal_balance, parent_code,
+                       is_active, is_header, level
+                FROM chart_of_accounts
+                WHERE {where_clause}
+                ORDER BY {sort_field} {sort_dir}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])
@@ -309,14 +298,14 @@ async def list_accounts(
             items = [
                 {
                     "id": str(row["id"]),
-                    "code": row["code"],
+                    "code": row["account_code"],
                     "name": row["name"],
-                    "type": row["type"],
+                    "type": row["account_type"],
                     "normal_balance": row["normal_balance"],
-                    "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "parent_code": row["parent_code"],
                     "is_active": row["is_active"],
-                    "is_system": row["is_system"],
-                    "level": row["level"],
+                    "is_header": row["is_header"],
+                    "level": row["level"] or 0,
                 }
                 for row in rows
             ]
@@ -345,12 +334,12 @@ async def get_account(request: Request, account_id: UUID):
 
         async with pool.acquire() as conn:
             query = """
-                SELECT c.id, c.code, c.name, c.type, c.normal_balance,
-                       c.parent_id, p.name as parent_name,
-                       c.is_active, c.is_system, c.metadata,
+                SELECT c.id, c.account_code, c.name, c.account_type, c.normal_balance,
+                       c.parent_code, p.name as parent_name,
+                       c.is_active, c.is_header, c.description, c.category,
                        c.created_at, c.updated_at
                 FROM chart_of_accounts c
-                LEFT JOIN chart_of_accounts p ON c.parent_id = p.id
+                LEFT JOIN chart_of_accounts p ON c.parent_code = p.account_code AND c.tenant_id = p.tenant_id
                 WHERE c.id = $1 AND c.tenant_id = $2
             """
             row = await conn.fetchrow(query, account_id, ctx["tenant_id"])
@@ -362,17 +351,18 @@ async def get_account(request: Request, account_id: UUID):
                 "success": True,
                 "data": {
                     "id": str(row["id"]),
-                    "code": row["code"],
+                    "code": row["account_code"],
                     "name": row["name"],
-                    "type": row["type"],
+                    "type": row["account_type"],
                     "normal_balance": row["normal_balance"],
-                    "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "parent_code": row["parent_code"],
                     "parent_name": row["parent_name"],
                     "is_active": row["is_active"],
-                    "is_system": row["is_system"],
-                    "metadata": row["metadata"] or {},
-                    "created_at": row["created_at"].isoformat(),
-                    "updated_at": row["updated_at"].isoformat(),
+                    "is_header": row["is_header"],
+                    "description": row["description"],
+                    "category": row["category"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
                 }
             }
 
@@ -403,7 +393,7 @@ async def get_account_balance(
         async with pool.acquire() as conn:
             # Get account info
             account = await conn.fetchrow(
-                "SELECT id, code, name, type, normal_balance FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, account_code, name, account_type, normal_balance FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
                 account_id, ctx["tenant_id"]
             )
             if not account:
@@ -415,12 +405,12 @@ async def get_account_balance(
             param_idx = 3
 
             if start_date:
-                date_conditions.append(f"je.journal_date >= ${param_idx}::date")
+                date_conditions.append(f"je.entry_date >= ${param_idx}::date")
                 params.append(start_date)
                 param_idx += 1
 
             if end_date:
-                date_conditions.append(f"je.journal_date <= ${param_idx}::date")
+                date_conditions.append(f"je.entry_date <= ${param_idx}::date")
                 params.append(end_date)
 
             date_clause = " AND " + " AND ".join(date_conditions) if date_conditions else ""
@@ -431,7 +421,7 @@ async def get_account_balance(
                     COALESCE(SUM(jl.debit), 0) as debit_total,
                     COALESCE(SUM(jl.credit), 0) as credit_total
                 FROM journal_lines jl
-                INNER JOIN journal_entries je ON jl.journal_id = je.id AND jl.journal_date = je.journal_date
+                INNER JOIN journal_entries je ON jl.journal_id = je.id
                 WHERE je.tenant_id = $1
                   AND jl.account_id = $2
                   AND je.status = 'POSTED'
@@ -452,9 +442,9 @@ async def get_account_balance(
                 "success": True,
                 "data": {
                     "id": str(account["id"]),
-                    "code": account["code"],
+                    "code": account["account_code"],
                     "name": account["name"],
-                    "type": account["type"],
+                    "type": account["account_type"],
                     "normal_balance": account["normal_balance"],
                     "debit_total": debit_total,
                     "credit_total": credit_total,

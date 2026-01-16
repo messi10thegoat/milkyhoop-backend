@@ -151,3 +151,26 @@ class VendorAutocompleteItem(BaseModel):
 class VendorAutocompleteResponse(BaseModel):
     """Response for vendor autocomplete endpoint."""
     items: List[VendorAutocompleteItem]
+
+
+# =============================================================================
+# BALANCE RESPONSE (AP Balance)
+# =============================================================================
+
+class VendorBalanceData(BaseModel):
+    """Vendor AP balance data."""
+    vendor_id: str
+    vendor_name: str
+    total_balance: int  # Outstanding amount in IDR
+    unpaid_bills: int   # Count of unpaid bills
+    partial_bills: int  # Count of partially paid bills
+    overdue_bills: int  # Count of overdue bills
+    overdue_amount: int  # Total overdue amount
+    total_billed: int   # Total amount billed (all time)
+    total_paid: int     # Total amount paid (all time)
+
+
+class VendorBalanceResponse(BaseModel):
+    """Response for vendor balance endpoint (AP balance)."""
+    success: bool = True
+    data: VendorBalanceData

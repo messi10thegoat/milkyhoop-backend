@@ -76,7 +76,7 @@ async def health_check():
 @router.get("/autocomplete", response_model=CustomerAutocompleteResponse)
 async def autocomplete_customers(
     request: Request,
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query(default="", description="Search query"),
     limit: int = Query(10, ge=1, le=50)
 ):
     """
@@ -89,12 +89,11 @@ async def autocomplete_customers(
 
         async with pool.acquire() as conn:
             query = """
-                SELECT id, name, code, phone
+                SELECT id, nama, nomor_member, telepon
                 FROM customers
                 WHERE tenant_id = $1
-                  AND is_active = true
-                  AND (name ILIKE $2 OR code ILIKE $2 OR phone ILIKE $2)
-                ORDER BY name ASC
+                  AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR telepon ILIKE $2)
+                ORDER BY nama ASC
                 LIMIT $3
             """
             rows = await conn.fetch(query, ctx["tenant_id"], f"%{q}%", limit)
@@ -102,9 +101,9 @@ async def autocomplete_customers(
             items = [
                 {
                     "id": str(row["id"]),
-                    "name": row["name"],
-                    "code": row["code"],
-                    "phone": row["phone"],
+                    "name": row["nama"],
+                    "code": row["nomor_member"],
+                    "phone": row["telepon"],
                 }
                 for row in rows
             ]
@@ -127,7 +126,7 @@ async def list_customers(
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    tipe: Optional[str] = Query(None, description="Filter by customer type"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
         "name", description="Sort field"
     ),
@@ -136,8 +135,7 @@ async def list_customers(
     """
     List customers with search, filtering, and pagination.
 
-    **Search:** Matches name, code, contact_person, or phone.
-    **Filter:** Use is_active=true to show only active customers.
+    **Search:** Matches nama, nomor_member, or telepon.
     """
     try:
         ctx = get_user_context(request)
@@ -151,27 +149,27 @@ async def list_customers(
 
             if search:
                 conditions.append(
-                    f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
-                    f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
+                    f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
+                    f"OR telepon ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
 
-            if is_active is not None:
-                conditions.append(f"is_active = ${param_idx}")
-                params.append(is_active)
+            if tipe is not None:
+                conditions.append(f"tipe = ${param_idx}")
+                params.append(tipe)
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
             # Validate sort field
             valid_sorts = {
-                "name": "name",
-                "code": "code",
+                "name": "nama",
+                "code": "nomor_member",
                 "created_at": "created_at",
                 "updated_at": "updated_at"
             }
-            sort_field = valid_sorts.get(sort_by, "name")
+            sort_field = valid_sorts.get(sort_by, "nama")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
             # Get total count
@@ -180,8 +178,8 @@ async def list_customers(
 
             # Get items
             query = f"""
-                SELECT id, code, name, contact_person, phone, email,
-                       payment_terms_days, is_active, created_at
+                SELECT id, nomor_member, nama, tipe, telepon, email, alamat,
+                       points, total_transaksi, total_nilai, saldo_hutang, created_at
                 FROM customers
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -194,14 +192,17 @@ async def list_customers(
             items = [
                 {
                     "id": str(row["id"]),
-                    "code": row["code"],
-                    "name": row["name"],
-                    "contact_person": row["contact_person"],
-                    "phone": row["phone"],
+                    "code": row["nomor_member"],
+                    "name": row["nama"],
+                    "type": row["tipe"],
+                    "phone": row["telepon"],
                     "email": row["email"],
-                    "payment_terms_days": row["payment_terms_days"],
-                    "is_active": row["is_active"],
-                    "created_at": row["created_at"].isoformat(),
+                    "address": row["alamat"],
+                    "points": row["points"],
+                    "total_transactions": row["total_transaksi"],
+                    "total_value": row["total_nilai"],
+                    "outstanding_balance": row["saldo_hutang"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
                 }
                 for row in rows
             ]
@@ -223,7 +224,7 @@ async def list_customers(
 # GET CUSTOMER DETAIL
 # =============================================================================
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
-async def get_customer(request: Request, customer_id: UUID):
+async def get_customer(request: Request, customer_id: str):
     """Get detailed information for a single customer."""
     try:
         ctx = get_user_context(request)
@@ -231,10 +232,10 @@ async def get_customer(request: Request, customer_id: UUID):
 
         async with pool.acquire() as conn:
             query = """
-                SELECT id, code, name, contact_person, phone, email,
-                       address, city, province, postal_code, tax_id,
-                       payment_terms_days, credit_limit, notes,
-                       is_active, created_at, updated_at
+                SELECT id, nomor_member, nama, tipe, telepon, email, alamat,
+                       points, points_per_50k, total_transaksi, total_nilai,
+                       saldo_hutang, last_transaction_at, created_at, updated_at,
+                       default_currency_id
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -247,22 +248,21 @@ async def get_customer(request: Request, customer_id: UUID):
                 "success": True,
                 "data": {
                     "id": str(row["id"]),
-                    "code": row["code"],
-                    "name": row["name"],
-                    "contact_person": row["contact_person"],
-                    "phone": row["phone"],
+                    "code": row["nomor_member"],
+                    "name": row["nama"],
+                    "type": row["tipe"],
+                    "phone": row["telepon"],
                     "email": row["email"],
-                    "address": row["address"],
-                    "city": row["city"],
-                    "province": row["province"],
-                    "postal_code": row["postal_code"],
-                    "tax_id": row["tax_id"],
-                    "payment_terms_days": row["payment_terms_days"],
-                    "credit_limit": row["credit_limit"],
-                    "notes": row["notes"],
-                    "is_active": row["is_active"],
-                    "created_at": row["created_at"].isoformat(),
-                    "updated_at": row["updated_at"].isoformat(),
+                    "address": row["alamat"],
+                    "points": row["points"],
+                    "points_per_50k": row["points_per_50k"],
+                    "total_transactions": row["total_transaksi"],
+                    "total_value": row["total_nilai"],
+                    "outstanding_balance": row["saldo_hutang"],
+                    "last_transaction_at": row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                    "default_currency_id": str(row["default_currency_id"]) if row["default_currency_id"] else None,
                 }
             }
 
@@ -277,7 +277,7 @@ async def get_customer(request: Request, customer_id: UUID):
 # GET CUSTOMER BALANCE (AR Balance)
 # =============================================================================
 @router.get("/{customer_id}/balance", response_model=CustomerBalanceResponse)
-async def get_customer_balance(request: Request, customer_id: UUID):
+async def get_customer_balance(request: Request, customer_id: str):
     """
     Get customer's accounts receivable balance.
 
@@ -290,7 +290,7 @@ async def get_customer_balance(request: Request, customer_id: UUID):
         async with pool.acquire() as conn:
             # Check if customer exists
             customer = await conn.fetchrow(
-                "SELECT id, name FROM customers WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, nama, saldo_hutang FROM customers WHERE id = $1 AND tenant_id = $2",
                 customer_id, ctx["tenant_id"]
             )
             if not customer:
@@ -305,17 +305,17 @@ async def get_customer_balance(request: Request, customer_id: UUID):
                     COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND status IN ('OPEN', 'PARTIAL')) as overdue_count
                 FROM accounts_receivable
                 WHERE tenant_id = $1
-                  AND customer_id = $2::text
+                  AND customer_id = $2
                   AND status IN ('OPEN', 'PARTIAL')
             """
-            balance = await conn.fetchrow(balance_query, ctx["tenant_id"], str(customer_id))
+            balance = await conn.fetchrow(balance_query, ctx["tenant_id"], customer_id)
 
             return {
                 "success": True,
                 "data": {
                     "customer_id": str(customer_id),
-                    "customer_name": customer["name"],
-                    "total_balance": int(balance["total_balance"] or 0),
+                    "customer_name": customer["nama"],
+                    "total_balance": int(balance["total_balance"] or customer["saldo_hutang"] or 0),
                     "open_invoices": balance["open_count"] or 0,
                     "partial_invoices": balance["partial_count"] or 0,
                     "overdue_invoices": balance["overdue_count"] or 0,

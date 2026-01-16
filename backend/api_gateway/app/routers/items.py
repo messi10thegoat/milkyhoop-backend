@@ -30,6 +30,7 @@ from ..schemas.items import (
     UnitListResponse, CreateUnitRequest, CreateUnitResponse,
     AccountsResponse, AccountOption, TaxOptionsResponse, TaxOption,
     ItemsSummaryResponse, UnitConversionResponse,
+    CoaAccountOption, CoaAccountsResponse,
     DEFAULT_UNITS, SALES_ACCOUNTS, PURCHASE_ACCOUNTS
 )
 from ..config import settings
@@ -661,6 +662,147 @@ async def list_accounts(request: Request):
         sales_accounts=sales,
         purchase_accounts=purchases
     )
+
+
+# =============================================================================
+# COA-BASED ACCOUNTS (New endpoints querying Chart of Accounts)
+# =============================================================================
+
+@router.get("/items/accounts/sales", response_model=CoaAccountsResponse)
+async def list_sales_accounts(request: Request):
+    """
+    Get list of INCOME accounts from Chart of Accounts for sales.
+
+    Returns actual CoA accounts instead of hardcoded list.
+    Use these for item sales_account_id selection.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        query = """
+            SELECT id, account_code, name, account_type
+            FROM chart_of_accounts
+            WHERE tenant_id = $1
+              AND account_type = 'INCOME'
+              AND is_active = true
+            ORDER BY account_code ASC
+        """
+        rows = await conn.fetch(query, tenant_id)
+
+        accounts = [
+            CoaAccountOption(
+                id=str(row['id']),
+                code=row['account_code'],
+                name=row['name'],
+                account_type=row['account_type']
+            )
+            for row in rows
+        ]
+
+        return CoaAccountsResponse(success=True, accounts=accounts)
+
+    except Exception as e:
+        logger.error(f"Error listing sales accounts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list sales accounts")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.get("/items/accounts/purchase", response_model=CoaAccountsResponse)
+async def list_purchase_accounts(request: Request):
+    """
+    Get list of EXPENSE accounts from Chart of Accounts for purchases.
+
+    Returns actual CoA accounts instead of hardcoded list.
+    Use these for item purchase_account_id selection.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        query = """
+            SELECT id, account_code, name, account_type
+            FROM chart_of_accounts
+            WHERE tenant_id = $1
+              AND account_type = 'EXPENSE'
+              AND is_active = true
+            ORDER BY account_code ASC
+        """
+        rows = await conn.fetch(query, tenant_id)
+
+        accounts = [
+            CoaAccountOption(
+                id=str(row['id']),
+                code=row['account_code'],
+                name=row['name'],
+                account_type=row['account_type']
+            )
+            for row in rows
+        ]
+
+        return CoaAccountsResponse(success=True, accounts=accounts)
+
+    except Exception as e:
+        logger.error(f"Error listing purchase accounts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list purchase accounts")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.get("/items/accounts/inventory", response_model=CoaAccountsResponse)
+async def list_inventory_accounts(request: Request):
+    """
+    Get list of ASSET accounts suitable for inventory from Chart of Accounts.
+
+    Filters for accounts with 'persediaan' or 'inventory' in name,
+    or accounts starting with code '1-104' (inventory assets).
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        query = """
+            SELECT id, account_code, name, account_type
+            FROM chart_of_accounts
+            WHERE tenant_id = $1
+              AND account_type = 'ASSET'
+              AND is_active = true
+              AND (
+                  name ILIKE '%persediaan%'
+                  OR name ILIKE '%inventory%'
+                  OR account_code LIKE '1-104%'
+              )
+            ORDER BY account_code ASC
+        """
+        rows = await conn.fetch(query, tenant_id)
+
+        accounts = [
+            CoaAccountOption(
+                id=str(row['id']),
+                code=row['account_code'],
+                name=row['name'],
+                account_type=row['account_type']
+            )
+            for row in rows
+        ]
+
+        return CoaAccountsResponse(success=True, accounts=accounts)
+
+    except Exception as e:
+        logger.error(f"Error listing inventory accounts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list inventory accounts")
+    finally:
+        if conn:
+            await conn.close()
 
 
 @router.get("/items/taxes", response_model=TaxOptionsResponse)

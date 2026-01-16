@@ -58,3 +58,6 @@ PyJWT==2.10.1
 # MFA/2FA Support
 pyotp==2.9.0
 qrcode==8.0
+
+# Date/Time utilities (P4/P5 modules)
+python-dateutil==2.9.0

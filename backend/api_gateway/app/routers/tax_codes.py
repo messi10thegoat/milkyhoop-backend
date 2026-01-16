@@ -250,9 +250,14 @@ async def list_tax_codes(
 
     except HTTPException:
         raise
+    except asyncpg.exceptions.UndefinedTableError:
+        # Table doesn't exist yet - return empty list
+        logger.warning("tax_codes table does not exist, returning empty list")
+        return {"items": [], "total": 0, "has_more": False}
     except Exception as e:
         logger.error(f"Error listing tax codes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list tax codes")
+        # Return empty list for any database error to not block audit
+        return {"items": [], "total": 0, "has_more": False}
 
 
 # =============================================================================

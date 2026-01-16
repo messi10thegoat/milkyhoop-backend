@@ -168,6 +168,7 @@ services:
       - .env
     volumes:
       - ./backend/api_gateway:/app/backend/api_gateway:ro  # Read-only mount
+      - ./backend/services/accounting_kernel:/app/backend/services/accounting_kernel:ro  # For AccountingFacade
       - ./logs/api_gateway:/var/log
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]

@@ -54,6 +54,10 @@ RUN mkdir -p /app/backend/api_gateway/libs
 # Copy application files
 COPY backend/api_gateway /app/backend/api_gateway
 
+# Copy accounting kernel for reports (required for AccountingFacade)
+RUN mkdir -p /app/backend/services
+COPY backend/services/accounting_kernel /app/backend/services/accounting_kernel
+
 # Copy working milkyhoop_protos from production
 COPY backend/api_gateway/libs/milkyhoop_protos /app/backend/api_gateway/libs/milkyhoop_protos
 
@@ -67,8 +71,8 @@ RUN find /app/backend/api_gateway -name "*.py" -exec python3 -m py_compile {} \;
 
 RUN chmod +x /usr/local/bin/grpc_health_probe
 
-# Set Python path EXACTLY like working container
-ENV PYTHONPATH=/app:/app/backend/api_gateway/app:/app/backend/api_gateway/libs
+# Set Python path (includes accounting_kernel for reports)
+ENV PYTHONPATH=/app:/app/backend/api_gateway/app:/app/backend/api_gateway/libs:/app/backend/services
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -87,6 +91,8 @@ RUN echo "=== ENHANCED BUILD VALIDATION ===" && \
     python3 -c "import grpc; print(f'gRPC version: {grpc.__version__}')" && \
     # 2. Import validation for critical modules
     python3 -c "from backend.api_gateway.libs.milkyhoop_prisma import Prisma; print('Prisma: OK')" && \
-    # 3. Generated protobuf validation
+    # 3. Accounting kernel validation
+    python3 -c "from accounting_kernel.integration.facade import AccountingFacade; print('AccountingFacade: OK')" && \
+    # 4. Generated protobuf validation
     find /app -name "*_pb2_grpc.py" -exec python3 -m py_compile {} \; && \
     echo "✅ All enhanced validations passed"

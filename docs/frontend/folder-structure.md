@@ -1,19 +1,23 @@
 # Frontend Folder Structure
 
-> Last updated: 2026-01-14
+> Last updated: 2026-01-16
 
 ## Overview
 
 ```
 frontend/web/src/
 ├── components/
-│   ├── app/          # Main application components (modules)
+│   ├── app/          # Main application modules
+│   ├── features/     # Feature-specific components
 │   └── ui/           # Reusable UI primitives
-├── types/            # TypeScript type definitions
-├── utils/            # Utility functions
+├── contexts/         # React context providers
 ├── hooks/            # Custom React hooks
-├── pages/            # Next.js pages (routing)
-└── styles/           # Global styles
+├── lib/              # Utility libraries
+├── pages/            # Page components (routing)
+├── services/         # API service layer
+├── styles/           # Global styles
+├── types/            # TypeScript type definitions
+└── utils/            # Utility functions
 ```
 
 ## App Components (`components/app/`)
@@ -38,6 +42,7 @@ components/app/
 │   ├── ChatHeader.tsx
 │   ├── ChatInput.tsx
 │   ├── ExpenseForm.tsx
+│   ├── ExpenseReasonForm.tsx
 │   ├── MessageBubble.tsx
 │   ├── MessageList.tsx
 │   ├── ProductAutocomplete.tsx
@@ -52,8 +57,37 @@ components/app/
 ├── Items/                        # Master data items (goods & services)
 │   ├── AddItemForm/
 │   │   ├── sheets/               # Bottom sheets for selections
-│   │   └── index.tsx             # Fullscreen form (1068 lines)
-│   ├── ItemsPanel.tsx            # List view with filters
+│   │   └── index.tsx
+│   ├── ItemListPage/             # Item list with pagination
+│   │   ├── components/
+│   │   │   ├── ItemCard.tsx
+│   │   │   ├── Pagination.tsx
+│   │   │   ├── QuickFilters.tsx
+│   │   │   ├── SearchBarTrigger.tsx
+│   │   │   └── index.ts
+│   │   ├── ItemListPage.tsx
+│   │   └── index.ts
+│   ├── ItemSearchPage/           # Item search & filter
+│   │   ├── components/
+│   │   │   ├── SearchFilters.tsx
+│   │   │   ├── SearchResultCard.tsx
+│   │   │   ├── SortSheet.tsx
+│   │   │   └── index.ts
+│   │   ├── ItemSearchPage.tsx
+│   │   └── index.ts
+│   ├── constants/
+│   │   └── itemList.constants.ts
+│   ├── hooks/
+│   │   ├── useItemList.ts
+│   │   ├── useItemSearch.ts
+│   │   └── index.ts
+│   ├── shared/
+│   │   ├── ItemIcon.tsx
+│   │   ├── ItemPriceDisplay.tsx
+│   │   └── index.ts
+│   ├── types/
+│   │   └── itemList.types.ts
+│   ├── ItemsPanel.tsx
 │   └── index.ts
 │
 ├── Inventory/                    # Stock management (track_inventory=true)
@@ -93,6 +127,13 @@ components/app/
 │   ├── SortModal.tsx
 │   └── index.tsx
 │
+├── SalesInvoice/                 # Sales invoice management
+│   ├── FilterModal.tsx
+│   ├── SalesInvoiceItem.tsx
+│   ├── SearchPage.tsx
+│   ├── SortModal.tsx
+│   └── index.tsx
+│
 ├── SalesTransaction/             # POS / Sales
 │   ├── CartSection.tsx
 │   ├── PaymentSection.tsx
@@ -105,6 +146,31 @@ components/app/
 ├── Customer/                     # Customer management
 │   ├── CustomerPanel.tsx
 │   └── index.ts
+│
+├── Vendor/                       # Vendor/supplier management
+│   ├── hooks/
+│   │   ├── useVendorFilters.ts
+│   │   └── useVendorSort.ts
+│   ├── VendorBadges.tsx
+│   ├── VendorCard.tsx
+│   ├── VendorDetailSection.tsx
+│   ├── VendorEmptyState.tsx
+│   ├── VendorPanel.tsx
+│   ├── VendorQuickActions.tsx
+│   ├── VendorSearchPage.tsx
+│   ├── VendorSearchResult.tsx
+│   ├── VendorSortSheet.tsx
+│   ├── VendorSummaryBar.tsx
+│   ├── constants.ts
+│   └── index.tsx
+│
+├── Expenses/                     # Expense list & search
+│   ├── ExpenseItem.tsx
+│   ├── FilterModal.tsx
+│   ├── SearchPage.tsx
+│   ├── SortModal.tsx
+│   ├── index.tsx
+│   └── types.ts
 │
 ├── Debt/                         # Debt & receivables management
 │   ├── DebtPanel.tsx
@@ -157,6 +223,93 @@ components/app/
 └── ANIMATION_GUIDE.md            # Animation guidelines
 ```
 
+## Feature Components (`components/features/`)
+
+```
+components/features/
+├── auth/                         # Authentication components
+│   ├── LoginForm.tsx
+│   ├── ProtectedRoute.tsx
+│   └── SignupForm.tsx
+│
+├── chat/                         # Chat feature components
+│   ├── FileUpload/
+│   │   ├── FileAttachment.tsx
+│   │   ├── FilePreview.tsx
+│   │   └── FileUploadButton.tsx
+│   ├── MessageTypes/
+│   │   ├── FinancialReport.tsx
+│   │   ├── ImageMessage.tsx
+│   │   └── TextMessage.tsx
+│   ├── QuickActions/
+│   │   ├── QuickActionBar.tsx
+│   │   └── QuickActionButton.tsx
+│   └── TypingIndicator.tsx
+│
+├── collaborator/                 # Team collaboration
+│   ├── CollaboratorList.tsx
+│   ├── InviteCollaborator.tsx
+│   └── PermissionMatrix.tsx
+│
+├── tenant-public/                # Public tenant pages
+│   ├── FloatingChatButton.tsx
+│   ├── GuestChatModal.tsx
+│   ├── TenantHero.tsx
+│   └── TenantPublicPage.tsx
+│
+└── workspace/                    # Workspace management
+    ├── CreateWorkspace.tsx
+    ├── UpgradePrompt.tsx
+    ├── WorkspaceSelector.tsx
+    └── WorkspaceSettings.tsx
+```
+
+## UI Components (`components/ui/`)
+
+```
+components/ui/
+├── Avatar.tsx                    # User avatars
+├── Badge.tsx                     # Status badges
+├── Button.tsx                    # Button variants
+├── Card.tsx                      # Card container
+├── CardGrid.tsx                  # Grid layout for cards
+├── CardRow.tsx                   # Row layout for cards
+├── Dropdown.tsx                  # Dropdown menu
+├── EditableValue.tsx             # Inline editable values
+├── Icon.tsx                      # Icon wrapper
+├── Modal.tsx                     # Modal dialog
+├── RemoteScanButton.tsx          # Remote barcode scan trigger
+├── Spinner.tsx                   # Loading spinner
+├── index.ts                      # Barrel exports
+├── types.ts                      # UI type definitions
+└── README.md                     # UI component docs
+```
+
+## Services (`services/`)
+
+```
+services/
+├── auth/
+│   └── auth.service.ts           # Authentication API
+├── chat/
+│   └── message.service.ts        # Chat message API
+├── collaborator/
+│   └── collaborator.service.ts   # Team member API
+├── transaction/
+│   └── transaction.service.ts    # Transaction API
+└── workspace/
+    └── workspace.service.ts      # Workspace API
+```
+
+## Contexts (`contexts/`)
+
+```
+contexts/
+├── AuthContext.tsx               # Authentication state provider
+├── ThemeContext.tsx              # Theme/dark mode provider
+└── WorkspaceContext.tsx          # Current workspace provider
+```
+
 ## Types (`types/`)
 
 ```
@@ -164,10 +317,12 @@ types/
 ├── items.ts              # Items master data (goods/services)
 ├── inventory.ts          # Stock & inventory
 ├── purchaseInvoice.ts    # Purchase invoices
+├── salesInvoice.ts       # Sales invoices
 ├── purchase.ts           # Purchase transactions
 ├── transaction.ts        # General transactions
 ├── expense.ts            # Expenses
 ├── customer.ts           # Customers
+├── vendor.ts             # Vendors/suppliers
 ├── debt.ts               # Debt management
 ├── hutangBank.ts         # Bank loans
 ├── hutangGaji.ts         # Salary payables
@@ -226,6 +381,38 @@ hooks/
 └── useAutoExpandTextarea.ts # Auto-expanding textareas
 ```
 
+## Lib (`lib/`)
+
+```
+lib/
+├── DeviceWebSocketSingleton.ts   # WebSocket singleton instance
+└── identifiers.ts                # ID generation utilities
+```
+
+## Pages (`pages/`)
+
+```
+pages/
+├── Dashboard.tsx           # Main dashboard
+├── LandingPage.tsx         # Public landing
+├── LoginPage.tsx           # Login
+├── SignupPage.tsx          # Registration
+├── SettingsPage.tsx        # User settings
+├── TenantLanding.tsx       # Tenant public page
+├── SalesScanPage.tsx       # Barcode scanning
+├── PembelianPage1.tsx      # Purchase flow step 1
+├── PembelianPage2.tsx      # Purchase flow step 2
+└── UITestPage.tsx          # Component testing
+```
+
+## Styles (`styles/`)
+
+```
+styles/
+├── reset.css               # CSS reset
+└── tokens.ts               # Design tokens
+```
+
 ## Module Relationships
 
 ```
@@ -236,11 +423,42 @@ Items (Master Data)
     │                                  ├── Stock opname
     │                                  └── Retur handling
     │
-    ├── item_type = 'goods' ─────► PurchaseInvoice
+    ├── item_type = 'goods' ─────► PurchaseInvoice ──► Vendor
+    │                              SalesInvoice ────► Customer
     │                              SalesTransaction
     │
     └── item_type = 'service' ───► PurchaseInvoice (no stock)
+                                   SalesInvoice (no stock)
                                    SalesTransaction (no stock)
+```
+
+## Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     Pages                            │
+│  (Dashboard, Login, Settings, etc.)                 │
+├─────────────────────────────────────────────────────┤
+│                  App Components                      │
+│  (ChatPanel, Items, PurchaseInvoice, Vendor, etc.)  │
+├─────────────────────────────────────────────────────┤
+│               Feature Components                     │
+│  (auth, chat, collaborator, workspace)              │
+├─────────────────────────────────────────────────────┤
+│                  UI Components                       │
+│  (Button, Card, Modal, Avatar, etc.)                │
+├─────────────────────────────────────────────────────┤
+│     Contexts          │        Hooks                │
+│  (Auth, Theme,        │  (useAuth, useWorkspace,    │
+│   Workspace)          │   useChatMessages, etc.)    │
+├─────────────────────────────────────────────────────┤
+│                    Services                          │
+│  (auth, chat, collaborator, transaction, workspace) │
+├─────────────────────────────────────────────────────┤
+│         Utils              │        Lib             │
+│  (api, formatters,         │  (WebSocket,           │
+│   validators, etc.)        │   identifiers)         │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## Design Patterns
@@ -249,5 +467,6 @@ Items (Master Data)
 2. **Form Pattern**: Fullscreen forms with bottom sheets for selections
 3. **List Pattern**: Scrollable lists with pull-to-refresh, infinite scroll
 4. **Sheet Pattern**: Bottom sheets for quick selections/inputs
+5. **Service Pattern**: Dedicated service files for API calls per domain
 
 See [component-patterns.md](./component-patterns.md) for detailed patterns.

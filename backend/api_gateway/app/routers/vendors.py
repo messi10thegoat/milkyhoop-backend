@@ -18,6 +18,7 @@ from ..schemas.vendors import (
     VendorListResponse,
     VendorDetailResponse,
     VendorAutocompleteResponse,
+    VendorBalanceResponse,
 )
 from ..config import settings
 
@@ -270,6 +271,96 @@ async def get_vendor(request: Request, vendor_id: UUID):
     except Exception as e:
         logger.error(f"Error getting vendor {vendor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get vendor")
+
+
+# =============================================================================
+# GET VENDOR BALANCE (AP Balance)
+# =============================================================================
+@router.get("/{vendor_id}/balance", response_model=VendorBalanceResponse)
+async def get_vendor_balance(request: Request, vendor_id: UUID):
+    """
+    Get vendor's accounts payable balance.
+
+    Returns the total outstanding balance from unpaid bills, plus summary stats.
+
+    **Returns:**
+    - `total_balance`: Outstanding amount (unpaid + partial bills)
+    - `unpaid_bills`: Count of bills with no payment
+    - `partial_bills`: Count of partially paid bills
+    - `overdue_bills`: Count of overdue bills
+    - `overdue_amount`: Total overdue amount
+    - `total_billed`: Total amount billed (historical)
+    - `total_paid`: Total amount paid (historical)
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Check if vendor exists
+            vendor = await conn.fetchrow(
+                "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                vendor_id, ctx["tenant_id"]
+            )
+            if not vendor:
+                raise HTTPException(status_code=404, detail="Vendor not found")
+
+            # Get AP balance from bills table
+            # status_v2 values: draft, posted, paid, void
+            # We want bills that are posted but not fully paid
+            balance_query = """
+                SELECT
+                    COALESCE(SUM(
+                        CASE WHEN status_v2 NOT IN ('draft', 'void', 'paid')
+                        THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
+                        ELSE 0 END
+                    ), 0) as total_balance,
+                    COUNT(*) FILTER (
+                        WHERE status_v2 = 'posted' AND COALESCE(amount_paid, 0) = 0
+                    ) as unpaid_count,
+                    COUNT(*) FILTER (
+                        WHERE status_v2 = 'posted'
+                        AND COALESCE(amount_paid, 0) > 0
+                        AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
+                    ) as partial_count,
+                    COUNT(*) FILTER (
+                        WHERE due_date < CURRENT_DATE
+                        AND status_v2 NOT IN ('draft', 'void', 'paid')
+                        AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
+                    ) as overdue_count,
+                    COALESCE(SUM(
+                        CASE WHEN due_date < CURRENT_DATE
+                        AND status_v2 NOT IN ('draft', 'void', 'paid')
+                        THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
+                        ELSE 0 END
+                    ), 0) as overdue_amount,
+                    COALESCE(SUM(COALESCE(grand_total, amount)), 0) as total_billed,
+                    COALESCE(SUM(COALESCE(amount_paid, 0)), 0) as total_paid
+                FROM bills
+                WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 != 'void'
+            """
+            balance = await conn.fetchrow(balance_query, ctx["tenant_id"], vendor_id)
+
+            return {
+                "success": True,
+                "data": {
+                    "vendor_id": str(vendor_id),
+                    "vendor_name": vendor["name"],
+                    "total_balance": int(balance["total_balance"] or 0),
+                    "unpaid_bills": balance["unpaid_count"] or 0,
+                    "partial_bills": balance["partial_count"] or 0,
+                    "overdue_bills": balance["overdue_count"] or 0,
+                    "overdue_amount": int(balance["overdue_amount"] or 0),
+                    "total_billed": int(balance["total_billed"] or 0),
+                    "total_paid": int(balance["total_paid"] or 0),
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting vendor balance {vendor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get vendor balance")
 
 
 # =============================================================================

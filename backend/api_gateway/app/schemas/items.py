@@ -259,6 +259,20 @@ class AccountsResponse(BaseModel):
     purchase_accounts: List[AccountOption]
 
 
+class CoaAccountOption(BaseModel):
+    """Account option from Chart of Accounts (CoA)."""
+    id: str           # UUID as string
+    code: str         # Account code (e.g., "4-10100")
+    name: str         # Account name (e.g., "Penjualan")
+    account_type: str # INCOME, EXPENSE, ASSET
+
+
+class CoaAccountsResponse(BaseModel):
+    """Response for CoA-based accounts endpoint."""
+    success: bool = True
+    accounts: List[CoaAccountOption]
+
+
 class TaxOptionsResponse(BaseModel):
     """Response for list tax options endpoint."""
     success: bool = True

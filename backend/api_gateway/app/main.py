@@ -27,8 +27,19 @@ from .routers import customers
 from .routers import tax_codes
 from .routers import accounts
 from .routers import sales_invoices
+from .routers import credit_notes
+from .routers import vendor_credits
 from .routers import storage_locations
+from .routers import bank_accounts
+from .routers import bank_transfers
+from .routers import stock_adjustments
+from .routers import customer_deposits
+from .routers import purchase_orders
 from .routers import price_lists
+from .routers import quotes
+from .routers import sales_orders
+from .routers import currencies
+from .routers import bank_reconciliation
 from backend.api_gateway.app.routers import ragcrud_test
 from backend.api_gateway.app.routers import ragllm_test
 from backend.api_gateway.app.routers import raginject_test
@@ -42,6 +53,44 @@ from .routers import dashboard
 from .routers import qr_auth
 from .routers import device
 from .routers import mfa
+from .routers import opening_balance
+
+# P4 Core Completion - 7 New Modules
+from .routers import warehouses
+from .routers import stock_transfers
+from .routers import sales_receipts
+from .routers import recurring_invoices
+from .routers import item_batches
+from .routers import item_serials
+from .routers import documents
+
+# P5 Tier 1 Professional - 6 New Modules
+from .routers import fixed_assets
+from .routers import budgets
+from .routers import cost_centers
+from .routers import recurring_bills
+from .routers import vendor_deposits
+
+# P6 Tier 2 Enterprise - 4 New Modules
+from .routers import audit
+from .routers import approvals
+from .routers import cheques
+from .routers import financial_ratios
+
+# P7 Tier 3 Corporate - 3 New Modules
+from .routers import consolidation
+from .routers import intercompany
+from .routers import branches
+
+# P8 Manufacturing - 3 New Modules
+from .routers import bom
+from .routers import production
+from .routers import production_costing
+
+# P9 F&B - 3 New Modules
+from .routers import recipes
+from .routers import kds
+from .routers import tables
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -258,7 +307,13 @@ app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"]
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 
 # Sales Invoices router (Faktur Penjualan)
-app.include_router(sales_invoices.router, prefix="/api/invoices", tags=["invoices"])
+app.include_router(sales_invoices.router, prefix="/api/sales-invoices", tags=["sales-invoices"])
+
+# Credit Notes router (Nota Kredit / Sales Returns)
+app.include_router(credit_notes.router, prefix="/api/credit-notes", tags=["credit-notes"])
+
+# Vendor Credits router (Kredit Vendor / Purchase Returns)
+app.include_router(vendor_credits.router, prefix="/api/vendor-credits", tags=["vendor-credits"])
 
 # Storage Locations router (Lokasi Penyimpanan)
 app.include_router(storage_locations.router, prefix="/api/storage-locations", tags=["storage-locations"])
@@ -278,6 +333,135 @@ app.include_router(device.router, tags=["devices"])
 
 # MFA (Multi-Factor Authentication) - ISO 27001:2022 A.8.5
 app.include_router(mfa.router, tags=["mfa"])
+
+# Opening Balance (Saldo Awal)
+app.include_router(opening_balance.router, prefix="/api", tags=["opening-balance"])
+
+# Bank Accounts router (Rekening Bank)
+app.include_router(bank_accounts.router, prefix="/api/bank-accounts", tags=["bank-accounts"])
+
+# Bank Transfers router (Transfer Antar Bank)
+app.include_router(bank_transfers.router, prefix="/api/bank-transfers", tags=["bank-transfers"])
+
+# Stock Adjustments router (Penyesuaian Stok)
+app.include_router(stock_adjustments.router, prefix="/api/stock-adjustments", tags=["stock-adjustments"])
+
+# Customer Deposits router (Uang Muka Pelanggan)
+app.include_router(customer_deposits.router, prefix="/api/customer-deposits", tags=["customer-deposits"])
+
+# Purchase Orders router (Pesanan Pembelian)
+app.include_router(purchase_orders.router, prefix="/api/purchase-orders", tags=["purchase-orders"])
+
+# Quotes router (Penawaran Harga)
+app.include_router(quotes.router, prefix="/api/quotes", tags=["quotes"])
+
+# Sales Orders router (Pesanan Penjualan)
+app.include_router(sales_orders.router, prefix="/api/sales-orders", tags=["sales-orders"])
+
+# Currencies router (Multi-currency Management)
+app.include_router(currencies.router, prefix="/api/currencies", tags=["currencies"])
+
+# Bank Reconciliation router (Rekonsiliasi Bank)
+app.include_router(bank_reconciliation.router, prefix="/api/bank-reconciliation", tags=["bank-reconciliation"])
+
+# ===========================================
+# P4 CORE COMPLETION - 7 NEW MODULES
+# ===========================================
+
+# Warehouses router (Gudang & Lokasi)
+app.include_router(warehouses.router, prefix="/api/warehouses", tags=["warehouses"])
+
+# Stock Transfers router (Transfer Stok Antar Gudang)
+app.include_router(stock_transfers.router, prefix="/api/stock-transfers", tags=["stock-transfers"])
+
+# Sales Receipts router (Bukti Penjualan / POS)
+app.include_router(sales_receipts.router, prefix="/api/sales-receipts", tags=["sales-receipts"])
+
+# Recurring Invoices router (Faktur Berulang)
+app.include_router(recurring_invoices.router, prefix="/api/recurring-invoices", tags=["recurring-invoices"])
+
+# Item Batches router (Nomor Lot & Kedaluwarsa - FEFO)
+app.include_router(item_batches.router, prefix="/api/item-batches", tags=["item-batches"])
+
+# Item Serials router (Nomor Seri)
+app.include_router(item_serials.router, prefix="/api/item-serials", tags=["item-serials"])
+
+# Documents router (Lampiran / Attachments - S3/MinIO)
+app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
+
+# ===========================================
+# P5 TIER 1 PROFESSIONAL - 6 NEW MODULES
+# ===========================================
+
+# Fixed Assets router (Aset Tetap - with depreciation)
+app.include_router(fixed_assets.router, prefix="/api/fixed-assets", tags=["fixed-assets"])
+
+# Budgets router (Anggaran - NO journal, planning only)
+app.include_router(budgets.router, prefix="/api/budgets", tags=["budgets"])
+
+# Cost Centers router (Pusat Biaya - NO journal, dimension)
+app.include_router(cost_centers.router, prefix="/api/cost-centers", tags=["cost-centers"])
+
+# Recurring Bills router (Tagihan Berulang)
+app.include_router(recurring_bills.router, prefix="/api/recurring-bills", tags=["recurring-bills"])
+
+# Vendor Deposits router (Uang Muka Vendor)
+app.include_router(vendor_deposits.router, prefix="/api/vendor-deposits", tags=["vendor-deposits"])
+
+# ===========================================
+# P6 TIER 2 ENTERPRISE - 4 NEW MODULES
+# ===========================================
+
+# Audit Trail router (Jejak Audit - NO journal)
+app.include_router(audit.router, prefix="/api", tags=["audit"])
+
+# Approval Workflows router (Alur Persetujuan - NO journal)
+app.include_router(approvals.router, prefix="/api", tags=["approvals"])
+
+# Cheques/Giro router (Manajemen Giro - HAS journal)
+app.include_router(cheques.router, prefix="/api/cheques", tags=["cheques"])
+
+# Financial Ratios router (Rasio Keuangan - NO journal)
+app.include_router(financial_ratios.router, prefix="/api/financial-ratios", tags=["financial-ratios"])
+
+# ===========================================
+# P7 TIER 3 CORPORATE - 3 NEW MODULES
+# ===========================================
+
+# Consolidation router (Konsolidasi Laporan Multi-Entitas)
+app.include_router(consolidation.router, prefix="/api/consolidation", tags=["consolidation"])
+
+# Intercompany router (Transaksi Antar Perusahaan - HAS journal)
+app.include_router(intercompany.router, prefix="/api/intercompany", tags=["intercompany"])
+
+# Branches router (Multi-Cabang - HAS journal for transfers)
+app.include_router(branches.router, prefix="/api/branches", tags=["branches"])
+
+# ===========================================
+# P8 MANUFACTURING - 3 NEW MODULES
+# ===========================================
+
+# BOM router (Bill of Materials - NO journal, master data)
+app.include_router(bom.router, prefix="/api/bom", tags=["bom"])
+
+# Production router (Production Orders - HAS journal for COGS)
+app.include_router(production.router, prefix="/api/production", tags=["production"])
+
+# Production Costing router (Kalkulasi Harga Produksi - NO journal)
+app.include_router(production_costing.router, prefix="/api/production-costing", tags=["production-costing"])
+
+# ===========================================
+# P9 F&B - 3 NEW MODULES
+# ===========================================
+
+# Recipes router (Manajemen Resep - NO journal, master data)
+app.include_router(recipes.router, prefix="/api/recipes", tags=["recipes"])
+
+# KDS router (Kitchen Display System - NO journal, operational)
+app.include_router(kds.router, prefix="/api/kds", tags=["kds"])
+
+# Tables router (Manajemen Meja Restoran - NO journal, operational)
+app.include_router(tables.router, prefix="/api/tables", tags=["tables"])
 
 
 @app.get("/")
@@ -316,3 +500,234 @@ async def root():
 @app.get("/healthz")
 async def healthz():
     return {"status": "healthy", "phase": "2", "middleware": "active"}
+
+
+# ===========================================
+# ALIAS ENDPOINTS FOR AUDIT COMPATIBILITY
+# ===========================================
+
+import asyncpg
+from fastapi import HTTPException, Request, Query
+from typing import Optional
+from datetime import date
+
+
+async def _get_pool() -> asyncpg.Pool:
+    """Get database connection pool."""
+    db_config = settings.get_db_config()
+    return await asyncpg.create_pool(
+        **db_config,
+        min_size=2,
+        max_size=10,
+        command_timeout=60
+    )
+
+
+def _get_user_context(request: Request) -> dict:
+    """Extract user context from request."""
+    if not hasattr(request.state, 'user') or not request.state.user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    user = request.state.user
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Invalid user context")
+    return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
+
+
+@app.get("/api/journals", tags=["journals"])
+async def list_journals(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    status: Optional[str] = Query(default=None),
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+):
+    """List all journal entries - alias endpoint for /api/journals."""
+    try:
+        ctx = _get_user_context(request)
+        pool = await _get_pool()
+
+        async with pool.acquire() as conn:
+            conditions = ["je.tenant_id = $1"]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            if status:
+                conditions.append(f"je.status = ${param_idx}")
+                params.append(status)
+                param_idx += 1
+
+            if start_date:
+                conditions.append(f"je.journal_date >= ${param_idx}")
+                params.append(start_date)
+                param_idx += 1
+
+            if end_date:
+                conditions.append(f"je.journal_date <= ${param_idx}")
+                params.append(end_date)
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+
+            # Count total
+            count_query = f"SELECT COUNT(*) FROM journal_entries je WHERE {where_clause}"
+            total = await conn.fetchval(count_query, *params)
+
+            # Get data with pagination
+            query = f"""
+                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                       je.source_type, je.source_id, je.status, je.created_at
+                FROM journal_entries je
+                WHERE {where_clause}
+                ORDER BY je.created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([per_page, (page - 1) * per_page])
+            rows = await conn.fetch(query, *params)
+
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": str(row["id"]),
+                        "journal_number": row["journal_number"],
+                        "journal_date": row["journal_date"].isoformat() if row["journal_date"] else None,
+                        "description": row["description"],
+                        "source_type": row["source_type"],
+                        "source_id": str(row["source_id"]) if row["source_id"] else None,
+                        "status": row["status"],
+                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    }
+                    for row in rows
+                ],
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": (total + per_page - 1) // per_page if total else 0
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing journals: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list journals")
+
+
+@app.get("/api/payments", tags=["payments"])
+async def list_payments(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    payment_type: Optional[str] = Query(default=None),
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+):
+    """List all payments (sales invoice payments + bill payments) - alias endpoint."""
+    try:
+        ctx = _get_user_context(request)
+        pool = await _get_pool()
+
+        async with pool.acquire() as conn:
+            # Build unified payments query from both tables
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            date_filter = ""
+            if start_date:
+                date_filter += f" AND payment_date >= ${param_idx}"
+                params.append(start_date)
+                param_idx += 1
+            if end_date:
+                date_filter += f" AND payment_date <= ${param_idx}"
+                params.append(end_date)
+                param_idx += 1
+
+            type_filter_received = "" if payment_type != 'made' else "AND 1=0"
+            type_filter_made = "" if payment_type != 'received' else "AND 1=0"
+
+            # Unified query combining sales invoice payments and bill payments
+            query = f"""
+                WITH unified_payments AS (
+                    SELECT
+                        sip.id,
+                        sip.payment_date,
+                        sip.amount,
+                        sip.payment_method,
+                        si.invoice_number as reference_number,
+                        'received' as payment_type,
+                        sip.created_at
+                    FROM sales_invoice_payments sip
+                    JOIN sales_invoices si ON si.id = sip.invoice_id
+                    WHERE si.tenant_id = $1 {date_filter} {type_filter_received}
+
+                    UNION ALL
+
+                    SELECT
+                        bp.id,
+                        bp.payment_date,
+                        bp.amount,
+                        bp.payment_method,
+                        b.invoice_number as reference_number,
+                        'made' as payment_type,
+                        bp.created_at
+                    FROM bill_payments bp
+                    JOIN bills b ON b.id = bp.bill_id
+                    WHERE b.tenant_id = $1 {date_filter} {type_filter_made}
+                )
+                SELECT * FROM unified_payments
+                ORDER BY created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([per_page, (page - 1) * per_page])
+
+            rows = await conn.fetch(query, *params)
+
+            # Count total
+            count_query = f"""
+                SELECT (
+                    SELECT COUNT(*) FROM sales_invoice_payments sip
+                    JOIN sales_invoices si ON si.id = sip.invoice_id
+                    WHERE si.tenant_id = $1 {date_filter} {type_filter_received}
+                ) + (
+                    SELECT COUNT(*) FROM bill_payments bp
+                    JOIN bills b ON b.id = bp.bill_id
+                    WHERE b.tenant_id = $1 {date_filter} {type_filter_made}
+                )
+            """
+            total = await conn.fetchval(count_query, *params[:-2])  # Exclude pagination params
+
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": str(row["id"]),
+                        "payment_date": row["payment_date"].isoformat() if row["payment_date"] else None,
+                        "amount": row["amount"],
+                        "payment_method": row["payment_method"],
+                        "reference_number": row["reference_number"],
+                        "payment_type": row["payment_type"],
+                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    }
+                    for row in rows
+                ],
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": (total + per_page - 1) // per_page if total else 0
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing payments: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list payments")
+
+
+
+# Note: /api/production/orders is handled by the production.py router
+# Added /orders alias endpoint in production.py to avoid route conflict with /{order_id}
