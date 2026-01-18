@@ -48,6 +48,66 @@ from ..services.bills_service import BillsService
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+# System filter presets (read-only, available to all users)
+BILLS_SYSTEM_PRESETS = [
+    {
+        "id": "system:urgent",
+        "name": "Jatuh Tempo Terdekat",
+        "description": "Tagihan yang mendekati atau sudah lewat jatuh tempo",
+        "config": {
+            "sort": "due_date:asc,balance:desc",
+            "filters": {"status": ["unpaid", "partial", "overdue"]}
+        },
+        "is_system": True,
+        "icon": "clock"
+    },
+    {
+        "id": "system:recently-paid",
+        "name": "Terakhir Dibayar",
+        "description": "Tagihan yang baru saja dibayar",
+        "config": {
+            "sort": "updated_at:desc",
+            "filters": {"status": ["paid", "partial"]}
+        },
+        "is_system": True,
+        "icon": "check-circle"
+    },
+    {
+        "id": "system:largest-outstanding",
+        "name": "Tagihan Terbesar",
+        "description": "Tagihan dengan saldo terbesar",
+        "config": {
+            "sort": "balance:desc",
+            "filters": {"status": ["unpaid", "partial", "overdue"]}
+        },
+        "is_system": True,
+        "icon": "trending-up"
+    },
+    {
+        "id": "system:newest",
+        "name": "Terbaru",
+        "description": "Tagihan terbaru berdasarkan tanggal dibuat",
+        "config": {
+            "sort": "created_at:desc",
+            "filters": {}
+        },
+        "is_system": True,
+        "icon": "plus-circle"
+    },
+    {
+        "id": "system:by-supplier",
+        "name": "Per Supplier",
+        "description": "Diurutkan berdasarkan nama supplier",
+        "config": {
+            "sort": "supplier:asc,due_date:asc",
+            "filters": {"status": ["unpaid", "partial", "overdue"]}
+        },
+        "is_system": True,
+        "icon": "users"
+    },
+]
+
 router = APIRouter()
 
 # Connection pool (initialized on first request)
@@ -237,6 +297,102 @@ async def get_outstanding_summary(request: Request):
     except Exception as e:
         logger.error(f"Error getting outstanding summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get outstanding summary")
+
+
+# =============================================================================
+# FILTER PRESETS
+# =============================================================================
+@router.get("/presets", response_model=dict)
+async def get_filter_presets(request: Request):
+    """
+    Get available filter presets for bills.
+
+    Returns system presets that are available to all users.
+    User-specific presets will be added in a future release.
+
+    **Usage:**
+    1. Fetch presets on page load
+    2. Display as quick-filter buttons/chips
+    3. When user clicks a preset, apply its `config.sort` and `config.filters`
+    """
+    try:
+        get_user_context(request)  # Validate auth
+
+        return {
+            "success": True,
+            "data": {
+                "system_presets": BILLS_SYSTEM_PRESETS,
+                "user_presets": [],  # TODO: Phase 2 - saved user presets
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting presets: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get presets")
+
+
+# =============================================================================
+# APPLY PRESET
+# =============================================================================
+@router.get("/presets/{preset_id}/apply", response_model=BillListResponse)
+async def apply_preset(
+    request: Request,
+    preset_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+):
+    """
+    Fetch bills using a preset's configuration.
+
+    This is a convenience endpoint that applies a preset's sort and filters.
+    Equivalent to calling GET /api/bills with the preset's config.
+    """
+    try:
+        ctx = get_user_context(request)
+
+        # Find preset
+        preset = None
+        for p in BILLS_SYSTEM_PRESETS:
+            if p["id"] == preset_id:
+                preset = p
+                break
+
+        if not preset:
+            raise HTTPException(status_code=404, detail=f"Preset '{preset_id}' not found")
+
+        config = preset["config"]
+        sort_fields = parse_sort_param(config.get("sort", "created_at:desc"))
+        filters = config.get("filters", {})
+
+        # Map preset filters to service params
+        status_filter = "all"
+        if filters.get("status"):
+            statuses = filters["status"]
+            if len(statuses) == 1:
+                status_filter = statuses[0]
+            # Multiple statuses: use 'all' and let frontend filter
+            # TODO: Support multiple status filter in service
+
+        service = await get_bills_service()
+        result = await service.list_bills(
+            tenant_id=ctx["tenant_id"],
+            skip=skip,
+            limit=limit,
+            status=status_filter,
+            search=search,
+            sort_fields=sort_fields,
+        )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error applying preset {preset_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to apply preset")
 
 
 # =============================================================================
