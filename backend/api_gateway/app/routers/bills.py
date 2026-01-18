@@ -12,6 +12,8 @@ from datetime import date
 import logging
 import asyncpg
 
+from ..utils.sorting import parse_sort_param
+
 # Import schemas
 from ..schemas.bills import (
     CreateBillRequest,
@@ -103,10 +105,15 @@ async def list_bills(
         "all", description="Filter by status"
     ),
     search: Optional[str] = Query(None, description="Search invoice number or vendor"),
-    sort_by: Literal["created_at", "due_date", "amount", "vendor_name"] = Query(
-        "created_at", description="Sort field"
+    sort: str = Query(
+        default="created_at:desc",
+        description="Comma-separated sort fields. Format: field:order,field:order. "
+                    "Fields: created_at, date, number, supplier, due_date, amount, "
+                    "balance, status, updated_at. Example: status:asc,amount:desc"
     ),
-    sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
+    # Keep legacy params for backward compatibility
+    sort_by: Optional[str] = Query(None, description="[DEPRECATED] Use 'sort' param instead"),
+    sort_order: Optional[str] = Query(None, description="[DEPRECATED] Use 'sort' param instead"),
     due_date_from: Optional[date] = Query(None, description="Filter due date from"),
     due_date_to: Optional[date] = Query(None, description="Filter due date to"),
     vendor_id: Optional[UUID] = Query(None, description="Filter by vendor")
@@ -125,14 +132,22 @@ async def list_bills(
         ctx = get_user_context(request)
         service = await get_bills_service()
 
+        # Parse sort parameter (with legacy fallback)
+        # If legacy sort_by is explicitly provided, use it instead of new sort param
+        if sort_by is not None:
+            # Legacy mode: convert old params to new format
+            legacy_order = sort_order or "desc"
+            sort_fields = [(sort_by, legacy_order)]
+        else:
+            sort_fields = parse_sort_param(sort)
+
         result = await service.list_bills(
             tenant_id=ctx["tenant_id"],
             skip=skip,
             limit=limit,
             status=status,
             search=search,
-            sort_by=sort_by,
-            sort_order=sort_order,
+            sort_fields=sort_fields,
             due_date_from=due_date_from,
             due_date_to=due_date_to,
             vendor_id=vendor_id
@@ -179,6 +194,49 @@ async def get_bills_summary(
     except Exception as e:
         logger.error(f"Error getting summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get summary")
+
+
+# =============================================================================
+# GET OUTSTANDING SUMMARY (No period filter - current state of all unpaid bills)
+# =============================================================================
+@router.get("/outstanding-summary", response_model=BillSummaryResponse)
+async def get_outstanding_summary(request: Request):
+    """
+    Get outstanding bills summary - ALL unpaid bills regardless of issue date.
+
+    This is the proper accounting view for current outstanding payables (hutang).
+    Unlike /summary which filters by period, this shows the current state of
+    all unpaid bills.
+
+    **Use cases:**
+    - Dashboard "Total Tagihan" card showing current outstanding amounts
+    - Filter pills showing breakdown by payment status
+    - AR/AP aging reports
+
+    **Breakdown:**
+    - `paid`: Bills fully paid (amount = 0, for reference only)
+    - `partial`: Partially paid, not yet due
+    - `unpaid`: Not paid at all, not yet due
+    - `overdue`: Past due date with remaining balance (includes both partial and unpaid)
+
+    **Note:** A bill can move from unpaid/partial to overdue automatically
+    when its due_date passes. This is calculated dynamically.
+    """
+    try:
+        ctx = get_user_context(request)
+        service = await get_bills_service()
+
+        result = await service.get_outstanding_summary(
+            tenant_id=ctx["tenant_id"]
+        )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting outstanding summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get outstanding summary")
 
 
 # =============================================================================
@@ -585,9 +643,35 @@ async def create_bill_v2(
 
     except HTTPException:
         raise
+    except asyncpg.exceptions.UniqueViolationError as e:
+        logger.error(f"Duplicate bill: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Nomor faktur sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk auto-generate."
+        )
+    except asyncpg.exceptions.ForeignKeyViolationError as e:
+        logger.error(f"Foreign key error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Data tidak valid: vendor atau produk tidak ditemukan"
+        )
+    except asyncpg.exceptions.CheckViolationError as e:
+        logger.error(f"Check constraint error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Data tidak valid: nilai di luar batas yang diizinkan"
+        )
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating bill v2: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create bill")
+        # Include error type for debugging
+        error_type = type(e).__name__
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal membuat faktur: {error_type} - {str(e)}"
+        )
 
 
 @router.post("/{bill_id}/post", response_model=CreateBillResponseV2)

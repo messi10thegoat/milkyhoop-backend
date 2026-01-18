@@ -12,12 +12,14 @@ V2 Extensions:
 """
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
 from datetime import date, datetime
 from decimal import Decimal
 
 import asyncpg
+
+from ..utils.sorting import build_order_by_clause
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +172,7 @@ class BillsService:
         limit: int = 20,
         status: str = "all",
         search: Optional[str] = None,
-        sort_by: str = "created_at",
-        sort_order: str = "desc",
+        sort_fields: List[Tuple[str, str]] = None,
         due_date_from: Optional[date] = None,
         due_date_to: Optional[date] = None,
         vendor_id: Optional[UUID] = None,
@@ -182,6 +183,9 @@ class BillsService:
         Returns:
             {items: [...], total: int, has_more: bool}
         """
+        if sort_fields is None:
+            sort_fields = [("created_at", "desc")]
+
         async with self.pool.acquire() as conn:
             # Build WHERE clause
             conditions = ["tenant_id = $1"]
@@ -227,16 +231,31 @@ class BillsService:
 
             where_clause = " AND ".join(conditions)
 
-            # Validate sort_by to prevent SQL injection
-            valid_sort_fields = {
+            # Build compound ORDER BY clause
+            field_mapping = {
                 "created_at": "created_at",
+                "date": "issue_date",
+                "number": "invoice_number",
+                "supplier": "vendor_name",
                 "due_date": "due_date",
-                "amount": "amount",
+                "amount": "COALESCE(grand_total, amount)",
+                "balance": "(COALESCE(amount, 0) - COALESCE(amount_paid, 0))",
+                "updated_at": "updated_at",
+                # Status ordering: overdue(1) > unpaid(2) > partial(3) > paid(4) > void(6)
+                "status": """CASE
+                    WHEN status = 'void' THEN 6
+                    WHEN amount_paid >= amount THEN 4
+                    WHEN amount_paid > 0 AND due_date < CURRENT_DATE THEN 1
+                    WHEN amount_paid > 0 THEN 3
+                    WHEN due_date < CURRENT_DATE THEN 1
+                    ELSE 2
+                END""",
+                # Legacy aliases
                 "vendor_name": "vendor_name",
                 "invoice_number": "invoice_number",
             }
-            sort_field = valid_sort_fields.get(sort_by, "created_at")
-            sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
+
+            order_by_clause = build_order_by_clause(sort_fields, field_mapping)
 
             # Get total count
             count_query = f"SELECT COUNT(*) FROM bills WHERE {where_clause}"
@@ -266,7 +285,7 @@ class BillsService:
                     updated_at
                 FROM bills
                 WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {order_by_clause}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])
@@ -1438,6 +1457,13 @@ class BillsService:
 
                 # 3. Calculate totals
                 items = request.get("items", [])
+                if not items:
+                    return {
+                        "success": False,
+                        "message": "Minimal satu item harus diisi",
+                        "data": None,
+                    }
+
                 calc = BillCalculator.calculate(
                     items=items,
                     invoice_discount_percent=Decimal(
@@ -1455,7 +1481,15 @@ class BillsService:
                 # 4. Determine status and dates
                 status = request.get("status", "draft")
                 issue_date = request.get("issue_date") or date.today()
-                due_date = request["due_date"]
+
+                # due_date is required
+                due_date = request.get("due_date")
+                if not due_date:
+                    return {
+                        "success": False,
+                        "message": "Tanggal jatuh tempo (due_date) wajib diisi",
+                        "data": None,
+                    }
 
                 # 5. Insert bill
                 bill_id = await conn.fetchval(
@@ -1505,8 +1539,30 @@ class BillsService:
 
                 # 6. Insert items
                 for idx, item in enumerate(items, start=1):
-                    qty = int(item["qty"])
-                    price = int(item["price"])
+                    # Validate required item fields
+                    if "qty" not in item or item["qty"] is None:
+                        return {
+                            "success": False,
+                            "message": f"Item {idx}: qty wajib diisi",
+                            "data": None,
+                        }
+                    if "price" not in item or item["price"] is None:
+                        return {
+                            "success": False,
+                            "message": f"Item {idx}: price wajib diisi",
+                            "data": None,
+                        }
+
+                    try:
+                        qty = int(item["qty"])
+                        price = int(item["price"])
+                    except (ValueError, TypeError) as e:
+                        return {
+                            "success": False,
+                            "message": f"Item {idx}: qty dan price harus berupa angka",
+                            "data": None,
+                        }
+
                     discount_pct = Decimal(str(item.get("discount_percent", 0)))
                     item_calc = BillCalculator.calculate_item_total(
                         qty, price, discount_pct
@@ -1515,7 +1571,14 @@ class BillsService:
                     # Convert exp_date string to date if provided
                     exp_date = None
                     if item.get("exp_date"):
-                        exp_date = date.fromisoformat(f"{item['exp_date']}-01")
+                        try:
+                            exp_date = date.fromisoformat(f"{item['exp_date']}-01")
+                        except ValueError:
+                            return {
+                                "success": False,
+                                "message": f"Item {idx}: format exp_date harus YYYY-MM (contoh: 2025-12)",
+                                "data": None,
+                            }
 
                     await conn.execute(
                         """
