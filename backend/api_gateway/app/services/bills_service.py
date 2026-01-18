@@ -1303,8 +1303,13 @@ class BillsService:
         Unlike get_summary() which filters by period, this shows the current
         state of all unpaid bills.
 
+        Status definitions (mutually exclusive):
+        - overdue:  remaining > 0 AND due_date < TODAY
+        - unpaid:   remaining = total (no payment) AND due_date >= TODAY
+        - partial:  remaining > 0 AND remaining < total AND due_date >= TODAY
+
         Returns:
-            Summary with breakdown by payment status
+            Summary with breakdown by payment status, counts, and urgency metrics
         """
         async with self.pool.acquire() as conn:
             today = date.today()
@@ -1320,17 +1325,26 @@ class BillsService:
                     COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) >= amount AND status != 'void') as paid_count,
                     0 as paid_amount,
 
-                    -- Partial: bayar sebagian, belum jatuh tempo
+                    -- Partial: bayar sebagian, belum jatuh tempo (mutually exclusive with overdue)
                     COUNT(*) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND due_date >= CURRENT_DATE AND status != 'void') as partial_count,
                     COALESCE(SUM(amount - amount_paid) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND due_date >= CURRENT_DATE AND status != 'void'), 0) as partial_amount,
 
-                    -- Unpaid: belum bayar sama sekali, belum jatuh tempo
+                    -- Unpaid: belum bayar sama sekali, belum jatuh tempo (mutually exclusive with overdue)
                     COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void') as unpaid_count,
                     COALESCE(SUM(amount) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void'), 0) as unpaid_amount,
 
                     -- Overdue: jatuh tempo dan belum lunas (includes partial + unpaid yang sudah lewat due_date)
                     COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void') as overdue_count,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_amount
+                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_amount,
+
+                    -- Urgency metrics
+                    -- Oldest overdue (days since due_date)
+                    COALESCE(MAX(CURRENT_DATE - due_date) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_oldest_days,
+                    -- Largest single overdue amount
+                    COALESCE(MAX(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_largest,
+                    -- Due within 7 days (excluding overdue)
+                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date >= CURRENT_DATE AND due_date <= CURRENT_DATE + INTERVAL '7 days' AND status != 'void') as due_within_7_days_count,
+                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date >= CURRENT_DATE AND due_date <= CURRENT_DATE + INTERVAL '7 days' AND status != 'void'), 0) as due_within_7_days_amount
                 FROM bills
                 WHERE tenant_id = $1
             """
@@ -1338,6 +1352,9 @@ class BillsService:
             row = await conn.fetchrow(query, tenant_id)
 
             total_outstanding = int(row["total_outstanding"])
+            overdue_amount = int(row["overdue_amount"])
+            unpaid_amount = int(row["unpaid_amount"])
+            partial_amount = int(row["partial_amount"])
 
             def calc_percentage(amount):
                 if total_outstanding == 0:
@@ -1348,6 +1365,28 @@ class BillsService:
                 "success": True,
                 "data": {
                     "as_of_date": today.isoformat(),
+                    # Flat amounts for easy access
+                    "amounts": {
+                        "outstanding": total_outstanding,
+                        "overdue": overdue_amount,
+                        "unpaid": unpaid_amount,
+                        "partial": partial_amount,
+                    },
+                    # Flat counts for easy access
+                    "counts": {
+                        "total": row["total_count"],
+                        "overdue": row["overdue_count"],
+                        "unpaid": row["unpaid_count"],
+                        "partial": row["partial_count"],
+                    },
+                    # Urgency metrics for alerts
+                    "urgency": {
+                        "overdue_oldest_days": row["overdue_oldest_days"],
+                        "overdue_largest": int(row["overdue_largest"]),
+                        "due_within_7_days": int(row["due_within_7_days_amount"]),
+                        "due_within_7_days_count": row["due_within_7_days_count"],
+                    },
+                    # Legacy fields for backward compatibility
                     "total_outstanding": total_outstanding,
                     "total_count": row["total_count"],
                     "vendor_count": row["vendor_count"],
@@ -1359,18 +1398,18 @@ class BillsService:
                         },
                         "partial": {
                             "count": row["partial_count"],
-                            "amount": int(row["partial_amount"]),
-                            "percentage": calc_percentage(row["partial_amount"]),
+                            "amount": partial_amount,
+                            "percentage": calc_percentage(partial_amount),
                         },
                         "unpaid": {
                             "count": row["unpaid_count"],
-                            "amount": int(row["unpaid_amount"]),
-                            "percentage": calc_percentage(row["unpaid_amount"]),
+                            "amount": unpaid_amount,
+                            "percentage": calc_percentage(unpaid_amount),
                         },
                         "overdue": {
                             "count": row["overdue_count"],
-                            "amount": int(row["overdue_amount"]),
-                            "percentage": calc_percentage(row["overdue_amount"]),
+                            "amount": overdue_amount,
+                            "percentage": calc_percentage(overdue_amount),
                         },
                     },
                 },
