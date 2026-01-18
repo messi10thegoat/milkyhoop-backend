@@ -4,7 +4,7 @@ Pydantic schemas for Bills (Faktur Pembelian) module.
 This module defines request and response models for the /api/bills endpoints.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Literal, Dict, Any
 from uuid import UUID
 from datetime import date, datetime
@@ -15,24 +15,27 @@ from decimal import Decimal
 # REQUEST MODELS
 # =============================================================================
 
+
 class BillItemRequest(BaseModel):
     """Single line item in a bill."""
+
     product_id: Optional[UUID] = None
     description: Optional[str] = None
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = None
     unit_price: int = Field(..., gt=0)
 
-    @field_validator('quantity')
+    @field_validator("quantity")
     @classmethod
     def validate_quantity(cls, v):
         if v <= 0:
-            raise ValueError('Quantity must be greater than 0')
+            raise ValueError("Quantity must be greater than 0")
         return v
 
 
 class CreateBillRequest(BaseModel):
     """Request body for creating a new bill."""
+
     invoice_number: Optional[str] = None  # Auto-generate if empty
     vendor_id: Optional[UUID] = None
     vendor_name: Optional[str] = None  # Required if vendor_id not provided
@@ -41,16 +44,17 @@ class CreateBillRequest(BaseModel):
     notes: Optional[str] = None
     items: List[BillItemRequest] = Field(..., min_length=1)
 
-    @field_validator('items')
+    @field_validator("items")
     @classmethod
     def validate_items(cls, v):
         if not v or len(v) == 0:
-            raise ValueError('At least one item is required')
+            raise ValueError("At least one item is required")
         return v
 
 
 class UpdateBillRequest(BaseModel):
     """Request body for updating a bill (only allowed if unpaid)."""
+
     invoice_number: Optional[str] = None
     vendor_name: Optional[str] = None
     due_date: Optional[date] = None
@@ -59,25 +63,60 @@ class UpdateBillRequest(BaseModel):
 
 
 class RecordPaymentRequest(BaseModel):
-    """Request body for recording a payment."""
+    """Request body for recording a payment.
+
+    Account handling:
+    - bank_account_id (preferred): Links to bank_accounts table, creates bank transaction
+    - account_id (legacy): Direct CoA UUID, no bank transaction created
+
+    At least one must be provided. bank_account_id takes precedence if both are provided.
+    """
+
     amount: int = Field(..., gt=0)
     payment_date: Optional[date] = None  # Default: today
     payment_method: Literal["cash", "transfer", "check", "other"]
-    account_id: UUID  # Kas/Bank account from CoA
+    bank_account_id: Optional[UUID] = Field(
+        None, description="Bank account UUID (preferred)"
+    )
+    account_id: Optional[UUID] = Field(
+        None, description="CoA UUID (legacy, backward compat)"
+    )
     reference: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_account(self):
+        if not self.bank_account_id and not self.account_id:
+            raise ValueError("Either bank_account_id or account_id is required")
+        return self
 
 
 class MarkPaidRequest(BaseModel):
-    """Request body for marking a bill as fully paid."""
+    """Request body for marking a bill as fully paid.
+
+    Account handling same as RecordPaymentRequest.
+    """
+
     payment_method: Literal["cash", "transfer", "check", "other"]
-    account_id: UUID
+    bank_account_id: Optional[UUID] = Field(
+        None, description="Bank account UUID (preferred)"
+    )
+    account_id: Optional[UUID] = Field(
+        None, description="CoA UUID (legacy, backward compat)"
+    )
     reference: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_account(self):
+        if not self.bank_account_id and not self.account_id:
+            raise ValueError("Either bank_account_id or account_id is required")
+        return self
 
 
 class VoidBillRequest(BaseModel):
     """Request body for voiding a bill."""
+
     reason: str = Field(..., min_length=1)
 
 
@@ -85,19 +124,21 @@ class VoidBillRequest(BaseModel):
 # RESPONSE MODELS - Nested Objects
 # =============================================================================
 
+
 class VendorInfo(BaseModel):
     """Vendor information for bill responses."""
+
     id: Optional[UUID] = None
     name: str
     initials: Optional[str] = None
 
-    @field_validator('initials', mode='before')
+    @field_validator("initials", mode="before")
     @classmethod
     def generate_initials(cls, v, info):
         if v:
             return v
         # Generate initials from name if not provided
-        name = info.data.get('name', '')
+        name = info.data.get("name", "")
         if name:
             words = name.split()
             if len(words) >= 2:
@@ -109,6 +150,7 @@ class VendorInfo(BaseModel):
 
 class BillItemResponse(BaseModel):
     """Single line item in bill response."""
+
     id: UUID
     product_id: Optional[UUID] = None
     product_name: Optional[str] = None
@@ -121,6 +163,7 @@ class BillItemResponse(BaseModel):
 
 class BillPaymentResponse(BaseModel):
     """Payment record in bill response."""
+
     id: UUID
     amount: int
     payment_date: date
@@ -132,6 +175,7 @@ class BillPaymentResponse(BaseModel):
 
 class BillAttachmentResponse(BaseModel):
     """Attachment in bill response."""
+
     id: UUID
     filename: str
     url: str
@@ -142,8 +186,10 @@ class BillAttachmentResponse(BaseModel):
 # RESPONSE MODELS - Main
 # =============================================================================
 
+
 class BillListItem(BaseModel):
     """Bill item for list responses."""
+
     id: UUID
     invoice_number: str
     vendor: VendorInfo
@@ -159,6 +205,7 @@ class BillListItem(BaseModel):
 
 class BillListResponse(BaseModel):
     """Response for list bills endpoint."""
+
     items: List[BillListItem]
     total: int
     has_more: bool
@@ -166,12 +213,14 @@ class BillListResponse(BaseModel):
 
 class BillDetailResponse(BaseModel):
     """Response for get bill detail endpoint."""
+
     success: bool = True
     data: Dict[str, Any]
 
 
 class CreateBillResponse(BaseModel):
     """Response for create bill endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -179,6 +228,7 @@ class CreateBillResponse(BaseModel):
 
 class UpdateBillResponse(BaseModel):
     """Response for update bill endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -186,12 +236,14 @@ class UpdateBillResponse(BaseModel):
 
 class DeleteBillResponse(BaseModel):
     """Response for delete bill endpoint."""
+
     success: bool
     message: str
 
 
 class RecordPaymentResponse(BaseModel):
     """Response for record payment endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -199,6 +251,7 @@ class RecordPaymentResponse(BaseModel):
 
 class MarkPaidResponse(BaseModel):
     """Response for mark paid endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -206,6 +259,7 @@ class MarkPaidResponse(BaseModel):
 
 class VoidBillResponse(BaseModel):
     """Response for void bill endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -215,8 +269,10 @@ class VoidBillResponse(BaseModel):
 # SUMMARY RESPONSE
 # =============================================================================
 
+
 class StatusBreakdown(BaseModel):
     """Breakdown by status for summary."""
+
     count: int
     amount: int
     percentage: float
@@ -224,12 +280,14 @@ class StatusBreakdown(BaseModel):
 
 class BillSummaryResponse(BaseModel):
     """Response for bills summary endpoint."""
+
     success: bool = True
     data: Dict[str, Any]
 
 
 class BillSummaryData(BaseModel):
     """Summary data structure."""
+
     period: str
     period_label: str
     total_amount: int
@@ -242,8 +300,10 @@ class BillSummaryData(BaseModel):
 # ATTACHMENT RESPONSE
 # =============================================================================
 
+
 class UploadAttachmentResponse(BaseModel):
     """Response for upload attachment endpoint."""
+
     success: bool
     data: Optional[Dict[str, Any]] = None
 
@@ -252,31 +312,43 @@ class UploadAttachmentResponse(BaseModel):
 # V2 REQUEST MODELS - Extended for Pharmacy
 # =============================================================================
 
+
 class BillItemRequestV2(BaseModel):
     """Extended line item for pharmacy bills (V2)."""
+
     product_id: Optional[UUID] = None
-    product_code: Optional[str] = Field(None, max_length=100, description="Product code from supplier")
+    product_code: Optional[str] = Field(
+        None, max_length=100, description="Product code from supplier"
+    )
     product_name: str = Field(..., min_length=1, description="Product name for display")
     qty: int = Field(..., gt=0, description="Quantity (must be > 0)")
     unit: Optional[str] = Field(None, max_length=20, description="Unit of measure")
     price: int = Field(..., gt=0, description="Unit price in Rupiah")
-    discount_percent: Decimal = Field(Decimal("0"), ge=0, le=100, description="Item discount %")
-    batch_no: Optional[str] = Field(None, max_length=100, description="Batch/lot number")
-    exp_date: Optional[str] = Field(None, pattern=r'^\d{4}-\d{2}$', description="Expiry date (YYYY-MM)")
-    bonus_qty: int = Field(0, ge=0, description="Free/bonus quantity (not in calculation)")
+    discount_percent: Decimal = Field(
+        Decimal("0"), ge=0, le=100, description="Item discount %"
+    )
+    batch_no: Optional[str] = Field(
+        None, max_length=100, description="Batch/lot number"
+    )
+    exp_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}$", description="Expiry date (YYYY-MM)"
+    )
+    bonus_qty: int = Field(
+        0, ge=0, description="Free/bonus quantity (not in calculation)"
+    )
 
-    @field_validator('exp_date')
+    @field_validator("exp_date")
     @classmethod
     def validate_exp_date(cls, v):
         if v:
             try:
-                year, month = map(int, v.split('-'))
+                year, month = map(int, v.split("-"))
                 if not (2020 <= year <= 2050):
-                    raise ValueError('Year must be between 2020 and 2050')
+                    raise ValueError("Year must be between 2020 and 2050")
                 if not (1 <= month <= 12):
-                    raise ValueError('Month must be between 01 and 12')
+                    raise ValueError("Month must be between 01 and 12")
             except ValueError as e:
-                raise ValueError(f'exp_date must be YYYY-MM format: {e}')
+                raise ValueError(f"exp_date must be YYYY-MM format: {e}")
         return v
 
 
@@ -288,10 +360,17 @@ class CreateBillRequestV2(BaseModel):
     - invoice_discount: use percent OR amount (percent takes precedence)
     - cash_discount: use percent OR amount (percent takes precedence)
     """
+
     vendor_id: Optional[UUID] = Field(None, description="Existing vendor ID")
-    vendor_name: Optional[str] = Field(None, description="Vendor name (required if vendor_id not provided)")
-    invoice_number: Optional[str] = Field(None, description="Auto-generate if empty (format: PB-YYMM-0001)")
-    ref_no: Optional[str] = Field(None, max_length=100, description="Reference number from vendor")
+    vendor_name: Optional[str] = Field(
+        None, description="Vendor name (required if vendor_id not provided)"
+    )
+    invoice_number: Optional[str] = Field(
+        None, description="Auto-generate if empty (format: PB-YYMM-0001)"
+    )
+    ref_no: Optional[str] = Field(
+        None, max_length=100, description="Reference number from vendor"
+    )
     issue_date: Optional[date] = Field(None, description="Bill date (default: today)")
     due_date: date = Field(..., description="Payment due date")
     tax_rate: Literal[0, 11, 12] = Field(11, description="Tax rate: 0%, 11%, or 12%")
@@ -300,16 +379,20 @@ class CreateBillRequestV2(BaseModel):
     invoice_discount_amount: int = Field(0, ge=0)
     cash_discount_percent: Decimal = Field(Decimal("0"), ge=0, le=100)
     cash_discount_amount: int = Field(0, ge=0)
-    dpp_manual: Optional[int] = Field(None, ge=0, description="Manual DPP override (null = auto)")
+    dpp_manual: Optional[int] = Field(
+        None, ge=0, description="Manual DPP override (null = auto)"
+    )
     notes: Optional[str] = None
-    items: List[BillItemRequestV2] = Field(..., min_length=1, description="Line items (min 1)")
+    items: List[BillItemRequestV2] = Field(
+        ..., min_length=1, description="Line items (min 1)"
+    )
     status: Literal["draft", "posted"] = Field("draft", description="Initial status")
 
-    @field_validator('items')
+    @field_validator("items")
     @classmethod
     def validate_items(cls, v):
         if not v or len(v) == 0:
-            raise ValueError('At least one item is required')
+            raise ValueError("At least one item is required")
         return v
 
 
@@ -319,6 +402,7 @@ class UpdateBillRequestV2(BaseModel):
 
     **Important:** Only draft bills can be updated.
     """
+
     vendor_id: Optional[UUID] = None
     vendor_name: Optional[str] = None
     ref_no: Optional[str] = None
@@ -338,11 +422,15 @@ class UpdateBillRequestV2(BaseModel):
 # V2 RESPONSE MODELS
 # =============================================================================
 
+
 class BillCalculationResult(BaseModel):
     """Calculated totals for a bill."""
+
     subtotal: int = Field(..., description="Sum of (qty * price) for all items")
     item_discount_total: int = Field(..., description="Sum of item-level discounts")
-    invoice_discount_total: int = Field(..., description="Invoice-level discount amount")
+    invoice_discount_total: int = Field(
+        ..., description="Invoice-level discount amount"
+    )
     cash_discount_total: int = Field(..., description="Cash/early payment discount")
     dpp: int = Field(..., description="Dasar Pengenaan Pajak (tax base)")
     tax_amount: int = Field(..., description="Calculated tax (dpp * tax_rate / 100)")
@@ -351,6 +439,7 @@ class BillCalculationResult(BaseModel):
 
 class BillItemResponseV2(BaseModel):
     """Extended line item response (V2)."""
+
     id: UUID
     product_id: Optional[UUID] = None
     product_code: Optional[str] = None
@@ -368,6 +457,7 @@ class BillItemResponseV2(BaseModel):
 
 class CreateBillResponseV2(BaseModel):
     """Response for create bill V2 endpoint."""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -375,5 +465,6 @@ class CreateBillResponseV2(BaseModel):
 
 class CalculateBillResponse(BaseModel):
     """Response for bill calculation preview."""
+
     success: bool = True
     calculation: BillCalculationResult
