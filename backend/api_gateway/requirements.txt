@@ -69,4 +69,4 @@ boto3==1.38.0
 Pillow==11.0.0
 
 # PDF Generation
-weasyprint==60.2
+weasyprint==67.0
