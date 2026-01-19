@@ -61,3 +61,12 @@ qrcode==8.0
 
 # Date/Time utilities (P4/P5 modules)
 python-dateutil==2.9.0
+
+# AWS S3 for document storage
+boto3==1.38.0
+
+# Image processing for thumbnails
+Pillow==11.0.0
+
+# PDF Generation
+weasyprint==60.2
