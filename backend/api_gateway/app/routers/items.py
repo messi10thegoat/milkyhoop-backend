@@ -20,17 +20,24 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, List
 import logging
 import asyncpg
+import json
+import uuid
 from uuid import UUID
 from datetime import datetime
 
 from ..schemas.items import (
     CreateItemRequest, UpdateItemRequest,
     CreateItemResponse, UpdateItemResponse, DeleteItemResponse,
-    ItemListResponse, ItemListItem, ItemDetailResponse,
+    ItemListResponse, ItemListItem, ItemListConversion, ItemDetailResponse,
     UnitListResponse, CreateUnitRequest, CreateUnitResponse,
     AccountsResponse, AccountOption, TaxOptionsResponse, TaxOption,
-    ItemsSummaryResponse, UnitConversionResponse,
+    ItemsSummaryResponse, ItemsStatsResponse, ItemsStatsStockResponse,
+    UnitConversionResponse,
     CoaAccountOption, CoaAccountsResponse,
+    ItemTransaction, ItemTransactionsResponse,
+    RelatedDocument, ItemRelatedResponse,
+    CreateCategoryRequest, CreateCategoryResponse, CategoryListResponse,
+    ItemActivity, ItemActivityResponse,
     DEFAULT_UNITS, SALES_ACCOUNTS, PURCHASE_ACCOUNTS
 )
 from ..config import settings
@@ -72,6 +79,7 @@ async def list_items(
     track_inventory: Optional[bool] = Query(None, description="Filter by track_inventory"),
     search: Optional[str] = Query(None, description="Search by name or barcode"),
     kategori: Optional[str] = Query(None, description="Filter by category"),
+    stock_status: Optional[str] = Query(None, description="Filter by stock status: in_stock, low_stock, out_of_stock"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0)
 ):
@@ -86,10 +94,34 @@ async def list_items(
     try:
         conn = await get_db_connection()
 
-        # Build query with filters
-        query_parts = ["SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value"]
+        # Build query with filters - include conversions as JSON array
+        # Use subquery for persediaan to prevent duplicate rows when multiple stock entries exist
+        query_parts = ["""SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value,
+            v.name as vendor_name,
+            CASE
+                WHEN p.track_inventory = true AND COALESCE(per.jumlah, 0) > 0
+                     AND p.reorder_level IS NOT NULL AND COALESCE(per.jumlah, 0) <= p.reorder_level
+                THEN true
+                ELSE false
+            END as low_stock,
+            COALESCE(
+                (SELECT json_agg(json_build_object(
+                    'conversion_unit', uc.conversion_unit,
+                    'conversion_factor', uc.conversion_factor,
+                    'sales_price', uc.sales_price,
+                    'purchase_price', uc.purchase_price
+                ) ORDER BY uc.conversion_factor)
+                FROM unit_conversions uc
+                WHERE uc.product_id = p.id AND uc.tenant_id = p.tenant_id AND uc.is_active = true),
+                '[]'::json
+            ) as conversions"""]
         query_parts.append("FROM products p")
-        query_parts.append("LEFT JOIN persediaan per ON per.product_id = p.id AND per.tenant_id = p.tenant_id")
+        query_parts.append("""LEFT JOIN LATERAL (
+                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
+                FROM persediaan
+                WHERE product_id = p.id AND tenant_id = p.tenant_id
+            ) per ON true""")
+        query_parts.append("LEFT JOIN vendors v ON v.id::text = p.preferred_vendor_id::text AND v.tenant_id = p.tenant_id")
         query_parts.append("WHERE p.tenant_id = $1")
 
         params = [tenant_id]
@@ -115,11 +147,18 @@ async def list_items(
             params.append(f"%{search}%")
             param_idx += 1
 
-        # Count total
-        count_query = " ".join(query_parts).replace(
-            "SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value",
-            "SELECT COUNT(*)"
-        )
+        if stock_status:
+            query_parts.append("AND p.item_type = 'goods' AND p.track_inventory = true")
+            if stock_status == 'in_stock':
+                query_parts.append("AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)")
+            elif stock_status == 'low_stock':
+                query_parts.append("AND COALESCE(p.reorder_level, 0) > 0 AND COALESCE(per.jumlah, 0) > 0 AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)")
+            elif stock_status == 'out_of_stock':
+                query_parts.append("AND (per.jumlah IS NULL OR per.jumlah = 0)")
+
+        # Count total - use simplified query for count
+        count_parts = [part for part in query_parts if not part.startswith("SELECT")]
+        count_query = "SELECT COUNT(*) FROM products p " + " ".join(count_parts[1:])
         total = await conn.fetchval(count_query, *params)
 
         # Add ordering and pagination
@@ -134,6 +173,21 @@ async def list_items(
         # Transform rows to response
         items = []
         for row in rows:
+            # Parse conversions from JSON
+            conversions_data = row.get('conversions') or []
+            if isinstance(conversions_data, str):
+                conversions_data = json.loads(conversions_data)
+
+            conversions = [
+                ItemListConversion(
+                    conversion_unit=c['conversion_unit'],
+                    conversion_factor=c['conversion_factor'],
+                    purchase_price=c.get('purchase_price'),
+                    sales_price=c.get('sales_price')
+                )
+                for c in conversions_data
+            ] if conversions_data else []
+
             items.append(ItemListItem(
                 id=row['id'],
                 name=row['nama_produk'],
@@ -142,11 +196,20 @@ async def list_items(
                 base_unit=row.get('base_unit') or row['satuan'],
                 barcode=row.get('barcode'),
                 kategori=row.get('kategori'),
+                deskripsi=row.get('deskripsi'),
                 is_returnable=row.get('is_returnable', True),
                 sales_price=row.get('sales_price') or row.get('harga_jual'),
                 purchase_price=row.get('purchase_price'),
+                image_url=row.get('image_url'),
+                reorder_level=float(row['reorder_level']) if row.get('reorder_level') else None,
+                reorder_point=int(row['reorder_level']) if row.get('reorder_level') else 0,
+                vendor_name=row.get('vendor_name'),
+                sales_tax=row.get('sales_tax'),
+                purchase_tax=row.get('purchase_tax'),
                 current_stock=row.get('current_stock'),
                 stock_value=row.get('stock_value'),
+                low_stock=row.get('low_stock', False),
+                conversions=conversions,
                 created_at=row['created_at'],
                 updated_at=row['updated_at']
             ))
@@ -160,88 +223,6 @@ async def list_items(
 
     except Exception as e:
         logger.error(f"Error listing items: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            await conn.close()
-
-
-# =============================================================================
-# GET ITEM DETAIL
-# =============================================================================
-
-@router.get("/items/{item_id}", response_model=ItemDetailResponse)
-async def get_item(request: Request, item_id: UUID):
-    """Get detailed information about a specific item including unit conversions."""
-    tenant_id = get_tenant_id(request)
-    conn = None
-
-    try:
-        conn = await get_db_connection()
-
-        # Get item
-        item_query = """
-            SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value
-            FROM products p
-            LEFT JOIN persediaan per ON per.product_id = p.id AND per.tenant_id = p.tenant_id
-            WHERE p.id = $1 AND p.tenant_id = $2
-        """
-        row = await conn.fetchrow(item_query, str(item_id), tenant_id)
-
-        if not row:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Get unit conversions
-        conversions_query = """
-            SELECT * FROM unit_conversions
-            WHERE product_id = $1 AND tenant_id = $2 AND is_active = true
-            ORDER BY conversion_factor ASC
-        """
-        conversion_rows = await conn.fetch(conversions_query, str(item_id), tenant_id)
-
-        conversions = [
-            {
-                "id": str(c['id']),
-                "base_unit": c['base_unit'],
-                "conversion_unit": c['conversion_unit'],
-                "conversion_factor": c['conversion_factor'],
-                "purchase_price": c.get('purchase_price'),
-                "sales_price": c.get('sales_price'),
-                "is_active": c.get('is_active', True)
-            }
-            for c in conversion_rows
-        ]
-
-        return ItemDetailResponse(
-            success=True,
-            data={
-                "id": str(row['id']),
-                "name": row['nama_produk'],
-                "item_type": row.get('item_type', 'goods'),
-                "track_inventory": row.get('track_inventory', True),
-                "base_unit": row.get('base_unit') or row['satuan'],
-                "barcode": row.get('barcode'),
-                "kategori": row.get('kategori'),
-                "deskripsi": row.get('deskripsi'),
-                "is_returnable": row.get('is_returnable', True),
-                "sales_account": row.get('sales_account', 'Sales'),
-                "purchase_account": row.get('purchase_account', 'Cost of Goods Sold'),
-                "sales_tax": row.get('sales_tax'),
-                "purchase_tax": row.get('purchase_tax'),
-                "sales_price": row.get('sales_price') or row.get('harga_jual'),
-                "purchase_price": row.get('purchase_price'),
-                "current_stock": row.get('current_stock'),
-                "stock_value": row.get('stock_value'),
-                "conversions": conversions,
-                "created_at": row['created_at'].isoformat() if row['created_at'] else None,
-                "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
@@ -292,12 +273,16 @@ async def create_item(request: Request, body: CreateItemRequest):
                     item_type, track_inventory, is_returnable,
                     sales_account, purchase_account, sales_tax, purchase_tax,
                     sales_price, purchase_price, harga_jual,
+                    image_url, reorder_level, preferred_vendor_id,
+                    sales_account_id, purchase_account_id,
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
+                    $18, $19, $20,
+                    $21, $22,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -320,7 +305,12 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.purchase_tax,
                 body.sales_price,
                 body.purchase_price,
-                body.sales_price  # harga_jual = sales_price for backwards compat
+                body.sales_price,  # harga_jual = sales_price for backwards compat
+                body.image_url,
+                body.reorder_level,
+                body.preferred_vendor_id,
+                body.sales_account_id,
+                body.purchase_account_id
             )
 
             # Insert unit conversions (goods only)
@@ -344,18 +334,38 @@ async def create_item(request: Request, body: CreateItemRequest):
 
             # Create initial stock entry (if track_inventory)
             if body.track_inventory and body.item_type == 'goods':
-                await conn.execute(
-                    """
-                    INSERT INTO persediaan (
-                        tenant_id, product_id, lokasi_gudang, jumlah,
-                        nilai_per_unit, total_nilai, created_at, updated_at
-                    ) VALUES ($1, $2, 'gudang_utama', 0, $3, 0, NOW(), NOW())
-                    ON CONFLICT (tenant_id, product_id, lokasi_gudang) DO NOTHING
-                    """,
-                    tenant_id,
-                    item_id,
-                    body.purchase_price or 0
+                # Check if stock entry already exists
+                existing_stock = await conn.fetchval(
+                    "SELECT id FROM persediaan WHERE tenant_id = $1 AND product_id = $2 AND lokasi_gudang = 'gudang_utama'",
+                    tenant_id, item_id
                 )
+                if not existing_stock:
+                    await conn.execute(
+                        """
+                        INSERT INTO persediaan (
+                            id, tenant_id, product_id, produk_id, lokasi_gudang, jumlah,
+                            nilai_per_unit, total_nilai, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, 'gudang_utama', 0, $5, 0, NOW(), NOW())
+                        """,
+                        str(uuid.uuid4()),
+                        tenant_id,
+                        item_id,
+                        str(item_id),  # produk_id for backwards compat
+                        body.purchase_price or 0
+                    )
+
+            # Log activity
+            user_id = request.state.user.get("user_id")
+            user_name = request.state.user.get("username") or request.state.user.get("email")
+            await conn.execute(
+                """
+                INSERT INTO item_activities (item_id, tenant_id, type, description, actor_id, actor_name)
+                VALUES ($1, $2, 'created', 'Item dibuat', $3, $4)
+                """,
+                item_id, tenant_id,
+                user_id if user_id else None,
+                user_name
+            )
 
         logger.info(f"Created item {body.name} (id={item_id}) for tenant {tenant_id}")
 
@@ -419,6 +429,16 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             if duplicate_barcode:
                 raise HTTPException(status_code=409, detail="Item with this barcode already exists")
 
+        # Fetch old values for change tracking
+        old_item = await conn.fetchrow(
+            """SELECT nama_produk, sales_price, harga_jual, purchase_price,
+                      base_unit, satuan, reorder_level, item_type, track_inventory,
+                      kategori, deskripsi, barcode, is_returnable,
+                      sales_tax, purchase_tax, image_url
+               FROM products WHERE id = $1 AND tenant_id = $2""",
+            str(item_id), tenant_id
+        )
+
         async with conn.transaction():
             # Build update query dynamically
             updates = []
@@ -436,10 +456,15 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 'is_returnable': 'is_returnable',
                 'sales_account': 'sales_account',
                 'purchase_account': 'purchase_account',
+                'sales_account_id': 'sales_account_id',
+                'purchase_account_id': 'purchase_account_id',
                 'sales_tax': 'sales_tax',
                 'purchase_tax': 'purchase_tax',
                 'sales_price': 'sales_price',
-                'purchase_price': 'purchase_price'
+                'purchase_price': 'purchase_price',
+                'image_url': 'image_url',
+                'reorder_level': 'reorder_level',
+                'preferred_vendor_id': 'preferred_vendor_id',
             }
 
             body_dict = body.model_dump(exclude_unset=True, exclude={'conversions'})
@@ -513,6 +538,67 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                             conv.conversion_unit, conv.conversion_factor,
                             conv.purchase_price, conv.sales_price
                         )
+
+            # Log activity
+            body_dict_for_log = body.model_dump(exclude_unset=True, exclude={'conversions'})
+            if body_dict_for_log:
+                change_parts = []
+                field_labels = {
+                    'name': ('Nama', 'nama_produk'),
+                    'sales_price': ('Harga jual', 'sales_price', True),
+                    'purchase_price': ('Harga beli', 'purchase_price', True),
+                    'base_unit': ('Satuan', 'base_unit'),
+                    'reorder_level': ('Titik reorder', 'reorder_level'),
+                    'kategori': ('Kategori', 'kategori'),
+                    'deskripsi': ('Deskripsi', 'deskripsi'),
+                    'barcode': ('Barcode', 'barcode'),
+                    'sales_tax': ('Pajak jual', 'sales_tax'),
+                    'purchase_tax': ('Pajak beli', 'purchase_tax'),
+                }
+
+                only_price = True
+
+                for field, meta in field_labels.items():
+                    if field in body_dict_for_log:
+                        label = meta[0]
+                        db_col = meta[1]
+                        is_price = len(meta) > 2 and meta[2]
+                        old_val = old_item.get(db_col) if old_item else None
+                        new_val = body_dict_for_log[field]
+
+                        if str(old_val) != str(new_val) and not (old_val is None and new_val is None):
+                            if is_price:
+                                old_display = f"Rp {int(old_val):,}".replace(",", ".") if old_val else "0"
+                                new_display = f"Rp {int(new_val):,}".replace(",", ".") if new_val else "0"
+                            else:
+                                old_display = str(old_val) if old_val else "-"
+                                new_display = str(new_val) if new_val else "-"
+                            change_parts.append(f"{label}: {old_display} \u2192 {new_display}")
+                            if field not in ('sales_price', 'purchase_price'):
+                                only_price = False
+
+                # Determine activity type
+                if only_price and change_parts and all('Harga' in p for p in change_parts):
+                    activity_type = 'price_changed'
+                    activity_desc = 'Harga diubah'
+                else:
+                    activity_type = 'updated'
+                    activity_desc = 'Item diperbarui'
+
+                details = ", ".join(change_parts) if change_parts else None
+                user_id = request.state.user.get("user_id")
+                user_name = request.state.user.get("username") or request.state.user.get("email")
+
+                if change_parts:  # Only log if there were actual changes
+                    await conn.execute(
+                        """
+                        INSERT INTO item_activities (item_id, tenant_id, type, description, details, actor_id, actor_name)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        str(item_id), tenant_id, activity_type, activity_desc, details,
+                        user_id if user_id else None,
+                        user_name
+                    )
 
         logger.info(f"Updated item {item_id} for tenant {tenant_id}")
 
@@ -845,11 +931,30 @@ async def get_items_summary(request: Request):
         summary_query = """
             SELECT
                 COUNT(*) as total,
-                COUNT(*) FILTER (WHERE item_type = 'goods') as goods_count,
-                COUNT(*) FILTER (WHERE item_type = 'service') as service_count,
-                COUNT(*) FILTER (WHERE track_inventory = true) as tracked_count
-            FROM products
-            WHERE tenant_id = $1
+                COUNT(*) FILTER (WHERE p.item_type = 'goods') as goods_count,
+                COUNT(*) FILTER (WHERE p.item_type = 'service') as service_count,
+                COUNT(*) FILTER (WHERE p.track_inventory = true) as tracked_count,
+                COUNT(*) FILTER (
+                    WHERE p.track_inventory = true
+                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
+                ) as in_stock_count,
+                COUNT(*) FILTER (
+                    WHERE p.track_inventory = true
+                      AND COALESCE(per.jumlah, 0) > 0
+                      AND p.reorder_level IS NOT NULL
+                      AND COALESCE(per.jumlah, 0) <= p.reorder_level
+                ) as low_stock_count,
+                COUNT(*) FILTER (
+                    WHERE p.track_inventory = true
+                      AND COALESCE(per.jumlah, 0) <= 0
+                ) as out_of_stock_count
+            FROM products p
+            LEFT JOIN LATERAL (
+                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
+                FROM persediaan
+                WHERE product_id = p.id AND tenant_id = p.tenant_id
+            ) per ON true
+            WHERE p.tenant_id = $1
         """
         row = await conn.fetchrow(summary_query, tenant_id)
 
@@ -859,12 +964,650 @@ async def get_items_summary(request: Request):
                 "total": row['total'] or 0,
                 "goods_count": row['goods_count'] or 0,
                 "service_count": row['service_count'] or 0,
-                "tracked_count": row['tracked_count'] or 0
+                "tracked_count": row['tracked_count'] or 0,
+                "in_stock_count": row['in_stock_count'] or 0,
+                "low_stock_count": row['low_stock_count'] or 0,
+                "out_of_stock_count": row['out_of_stock_count'] or 0
             }
         )
 
     except Exception as e:
         logger.error(f"Error getting summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# STATS
+# =============================================================================
+
+@router.get("/items/stats", response_model=ItemsStatsResponse)
+async def get_items_stats(request: Request):
+    """
+    Get aggregate item statistics.
+
+    Stock counts are only for items with item_type='goods' AND track_inventory=true.
+    - inStock: current_stock > reorder_level
+    - lowStock: current_stock > 0 AND current_stock <= reorder_level
+    - outOfStock: current_stock = 0 OR current_stock IS NULL
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        stats_query = """
+            SELECT
+                COUNT(*) as total_items,
+                COUNT(*) FILTER (WHERE p.item_type = 'goods') as total_goods,
+                COUNT(*) FILTER (WHERE p.item_type = 'service') as total_services,
+                COUNT(*) FILTER (
+                    WHERE p.item_type = 'goods'
+                      AND p.track_inventory = true
+                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
+                ) as in_stock,
+                COUNT(*) FILTER (
+                    WHERE p.item_type = 'goods'
+                      AND p.track_inventory = true
+                      AND COALESCE(per.jumlah, 0) > 0
+                      AND COALESCE(p.reorder_level, 0) > 0
+                      AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
+                ) as low_stock,
+                COUNT(*) FILTER (
+                    WHERE p.item_type = 'goods'
+                      AND p.track_inventory = true
+                      AND (per.jumlah IS NULL OR per.jumlah = 0)
+                ) as out_of_stock
+            FROM products p
+            LEFT JOIN LATERAL (
+                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
+                FROM persediaan
+                WHERE product_id = p.id AND tenant_id = p.tenant_id
+            ) per ON true
+            WHERE p.tenant_id = $1
+        """
+        row = await conn.fetchrow(stats_query, tenant_id)
+
+        return ItemsStatsResponse(
+            totalItems=row['total_items'] or 0,
+            totalGoods=row['total_goods'] or 0,
+            totalServices=row['total_services'] or 0,
+            stock=ItemsStatsStockResponse(
+                inStock=row['in_stock'] or 0,
+                lowStock=row['low_stock'] or 0,
+                outOfStock=row['out_of_stock'] or 0
+            )
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting item stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# CATEGORIES
+# =============================================================================
+
+@router.get("/items/categories", response_model=CategoryListResponse)
+async def list_categories(request: Request):
+    """Get list of categories for the current tenant."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        query = """
+            SELECT DISTINCT kategori
+            FROM products
+            WHERE tenant_id = $1 AND kategori IS NOT NULL AND kategori != ''
+            ORDER BY kategori ASC
+        """
+        rows = await conn.fetch(query, tenant_id)
+        categories = [row['kategori'] for row in rows]
+
+        return CategoryListResponse(success=True, categories=categories)
+
+    except Exception as e:
+        logger.error(f"Error listing categories: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.post("/items/categories", response_model=CreateCategoryResponse)
+async def create_category(request: Request, body: CreateCategoryRequest):
+    """
+    Register a new category. Categories are stored as strings on products.
+    This endpoint validates uniqueness and returns the category name.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Check if category already exists
+        existing = await conn.fetchval(
+            "SELECT kategori FROM products WHERE tenant_id = $1 AND kategori = $2 LIMIT 1",
+            tenant_id, body.name
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Kategori sudah ada")
+
+        return CreateCategoryResponse(
+            success=True,
+            message=f"Kategori '{body.name}' siap digunakan",
+            category=body.name
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# ACTIVITY LOG
+# =============================================================================
+
+@router.get("/items/{item_id}/activity", response_model=ItemActivityResponse)
+async def get_item_activity(
+    request: Request,
+    item_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0)
+):
+    """Get activity log / audit trail for an item."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Verify item exists
+        item_exists = await conn.fetchval(
+            "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
+            str(item_id), tenant_id
+        )
+        if not item_exists:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Get total count
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM item_activities WHERE item_id = $1 AND tenant_id = $2",
+            str(item_id), tenant_id
+        )
+
+        # Get activities
+        query = """
+            SELECT id, type, description, details, actor_name, timestamp
+            FROM item_activities
+            WHERE item_id = $1 AND tenant_id = $2
+            ORDER BY timestamp DESC
+            LIMIT $3 OFFSET $4
+        """
+        rows = await conn.fetch(query, str(item_id), tenant_id, limit, offset)
+
+        activities = [
+            ItemActivity(
+                id=str(row['id']),
+                type=row['type'],
+                description=row['description'],
+                details=row.get('details'),
+                actor_name=row.get('actor_name'),
+                timestamp=row['timestamp'].isoformat() if row['timestamp'] else None
+            )
+            for row in rows
+        ]
+
+        return ItemActivityResponse(
+            success=True,
+            activities=activities,
+            total=total or 0,
+            has_more=(offset + limit) < (total or 0)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting item activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# GET ITEM DETAIL
+# =============================================================================
+
+@router.get("/items/{item_id}", response_model=ItemDetailResponse)
+async def get_item(request: Request, item_id: UUID):
+    """Get detailed information about a specific item including unit conversions."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Get item
+        item_query = """
+            SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value
+            FROM products p
+            LEFT JOIN LATERAL (
+                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
+                FROM persediaan
+                WHERE product_id = p.id AND tenant_id = p.tenant_id
+            ) per ON true
+            WHERE p.id = $1 AND p.tenant_id = $2
+        """
+        row = await conn.fetchrow(item_query, str(item_id), tenant_id)
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Get unit conversions
+        conversions_query = """
+            SELECT * FROM unit_conversions
+            WHERE product_id = $1 AND tenant_id = $2 AND is_active = true
+            ORDER BY conversion_factor ASC
+        """
+        conversion_rows = await conn.fetch(conversions_query, str(item_id), tenant_id)
+
+        conversions = [
+            {
+                "id": str(c['id']),
+                "base_unit": c['base_unit'],
+                "conversion_unit": c['conversion_unit'],
+                "conversion_factor": c['conversion_factor'],
+                "purchase_price": c.get('purchase_price'),
+                "sales_price": c.get('sales_price'),
+                "is_active": c.get('is_active', True)
+            }
+            for c in conversion_rows
+        ]
+
+        return ItemDetailResponse(
+            success=True,
+            data={
+                "id": str(row['id']),
+                "name": row['nama_produk'],
+                "item_type": row.get('item_type', 'goods'),
+                "track_inventory": row.get('track_inventory', True),
+                "base_unit": row.get('base_unit') or row['satuan'],
+                "barcode": row.get('barcode'),
+                "kategori": row.get('kategori'),
+                "deskripsi": row.get('deskripsi'),
+                "is_returnable": row.get('is_returnable', True),
+                "image_url": row.get('image_url'),
+                "reorder_level": float(row['reorder_level']) if row.get('reorder_level') else None,
+                "reorder_point": int(row['reorder_level']) if row.get('reorder_level') else 0,
+                "preferred_vendor_id": str(row['preferred_vendor_id']) if row.get('preferred_vendor_id') else None,
+                "sales_account": row.get('sales_account', 'Sales'),
+                "purchase_account": row.get('purchase_account', 'Cost of Goods Sold'),
+                "sales_account_id": str(row['sales_account_id']) if row.get('sales_account_id') else None,
+                "purchase_account_id": str(row['purchase_account_id']) if row.get('purchase_account_id') else None,
+                "sales_tax": row.get('sales_tax'),
+                "purchase_tax": row.get('purchase_tax'),
+                "sales_price": row.get('sales_price') or row.get('harga_jual'),
+                "purchase_price": row.get('purchase_price'),
+                "current_stock": row.get('current_stock'),
+                "stock_value": row.get('stock_value'),
+                "conversions": conversions,
+                "created_at": row['created_at'].isoformat() if row['created_at'] else None,
+                "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# TRANSACTIONS (Tab Riwayat)
+# =============================================================================
+
+@router.get("/items/{item_id}/transactions", response_model=ItemTransactionsResponse)
+async def get_item_transactions(
+    request: Request,
+    item_id: UUID,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0)
+):
+    """Get transaction history for an item (purchases, sales, adjustments)."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Verify item exists
+        item_exists = await conn.fetchval(
+            "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
+            str(item_id), tenant_id
+        )
+        if not item_exists:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Query transaction history from item_transaksi + transaksi_harian
+        tx_query = """
+            SELECT
+                it.id::text,
+                to_char(to_timestamp(th.timestamp / 1000), 'YYYY-MM-DD') as date,
+                th.jenis_transaksi as transaction_type,
+                th.id as document_number,
+                CASE
+                    WHEN th.jenis_transaksi IN ('pembelian', 'purchase', 'stock_in', 'adjustment_in', 'penerimaan_barang')
+                    THEN ABS(COALESCE(it.jumlah, 0))
+                    ELSE -ABS(COALESCE(it.jumlah, 0))
+                END as qty_change,
+                it.harga_satuan as unit_price,
+                it.subtotal as total,
+                it.keterangan as notes
+            FROM item_transaksi it
+            JOIN transaksi_harian th ON th.id = it.transaksi_id
+            WHERE it.produk_id = $1 AND th.tenant_id = $2
+            ORDER BY th.timestamp DESC, th.created_at DESC
+            LIMIT $3 OFFSET $4
+        """
+        rows = await conn.fetch(tx_query, str(item_id), tenant_id, limit, offset)
+
+        # Get total count
+        count = await conn.fetchval(
+            """SELECT COUNT(*) FROM item_transaksi it
+               JOIN transaksi_harian th ON th.id = it.transaksi_id
+               WHERE it.produk_id = $1 AND th.tenant_id = $2""",
+            str(item_id), tenant_id
+        )
+
+        transactions = [
+            ItemTransaction(
+                id=row.get('id'),
+                date=row['date'] or '',
+                transaction_type=row.get('transaction_type', 'unknown'),
+                document_number=row.get('document_number'),
+                qty_change=float(row.get('qty_change', 0)),
+                unit_price=float(row['unit_price']) if row.get('unit_price') else None,
+                total=float(row['total']) if row.get('total') else None,
+                notes=row.get('notes'),
+            )
+            for row in rows
+        ]
+
+        return ItemTransactionsResponse(
+            success=True,
+            transactions=transactions,
+            total=count or 0,
+            has_more=(offset + limit) < (count or 0)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting item transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# RELATED DOCUMENTS (Tab Terkait)
+# =============================================================================
+
+@router.get("/items/{item_id}/related", response_model=ItemRelatedResponse)
+async def get_item_related(request: Request, item_id: UUID):
+    """Get related documents (invoices, bills) for an item."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Verify item exists
+        item_exists = await conn.fetchval(
+            "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
+            str(item_id), tenant_id
+        )
+        if not item_exists:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Related invoices (sales)
+        invoices = []
+        try:
+            inv_query = """
+                SELECT
+                    si.id::text,
+                    si.invoice_number as document_number,
+                    si.invoice_date::text as date,
+                    si.customer_name as counterparty,
+                    sii.quantity as qty,
+                    sii.unit_price,
+                    sii.total as total,
+                    si.status
+                FROM sales_invoice_items sii
+                JOIN sales_invoices si ON si.id = sii.invoice_id
+                WHERE sii.item_id = $1 AND si.tenant_id = $2
+                ORDER BY si.invoice_date DESC
+                LIMIT 20
+            """
+            inv_rows = await conn.fetch(inv_query, str(item_id), tenant_id)
+            invoices = [
+                RelatedDocument(
+                    id=row['id'],
+                    document_type='invoice',
+                    document_number=row.get('document_number'),
+                    date=row.get('date'),
+                    counterparty=row.get('counterparty'),
+                    qty=float(row['qty']) if row.get('qty') else None,
+                    unit_price=float(row['unit_price']) if row.get('unit_price') else None,
+                    total=float(row['total']) if row.get('total') else None,
+                    status=row.get('status'),
+                )
+                for row in inv_rows
+            ]
+        except Exception as e:
+            logger.warning(f"Could not fetch related invoices: {e}")
+
+        # Related bills (purchases)
+        bills = []
+        try:
+            bill_query = """
+                SELECT
+                    b.id::text,
+                    b.invoice_number as document_number,
+                    b.issue_date::text as date,
+                    b.vendor_name as counterparty,
+                    bi.quantity as qty,
+                    bi.unit_price,
+                    bi.total as total,
+                    b.status
+                FROM bill_items bi
+                JOIN bills b ON b.id = bi.bill_id
+                WHERE bi.product_id = $1 AND b.tenant_id = $2
+                ORDER BY b.issue_date DESC
+                LIMIT 20
+            """
+            bill_rows = await conn.fetch(bill_query, str(item_id), tenant_id)
+            bills = [
+                RelatedDocument(
+                    id=row['id'],
+                    document_type='bill',
+                    document_number=row.get('document_number'),
+                    date=row.get('date'),
+                    counterparty=row.get('counterparty'),
+                    qty=float(row['qty']) if row.get('qty') else None,
+                    unit_price=float(row['unit_price']) if row.get('unit_price') else None,
+                    total=float(row['total']) if row.get('total') else None,
+                    status=row.get('status'),
+                )
+                for row in bill_rows
+            ]
+        except Exception as e:
+            logger.warning(f"Could not fetch related bills: {e}")
+
+        return ItemRelatedResponse(
+            success=True,
+            invoices=invoices,
+            bills=bills,
+            purchase_orders=[]  # PO table may not exist yet
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting related documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
+# DUPLICATE ITEM
+# =============================================================================
+
+@router.post("/items/{item_id}/duplicate", response_model=CreateItemResponse)
+async def duplicate_item(request: Request, item_id: UUID):
+    """Duplicate an existing item with '(Copy)' suffix. Does not copy stock or images."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        # Fetch original item
+        item_row = await conn.fetchrow(
+            "SELECT * FROM products WHERE id = $1 AND tenant_id = $2",
+            str(item_id), tenant_id
+        )
+        if not item_row:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Generate copy name
+        original_name = item_row['nama_produk']
+        copy_name = f"{original_name} (Copy)"
+
+        # Ensure unique name
+        suffix = 1
+        while await conn.fetchval(
+            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2",
+            tenant_id, copy_name
+        ):
+            suffix += 1
+            copy_name = f"{original_name} (Copy {suffix})"
+
+        async with conn.transaction():
+            # Insert duplicate (without stock, image, barcode)
+            new_id = await conn.fetchval(
+                """
+                INSERT INTO products (
+                    tenant_id, nama_produk, satuan, base_unit, kategori, deskripsi,
+                    item_type, track_inventory, is_returnable,
+                    sales_account, purchase_account, sales_tax, purchase_tax,
+                    sales_price, purchase_price, harga_jual,
+                    reorder_level, preferred_vendor_id,
+                    sales_account_id, purchase_account_id,
+                    created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6,
+                    $7, $8, $9,
+                    $10, $11, $12, $13,
+                    $14, $15, $16,
+                    $17, $18,
+                    $19, $20,
+                    NOW(), NOW()
+                )
+                RETURNING id
+                """,
+                tenant_id,
+                copy_name,
+                item_row.get('satuan'),
+                item_row.get('base_unit') or item_row.get('satuan'),
+                item_row.get('kategori'),
+                item_row.get('deskripsi'),
+                item_row.get('item_type', 'goods'),
+                item_row.get('track_inventory', True),
+                item_row.get('is_returnable', True),
+                item_row.get('sales_account', 'Sales'),
+                item_row.get('purchase_account', 'Cost of Goods Sold'),
+                item_row.get('sales_tax'),
+                item_row.get('purchase_tax'),
+                item_row.get('sales_price'),
+                item_row.get('purchase_price'),
+                item_row.get('sales_price'),  # harga_jual
+                float(item_row['reorder_level']) if item_row.get('reorder_level') else None,
+                str(item_row['preferred_vendor_id']) if item_row.get('preferred_vendor_id') else None,
+                str(item_row['sales_account_id']) if item_row.get('sales_account_id') else None,
+                str(item_row['purchase_account_id']) if item_row.get('purchase_account_id') else None,
+            )
+
+            # Duplicate unit conversions
+            conversions = await conn.fetch(
+                "SELECT * FROM unit_conversions WHERE product_id = $1 AND tenant_id = $2 AND is_active = true",
+                str(item_id), tenant_id
+            )
+            for conv in conversions:
+                await conn.execute(
+                    """
+                    INSERT INTO unit_conversions (
+                        tenant_id, product_id, base_unit, conversion_unit, conversion_factor,
+                        purchase_price, sales_price, is_active, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW(), NOW())
+                    """,
+                    tenant_id, new_id,
+                    conv['base_unit'], conv['conversion_unit'], conv['conversion_factor'],
+                    conv.get('purchase_price'), conv.get('sales_price')
+                )
+
+            # Create initial stock entry if tracked
+            if item_row.get('track_inventory') and item_row.get('item_type') == 'goods':
+                await conn.execute(
+                    """
+                    INSERT INTO persediaan (
+                        id, tenant_id, product_id, produk_id, lokasi_gudang, jumlah,
+                        nilai_per_unit, total_nilai, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, 'gudang_utama', 0, $5, 0, NOW(), NOW())
+                    """,
+                    str(uuid.uuid4()), tenant_id, new_id, str(new_id),
+                    item_row.get('purchase_price') or 0
+                )
+
+        logger.info(f"Duplicated item {item_id} -> {new_id} for tenant {tenant_id}")
+
+        return CreateItemResponse(
+            success=True,
+            message=f"Item '{copy_name}' berhasil diduplikasi",
+            data={
+                "id": str(new_id),
+                "name": copy_name,
+                "item_type": item_row.get('item_type', 'goods'),
+                "source_id": str(item_id)
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error duplicating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:

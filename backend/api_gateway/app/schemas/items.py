@@ -82,6 +82,17 @@ class CreateItemRequest(BaseModel):
     sales_price: Optional[float] = Field(None, ge=0, description="Default sales price (base unit)")
     purchase_price: Optional[float] = Field(None, ge=0, description="Default purchase price (base unit)")
 
+    # Image
+    image_url: Optional[str] = Field(None, description="Primary product image URL")
+
+    # Reorder & Vendor
+    reorder_level: Optional[float] = Field(None, ge=0, description="Reorder point (stock level trigger)")
+    preferred_vendor_id: Optional[str] = Field(None, description="Preferred vendor UUID")
+
+    # Account IDs (CoA references)
+    sales_account_id: Optional[str] = Field(None, description="Sales account UUID from CoA")
+    purchase_account_id: Optional[str] = Field(None, description="Purchase/COGS account UUID from CoA")
+
     # Unit conversions (goods only)
     conversions: List[UnitConversionInput] = Field(default_factory=list, description="Unit conversions")
 
@@ -121,15 +132,26 @@ class UpdateItemRequest(BaseModel):
     deskripsi: Optional[str] = None
     is_returnable: Optional[bool] = None
 
-    # Accounts
+    # Accounts (string names - legacy)
     sales_account: Optional[str] = Field(None, max_length=100)
     purchase_account: Optional[str] = Field(None, max_length=100)
     sales_tax: Optional[str] = Field(None, max_length=50)
     purchase_tax: Optional[str] = Field(None, max_length=50)
 
+    # Account IDs (CoA references)
+    sales_account_id: Optional[str] = None
+    purchase_account_id: Optional[str] = None
+
     # Base pricing
     sales_price: Optional[float] = Field(None, ge=0)
     purchase_price: Optional[float] = Field(None, ge=0)
+
+    # Image
+    image_url: Optional[str] = None
+
+    # Reorder & Vendor
+    reorder_level: Optional[float] = Field(None, ge=0)
+    preferred_vendor_id: Optional[str] = None
 
     # Unit conversions (replace all)
     conversions: Optional[List[UnitConversionUpdate]] = None
@@ -163,6 +185,14 @@ class UnitConversionResponse(BaseModel):
 # RESPONSE MODELS - Item
 # =============================================================================
 
+class ItemListConversion(BaseModel):
+    """Unit conversion in list item response (simplified)."""
+    conversion_unit: str
+    conversion_factor: int
+    purchase_price: Optional[float] = None
+    sales_price: Optional[float] = None
+
+
 class ItemListItem(BaseModel):
     """Item for list responses."""
     id: UUID
@@ -172,12 +202,22 @@ class ItemListItem(BaseModel):
     base_unit: str
     barcode: Optional[str] = None
     kategori: Optional[str] = None
+    deskripsi: Optional[str] = None
     is_returnable: bool
     sales_price: Optional[float] = None
     purchase_price: Optional[float] = None
+    image_url: Optional[str] = None
+    reorder_level: Optional[float] = None
+    reorder_point: Optional[int] = None
+    vendor_name: Optional[str] = None
+    sales_tax: Optional[str] = None
+    purchase_tax: Optional[str] = None
     # Stock info (only for track_inventory=true)
     current_stock: Optional[float] = None
     stock_value: Optional[float] = None
+    low_stock: bool = False
+    # Unit conversions
+    conversions: List[ItemListConversion] = []
     created_at: datetime
     updated_at: datetime
 
@@ -288,3 +328,109 @@ class ItemsSummaryResponse(BaseModel):
     """Response for items summary endpoint."""
     success: bool = True
     data: Dict[str, Any]
+
+
+class ItemsStatsStockResponse(BaseModel):
+    """Stock breakdown in stats response."""
+    inStock: int = 0
+    lowStock: int = 0
+    outOfStock: int = 0
+
+
+class ItemsStatsResponse(BaseModel):
+    """Response for items stats endpoint."""
+    totalItems: int = 0
+    totalGoods: int = 0
+    totalServices: int = 0
+    stock: ItemsStatsStockResponse = Field(default_factory=ItemsStatsStockResponse)
+
+
+# =============================================================================
+# RESPONSE MODELS - Transactions (Tab Riwayat)
+# =============================================================================
+
+class ItemTransaction(BaseModel):
+    """Single transaction entry for an item."""
+    id: Optional[str] = None
+    date: str
+    transaction_type: str  # 'purchase', 'sales', 'adjustment'
+    document_number: Optional[str] = None
+    qty_change: float  # positive = in, negative = out
+    unit_price: Optional[float] = None
+    total: Optional[float] = None
+    stock_balance: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class ItemTransactionsResponse(BaseModel):
+    """Response for item transactions endpoint."""
+    success: bool = True
+    transactions: List[ItemTransaction] = []
+    total: int = 0
+    has_more: bool = False
+
+
+# =============================================================================
+# RESPONSE MODELS - Related Documents (Tab Terkait)
+# =============================================================================
+
+class RelatedDocument(BaseModel):
+    """A document related to this item (invoice, bill, PO)."""
+    id: str
+    document_type: str  # 'invoice', 'bill', 'purchase_order'
+    document_number: Optional[str] = None
+    date: Optional[str] = None
+    counterparty: Optional[str] = None  # customer or vendor name
+    qty: Optional[float] = None
+    unit_price: Optional[float] = None
+    total: Optional[float] = None
+    status: Optional[str] = None
+
+
+class ItemRelatedResponse(BaseModel):
+    """Response for item related documents endpoint."""
+    success: bool = True
+    invoices: List[RelatedDocument] = []
+    bills: List[RelatedDocument] = []
+    purchase_orders: List[RelatedDocument] = []
+
+
+# =============================================================================
+# REQUEST/RESPONSE - Categories
+# =============================================================================
+
+class CreateCategoryRequest(BaseModel):
+    """Request to create a new category."""
+    name: str = Field(..., min_length=1, max_length=100, description="Category name")
+
+
+class CreateCategoryResponse(BaseModel):
+    """Response for create category."""
+    success: bool = True
+    message: str = ""
+    category: str = ""
+
+
+class CategoryListResponse(BaseModel):
+    """Response for list categories."""
+    success: bool = True
+    categories: List[str] = []
+
+
+# =============================================================================
+# RESPONSE MODELS - Activity Log
+# =============================================================================
+
+class ItemActivity(BaseModel):
+    id: str
+    type: str
+    description: str
+    actor_name: Optional[str] = None
+    timestamp: str
+    details: Optional[str] = None
+
+class ItemActivityResponse(BaseModel):
+    success: bool
+    activities: List[ItemActivity]
+    total: int
+    has_more: bool
