@@ -322,6 +322,10 @@ async def get_vendor(request: Request, vendor_id: UUID):
                 SELECT id, code, name, contact_person, phone, email,
                        address, city, province, postal_code, tax_id,
                        payment_terms_days, credit_limit, notes,
+                       account_number, vendor_type,
+                       bank_name, bank_account_number, bank_account_holder,
+                       tax_address, tax_city, tax_province, tax_postal_code,
+                       opening_balance, opening_balance_date,
                        is_active, created_at, updated_at
                 FROM vendors
                 WHERE id = $1 AND tenant_id = $2
@@ -348,6 +352,21 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "payment_terms_days": row["payment_terms_days"],
                     "credit_limit": row["credit_limit"],
                     "notes": row["notes"],
+                    # Extended fields
+                    "account_number": row["account_number"],
+                    "vendor_type": row["vendor_type"],
+                    "bank_name": row["bank_name"],
+                    "bank_account_number": row["bank_account_number"],
+                    "bank_account_holder": row["bank_account_holder"],
+                    "tax_address": row["tax_address"],
+                    "tax_city": row["tax_city"],
+                    "tax_province": row["tax_province"],
+                    "tax_postal_code": row["tax_postal_code"],
+                    "opening_balance": row["opening_balance"],
+                    "opening_balance_date": row["opening_balance_date"].isoformat()
+                    if row["opening_balance_date"]
+                    else None,
+                    # Status and timestamps
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
@@ -634,6 +653,68 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
     except Exception as e:
         logger.error(f"Error updating vendor {vendor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update vendor")
+
+
+# =============================================================================
+# TOGGLE VENDOR STATUS
+# =============================================================================
+@router.patch("/{vendor_id}/status", response_model=VendorResponse)
+async def toggle_vendor_status(
+    request: Request,
+    vendor_id: UUID,
+    status: Literal["active", "inactive"] = Query(..., description="New status"),
+):
+    """
+    Toggle vendor active/inactive status.
+
+    This is a convenience endpoint for quickly changing vendor status.
+    Equivalent to PATCH /vendors/:id with { is_active: true/false }
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Check if vendor exists
+            existing = await conn.fetchrow(
+                "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
+                vendor_id,
+                ctx["tenant_id"],
+            )
+            if not existing:
+                raise HTTPException(status_code=404, detail="Vendor not found")
+
+            is_active = status == "active"
+
+            # Update status
+            await conn.execute(
+                """
+                UPDATE vendors
+                SET is_active = $1, updated_at = NOW()
+                WHERE id = $2 AND tenant_id = $3
+                """,
+                is_active,
+                vendor_id,
+                ctx["tenant_id"],
+            )
+
+            logger.info(f"Vendor status changed: {vendor_id}, status={status}")
+
+            return {
+                "success": True,
+                "message": "Status vendor berhasil diubah",
+                "data": {
+                    "id": str(vendor_id),
+                    "name": existing["name"],
+                    "is_active": is_active,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling vendor status {vendor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update vendor status")
 
 
 # =============================================================================
