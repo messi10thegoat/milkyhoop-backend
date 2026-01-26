@@ -19,6 +19,7 @@ from ..schemas.vendors import (
     VendorDetailResponse,
     VendorAutocompleteResponse,
     VendorBalanceResponse,
+    VendorDuplicateCheckResponse,
 )
 from ..config import settings
 
@@ -35,17 +36,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -55,10 +53,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -77,7 +72,7 @@ async def health_check():
 async def autocomplete_vendors(
     request: Request,
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(10, ge=1, le=50)
+    limit: int = Query(10, ge=1, le=50),
 ):
     """
     Quick vendor search for autocomplete in forms.
@@ -116,6 +111,103 @@ async def autocomplete_vendors(
     except Exception as e:
         logger.error(f"Error in vendor autocomplete: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Autocomplete failed")
+
+
+# =============================================================================
+# DUPLICATE CHECK (for form validation)
+# =============================================================================
+@router.get("/check-duplicate", response_model=VendorDuplicateCheckResponse)
+async def check_duplicate(
+    request: Request,
+    nama: Optional[str] = Query(None, description="Vendor name to check"),
+    npwp: Optional[str] = Query(None, description="NPWP to check"),
+    excludeId: Optional[str] = Query(
+        None, description="Vendor ID to exclude (for edit mode)"
+    ),
+):
+    """
+    Check for potential duplicate vendors by name or NPWP.
+
+    Used for form validation before creating/updating vendors.
+
+    **Returns:**
+    - `byName`: Vendors with similar names (case-insensitive, partial match)
+    - `byNpwp`: Vendors with exact NPWP match
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        by_name = []
+        by_npwp = []
+
+        async with pool.acquire() as conn:
+            # Check by name (partial match, case-insensitive)
+            if nama and nama.strip():
+                name_query = """
+                    SELECT id, name, company_name, tax_id
+                    FROM vendors
+                    WHERE tenant_id = $1
+                      AND is_active = true
+                      AND name ILIKE $2
+                """
+                params = [ctx["tenant_id"], f"%{nama.strip()}%"]
+
+                if excludeId:
+                    name_query += " AND id != $3"
+                    params.append(UUID(excludeId))
+
+                name_query += " LIMIT 10"
+
+                rows = await conn.fetch(name_query, *params)
+                by_name = [
+                    {
+                        "id": str(row["id"]),
+                        "name": row["name"],
+                        "company": row["company_name"],
+                        "npwp": row["tax_id"],
+                    }
+                    for row in rows
+                ]
+
+            # Check by NPWP (exact match after normalization)
+            if npwp and npwp.strip():
+                # Normalize NPWP: remove dots and dashes
+                normalized_npwp = npwp.replace(".", "").replace("-", "").strip()
+
+                npwp_query = """
+                    SELECT id, name, company_name, tax_id
+                    FROM vendors
+                    WHERE tenant_id = $1
+                      AND is_active = true
+                      AND REPLACE(REPLACE(tax_id, '.', ''), '-', '') = $2
+                """
+                params = [ctx["tenant_id"], normalized_npwp]
+
+                if excludeId:
+                    npwp_query += " AND id != $3"
+                    params.append(UUID(excludeId))
+
+                npwp_query += " LIMIT 10"
+
+                rows = await conn.fetch(npwp_query, *params)
+                by_npwp = [
+                    {
+                        "id": str(row["id"]),
+                        "name": row["name"],
+                        "company": row["company_name"],
+                        "npwp": row["tax_id"],
+                    }
+                    for row in rows
+                ]
+
+        return {"byName": by_name, "byNpwp": by_npwp}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking vendor duplicates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Duplicate check failed")
 
 
 # =============================================================================
@@ -169,7 +261,7 @@ async def list_vendors(
                 "name": "name",
                 "code": "code",
                 "created_at": "created_at",
-                "updated_at": "updated_at"
+                "updated_at": "updated_at",
             }
             sort_field = valid_sorts.get(sort_by, "name")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -206,11 +298,7 @@ async def list_vendors(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -263,7 +351,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
-                }
+                },
             }
 
     except HTTPException:
@@ -300,7 +388,8 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
             # Check if vendor exists
             vendor = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, ctx["tenant_id"]
+                vendor_id,
+                ctx["tenant_id"],
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
@@ -353,7 +442,7 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
                     "overdue_amount": int(balance["overdue_amount"] or 0),
                     "total_billed": int(balance["total_billed"] or 0),
                     "total_paid": int(balance["total_paid"] or 0),
-                }
+                },
             }
 
     except HTTPException:
@@ -383,28 +472,31 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
             # Check for duplicate name
             existing = await conn.fetchval(
                 "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
-                ctx["tenant_id"], body.name
+                ctx["tenant_id"],
+                body.name,
             )
             if existing:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Vendor with name '{body.name}' already exists"
+                    detail=f"Vendor with name '{body.name}' already exists",
                 )
 
             # Check for duplicate code if provided
             if body.code:
                 existing_code = await conn.fetchval(
                     "SELECT id FROM vendors WHERE tenant_id = $1 AND code = $2",
-                    ctx["tenant_id"], body.code
+                    ctx["tenant_id"],
+                    body.code,
                 )
                 if existing_code:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Vendor with code '{body.code}' already exists"
+                        detail=f"Vendor with code '{body.code}' already exists",
                     )
 
             # Insert vendor
-            vendor_id = await conn.fetchval("""
+            vendor_id = await conn.fetchval(
+                """
                 INSERT INTO vendors (
                     tenant_id, code, name, contact_person, phone, email,
                     address, city, province, postal_code, tax_id,
@@ -426,7 +518,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                 body.payment_terms_days,
                 body.credit_limit,
                 body.notes,
-                ctx["user_id"]
+                ctx["user_id"],
             )
 
             logger.info(f"Vendor created: {vendor_id}, name={body.name}")
@@ -434,11 +526,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
             return {
                 "success": True,
                 "message": "Vendor created successfully",
-                "data": {
-                    "id": str(vendor_id),
-                    "name": body.name,
-                    "code": body.code
-                }
+                "data": {"id": str(vendor_id), "name": body.name, "code": body.code},
             }
 
     except HTTPException:
@@ -466,7 +554,8 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
             # Check if vendor exists
             existing = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, ctx["tenant_id"]
+                vendor_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Vendor not found")
@@ -475,12 +564,14 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
             if body.name and body.name != existing["name"]:
                 duplicate = await conn.fetchval(
                     "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2 AND id != $3",
-                    ctx["tenant_id"], body.name, vendor_id
+                    ctx["tenant_id"],
+                    body.name,
+                    vendor_id,
                 )
                 if duplicate:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Vendor with name '{body.name}' already exists"
+                        detail=f"Vendor with name '{body.name}' already exists",
                     )
 
             # Build update query dynamically
@@ -489,7 +580,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                 return {
                     "success": True,
                     "message": "No changes provided",
-                    "data": {"id": str(vendor_id)}
+                    "data": {"id": str(vendor_id)},
                 }
 
             updates = []
@@ -516,7 +607,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
             return {
                 "success": True,
                 "message": "Vendor updated successfully",
-                "data": {"id": str(vendor_id)}
+                "data": {"id": str(vendor_id)},
             }
 
     except HTTPException:
@@ -545,24 +636,29 @@ async def delete_vendor(request: Request, vendor_id: UUID):
             # Check if vendor exists
             existing = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, ctx["tenant_id"]
+                vendor_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Vendor not found")
 
             # Soft delete
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE vendors
                 SET is_active = false, updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, vendor_id, ctx["tenant_id"])
+            """,
+                vendor_id,
+                ctx["tenant_id"],
+            )
 
             logger.info(f"Vendor soft deleted: {vendor_id}, name={existing['name']}")
 
             return {
                 "success": True,
                 "message": "Vendor deleted successfully",
-                "data": {"id": str(vendor_id), "name": existing["name"]}
+                "data": {"id": str(vendor_id), "name": existing["name"]},
             }
 
     except HTTPException:
