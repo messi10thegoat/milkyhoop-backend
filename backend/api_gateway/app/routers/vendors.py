@@ -500,10 +500,18 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                 INSERT INTO vendors (
                     tenant_id, code, name, contact_person, phone, email,
                     address, city, province, postal_code, tax_id,
-                    payment_terms_days, credit_limit, notes, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    payment_terms_days, credit_limit, notes,
+                    account_number, vendor_type,
+                    bank_name, bank_account_number, bank_account_holder,
+                    tax_address, tax_city, tax_province, tax_postal_code,
+                    opening_balance, opening_balance_date,
+                    created_by
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+                )
                 RETURNING id
-            """,
+                """,
                 ctx["tenant_id"],
                 body.code,
                 body.name,
@@ -518,6 +526,17 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                 body.payment_terms_days,
                 body.credit_limit,
                 body.notes,
+                body.account_number,
+                body.vendor_type,
+                body.bank_name,
+                body.bank_account_number,
+                body.bank_account_holder,
+                body.tax_address,
+                body.tax_city,
+                body.tax_province,
+                body.tax_postal_code,
+                body.opening_balance,
+                body.opening_balance_date,
                 ctx["user_id"],
             )
 
