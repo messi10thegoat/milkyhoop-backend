@@ -284,6 +284,9 @@ async def get_neraca(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date = parse_periode(periode)
+        # Convert to unix timestamp (milliseconds) for bigint column
+        start_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
 
         conn = await get_db_connection()
         try:
@@ -309,7 +312,7 @@ async def get_neraca(
                   AND timestamp <= $3
                   AND status = 'approved'
             """
-            rows = await conn.fetch(query, tenant_id, start_date, end_date)
+            rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # Calculate Aset Lancar
             kas = sum(r['total_nominal'] or 0 for r in rows if r['metode_pembayaran'] == 'tunai' and r['jenis_transaksi'] == 'penjualan')
@@ -447,6 +450,9 @@ async def get_arus_kas(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date = parse_periode(periode)
+        # Convert to unix timestamp (milliseconds) for bigint column
+        start_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
 
         conn = await get_db_connection()
         try:
@@ -468,7 +474,7 @@ async def get_arus_kas(
                   AND timestamp <= $3
                   AND status = 'approved'
             """
-            rows = await conn.fetch(query, tenant_id, start_date, end_date)
+            rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # ARUS KAS OPERASI
             penerimaan_penjualan = sum(r['nominal_dibayar'] or r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
@@ -584,6 +590,9 @@ async def get_laba_rugi(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date = parse_periode(periode)
+        # Convert to unix timestamp (milliseconds) for bigint column
+        start_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
 
         conn = await get_db_connection()
         try:
@@ -601,7 +610,7 @@ async def get_laba_rugi(
                   AND timestamp <= $3
                   AND status = 'approved'
             """
-            rows = await conn.fetch(query, tenant_id, start_date, end_date)
+            rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # PENDAPATAN
             pendapatan_penjualan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
@@ -1065,6 +1074,9 @@ async def get_profit_loss_by_basis(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date = parse_periode(periode)
+        # Convert to unix timestamp (milliseconds) for bigint column
+        start_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
         conn = await get_db_connection()
 
         try:
@@ -1231,6 +1243,9 @@ async def get_cash_accrual_comparison(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date = parse_periode(periode)
+        # Convert to unix timestamp (milliseconds) for bigint column
+        start_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
         conn = await get_db_connection()
 
         try:
@@ -1422,8 +1437,8 @@ async def get_timing_differences(
                     si.invoice_date,
                     si.due_date,
                     si.total_amount,
-                    si.paid_amount,
-                    (si.total_amount - si.paid_amount) as balance_due
+                    si.amount_paid as paid_amount,
+                    (si.total_amount - si.amount_paid) as balance_due
                 FROM sales_invoices si
                 LEFT JOIN customers c ON c.id = si.customer_id
                 WHERE si.tenant_id = $1
@@ -1454,9 +1469,9 @@ async def get_timing_differences(
                     v.name as vendor_name,
                     b.bill_date,
                     b.due_date,
-                    b.total_amount,
-                    b.paid_amount,
-                    (b.total_amount - b.paid_amount) as balance_due
+                    b.grand_total as total_amount,
+                    b.amount_paid as paid_amount,
+                    (b.grand_total - b.amount_paid) as balance_due
                 FROM bills b
                 LEFT JOIN vendors v ON v.id = b.vendor_id
                 WHERE b.tenant_id = $1
@@ -1991,3 +2006,169 @@ async def get_aging_trend(
     except Exception as e:
         logger.error(f"Get aging trend error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get aging trend")
+
+
+# ========================================
+# Drill-Down Report
+# ========================================
+
+from ..schemas.drill_down import (
+    DrillDownTransaction,
+    DrillDownResponse,
+)
+
+
+@router.get("/drill-down", response_model=DrillDownResponse)
+async def get_drill_down(
+    request: Request,
+    account_id: uuid.UUID = Query(..., description="Account ID to drill into"),
+    start_date: date = Query(..., description="Start of period"),
+    end_date: date = Query(..., description="End of period"),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=50, ge=1, le=200, description="Items per page"),
+):
+    """
+    Get transaction details for a specific account.
+
+    Use this to drill down from P&L or Balance Sheet line items
+    to see the underlying journal entries.
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+
+            # Get account info
+            account = await conn.fetchrow("""
+                SELECT id, code, name, type, normal_balance
+                FROM chart_of_accounts
+                WHERE id = $1 AND tenant_id = $2
+            """, account_id, tenant_id)
+
+            if not account:
+                raise HTTPException(status_code=404, detail="Account not found")
+
+            # Calculate opening balance (before start_date)
+            opening_row = await conn.fetchrow("""
+                SELECT
+                    COALESCE(SUM(jl.debit), 0) as total_debit,
+                    COALESCE(SUM(jl.credit), 0) as total_credit
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                WHERE jl.account_id = $1
+                  AND je.tenant_id = $2
+                  AND je.entry_date < $3
+                  AND je.status = 'POSTED'
+            """, account_id, tenant_id, start_date)
+
+            if account['normal_balance'] == 'DEBIT':
+                opening_balance = (opening_row['total_debit'] or 0) - (opening_row['total_credit'] or 0)
+            else:
+                opening_balance = (opening_row['total_credit'] or 0) - (opening_row['total_debit'] or 0)
+
+            # Get total count for pagination
+            total_count = await conn.fetchval("""
+                SELECT COUNT(*)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                WHERE jl.account_id = $1
+                  AND je.tenant_id = $2
+                  AND je.entry_date BETWEEN $3 AND $4
+                  AND je.status = 'POSTED'
+            """, account_id, tenant_id, start_date, end_date)
+
+            # Get transactions with pagination
+            offset = (page - 1) * limit
+            rows = await conn.fetch("""
+                SELECT
+                    je.id as journal_id,
+                    je.journal_number,
+                    je.entry_date,
+                    je.source_type,
+                    je.source_id,
+                    je.description,
+                    jl.memo,
+                    jl.debit,
+                    jl.credit
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                WHERE jl.account_id = $1
+                  AND je.tenant_id = $2
+                  AND je.entry_date BETWEEN $3 AND $4
+                  AND je.status = 'POSTED'
+                ORDER BY je.entry_date, je.created_at
+                OFFSET $5 LIMIT $6
+            """, account_id, tenant_id, start_date, end_date, offset, limit)
+
+            # Calculate running balance and build transactions
+            transactions = []
+            running_balance = opening_balance
+            total_debit = 0
+            total_credit = 0
+
+            for row in rows:
+                debit = row['debit'] or 0
+                credit = row['credit'] or 0
+                total_debit += debit
+                total_credit += credit
+
+                if account['normal_balance'] == 'DEBIT':
+                    running_balance = running_balance + debit - credit
+                else:
+                    running_balance = running_balance + credit - debit
+
+                transactions.append(DrillDownTransaction(
+                    journal_id=row['journal_id'],
+                    journal_number=row['journal_number'],
+                    entry_date=row['entry_date'],
+                    source_type=row['source_type'],
+                    source_id=row['source_id'],
+                    description=row['description'],
+                    memo=row['memo'],
+                    debit=debit,
+                    credit=credit,
+                    running_balance=running_balance,
+                ))
+
+            closing_balance = opening_balance
+            if account['normal_balance'] == 'DEBIT':
+                closing_balance = opening_balance + total_debit - total_credit
+            else:
+                closing_balance = opening_balance + total_credit - total_debit
+
+            logger.info(f"Drill-down generated: tenant={tenant_id}, account={account['code']}, transactions={len(transactions)}")
+
+            return DrillDownResponse(
+                account_id=account['id'],
+                account_code=account['code'],
+                account_name=account['name'],
+                account_type=account['type'],
+                normal_balance=account['normal_balance'],
+                period_start=start_date,
+                period_end=end_date,
+                opening_balance=opening_balance,
+                total_debit=total_debit,
+                total_credit=total_credit,
+                closing_balance=closing_balance,
+                transactions=transactions,
+                pagination={
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "has_more": offset + len(transactions) < total_count,
+                },
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get drill-down error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate drill-down report")

@@ -1,5 +1,4 @@
 """Tests for drill-down report schemas."""
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
@@ -15,6 +14,7 @@ class TestDrillDownSchemas:
             DrillDownResponse,
             DrillDownRequest,
         )
+
         assert DrillDownTransaction is not None
         assert DrillDownResponse is not None
         assert DrillDownRequest is not None
@@ -40,7 +40,7 @@ class TestDrillDownSchemas:
 
     def test_drill_down_response_model(self):
         """DrillDownResponse model validates correctly."""
-        from app.schemas.drill_down import DrillDownResponse, DrillDownTransaction
+        from app.schemas.drill_down import DrillDownResponse
 
         response = DrillDownResponse(
             account_id=uuid4(),

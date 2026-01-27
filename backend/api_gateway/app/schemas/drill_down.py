@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class DrillDownRequest(BaseModel):
     """Request parameters for drill-down query."""
+
     account_id: UUID
     start_date: date
     end_date: date
@@ -20,6 +21,7 @@ class DrillDownRequest(BaseModel):
 
 class DrillDownTransaction(BaseModel):
     """Single transaction in drill-down results."""
+
     journal_id: UUID
     journal_number: str
     entry_date: date
@@ -34,6 +36,7 @@ class DrillDownTransaction(BaseModel):
 
 class DrillDownResponse(BaseModel):
     """Response for drill-down endpoint."""
+
     account_id: UUID
     account_code: str
     account_name: str

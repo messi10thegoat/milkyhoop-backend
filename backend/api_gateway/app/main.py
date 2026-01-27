@@ -93,6 +93,9 @@ from .routers import recipes
 from .routers import kds
 from .routers import tables
 
+# Expenses module
+from .routers import expenses
+
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
 from .routers import ledger
@@ -552,6 +555,9 @@ app.include_router(
 
 # Periods router (Periode Akuntansi)
 app.include_router(periods.router, prefix="/api/periods", tags=["periods"])
+
+# Expenses router (Biaya & Pengeluaran)
+app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 
 
 @app.get("/")
