@@ -4,7 +4,7 @@ Tests for /api/bills/outstanding-summary endpoint.
 Verifies the proper aging-based accounting structure with invariants.
 """
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 
@@ -58,9 +58,9 @@ class TestOutstandingSummaryInvariants:
             + valid_summary_data["overdue_61_90"]
             + valid_summary_data["overdue_90_plus"]
         )
-        assert breakdown_sum == valid_summary_data["overdue_amount"], (
-            "Aging breakdown sum must equal overdue amount"
-        )
+        assert (
+            breakdown_sum == valid_summary_data["overdue_amount"]
+        ), "Aging breakdown sum must equal overdue amount"
 
     def test_invariant_counts_sum_equals_total(self, valid_summary_data):
         """counts.overdue + counts.current == counts.total"""
@@ -271,9 +271,10 @@ class TestOutstandingSummaryEndpoint:
             data = response.json()["data"]
 
             # Invariant 1: by_aging.overdue + by_aging.current == total_outstanding
-            assert data["by_aging"]["overdue"] + data["by_aging"]["current"] == data[
-                "total_outstanding"
-            ]
+            assert (
+                data["by_aging"]["overdue"] + data["by_aging"]["current"]
+                == data["total_outstanding"]
+            )
 
             # Invariant 2: sum(aging_breakdown.*) == by_aging.overdue
             breakdown = data["aging_breakdown"]

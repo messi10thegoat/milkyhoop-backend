@@ -6,10 +6,10 @@ Supports both Cash and Accrual accounting basis.
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
-from typing import Optional, List, Literal, Dict, Any
+from typing import Optional, List, Literal
 import logging
 import asyncpg
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from calendar import monthrange
 import uuid
 
@@ -52,10 +52,7 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
+            **db_config, min_size=2, max_size=10, command_timeout=60
         )
     return _pool
 
@@ -80,6 +77,7 @@ async def get_db_connection():
 # Helper Functions
 # ========================================
 
+
 def parse_periode(periode: str) -> tuple:
     """
     Parse periode string to date range.
@@ -87,9 +85,9 @@ def parse_periode(periode: str) -> tuple:
     Returns: (start_date, end_date) as datetime
     """
     try:
-        if '-Q' in periode:
+        if "-Q" in periode:
             # Quarterly: 2024-Q4
-            year, quarter = periode.split('-Q')
+            year, quarter = periode.split("-Q")
             year = int(year)
             quarter = int(quarter)
             start_month = (quarter - 1) * 3 + 1
@@ -99,7 +97,7 @@ def parse_periode(periode: str) -> tuple:
             end_date = datetime(year, end_month, last_day, 23, 59, 59)
         elif len(periode) == 7:
             # Monthly: 2024-12
-            year, month = map(int, periode.split('-'))
+            year, month = map(int, periode.split("-"))
             start_date = datetime(year, month, 1)
             _, last_day = monthrange(year, month)
             end_date = datetime(year, month, last_day, 23, 59, 59)
@@ -129,6 +127,7 @@ def parse_periode(periode: str) -> tuple:
 # ========================================
 # Response Models
 # ========================================
+
 
 class AsetLancarResponse(BaseModel):
     kas: int
@@ -262,11 +261,9 @@ class LabaRugiResponse(BaseModel):
 # Endpoints
 # ========================================
 
+
 @router.get("/neraca/{periode}", response_model=NeracaResponse)
-async def get_neraca(
-    request: Request,
-    periode: str
-):
+async def get_neraca(request: Request, periode: str):
     """
     Get Laporan Posisi Keuangan (Neraca/Balance Sheet) for a given period.
 
@@ -276,7 +273,7 @@ async def get_neraca(
     - YYYY: Yearly (e.g., 2024)
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -315,9 +312,23 @@ async def get_neraca(
             rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # Calculate Aset Lancar
-            kas = sum(r['total_nominal'] or 0 for r in rows if r['metode_pembayaran'] == 'tunai' and r['jenis_transaksi'] == 'penjualan')
-            bank = sum(r['total_nominal'] or 0 for r in rows if r['metode_pembayaran'] in ['transfer', 'bank'] and r['jenis_transaksi'] == 'penjualan')
-            piutang_usaha = sum(r['sisa_piutang_hutang'] or 0 for r in rows if (r['sisa_piutang_hutang'] or 0) > 0 and r['pihak_type'] == 'customer')
+            kas = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["metode_pembayaran"] == "tunai"
+                and r["jenis_transaksi"] == "penjualan"
+            )
+            bank = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["metode_pembayaran"] in ["transfer", "bank"]
+                and r["jenis_transaksi"] == "penjualan"
+            )
+            piutang_usaha = sum(
+                r["sisa_piutang_hutang"] or 0
+                for r in rows
+                if (r["sisa_piutang_hutang"] or 0) > 0 and r["pihak_type"] == "customer"
+            )
 
             # Get persediaan from persediaan table
             persediaan_query = """
@@ -326,23 +337,56 @@ async def get_neraca(
                 WHERE tenant_id = $1
             """
             persediaan_result = await conn.fetchrow(persediaan_query, tenant_id)
-            persediaan = int(persediaan_result['total']) if persediaan_result else 0
+            persediaan = int(persediaan_result["total"]) if persediaan_result else 0
 
-            beban_dibayar_dimuka = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'beban_dibayar_dimuka' in str(r['jenis_aset']))
-            uang_muka_pembelian = sum(r['nominal_dibayar'] or 0 for r in rows if r['status_pembayaran'] == 'sebagian' and r['jenis_transaksi'] == 'pembelian')
+            beban_dibayar_dimuka = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "beban_dibayar_dimuka" in str(r["jenis_aset"])
+            )
+            uang_muka_pembelian = sum(
+                r["nominal_dibayar"] or 0
+                for r in rows
+                if r["status_pembayaran"] == "sebagian"
+                and r["jenis_transaksi"] == "pembelian"
+            )
 
-            total_aset_lancar = kas + bank + persediaan + piutang_usaha + beban_dibayar_dimuka + uang_muka_pembelian
+            total_aset_lancar = (
+                kas
+                + bank
+                + persediaan
+                + piutang_usaha
+                + beban_dibayar_dimuka
+                + uang_muka_pembelian
+            )
 
             # Calculate Aset Tetap
-            peralatan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'peralatan' in str(r['jenis_aset']))
-            kendaraan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'kendaraan' in str(r['jenis_aset']))
-            bangunan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'bangunan' in str(r['jenis_aset']))
-            tanah = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'tanah' in str(r['jenis_aset']))
+            peralatan = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "peralatan" in str(r["jenis_aset"])
+            )
+            kendaraan = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "kendaraan" in str(r["jenis_aset"])
+            )
+            bangunan = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "bangunan" in str(r["jenis_aset"])
+            )
+            tanah = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "tanah" in str(r["jenis_aset"])
+            )
 
             # Accumulated depreciation
             akum_penyusutan = sum(
-                ((r['penyusutan_per_tahun'] or 0) * (r['umur_manfaat'] or 0)) // 12
-                for r in rows if r['penyusutan_per_tahun']
+                ((r["penyusutan_per_tahun"] or 0) * (r["umur_manfaat"] or 0)) // 12
+                for r in rows
+                if r["penyusutan_per_tahun"]
             )
 
             total_aset_tetap = peralatan + kendaraan + bangunan + tanah
@@ -350,22 +394,51 @@ async def get_neraca(
             total_aset = total_aset_lancar + total_aset_tetap_neto
 
             # Calculate Kewajiban
-            hutang_usaha = sum(r['sisa_piutang_hutang'] or 0 for r in rows if (r['sisa_piutang_hutang'] or 0) > 0 and r['pihak_type'] == 'supplier')
-            hutang_gaji = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'hutang_gaji' and r['status_pembayaran'] == 'belum_lunas')
+            hutang_usaha = sum(
+                r["sisa_piutang_hutang"] or 0
+                for r in rows
+                if (r["sisa_piutang_hutang"] or 0) > 0 and r["pihak_type"] == "supplier"
+            )
+            hutang_gaji = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "hutang_gaji"
+                and r["status_pembayaran"] == "belum_lunas"
+            )
 
             total_kewajiban_jangka_pendek = hutang_usaha + hutang_gaji
             total_kewajiban_jangka_panjang = 0  # TODO: Add bank loan tracking
-            total_kewajiban = total_kewajiban_jangka_pendek + total_kewajiban_jangka_panjang
+            total_kewajiban = (
+                total_kewajiban_jangka_pendek + total_kewajiban_jangka_panjang
+            )
 
             # Calculate Ekuitas
-            modal_awal = sum(r['total_nominal'] or 0 for r in rows if r['is_modal'] and r['jenis_transaksi'] == 'modal_awal')
-            setor_modal = sum(r['total_nominal'] or 0 for r in rows if r['is_modal'] and r['jenis_transaksi'] == 'setor_modal')
-            prive = sum(r['total_nominal'] or 0 for r in rows if r['is_prive'])
+            modal_awal = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["is_modal"] and r["jenis_transaksi"] == "modal_awal"
+            )
+            setor_modal = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["is_modal"] and r["jenis_transaksi"] == "setor_modal"
+            )
+            prive = sum(r["total_nominal"] or 0 for r in rows if r["is_prive"])
 
             # Calculate laba periode
-            pendapatan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
-            beban = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'beban')
-            hpp = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'pembelian')
+            pendapatan = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "penjualan"
+            )
+            beban = sum(
+                r["total_nominal"] or 0 for r in rows if r["jenis_transaksi"] == "beban"
+            )
+            hpp = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "pembelian"
+            )
             laba_periode_berjalan = pendapatan - hpp - beban
 
             total_ekuitas = modal_awal + setor_modal - prive + laba_periode_berjalan
@@ -373,11 +446,13 @@ async def get_neraca(
             # Balance check
             is_balanced = abs(total_aset - (total_kewajiban + total_ekuitas)) < 1000
 
-            logger.info(f"Neraca generated: tenant={tenant_id}, periode={periode}, aset={total_aset}, balanced={is_balanced}")
+            logger.info(
+                f"Neraca generated: tenant={tenant_id}, periode={periode}, aset={total_aset}, balanced={is_balanced}"
+            )
 
             return NeracaResponse(
                 periode=periode,
-                tanggal=end_date.strftime('%d %B %Y'),
+                tanggal=end_date.strftime("%d %B %Y"),
                 aset_lancar=AsetLancarResponse(
                     kas=kas,
                     bank=bank,
@@ -385,18 +460,24 @@ async def get_neraca(
                     piutang_usaha=piutang_usaha,
                     beban_dibayar_dimuka=beban_dibayar_dimuka,
                     uang_muka_pembelian=uang_muka_pembelian,
-                    total=total_aset_lancar
+                    total=total_aset_lancar,
                 ),
                 aset_tetap=AsetTetapResponse(
                     peralatan=peralatan,
-                    akum_penyusutan_peralatan=akum_penyusutan // 3 if akum_penyusutan else 0,
+                    akum_penyusutan_peralatan=akum_penyusutan // 3
+                    if akum_penyusutan
+                    else 0,
                     kendaraan=kendaraan,
-                    akum_penyusutan_kendaraan=akum_penyusutan // 3 if akum_penyusutan else 0,
+                    akum_penyusutan_kendaraan=akum_penyusutan // 3
+                    if akum_penyusutan
+                    else 0,
                     bangunan=bangunan,
-                    akum_penyusutan_bangunan=akum_penyusutan // 3 if akum_penyusutan else 0,
+                    akum_penyusutan_bangunan=akum_penyusutan // 3
+                    if akum_penyusutan
+                    else 0,
                     tanah=tanah,
                     total=total_aset_tetap,
-                    total_neto=total_aset_tetap_neto
+                    total_neto=total_aset_tetap_neto,
                 ),
                 total_aset=total_aset,
                 kewajiban_jangka_pendek=KewajibanJangkaPendekResponse(
@@ -405,11 +486,10 @@ async def get_neraca(
                     uang_muka_pelanggan=0,
                     hutang_pajak=0,
                     hutang_gaji=hutang_gaji,
-                    total=total_kewajiban_jangka_pendek
+                    total=total_kewajiban_jangka_pendek,
                 ),
                 kewajiban_jangka_panjang=KewajibanJangkaPanjangResponse(
-                    hutang_bank=0,
-                    total=total_kewajiban_jangka_panjang
+                    hutang_bank=0, total=total_kewajiban_jangka_panjang
                 ),
                 total_kewajiban=total_kewajiban,
                 ekuitas=EkuitasResponse(
@@ -418,9 +498,9 @@ async def get_neraca(
                     prive=prive,
                     laba_ditahan=0,
                     laba_periode_berjalan=laba_periode_berjalan,
-                    total=total_ekuitas
+                    total=total_ekuitas,
                 ),
-                is_balanced=is_balanced
+                is_balanced=is_balanced,
             )
 
         finally:
@@ -434,15 +514,12 @@ async def get_neraca(
 
 
 @router.get("/arus-kas/{periode}", response_model=ArusKasResponse)
-async def get_arus_kas(
-    request: Request,
-    periode: str
-):
+async def get_arus_kas(request: Request, periode: str):
     """
     Get Laporan Arus Kas (Cash Flow Statement) for a given period.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -477,47 +554,84 @@ async def get_arus_kas(
             rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # ARUS KAS OPERASI
-            penerimaan_penjualan = sum(r['nominal_dibayar'] or r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
+            penerimaan_penjualan = sum(
+                r["nominal_dibayar"] or r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "penjualan"
+            )
             penerimaan_piutang = 0  # TODO: Track piutang payments
             penerimaan_lainnya = 0
-            total_penerimaan_operasi = penerimaan_penjualan + penerimaan_piutang + penerimaan_lainnya
+            total_penerimaan_operasi = (
+                penerimaan_penjualan + penerimaan_piutang + penerimaan_lainnya
+            )
 
-            pembayaran_kulakan = sum(r['nominal_dibayar'] or r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'pembelian')
-            pembayaran_gaji = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_gaji')
-            pembayaran_beban_lain = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'beban' and r['kategori_beban'] != 'beban_gaji')
-            total_pengeluaran_operasi = pembayaran_kulakan + pembayaran_gaji + pembayaran_beban_lain
+            pembayaran_kulakan = sum(
+                r["nominal_dibayar"] or r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "pembelian"
+            )
+            pembayaran_gaji = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_gaji"
+            )
+            pembayaran_beban_lain = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "beban"
+                and r["kategori_beban"] != "beban_gaji"
+            )
+            total_pengeluaran_operasi = (
+                pembayaran_kulakan + pembayaran_gaji + pembayaran_beban_lain
+            )
 
             net_arus_kas_operasi = total_penerimaan_operasi - total_pengeluaran_operasi
 
             # ARUS KAS INVESTASI
-            pembelian_aset = sum(r['total_nominal'] or 0 for r in rows if r['jenis_aset'] and 'aset_tetap' in str(r['jenis_aset']))
+            pembelian_aset = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_aset"] and "aset_tetap" in str(r["jenis_aset"])
+            )
             penjualan_aset = 0
             total_penerimaan_investasi = penjualan_aset
             total_pengeluaran_investasi = pembelian_aset
-            net_arus_kas_investasi = total_penerimaan_investasi - total_pengeluaran_investasi
+            net_arus_kas_investasi = (
+                total_penerimaan_investasi - total_pengeluaran_investasi
+            )
 
             # ARUS KAS PENDANAAN
-            setor_modal = sum(r['total_nominal'] or 0 for r in rows if r['is_modal'])
+            setor_modal = sum(r["total_nominal"] or 0 for r in rows if r["is_modal"])
             penerimaan_pinjaman = 0
             total_penerimaan_pendanaan = setor_modal + penerimaan_pinjaman
 
-            prive = sum(r['total_nominal'] or 0 for r in rows if r['is_prive'])
+            prive = sum(r["total_nominal"] or 0 for r in rows if r["is_prive"])
             pembayaran_pinjaman = 0
-            pembayaran_bunga = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_bunga')
+            pembayaran_bunga = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_bunga"
+            )
             total_pengeluaran_pendanaan = prive + pembayaran_pinjaman + pembayaran_bunga
-            net_arus_kas_pendanaan = total_penerimaan_pendanaan - total_pengeluaran_pendanaan
+            net_arus_kas_pendanaan = (
+                total_penerimaan_pendanaan - total_pengeluaran_pendanaan
+            )
 
             # TOTAL
-            kenaikan_bersih_kas = net_arus_kas_operasi + net_arus_kas_investasi + net_arus_kas_pendanaan
+            kenaikan_bersih_kas = (
+                net_arus_kas_operasi + net_arus_kas_investasi + net_arus_kas_pendanaan
+            )
             kas_awal_periode = 0  # TODO: Get from previous period
             kas_akhir_periode = kas_awal_periode + kenaikan_bersih_kas
 
-            logger.info(f"Arus Kas generated: tenant={tenant_id}, periode={periode}, kas_akhir={kas_akhir_periode}")
+            logger.info(
+                f"Arus Kas generated: tenant={tenant_id}, periode={periode}, kas_akhir={kas_akhir_periode}"
+            )
 
             return ArusKasResponse(
                 periode=periode,
-                tanggal_awal=start_date.strftime('%d %B %Y'),
-                tanggal_akhir=end_date.strftime('%d %B %Y'),
+                tanggal_awal=start_date.strftime("%d %B %Y"),
+                tanggal_akhir=end_date.strftime("%d %B %Y"),
                 operasi=ArusKasOperasiResponse(
                     penerimaan_penjualan=penerimaan_penjualan,
                     penerimaan_piutang=penerimaan_piutang,
@@ -529,7 +643,7 @@ async def get_arus_kas(
                     pembayaran_pajak=0,
                     pembayaran_lainnya=0,
                     total_pengeluaran=total_pengeluaran_operasi,
-                    net_arus_kas_operasi=net_arus_kas_operasi
+                    net_arus_kas_operasi=net_arus_kas_operasi,
                 ),
                 investasi=ArusKasInvestasiResponse(
                     penjualan_aset_tetap=penjualan_aset,
@@ -538,7 +652,7 @@ async def get_arus_kas(
                     pembelian_aset_tetap=pembelian_aset,
                     pengeluaran_investasi=0,
                     total_pengeluaran=total_pengeluaran_investasi,
-                    net_arus_kas_investasi=net_arus_kas_investasi
+                    net_arus_kas_investasi=net_arus_kas_investasi,
                 ),
                 pendanaan=ArusKasPendanaanResponse(
                     setor_modal=setor_modal,
@@ -548,11 +662,11 @@ async def get_arus_kas(
                     pembayaran_pinjaman=pembayaran_pinjaman,
                     pembayaran_bunga=pembayaran_bunga,
                     total_pengeluaran=total_pengeluaran_pendanaan,
-                    net_arus_kas_pendanaan=net_arus_kas_pendanaan
+                    net_arus_kas_pendanaan=net_arus_kas_pendanaan,
                 ),
                 kenaikan_bersih_kas=kenaikan_bersih_kas,
                 kas_awal_periode=kas_awal_periode,
-                kas_akhir_periode=kas_akhir_periode
+                kas_akhir_periode=kas_akhir_periode,
             )
 
         finally:
@@ -562,7 +676,9 @@ async def get_arus_kas(
         raise
     except Exception as e:
         logger.error(f"Get arus kas error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate arus kas report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate arus kas report"
+        )
 
 
 @router.get("/laba-rugi/{periode}", response_model=LabaRugiResponse)
@@ -571,8 +687,8 @@ async def get_laba_rugi(
     periode: str,
     basis: Optional[Literal["cash", "accrual"]] = Query(
         default=None,
-        description="Accounting basis: 'cash' or 'accrual'. If not specified, uses tenant's default setting."
-    )
+        description="Accounting basis: 'cash' or 'accrual'. If not specified, uses tenant's default setting.",
+    ),
 ):
     """
     Get Laporan Laba Rugi (Income Statement) for a given period.
@@ -582,7 +698,7 @@ async def get_laba_rugi(
     - **cash**: Revenue recognized when payment received, expenses when payment made
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -613,46 +729,106 @@ async def get_laba_rugi(
             rows = await conn.fetch(query, tenant_id, start_ts, end_ts)
 
             # PENDAPATAN
-            pendapatan_penjualan = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
-            diskon_penjualan = sum(r['discount_amount'] or 0 for r in rows if r['jenis_transaksi'] == 'penjualan')
+            pendapatan_penjualan = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "penjualan"
+            )
+            diskon_penjualan = sum(
+                r["discount_amount"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "penjualan"
+            )
             pendapatan_lainnya = 0  # TODO: Add other income tracking
-            total_pendapatan = pendapatan_penjualan - diskon_penjualan + pendapatan_lainnya
+            total_pendapatan = (
+                pendapatan_penjualan - diskon_penjualan + pendapatan_lainnya
+            )
 
             # HPP (Harga Pokok Penjualan)
-            hpp = sum(r['total_nominal'] or 0 for r in rows if r['jenis_transaksi'] == 'pembelian')
+            hpp = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "pembelian"
+            )
 
             # LABA KOTOR
             laba_kotor = total_pendapatan - hpp
 
             # BEBAN OPERASIONAL
-            beban_gaji = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_gaji')
-            beban_sewa = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_sewa')
-            beban_listrik = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] in ['beban_listrik', 'beban_utilitas'])
-            beban_transportasi = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_transportasi')
-            beban_penyusutan = sum((r['penyusutan_per_tahun'] or 0) // 12 for r in rows if r['penyusutan_per_tahun'])
+            beban_gaji = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_gaji"
+            )
+            beban_sewa = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_sewa"
+            )
+            beban_listrik = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] in ["beban_listrik", "beban_utilitas"]
+            )
+            beban_transportasi = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_transportasi"
+            )
+            beban_penyusutan = sum(
+                (r["penyusutan_per_tahun"] or 0) // 12
+                for r in rows
+                if r["penyusutan_per_tahun"]
+            )
             beban_lainnya = sum(
-                r['total_nominal'] or 0 for r in rows
-                if r['jenis_transaksi'] == 'beban'
-                and r['kategori_beban'] not in ['beban_gaji', 'beban_sewa', 'beban_listrik', 'beban_utilitas', 'beban_transportasi', 'beban_bunga']
+                r["total_nominal"] or 0
+                for r in rows
+                if r["jenis_transaksi"] == "beban"
+                and r["kategori_beban"]
+                not in [
+                    "beban_gaji",
+                    "beban_sewa",
+                    "beban_listrik",
+                    "beban_utilitas",
+                    "beban_transportasi",
+                    "beban_bunga",
+                ]
             )
 
-            total_beban = beban_gaji + beban_sewa + beban_listrik + beban_transportasi + beban_penyusutan + beban_lainnya
+            total_beban = (
+                beban_gaji
+                + beban_sewa
+                + beban_listrik
+                + beban_transportasi
+                + beban_penyusutan
+                + beban_lainnya
+            )
 
             # LABA OPERASIONAL
             laba_operasional = laba_kotor - total_beban
 
             # PENDAPATAN & BEBAN LAIN
             pendapatan_bunga = 0  # TODO: Add interest income tracking
-            beban_bunga = sum(r['total_nominal'] or 0 for r in rows if r['kategori_beban'] == 'beban_bunga')
+            beban_bunga = sum(
+                r["total_nominal"] or 0
+                for r in rows
+                if r["kategori_beban"] == "beban_bunga"
+            )
 
             # LABA BERSIH
             laba_bersih = laba_operasional + pendapatan_bunga - beban_bunga
 
             # MARGIN
-            margin_laba_kotor = (laba_kotor / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
-            margin_laba_bersih = (laba_bersih / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            margin_laba_kotor = (
+                (laba_kotor / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            )
+            margin_laba_bersih = (
+                (laba_bersih / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            )
 
-            logger.info(f"Laba Rugi generated: tenant={tenant_id}, periode={periode}, laba_bersih={laba_bersih}")
+            logger.info(
+                f"Laba Rugi generated: tenant={tenant_id}, periode={periode}, laba_bersih={laba_bersih}"
+            )
 
             return LabaRugiResponse(
                 periode=periode,
@@ -674,7 +850,7 @@ async def get_laba_rugi(
                 beban_bunga=beban_bunga,
                 laba_bersih=laba_bersih,
                 margin_laba_kotor=round(margin_laba_kotor, 2),
-                margin_laba_bersih=round(margin_laba_bersih, 2)
+                margin_laba_bersih=round(margin_laba_bersih, 2),
             )
 
         finally:
@@ -684,7 +860,9 @@ async def get_laba_rugi(
         raise
     except Exception as e:
         logger.error(f"Get laba rugi error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate laba rugi report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate laba rugi report"
+        )
 
 
 @router.get("/health")
@@ -697,8 +875,10 @@ async def health_check():
 # Trial Balance (using AccountingFacade)
 # ========================================
 
+
 class TrialBalanceAccountRow(BaseModel):
     """Single account row in trial balance."""
+
     account_id: str
     account_code: str
     account_name: str
@@ -711,6 +891,7 @@ class TrialBalanceAccountRow(BaseModel):
 
 class TrialBalanceResponse(BaseModel):
     """Trial Balance report response."""
+
     tenant_id: str
     as_of_date: str
     period_id: Optional[str] = None
@@ -723,6 +904,7 @@ class TrialBalanceResponse(BaseModel):
 
 class TrialBalanceSummaryByType(BaseModel):
     """Summary for a single account type."""
+
     total_debit: float
     total_credit: float
     balance: float
@@ -731,6 +913,7 @@ class TrialBalanceSummaryByType(BaseModel):
 
 class TrialBalanceSummaryResponse(BaseModel):
     """Trial Balance summary grouped by account type."""
+
     tenant_id: str
     as_of_date: str
     total_debit: float
@@ -742,7 +925,9 @@ class TrialBalanceSummaryResponse(BaseModel):
 @router.get("/trial-balance", response_model=TrialBalanceResponse)
 async def get_trial_balance(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """
     Get Trial Balance report using the Accounting Kernel.
@@ -759,7 +944,7 @@ async def get_trial_balance(
     - as_of: Date for balance calculation (default: today)
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -770,10 +955,7 @@ async def get_trial_balance(
         facade = await get_facade()
 
         # Get trial balance from journal_entries
-        result = await facade.get_trial_balance(
-            tenant_id=tenant_id,
-            as_of_date=as_of
-        )
+        result = await facade.get_trial_balance(tenant_id=tenant_id, as_of_date=as_of)
 
         logger.info(
             f"Trial Balance generated: tenant={tenant_id}, "
@@ -784,30 +966,31 @@ async def get_trial_balance(
         )
 
         return TrialBalanceResponse(
-            tenant_id=result['tenant_id'],
-            as_of_date=result['as_of_date'],
-            period_id=result.get('period_id'),
-            total_debit=result['total_debit'],
-            total_credit=result['total_credit'],
-            is_balanced=result['is_balanced'],
-            account_count=result['account_count'],
-            accounts=[
-                TrialBalanceAccountRow(**acc)
-                for acc in result['accounts']
-            ]
+            tenant_id=result["tenant_id"],
+            as_of_date=result["as_of_date"],
+            period_id=result.get("period_id"),
+            total_debit=result["total_debit"],
+            total_credit=result["total_credit"],
+            is_balanced=result["is_balanced"],
+            account_count=result["account_count"],
+            accounts=[TrialBalanceAccountRow(**acc) for acc in result["accounts"]],
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Get trial balance error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate trial balance report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate trial balance report"
+        )
 
 
 @router.get("/trial-balance/summary", response_model=TrialBalanceSummaryResponse)
 async def get_trial_balance_summary(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """
     Get Trial Balance summary grouped by account type.
@@ -816,7 +999,7 @@ async def get_trial_balance_summary(
     Returns totals for ASSET, LIABILITY, EQUITY, INCOME, EXPENSE.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -825,8 +1008,7 @@ async def get_trial_balance_summary(
 
         facade = await get_facade()
         result = await facade.get_trial_balance_summary(
-            tenant_id=tenant_id,
-            as_of_date=as_of
+            tenant_id=tenant_id, as_of_date=as_of
         )
 
         logger.info(
@@ -835,24 +1017,27 @@ async def get_trial_balance_summary(
         )
 
         return TrialBalanceSummaryResponse(
-            tenant_id=result['tenant_id'],
-            as_of_date=result['as_of_date'],
-            total_debit=result['total_debit'],
-            total_credit=result['total_credit'],
-            is_balanced=result['is_balanced'],
-            by_type=result['by_type']
+            tenant_id=result["tenant_id"],
+            as_of_date=result["as_of_date"],
+            total_debit=result["total_debit"],
+            total_credit=result["total_credit"],
+            is_balanced=result["is_balanced"],
+            by_type=result["by_type"],
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Get trial balance summary error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate trial balance summary")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate trial balance summary"
+        )
 
 
 # ========================================
 # Accounting Settings
 # ========================================
+
 
 @router.get("/accounting-settings", response_model=AccountingSettingsDetailResponse)
 async def get_accounting_settings(request: Request):
@@ -866,7 +1051,7 @@ async def get_accounting_settings(request: Request):
     - number/date formatting preferences
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -876,37 +1061,51 @@ async def get_accounting_settings(request: Request):
         conn = await get_db_connection()
         try:
             # Get or create settings for tenant
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM accounting_settings WHERE tenant_id = $1
-            """, tenant_id)
+            """,
+                tenant_id,
+            )
 
             if not row:
                 # Create default settings
                 new_id = str(uuid.uuid4())
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO accounting_settings (id, tenant_id)
                     VALUES ($1, $2)
-                """, new_id, tenant_id)
+                """,
+                    new_id,
+                    tenant_id,
+                )
 
-                row = await conn.fetchrow("""
+                row = await conn.fetchrow(
+                    """
                     SELECT * FROM accounting_settings WHERE tenant_id = $1
-                """, tenant_id)
+                """,
+                    tenant_id,
+                )
 
             return AccountingSettingsDetailResponse(
                 success=True,
                 data=AccountingSettingsResponse(
-                    id=str(row['id']),
-                    tenant_id=row['tenant_id'],
-                    default_report_basis=row['default_report_basis'] or 'accrual',
-                    fiscal_year_start_month=row['fiscal_year_start_month'] or 1,
-                    base_currency_code=row['base_currency_code'] or 'IDR',
-                    decimal_places=row['decimal_places'] or 0,
-                    thousand_separator=row['thousand_separator'] or '.',
-                    decimal_separator=row['decimal_separator'] or ',',
-                    date_format=row['date_format'] or 'DD/MM/YYYY',
-                    created_at=row['created_at'].isoformat() if row['created_at'] else '',
-                    updated_at=row['updated_at'].isoformat() if row['updated_at'] else ''
-                )
+                    id=str(row["id"]),
+                    tenant_id=row["tenant_id"],
+                    default_report_basis=row["default_report_basis"] or "accrual",
+                    fiscal_year_start_month=row["fiscal_year_start_month"] or 1,
+                    base_currency_code=row["base_currency_code"] or "IDR",
+                    decimal_places=row["decimal_places"] or 0,
+                    thousand_separator=row["thousand_separator"] or ".",
+                    decimal_separator=row["decimal_separator"] or ",",
+                    date_format=row["date_format"] or "DD/MM/YYYY",
+                    created_at=row["created_at"].isoformat()
+                    if row["created_at"]
+                    else "",
+                    updated_at=row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else "",
+                ),
             )
 
         finally:
@@ -921,8 +1120,7 @@ async def get_accounting_settings(request: Request):
 
 @router.patch("/accounting-settings", response_model=AccountingSettingsDetailResponse)
 async def update_accounting_settings(
-    request: Request,
-    data: UpdateAccountingSettingsRequest
+    request: Request, data: UpdateAccountingSettingsRequest
 ):
     """
     Update tenant's accounting settings.
@@ -935,7 +1133,7 @@ async def update_accounting_settings(
     - date_format
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -945,16 +1143,23 @@ async def update_accounting_settings(
         conn = await get_db_connection()
         try:
             # Ensure settings exist
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id FROM accounting_settings WHERE tenant_id = $1
-            """, tenant_id)
+            """,
+                tenant_id,
+            )
 
             if not existing:
                 new_id = str(uuid.uuid4())
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO accounting_settings (id, tenant_id)
                     VALUES ($1, $2)
-                """, new_id, tenant_id)
+                """,
+                    new_id,
+                    tenant_id,
+                )
 
             # Build dynamic update
             updates = []
@@ -1006,27 +1211,34 @@ async def update_accounting_settings(
                 await conn.execute(update_sql, *params)
 
             # Fetch updated settings
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM accounting_settings WHERE tenant_id = $1
-            """, tenant_id)
+            """,
+                tenant_id,
+            )
 
             logger.info(f"Accounting settings updated: tenant={tenant_id}")
 
             return AccountingSettingsDetailResponse(
                 success=True,
                 data=AccountingSettingsResponse(
-                    id=str(row['id']),
-                    tenant_id=row['tenant_id'],
-                    default_report_basis=row['default_report_basis'] or 'accrual',
-                    fiscal_year_start_month=row['fiscal_year_start_month'] or 1,
-                    base_currency_code=row['base_currency_code'] or 'IDR',
-                    decimal_places=row['decimal_places'] or 0,
-                    thousand_separator=row['thousand_separator'] or '.',
-                    decimal_separator=row['decimal_separator'] or ',',
-                    date_format=row['date_format'] or 'DD/MM/YYYY',
-                    created_at=row['created_at'].isoformat() if row['created_at'] else '',
-                    updated_at=row['updated_at'].isoformat() if row['updated_at'] else ''
-                )
+                    id=str(row["id"]),
+                    tenant_id=row["tenant_id"],
+                    default_report_basis=row["default_report_basis"] or "accrual",
+                    fiscal_year_start_month=row["fiscal_year_start_month"] or 1,
+                    base_currency_code=row["base_currency_code"] or "IDR",
+                    decimal_places=row["decimal_places"] or 0,
+                    thousand_separator=row["thousand_separator"] or ".",
+                    decimal_separator=row["decimal_separator"] or ",",
+                    date_format=row["date_format"] or "DD/MM/YYYY",
+                    created_at=row["created_at"].isoformat()
+                    if row["created_at"]
+                    else "",
+                    updated_at=row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else "",
+                ),
             )
 
         finally:
@@ -1036,12 +1248,15 @@ async def update_accounting_settings(
         raise
     except Exception as e:
         logger.error(f"Update accounting settings error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update accounting settings")
+        raise HTTPException(
+            status_code=500, detail="Failed to update accounting settings"
+        )
 
 
 # ========================================
 # Cash/Accrual Profit & Loss (Journal-based)
 # ========================================
+
 
 @router.get("/profit-loss/{periode}", response_model=ProfitLossReportResponse)
 async def get_profit_loss_by_basis(
@@ -1049,8 +1264,8 @@ async def get_profit_loss_by_basis(
     periode: str,
     basis: Optional[Literal["cash", "accrual"]] = Query(
         default=None,
-        description="Accounting basis: 'cash' or 'accrual'. If not specified, uses tenant's default."
-    )
+        description="Accounting basis: 'cash' or 'accrual'. If not specified, uses tenant's default.",
+    ),
 ):
     """
     Get Profit & Loss report using journal entries with specified accounting basis.
@@ -1066,7 +1281,7 @@ async def get_profit_loss_by_basis(
     - Expenses recognized when payment is made
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1082,34 +1297,54 @@ async def get_profit_loss_by_basis(
         try:
             # Get default basis if not specified
             if basis is None:
-                settings_row = await conn.fetchrow("""
+                settings_row = await conn.fetchrow(
+                    """
                     SELECT default_report_basis FROM accounting_settings
                     WHERE tenant_id = $1
-                """, tenant_id)
-                basis = settings_row['default_report_basis'] if settings_row else 'accrual'
+                """,
+                    tenant_id,
+                )
+                basis = (
+                    settings_row["default_report_basis"] if settings_row else "accrual"
+                )
 
             # Set tenant context for RLS
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
+            )
 
             # Query revenue using helper function
-            revenue_rows = await conn.fetch("""
+            revenue_rows = await conn.fetch(
+                """
                 SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)
-            """, tenant_id, start_date.date(), end_date.date(), basis)
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+                basis,
+            )
 
             revenue_accounts = [
                 ReportAccountLine(
-                    account_id=str(r['account_id']),
-                    account_code=r['account_code'],
-                    account_name=r['account_name'],
-                    amount=int(r['total_amount'])
-                ) for r in revenue_rows
+                    account_id=str(r["account_id"]),
+                    account_code=r["account_code"],
+                    account_name=r["account_name"],
+                    amount=int(r["total_amount"]),
+                )
+                for r in revenue_rows
             ]
-            total_revenue = sum(int(r['total_amount']) for r in revenue_rows)
+            total_revenue = sum(int(r["total_amount"]) for r in revenue_rows)
 
             # Query expenses using helper function
-            expense_rows = await conn.fetch("""
+            expense_rows = await conn.fetch(
+                """
                 SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)
-            """, tenant_id, start_date.date(), end_date.date(), basis)
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+                basis,
+            )
 
             # Separate into categories
             cogs_accounts = []
@@ -1120,29 +1355,33 @@ async def get_profit_loss_by_basis(
             total_other_expenses = 0
 
             for r in expense_rows:
-                account_type = await conn.fetchval("""
+                account_type = await conn.fetchval(
+                    """
                     SELECT account_type FROM chart_of_accounts WHERE id = $1
-                """, r['account_id'])
-
-                line = ReportAccountLine(
-                    account_id=str(r['account_id']),
-                    account_code=r['account_code'],
-                    account_name=r['account_name'],
-                    amount=int(r['total_amount'])
+                """,
+                    r["account_id"],
                 )
 
-                if account_type == 'COGS':
+                line = ReportAccountLine(
+                    account_id=str(r["account_id"]),
+                    account_code=r["account_code"],
+                    account_name=r["account_name"],
+                    amount=int(r["total_amount"]),
+                )
+
+                if account_type == "COGS":
                     cogs_accounts.append(line)
-                    total_cogs += int(r['total_amount'])
-                elif account_type == 'OTHER_EXPENSE':
+                    total_cogs += int(r["total_amount"])
+                elif account_type == "OTHER_EXPENSE":
                     other_expense_accounts.append(line)
-                    total_other_expenses += int(r['total_amount'])
+                    total_other_expenses += int(r["total_amount"])
                 else:  # EXPENSE
                     operating_expense_accounts.append(line)
-                    total_operating_expenses += int(r['total_amount'])
+                    total_operating_expenses += int(r["total_amount"])
 
             # Query other income (interest, forex gains, etc.)
-            other_income_rows = await conn.fetch("""
+            other_income_rows = await conn.fetch(
+                """
                 SELECT
                     jl.account_id,
                     coa.account_code,
@@ -1156,25 +1395,34 @@ async def get_profit_loss_by_basis(
                 AND coa.account_type = 'OTHER_INCOME'
                 GROUP BY jl.account_id, coa.account_code, coa.account_name
                 HAVING SUM(jl.credit - jl.debit) != 0
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
             other_income_accounts = [
                 ReportAccountLine(
-                    account_id=str(r['account_id']),
-                    account_code=r['account_code'],
-                    account_name=r['account_name'],
-                    amount=int(r['total_amount'])
-                ) for r in other_income_rows
+                    account_id=str(r["account_id"]),
+                    account_code=r["account_code"],
+                    account_name=r["account_name"],
+                    amount=int(r["total_amount"]),
+                )
+                for r in other_income_rows
             ]
-            total_other_income = sum(int(r['total_amount']) for r in other_income_rows)
+            total_other_income = sum(int(r["total_amount"]) for r in other_income_rows)
 
             # Calculate totals
             gross_profit = total_revenue - total_cogs
             operating_income = gross_profit - total_operating_expenses
-            net_income_before_tax = operating_income + total_other_income - total_other_expenses
+            net_income_before_tax = (
+                operating_income + total_other_income - total_other_expenses
+            )
             net_income = net_income_before_tax  # Tax handling can be added later
 
-            logger.info(f"Profit/Loss generated: tenant={tenant_id}, periode={periode}, basis={basis}, net_income={net_income}")
+            logger.info(
+                f"Profit/Loss generated: tenant={tenant_id}, periode={periode}, basis={basis}, net_income={net_income}"
+            )
 
             return ProfitLossReportResponse(
                 success=True,
@@ -1182,31 +1430,27 @@ async def get_profit_loss_by_basis(
                     period=periode,
                     basis=basis,
                     revenue=RevenueExpenseSection(
-                        accounts=revenue_accounts,
-                        total=total_revenue
+                        accounts=revenue_accounts, total=total_revenue
                     ),
                     cost_of_goods_sold=RevenueExpenseSection(
-                        accounts=cogs_accounts,
-                        total=total_cogs
+                        accounts=cogs_accounts, total=total_cogs
                     ),
                     gross_profit=gross_profit,
                     operating_expenses=RevenueExpenseSection(
                         accounts=operating_expense_accounts,
-                        total=total_operating_expenses
+                        total=total_operating_expenses,
                     ),
                     operating_income=operating_income,
                     other_income=RevenueExpenseSection(
-                        accounts=other_income_accounts,
-                        total=total_other_income
+                        accounts=other_income_accounts, total=total_other_income
                     ),
                     other_expenses=RevenueExpenseSection(
-                        accounts=other_expense_accounts,
-                        total=total_other_expenses
+                        accounts=other_expense_accounts, total=total_other_expenses
                     ),
                     net_income_before_tax=net_income_before_tax,
                     tax_expense=0,
-                    net_income=net_income
-                )
+                    net_income=net_income,
+                ),
             )
 
         finally:
@@ -1216,18 +1460,18 @@ async def get_profit_loss_by_basis(
         raise
     except Exception as e:
         logger.error(f"Get profit/loss error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate profit/loss report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate profit/loss report"
+        )
 
 
 # ========================================
 # Cash vs Accrual Comparison
 # ========================================
 
+
 @router.get("/comparison/{periode}", response_model=ComparisonReportResponse)
-async def get_cash_accrual_comparison(
-    request: Request,
-    periode: str
-):
+async def get_cash_accrual_comparison(request: Request, periode: str):
     """
     Get side-by-side comparison of Cash vs Accrual basis for a period.
 
@@ -1235,7 +1479,7 @@ async def get_cash_accrual_comparison(
     Shows the difference in revenue, expenses, and net income between the two methods.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1249,66 +1493,88 @@ async def get_cash_accrual_comparison(
         conn = await get_db_connection()
 
         try:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
+            )
 
             # Get revenue for both bases
-            cash_revenue = await conn.fetch("""
+            cash_revenue = await conn.fetch(
+                """
                 SELECT * FROM get_revenue_by_basis($1, $2, $3, 'cash')
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
-            accrual_revenue = await conn.fetch("""
+            accrual_revenue = await conn.fetch(
+                """
                 SELECT * FROM get_revenue_by_basis($1, $2, $3, 'accrual')
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
             # Get expenses for both bases
-            cash_expenses = await conn.fetch("""
+            cash_expenses = await conn.fetch(
+                """
                 SELECT * FROM get_expenses_by_basis($1, $2, $3, 'cash')
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
-            accrual_expenses = await conn.fetch("""
+            accrual_expenses = await conn.fetch(
+                """
                 SELECT * FROM get_expenses_by_basis($1, $2, $3, 'accrual')
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
             # Build comparison dictionaries
             def build_comparison(cash_rows, accrual_rows) -> ComparisonSection:
                 all_accounts = {}
 
                 for r in cash_rows:
-                    key = str(r['account_id'])
+                    key = str(r["account_id"])
                     all_accounts[key] = {
-                        'account_id': key,
-                        'account_code': r['account_code'],
-                        'account_name': r['account_name'],
-                        'cash_amount': int(r['total_amount']),
-                        'accrual_amount': 0
+                        "account_id": key,
+                        "account_code": r["account_code"],
+                        "account_name": r["account_name"],
+                        "cash_amount": int(r["total_amount"]),
+                        "accrual_amount": 0,
                     }
 
                 for r in accrual_rows:
-                    key = str(r['account_id'])
+                    key = str(r["account_id"])
                     if key in all_accounts:
-                        all_accounts[key]['accrual_amount'] = int(r['total_amount'])
+                        all_accounts[key]["accrual_amount"] = int(r["total_amount"])
                     else:
                         all_accounts[key] = {
-                            'account_id': key,
-                            'account_code': r['account_code'],
-                            'account_name': r['account_name'],
-                            'cash_amount': 0,
-                            'accrual_amount': int(r['total_amount'])
+                            "account_id": key,
+                            "account_code": r["account_code"],
+                            "account_name": r["account_name"],
+                            "cash_amount": 0,
+                            "accrual_amount": int(r["total_amount"]),
                         }
 
                 lines = []
                 for acc in all_accounts.values():
-                    acc['difference'] = acc['accrual_amount'] - acc['cash_amount']
+                    acc["difference"] = acc["accrual_amount"] - acc["cash_amount"]
                     lines.append(ComparisonLine(**acc))
 
-                cash_total = sum(a['cash_amount'] for a in all_accounts.values())
-                accrual_total = sum(a['accrual_amount'] for a in all_accounts.values())
+                cash_total = sum(a["cash_amount"] for a in all_accounts.values())
+                accrual_total = sum(a["accrual_amount"] for a in all_accounts.values())
 
                 return ComparisonSection(
                     accounts=lines,
                     cash_total=cash_total,
                     accrual_total=accrual_total,
-                    difference=accrual_total - cash_total
+                    difference=accrual_total - cash_total,
                 )
 
             revenue_comparison = build_comparison(cash_revenue, accrual_revenue)
@@ -1319,26 +1585,34 @@ async def get_cash_accrual_comparison(
                 operating = []
                 other = []
                 for r in expense_rows:
-                    account_type = await conn.fetchval("""
+                    account_type = await conn.fetchval(
+                        """
                         SELECT account_type FROM chart_of_accounts WHERE id = $1
-                    """, r['account_id'])
-                    if account_type == 'COGS':
+                    """,
+                        r["account_id"],
+                    )
+                    if account_type == "COGS":
                         cogs.append(r)
-                    elif account_type == 'OTHER_EXPENSE':
+                    elif account_type == "OTHER_EXPENSE":
                         other.append(r)
                     else:
                         operating.append(r)
                 return cogs, operating, other
 
-            cash_cogs, cash_operating, cash_other = await categorize_expenses(cash_expenses)
-            accrual_cogs, accrual_operating, accrual_other = await categorize_expenses(accrual_expenses)
+            cash_cogs, cash_operating, cash_other = await categorize_expenses(
+                cash_expenses
+            )
+            accrual_cogs, accrual_operating, accrual_other = await categorize_expenses(
+                accrual_expenses
+            )
 
             cogs_comparison = build_comparison(cash_cogs, accrual_cogs)
             operating_comparison = build_comparison(cash_operating, accrual_operating)
             other_expense_comparison = build_comparison(cash_other, accrual_other)
 
             # Other income (same for both bases - no timing difference for interest/forex)
-            other_income_rows = await conn.fetch("""
+            other_income_rows = await conn.fetch(
+                """
                 SELECT
                     jl.account_id,
                     coa.account_code,
@@ -1352,21 +1626,43 @@ async def get_cash_accrual_comparison(
                 AND coa.account_type = 'OTHER_INCOME'
                 GROUP BY jl.account_id, coa.account_code, coa.account_name
                 HAVING SUM(jl.credit - jl.debit) != 0
-            """, tenant_id, start_date.date(), end_date.date())
+            """,
+                tenant_id,
+                start_date.date(),
+                end_date.date(),
+            )
 
-            other_income_comparison = build_comparison(other_income_rows, other_income_rows)
+            other_income_comparison = build_comparison(
+                other_income_rows, other_income_rows
+            )
 
             # Calculate final numbers
-            gross_profit_cash = revenue_comparison.cash_total - cogs_comparison.cash_total
-            gross_profit_accrual = revenue_comparison.accrual_total - cogs_comparison.accrual_total
+            gross_profit_cash = (
+                revenue_comparison.cash_total - cogs_comparison.cash_total
+            )
+            gross_profit_accrual = (
+                revenue_comparison.accrual_total - cogs_comparison.accrual_total
+            )
 
             operating_income_cash = gross_profit_cash - operating_comparison.cash_total
-            operating_income_accrual = gross_profit_accrual - operating_comparison.accrual_total
+            operating_income_accrual = (
+                gross_profit_accrual - operating_comparison.accrual_total
+            )
 
-            net_income_cash = operating_income_cash + other_income_comparison.cash_total - other_expense_comparison.cash_total
-            net_income_accrual = operating_income_accrual + other_income_comparison.accrual_total - other_expense_comparison.accrual_total
+            net_income_cash = (
+                operating_income_cash
+                + other_income_comparison.cash_total
+                - other_expense_comparison.cash_total
+            )
+            net_income_accrual = (
+                operating_income_accrual
+                + other_income_comparison.accrual_total
+                - other_expense_comparison.accrual_total
+            )
 
-            logger.info(f"Comparison report generated: tenant={tenant_id}, periode={periode}")
+            logger.info(
+                f"Comparison report generated: tenant={tenant_id}, periode={periode}"
+            )
 
             return ComparisonReportResponse(
                 success=True,
@@ -1380,13 +1676,14 @@ async def get_cash_accrual_comparison(
                     operating_expenses=operating_comparison,
                     operating_income_cash=operating_income_cash,
                     operating_income_accrual=operating_income_accrual,
-                    operating_income_difference=operating_income_accrual - operating_income_cash,
+                    operating_income_difference=operating_income_accrual
+                    - operating_income_cash,
                     other_income=other_income_comparison,
                     other_expenses=other_expense_comparison,
                     net_income_cash=net_income_cash,
                     net_income_accrual=net_income_accrual,
-                    net_income_difference=net_income_accrual - net_income_cash
-                )
+                    net_income_difference=net_income_accrual - net_income_cash,
+                ),
             )
 
         finally:
@@ -1396,17 +1693,22 @@ async def get_cash_accrual_comparison(
         raise
     except Exception as e:
         logger.error(f"Get comparison report error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate comparison report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate comparison report"
+        )
 
 
 # ========================================
 # Timing Differences Report
 # ========================================
 
+
 @router.get("/timing-differences", response_model=TimingDifferencesResponse)
 async def get_timing_differences(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """
     Get report of timing differences between cash and accrual basis.
@@ -1415,7 +1717,7 @@ async def get_timing_differences(
     and unpaid bills (expenses recognized in accrual but not cash).
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1426,10 +1728,13 @@ async def get_timing_differences(
         conn = await get_db_connection()
 
         try:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
+            )
 
             # Get unpaid invoices
-            unpaid_invoices = await conn.fetch("""
+            unpaid_invoices = await conn.fetch(
+                """
                 SELECT
                     si.id,
                     si.invoice_number,
@@ -1445,24 +1750,33 @@ async def get_timing_differences(
                 AND si.status IN ('sent', 'partial', 'overdue')
                 AND si.invoice_date <= $2
                 ORDER BY si.invoice_date
-            """, tenant_id, as_of_date)
+            """,
+                tenant_id,
+                as_of_date,
+            )
 
             unpaid_invoice_items = [
                 UnpaidInvoiceItem(
-                    id=str(r['id']),
-                    invoice_number=r['invoice_number'],
-                    customer_name=r['customer_name'] or 'Unknown',
-                    invoice_date=r['invoice_date'].isoformat() if r['invoice_date'] else '',
-                    due_date=r['due_date'].isoformat() if r['due_date'] else None,
-                    total_amount=int(r['total_amount'] or 0),
-                    paid_amount=int(r['paid_amount'] or 0),
-                    balance_due=int(r['balance_due'] or 0)
-                ) for r in unpaid_invoices
+                    id=str(r["id"]),
+                    invoice_number=r["invoice_number"],
+                    customer_name=r["customer_name"] or "Unknown",
+                    invoice_date=r["invoice_date"].isoformat()
+                    if r["invoice_date"]
+                    else "",
+                    due_date=r["due_date"].isoformat() if r["due_date"] else None,
+                    total_amount=int(r["total_amount"] or 0),
+                    paid_amount=int(r["paid_amount"] or 0),
+                    balance_due=int(r["balance_due"] or 0),
+                )
+                for r in unpaid_invoices
             ]
-            total_unpaid_revenue = sum(int(r['balance_due'] or 0) for r in unpaid_invoices)
+            total_unpaid_revenue = sum(
+                int(r["balance_due"] or 0) for r in unpaid_invoices
+            )
 
             # Get unpaid bills
-            unpaid_bills = await conn.fetch("""
+            unpaid_bills = await conn.fetch(
+                """
                 SELECT
                     b.id,
                     b.bill_number,
@@ -1478,25 +1792,33 @@ async def get_timing_differences(
                 AND b.status IN ('approved', 'partial', 'overdue')
                 AND b.bill_date <= $2
                 ORDER BY b.bill_date
-            """, tenant_id, as_of_date)
+            """,
+                tenant_id,
+                as_of_date,
+            )
 
             unpaid_bill_items = [
                 UnpaidBillItem(
-                    id=str(r['id']),
-                    bill_number=r['bill_number'],
-                    vendor_name=r['vendor_name'] or 'Unknown',
-                    bill_date=r['bill_date'].isoformat() if r['bill_date'] else '',
-                    due_date=r['due_date'].isoformat() if r['due_date'] else None,
-                    total_amount=int(r['total_amount'] or 0),
-                    paid_amount=int(r['paid_amount'] or 0),
-                    balance_due=int(r['balance_due'] or 0)
-                ) for r in unpaid_bills
+                    id=str(r["id"]),
+                    bill_number=r["bill_number"],
+                    vendor_name=r["vendor_name"] or "Unknown",
+                    bill_date=r["bill_date"].isoformat() if r["bill_date"] else "",
+                    due_date=r["due_date"].isoformat() if r["due_date"] else None,
+                    total_amount=int(r["total_amount"] or 0),
+                    paid_amount=int(r["paid_amount"] or 0),
+                    balance_due=int(r["balance_due"] or 0),
+                )
+                for r in unpaid_bills
             ]
-            total_unpaid_expenses = sum(int(r['balance_due'] or 0) for r in unpaid_bills)
+            total_unpaid_expenses = sum(
+                int(r["balance_due"] or 0) for r in unpaid_bills
+            )
 
             net_timing_difference = total_unpaid_revenue - total_unpaid_expenses
 
-            logger.info(f"Timing differences report: tenant={tenant_id}, as_of={as_of_date}")
+            logger.info(
+                f"Timing differences report: tenant={tenant_id}, as_of={as_of_date}"
+            )
 
             return TimingDifferencesResponse(
                 success=True,
@@ -1506,8 +1828,8 @@ async def get_timing_differences(
                     total_unpaid_revenue=total_unpaid_revenue,
                     unpaid_bills=unpaid_bill_items,
                     total_unpaid_expenses=total_unpaid_expenses,
-                    net_timing_difference=net_timing_difference
-                )
+                    net_timing_difference=net_timing_difference,
+                ),
             )
 
         finally:
@@ -1517,7 +1839,9 @@ async def get_timing_differences(
         raise
     except Exception as e:
         logger.error(f"Get timing differences error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate timing differences report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate timing differences report"
+        )
 
 
 # ========================================
@@ -1537,10 +1861,6 @@ from ..schemas.aging_reports import (
     APAgingDetailResponse,
     APVendorAgingItem,
     APVendorAgingResponse,
-    AgingBracketsResponse,
-    AgingBracketsUpdate,
-    AgingSnapshotResponse,
-    AgingSnapshotListResponse,
     CreateSnapshotRequest,
     CreateSnapshotResponse,
     AgingTrendItem,
@@ -1552,7 +1872,9 @@ from ..schemas.aging_reports import (
 @router.get("/ar-aging", response_model=ARAgingSummaryResponse)
 async def get_ar_aging_summary(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """
     Get AR (Accounts Receivable) aging summary report.
@@ -1566,7 +1888,7 @@ async def get_ar_aging_summary(
     - 120+ days overdue
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1577,11 +1899,12 @@ async def get_ar_aging_summary(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             row = await conn.fetchrow(
-                "SELECT * FROM get_ar_aging_summary($1, $2)",
-                tenant_id, as_of_date
+                "SELECT * FROM get_ar_aging_summary($1, $2)", tenant_id, as_of_date
             )
 
             summary = ARAgingSummary(
@@ -1604,17 +1927,21 @@ async def get_ar_aging_summary(
         raise
     except Exception as e:
         logger.error(f"Get AR aging summary error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AR aging summary")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AR aging summary"
+        )
 
 
 @router.get("/ar-aging/detail", response_model=ARAgingDetailResponse)
 async def get_ar_aging_detail(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """Get AR aging detail by customer."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1625,31 +1952,34 @@ async def get_ar_aging_detail(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-
-            rows = await conn.fetch(
-                "SELECT * FROM get_ar_aging_detail($1, $2)",
-                tenant_id, as_of_date
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
 
-            items = [ARAgingDetailItem(
-                customer_id=row["customer_id"],
-                customer_name=row["customer_name"],
-                customer_code=row["customer_code"],
-                current_amount=row["current_amount"],
-                days_1_30=row["days_1_30"],
-                days_31_60=row["days_31_60"],
-                days_61_90=row["days_61_90"],
-                days_91_120=row["days_91_120"],
-                days_over_120=row["days_over_120"],
-                total_balance=row["total_balance"],
-                oldest_invoice_date=row["oldest_invoice_date"],
-                invoice_count=row["invoice_count"],
-            ) for row in rows]
+            rows = await conn.fetch(
+                "SELECT * FROM get_ar_aging_detail($1, $2)", tenant_id, as_of_date
+            )
+
+            items = [
+                ARAgingDetailItem(
+                    customer_id=row["customer_id"],
+                    customer_name=row["customer_name"],
+                    customer_code=row["customer_code"],
+                    current_amount=row["current_amount"],
+                    days_1_30=row["days_1_30"],
+                    days_31_60=row["days_31_60"],
+                    days_61_90=row["days_61_90"],
+                    days_91_120=row["days_91_120"],
+                    days_over_120=row["days_over_120"],
+                    total_balance=row["total_balance"],
+                    oldest_invoice_date=row["oldest_invoice_date"],
+                    invoice_count=row["invoice_count"],
+                )
+                for row in rows
+            ]
 
             summary_row = await conn.fetchrow(
-                "SELECT * FROM get_ar_aging_summary($1, $2)",
-                tenant_id, as_of_date
+                "SELECT * FROM get_ar_aging_summary($1, $2)", tenant_id, as_of_date
             )
 
             summary = ARAgingSummary(
@@ -1673,18 +2003,22 @@ async def get_ar_aging_detail(
         raise
     except Exception as e:
         logger.error(f"Get AR aging detail error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AR aging detail")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AR aging detail"
+        )
 
 
 @router.get("/ar-aging/customer/{customer_id}", response_model=ARCustomerAgingResponse)
 async def get_ar_aging_for_customer(
     request: Request,
     customer_id: uuid.UUID,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """Get AR aging for a single customer."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1695,31 +2029,36 @@ async def get_ar_aging_for_customer(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             customer = await conn.fetchrow(
                 "SELECT id, name FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, tenant_id
+                customer_id,
+                tenant_id,
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
             rows = await conn.fetch(
-                "SELECT * FROM get_ar_aging_customer($1, $2)",
-                customer_id, as_of_date
+                "SELECT * FROM get_ar_aging_customer($1, $2)", customer_id, as_of_date
             )
 
-            items = [ARCustomerAgingItem(
-                invoice_id=row["invoice_id"],
-                invoice_number=row["invoice_number"],
-                invoice_date=row["invoice_date"],
-                due_date=row["due_date"],
-                total_amount=row["total_amount"],
-                paid_amount=row["paid_amount"],
-                balance=row["balance"],
-                days_overdue=row["days_overdue"],
-                aging_bucket=row["aging_bucket"],
-            ) for row in rows]
+            items = [
+                ARCustomerAgingItem(
+                    invoice_id=row["invoice_id"],
+                    invoice_number=row["invoice_number"],
+                    invoice_date=row["invoice_date"],
+                    due_date=row["due_date"],
+                    total_amount=row["total_amount"],
+                    paid_amount=row["paid_amount"],
+                    balance=row["balance"],
+                    days_overdue=row["days_overdue"],
+                    aging_bucket=row["aging_bucket"],
+                )
+                for row in rows
+            ]
 
             return ARCustomerAgingResponse(
                 customer_id=customer_id,
@@ -1733,13 +2072,17 @@ async def get_ar_aging_for_customer(
         raise
     except Exception as e:
         logger.error(f"Get AR aging for customer error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AR aging for customer")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AR aging for customer"
+        )
 
 
 @router.get("/ap-aging", response_model=APAgingSummaryResponse)
 async def get_ap_aging_summary(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """
     Get AP (Accounts Payable) aging summary report.
@@ -1747,7 +2090,7 @@ async def get_ap_aging_summary(
     Shows total payables broken down by aging brackets.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1758,11 +2101,12 @@ async def get_ap_aging_summary(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             row = await conn.fetchrow(
-                "SELECT * FROM get_ap_aging_summary($1, $2)",
-                tenant_id, as_of_date
+                "SELECT * FROM get_ap_aging_summary($1, $2)", tenant_id, as_of_date
             )
 
             summary = APAgingSummary(
@@ -1785,17 +2129,21 @@ async def get_ap_aging_summary(
         raise
     except Exception as e:
         logger.error(f"Get AP aging summary error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AP aging summary")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AP aging summary"
+        )
 
 
 @router.get("/ap-aging/detail", response_model=APAgingDetailResponse)
 async def get_ap_aging_detail(
     request: Request,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """Get AP aging detail by vendor."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1806,31 +2154,34 @@ async def get_ap_aging_detail(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-
-            rows = await conn.fetch(
-                "SELECT * FROM get_ap_aging_detail($1, $2)",
-                tenant_id, as_of_date
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
 
-            items = [APAgingDetailItem(
-                vendor_id=row["vendor_id"],
-                vendor_name=row["vendor_name"],
-                vendor_code=row["vendor_code"],
-                current_amount=row["current_amount"],
-                days_1_30=row["days_1_30"],
-                days_31_60=row["days_31_60"],
-                days_61_90=row["days_61_90"],
-                days_91_120=row["days_91_120"],
-                days_over_120=row["days_over_120"],
-                total_balance=row["total_balance"],
-                oldest_bill_date=row["oldest_bill_date"],
-                bill_count=row["bill_count"],
-            ) for row in rows]
+            rows = await conn.fetch(
+                "SELECT * FROM get_ap_aging_detail($1, $2)", tenant_id, as_of_date
+            )
+
+            items = [
+                APAgingDetailItem(
+                    vendor_id=row["vendor_id"],
+                    vendor_name=row["vendor_name"],
+                    vendor_code=row["vendor_code"],
+                    current_amount=row["current_amount"],
+                    days_1_30=row["days_1_30"],
+                    days_31_60=row["days_31_60"],
+                    days_61_90=row["days_61_90"],
+                    days_91_120=row["days_91_120"],
+                    days_over_120=row["days_over_120"],
+                    total_balance=row["total_balance"],
+                    oldest_bill_date=row["oldest_bill_date"],
+                    bill_count=row["bill_count"],
+                )
+                for row in rows
+            ]
 
             summary_row = await conn.fetchrow(
-                "SELECT * FROM get_ap_aging_summary($1, $2)",
-                tenant_id, as_of_date
+                "SELECT * FROM get_ap_aging_summary($1, $2)", tenant_id, as_of_date
             )
 
             summary = APAgingSummary(
@@ -1854,18 +2205,22 @@ async def get_ap_aging_detail(
         raise
     except Exception as e:
         logger.error(f"Get AP aging detail error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AP aging detail")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AP aging detail"
+        )
 
 
 @router.get("/ap-aging/vendor/{vendor_id}", response_model=APVendorAgingResponse)
 async def get_ap_aging_for_vendor(
     request: Request,
     vendor_id: uuid.UUID,
-    as_of: Optional[date] = Query(default=None, description="As of date (default: today)")
+    as_of: Optional[date] = Query(
+        default=None, description="As of date (default: today)"
+    ),
 ):
     """Get AP aging for a single vendor."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1876,31 +2231,36 @@ async def get_ap_aging_for_vendor(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             vendor = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, tenant_id
+                vendor_id,
+                tenant_id,
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
 
             rows = await conn.fetch(
-                "SELECT * FROM get_ap_aging_vendor($1, $2)",
-                vendor_id, as_of_date
+                "SELECT * FROM get_ap_aging_vendor($1, $2)", vendor_id, as_of_date
             )
 
-            items = [APVendorAgingItem(
-                bill_id=row["bill_id"],
-                bill_number=row["bill_number"],
-                bill_date=row["bill_date"],
-                due_date=row["due_date"],
-                total_amount=row["total_amount"],
-                paid_amount=row["paid_amount"],
-                balance=row["balance"],
-                days_overdue=row["days_overdue"],
-                aging_bucket=row["aging_bucket"],
-            ) for row in rows]
+            items = [
+                APVendorAgingItem(
+                    bill_id=row["bill_id"],
+                    bill_number=row["bill_number"],
+                    bill_date=row["bill_date"],
+                    due_date=row["due_date"],
+                    total_amount=row["total_amount"],
+                    paid_amount=row["paid_amount"],
+                    balance=row["balance"],
+                    days_overdue=row["days_overdue"],
+                    aging_bucket=row["aging_bucket"],
+                )
+                for row in rows
+            ]
 
             return APVendorAgingResponse(
                 vendor_id=vendor_id,
@@ -1914,17 +2274,16 @@ async def get_ap_aging_for_vendor(
         raise
     except Exception as e:
         logger.error(f"Get AP aging for vendor error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate AP aging for vendor")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate AP aging for vendor"
+        )
 
 
 @router.post("/aging-snapshot", response_model=CreateSnapshotResponse)
-async def create_aging_snapshot(
-    request: Request,
-    data: CreateSnapshotRequest
-):
+async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
     """Create an aging snapshot for trend analysis."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1935,17 +2294,17 @@ async def create_aging_snapshot(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             if data.snapshot_type == AgingType.ar:
                 snapshot_id = await conn.fetchval(
-                    "SELECT create_ar_aging_snapshot($1, $2)",
-                    tenant_id, as_of_date
+                    "SELECT create_ar_aging_snapshot($1, $2)", tenant_id, as_of_date
                 )
             else:
                 snapshot_id = await conn.fetchval(
-                    "SELECT create_ap_aging_snapshot($1, $2)",
-                    tenant_id, as_of_date
+                    "SELECT create_ap_aging_snapshot($1, $2)", tenant_id, as_of_date
                 )
 
             return CreateSnapshotResponse(
@@ -1970,7 +2329,7 @@ async def get_aging_trend(
 ):
     """Get aging trend from snapshots."""
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1980,19 +2339,27 @@ async def get_aging_trend(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             rows = await conn.fetch(
                 "SELECT * FROM get_aging_trend($1, $2, $3, $4)",
-                tenant_id, snapshot_type.value, start_date, end_date
+                tenant_id,
+                snapshot_type.value,
+                start_date,
+                end_date,
             )
 
-            items = [AgingTrendItem(
-                snapshot_date=row["snapshot_date"],
-                total_current=row["total_current"],
-                total_overdue=row["total_overdue"],
-                grand_total=row["grand_total"],
-            ) for row in rows]
+            items = [
+                AgingTrendItem(
+                    snapshot_date=row["snapshot_date"],
+                    total_current=row["total_current"],
+                    total_overdue=row["total_overdue"],
+                    grand_total=row["grand_total"],
+                )
+                for row in rows
+            ]
 
             return AgingTrendResponse(
                 snapshot_type=snapshot_type,
@@ -2034,7 +2401,7 @@ async def get_drill_down(
     to see the underlying journal entries.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -2044,20 +2411,27 @@ async def get_drill_down(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
 
             # Get account info
-            account = await conn.fetchrow("""
+            account = await conn.fetchrow(
+                """
                 SELECT id, code, name, type, normal_balance
                 FROM chart_of_accounts
                 WHERE id = $1 AND tenant_id = $2
-            """, account_id, tenant_id)
+            """,
+                account_id,
+                tenant_id,
+            )
 
             if not account:
                 raise HTTPException(status_code=404, detail="Account not found")
 
             # Calculate opening balance (before start_date)
-            opening_row = await conn.fetchrow("""
+            opening_row = await conn.fetchrow(
+                """
                 SELECT
                     COALESCE(SUM(jl.debit), 0) as total_debit,
                     COALESCE(SUM(jl.credit), 0) as total_credit
@@ -2067,15 +2441,24 @@ async def get_drill_down(
                   AND je.tenant_id = $2
                   AND je.entry_date < $3
                   AND je.status = 'POSTED'
-            """, account_id, tenant_id, start_date)
+            """,
+                account_id,
+                tenant_id,
+                start_date,
+            )
 
-            if account['normal_balance'] == 'DEBIT':
-                opening_balance = (opening_row['total_debit'] or 0) - (opening_row['total_credit'] or 0)
+            if account["normal_balance"] == "DEBIT":
+                opening_balance = (opening_row["total_debit"] or 0) - (
+                    opening_row["total_credit"] or 0
+                )
             else:
-                opening_balance = (opening_row['total_credit'] or 0) - (opening_row['total_debit'] or 0)
+                opening_balance = (opening_row["total_credit"] or 0) - (
+                    opening_row["total_debit"] or 0
+                )
 
             # Get total count for pagination
-            total_count = await conn.fetchval("""
+            total_count = await conn.fetchval(
+                """
                 SELECT COUNT(*)
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_entry_id
@@ -2083,11 +2466,17 @@ async def get_drill_down(
                   AND je.tenant_id = $2
                   AND je.entry_date BETWEEN $3 AND $4
                   AND je.status = 'POSTED'
-            """, account_id, tenant_id, start_date, end_date)
+            """,
+                account_id,
+                tenant_id,
+                start_date,
+                end_date,
+            )
 
             # Get transactions with pagination
             offset = (page - 1) * limit
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT
                     je.id as journal_id,
                     je.journal_number,
@@ -2106,7 +2495,14 @@ async def get_drill_down(
                   AND je.status = 'POSTED'
                 ORDER BY je.entry_date, je.created_at
                 OFFSET $5 LIMIT $6
-            """, account_id, tenant_id, start_date, end_date, offset, limit)
+            """,
+                account_id,
+                tenant_id,
+                start_date,
+                end_date,
+                offset,
+                limit,
+            )
 
             # Calculate running balance and build transactions
             transactions = []
@@ -2115,43 +2511,47 @@ async def get_drill_down(
             total_credit = 0
 
             for row in rows:
-                debit = row['debit'] or 0
-                credit = row['credit'] or 0
+                debit = row["debit"] or 0
+                credit = row["credit"] or 0
                 total_debit += debit
                 total_credit += credit
 
-                if account['normal_balance'] == 'DEBIT':
+                if account["normal_balance"] == "DEBIT":
                     running_balance = running_balance + debit - credit
                 else:
                     running_balance = running_balance + credit - debit
 
-                transactions.append(DrillDownTransaction(
-                    journal_id=row['journal_id'],
-                    journal_number=row['journal_number'],
-                    entry_date=row['entry_date'],
-                    source_type=row['source_type'],
-                    source_id=row['source_id'],
-                    description=row['description'],
-                    memo=row['memo'],
-                    debit=debit,
-                    credit=credit,
-                    running_balance=running_balance,
-                ))
+                transactions.append(
+                    DrillDownTransaction(
+                        journal_id=row["journal_id"],
+                        journal_number=row["journal_number"],
+                        entry_date=row["entry_date"],
+                        source_type=row["source_type"],
+                        source_id=row["source_id"],
+                        description=row["description"],
+                        memo=row["memo"],
+                        debit=debit,
+                        credit=credit,
+                        running_balance=running_balance,
+                    )
+                )
 
             closing_balance = opening_balance
-            if account['normal_balance'] == 'DEBIT':
+            if account["normal_balance"] == "DEBIT":
                 closing_balance = opening_balance + total_debit - total_credit
             else:
                 closing_balance = opening_balance + total_credit - total_debit
 
-            logger.info(f"Drill-down generated: tenant={tenant_id}, account={account['code']}, transactions={len(transactions)}")
+            logger.info(
+                f"Drill-down generated: tenant={tenant_id}, account={account['code']}, transactions={len(transactions)}"
+            )
 
             return DrillDownResponse(
-                account_id=account['id'],
-                account_code=account['code'],
-                account_name=account['name'],
-                account_type=account['type'],
-                normal_balance=account['normal_balance'],
+                account_id=account["id"],
+                account_code=account["code"],
+                account_name=account["name"],
+                account_type=account["type"],
+                normal_balance=account["normal_balance"],
                 period_start=start_date,
                 period_end=end_date,
                 opening_balance=opening_balance,
@@ -2171,4 +2571,6 @@ async def get_drill_down(
         raise
     except Exception as e:
         logger.error(f"Get drill-down error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate drill-down report")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate drill-down report"
+        )

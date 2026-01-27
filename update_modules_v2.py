@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
-import re
 
 # Read the file
-with open('/root/milkyhoop/frontend/web/src/components/app/MoreModules/index.tsx', 'r') as f:
+with open(
+    "/root/milkyhoop/frontend/web/src/components/app/MoreModules/index.tsx", "r"
+) as f:
     content = f.read()
 
 # 1. Add Saldo Awal to AKUNTANSI section (after Pusat Laba)
 content = content.replace(
     "{ id: 'pusat_laba', label: 'Pusat Laba', icon: <ProfitCenterIcon />, tier: 'tier3' },\n    ],\n  },\n  {\n    title: 'PERBANKAN',",
-    "{ id: 'pusat_laba', label: 'Pusat Laba', icon: <ProfitCenterIcon />, tier: 'tier3' },\n      { id: 'saldo_awal', label: 'Saldo Awal', icon: <OpeningBalanceIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PERBANKAN',"
+    "{ id: 'pusat_laba', label: 'Pusat Laba', icon: <ProfitCenterIcon />, tier: 'tier3' },\n      { id: 'saldo_awal', label: 'Saldo Awal', icon: <OpeningBalanceIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PERBANKAN',",
 )
 
 # 2. Add Surat Jalan to PENJUALAN section (after Uang Muka Pelanggan)
 content = content.replace(
     "{ id: 'uang_muka_pelanggan', label: 'Uang Muka Pelanggan', icon: <CustomerAdvanceIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PEMBELIAN',",
-    "{ id: 'uang_muka_pelanggan', label: 'Uang Muka Pelanggan', icon: <CustomerAdvanceIcon />, tier: 'core' },\n      { id: 'surat_jalan', label: 'Surat Jalan', icon: <ShipmentIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PEMBELIAN',"
+    "{ id: 'uang_muka_pelanggan', label: 'Uang Muka Pelanggan', icon: <CustomerAdvanceIcon />, tier: 'core' },\n      { id: 'surat_jalan', label: 'Surat Jalan', icon: <ShipmentIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PEMBELIAN',",
 )
 
 # 3. Add Penerimaan Barang to PEMBELIAN section (after Uang Muka Pemasok)
 content = content.replace(
     "{ id: 'uang_muka_pemasok', label: 'Uang Muka Pemasok', icon: <VendorAdvanceIcon />, tier: 'tier1' },\n    ],\n  },\n  {\n    title: 'PAJAK',",
-    "{ id: 'uang_muka_pemasok', label: 'Uang Muka Pemasok', icon: <VendorAdvanceIcon />, tier: 'tier1' },\n      { id: 'penerimaan_barang', label: 'Penerimaan Barang', icon: <GoodsReceiptIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PAJAK',"
+    "{ id: 'uang_muka_pemasok', label: 'Uang Muka Pemasok', icon: <VendorAdvanceIcon />, tier: 'tier1' },\n      { id: 'penerimaan_barang', label: 'Penerimaan Barang', icon: <GoodsReceiptIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'PAJAK',",
 )
 
 # 4. Add Serial Number to PELACAKAN LANJUTAN section (after Barang Terkendali)
 content = content.replace(
     "{ id: 'barang_terkendali', label: 'Barang Terkendali', icon: <ControlledSubstanceIcon />, tier: 'core' },\n    ],\n  },\n  {\n    title: 'LAPORAN',",
-    "{ id: 'barang_terkendali', label: 'Barang Terkendali', icon: <ControlledSubstanceIcon />, tier: 'core' },\n      { id: 'serial_number', label: 'Serial Number', icon: <SerialNumberIcon />, tier: 'tier1' },\n    ],\n  },\n  {\n    title: 'LAPORAN',"
+    "{ id: 'barang_terkendali', label: 'Barang Terkendali', icon: <ControlledSubstanceIcon />, tier: 'core' },\n      { id: 'serial_number', label: 'Serial Number', icon: <SerialNumberIcon />, tier: 'tier1' },\n    ],\n  },\n  {\n    title: 'LAPORAN',",
 )
 
 # 5. Add 3 new categories after PENGATURAN section
-new_categories = '''
+new_categories = """
   {
     title: 'MANUFAKTUR',
     items: [
@@ -56,15 +57,17 @@ new_categories = '''
       { id: 'timesheet', label: 'Timesheet', icon: <TimesheetIcon />, tier: 'industry' },
       { id: 'timer', label: 'Timer', icon: <TimerIcon />, tier: 'industry' },
     ],
-  },'''
+  },"""
 
 content = content.replace(
     "{\n    title: 'PENGATURAN',\n    items: [\n      { id: 'mata_uang', label: 'Mata Uang', icon: <CurrencyIcon />, tier: 'core' },\n      { id: 'pengaturan_umum', label: 'Pengaturan Umum', icon: <SettingsIcon />, tier: 'core' },\n    ],\n  },\n];",
-    "{\n    title: 'PENGATURAN',\n    items: [\n      { id: 'mata_uang', label: 'Mata Uang', icon: <CurrencyIcon />, tier: 'core' },\n      { id: 'pengaturan_umum', label: 'Pengaturan Umum', icon: <SettingsIcon />, tier: 'core' },\n    ],\n  }," + new_categories + "\n];"
+    "{\n    title: 'PENGATURAN',\n    items: [\n      { id: 'mata_uang', label: 'Mata Uang', icon: <CurrencyIcon />, tier: 'core' },\n      { id: 'pengaturan_umum', label: 'Pengaturan Umum', icon: <SettingsIcon />, tier: 'core' },\n    ],\n  },"
+    + new_categories
+    + "\n];",
 )
 
 # 6. Update tier badge styling to handle 'industry' tier
-old_badge = '''                {/* Tier Badge */}
+old_badge = """                {/* Tier Badge */}
                 {item.tier && item.tier !== 'core' && (
                   <span
                     style={{
@@ -80,9 +83,9 @@ old_badge = '''                {/* Tier Badge */}
                   >
                     {item.tier === 'tier1' ? 'Pro' : item.tier === 'tier2' ? 'Enterprise' : 'Corporate'}
                   </span>
-                )}'''
+                )}"""
 
-new_badge = '''                {/* Tier Badge */}
+new_badge = """                {/* Tier Badge */}
                 {item.tier && item.tier !== 'core' && (
                   <span
                     style={{
@@ -98,15 +101,17 @@ new_badge = '''                {/* Tier Badge */}
                   >
                     {item.tier === 'tier1' ? 'Pro' : item.tier === 'tier2' ? 'Enterprise' : item.tier === 'tier3' ? 'Corporate' : 'Industry'}
                   </span>
-                )}'''
+                )}"""
 
 content = content.replace(old_badge, new_badge)
 
 # Write the file
-with open('/root/milkyhoop/frontend/web/src/components/app/MoreModules/index.tsx', 'w') as f:
+with open(
+    "/root/milkyhoop/frontend/web/src/components/app/MoreModules/index.tsx", "w"
+) as f:
     f.write(content)
 
-print('Modules updated successfully!')
-print('Added: Saldo Awal, Surat Jalan, Penerimaan Barang, Serial Number')
-print('Added categories: MANUFAKTUR, F&B / RESTORAN, PROYEK & WAKTU')
-print('Updated tier badge styling for industry tier')
+print("Modules updated successfully!")
+print("Added: Saldo Awal, Surat Jalan, Penerimaan Barang, Serial Number")
+print("Added categories: MANUFAKTUR, F&B / RESTORAN, PROYEK & WAKTU")
+print("Updated tier badge styling for industry tier")

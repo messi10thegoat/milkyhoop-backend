@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StorageResult:
     """Result of a storage operation."""
+
     file_path: str
     file_size: int
     content_type: str
@@ -34,6 +35,7 @@ class StorageResult:
 @dataclass
 class StorageConfig:
     """MinIO/S3 storage configuration."""
+
     endpoint: str
     access_key: str
     secret_key: str
@@ -170,8 +172,7 @@ class StorageService:
 
         # Sanitize filename - keep only alphanumeric, dash, underscore, dot
         safe_filename = "".join(
-            c if c.isalnum() or c in "-_." else "_"
-            for c in filename
+            c if c.isalnum() or c in "-_." else "_" for c in filename
         )
 
         # Limit filename length

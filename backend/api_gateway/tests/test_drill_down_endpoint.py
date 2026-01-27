@@ -1,6 +1,5 @@
 """Tests for drill-down endpoint."""
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 from uuid import uuid4
 from datetime import date
 from decimal import Decimal

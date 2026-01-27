@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ImageInfo:
     """Information extracted from an image."""
+
     width: int
     height: int
     format: str
@@ -26,6 +27,7 @@ class ImageInfo:
 @dataclass
 class ThumbnailResult:
     """Result of thumbnail generation."""
+
     content: bytes
     width: int
     height: int
@@ -73,6 +75,7 @@ class ThumbnailService:
         """Check if HEIC/HEIF support is available."""
         try:
             import pillow_heif
+
             pillow_heif.register_heif_opener()
             return True
         except ImportError:
@@ -211,7 +214,9 @@ class ThumbnailService:
                     background = Image.new("RGB", img.size, (255, 255, 255))
                     if img.mode == "P":
                         img = img.convert("RGBA")
-                    background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                    background.paste(
+                        img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                    )
                     img = background
                 elif img.mode != "RGB":
                     img = img.convert("RGB")
@@ -273,7 +278,9 @@ class ThumbnailService:
                     background = Image.new("RGB", img.size, (255, 255, 255))
                     if img.mode == "P":
                         img = img.convert("RGBA")
-                    background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                    background.paste(
+                        img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                    )
                     img = background
                 elif img.mode != "RGB":
                     img = img.convert("RGB")
