@@ -181,7 +181,7 @@ class SessionStatistics(BaseModel):
     unmatched_transactions: int = 0
     statement_total: int = 0
     matched_total: int = 0
-    difference: int = 0
+    difference: Optional[int] = 0
     is_balanced: bool = False
 
 
@@ -189,7 +189,7 @@ class SessionListItem(BaseModel):
     """Reconciliation session for list display."""
 
     id: str
-    session_number: str
+    session_number: Optional[str] = None
     account_id: str
     account_name: str
     statement_date: str
@@ -200,7 +200,7 @@ class SessionListItem(BaseModel):
     status: Literal["in_progress", "completed", "cancelled"]
     matched_count: int = 0
     total_lines: int = 0
-    difference: int = 0
+    difference: Optional[int] = 0
     created_at: str
     completed_at: Optional[str] = None
 
@@ -264,14 +264,14 @@ class HistoryItem(BaseModel):
     """Reconciliation history entry."""
 
     id: str
-    session_number: str
+    session_number: Optional[str] = None
     statement_date: str
     statement_start_date: str
     statement_end_date: str
     statement_beginning_balance: int
     statement_ending_balance: int
     system_balance: int
-    difference: int
+    difference: Optional[int] = None
     matched_count: int
     adjustment_count: int
     status: str
@@ -284,7 +284,7 @@ class SessionDetail(BaseModel):
     """Full reconciliation session detail."""
 
     id: str
-    session_number: str
+    session_number: Optional[str] = None
     account_id: str
     account_name: str
     account_number: Optional[str] = None
