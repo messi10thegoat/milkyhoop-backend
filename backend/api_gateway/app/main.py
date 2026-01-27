@@ -34,6 +34,7 @@ from .routers import bank_accounts
 from .routers import bank_transfers
 from .routers import stock_adjustments
 from .routers import customer_deposits
+from .routers import receive_payments
 from .routers import purchase_orders
 from .routers import price_lists
 from .routers import quotes
@@ -313,16 +314,26 @@ app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"]
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 
 # Sales Invoices router (Faktur Penjualan)
-app.include_router(sales_invoices.router, prefix="/api/sales-invoices", tags=["sales-invoices"])
+app.include_router(
+    sales_invoices.router, prefix="/api/sales-invoices", tags=["sales-invoices"]
+)
 
 # Credit Notes router (Nota Kredit / Sales Returns)
-app.include_router(credit_notes.router, prefix="/api/credit-notes", tags=["credit-notes"])
+app.include_router(
+    credit_notes.router, prefix="/api/credit-notes", tags=["credit-notes"]
+)
 
 # Vendor Credits router (Kredit Vendor / Purchase Returns)
-app.include_router(vendor_credits.router, prefix="/api/vendor-credits", tags=["vendor-credits"])
+app.include_router(
+    vendor_credits.router, prefix="/api/vendor-credits", tags=["vendor-credits"]
+)
 
 # Storage Locations router (Lokasi Penyimpanan)
-app.include_router(storage_locations.router, prefix="/api/storage-locations", tags=["storage-locations"])
+app.include_router(
+    storage_locations.router,
+    prefix="/api/storage-locations",
+    tags=["storage-locations"],
+)
 
 # Price Lists router (Daftar Harga)
 app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-lists"])
@@ -344,31 +355,56 @@ app.include_router(mfa.router, tags=["mfa"])
 app.include_router(opening_balance.router, prefix="/api", tags=["opening-balance"])
 
 # Bank Accounts router (Rekening Bank)
-app.include_router(bank_accounts.router, prefix="/api/bank-accounts", tags=["bank-accounts"])
+app.include_router(
+    bank_accounts.router, prefix="/api/bank-accounts", tags=["bank-accounts"]
+)
 
 # Bank Transfers router (Transfer Antar Bank)
-app.include_router(bank_transfers.router, prefix="/api/bank-transfers", tags=["bank-transfers"])
+app.include_router(
+    bank_transfers.router, prefix="/api/bank-transfers", tags=["bank-transfers"]
+)
 
 # Stock Adjustments router (Penyesuaian Stok)
-app.include_router(stock_adjustments.router, prefix="/api/stock-adjustments", tags=["stock-adjustments"])
+app.include_router(
+    stock_adjustments.router,
+    prefix="/api/stock-adjustments",
+    tags=["stock-adjustments"],
+)
 
 # Customer Deposits router (Uang Muka Pelanggan)
-app.include_router(customer_deposits.router, prefix="/api/customer-deposits", tags=["customer-deposits"])
+app.include_router(
+    customer_deposits.router,
+    prefix="/api/customer-deposits",
+    tags=["customer-deposits"],
+)
+
+# Receive Payments router (Penerimaan Pembayaran)
+app.include_router(
+    receive_payments.router, prefix="/api/receive-payments", tags=["receive-payments"]
+)
 
 # Purchase Orders router (Pesanan Pembelian)
-app.include_router(purchase_orders.router, prefix="/api/purchase-orders", tags=["purchase-orders"])
+app.include_router(
+    purchase_orders.router, prefix="/api/purchase-orders", tags=["purchase-orders"]
+)
 
 # Quotes router (Penawaran Harga)
 app.include_router(quotes.router, prefix="/api/quotes", tags=["quotes"])
 
 # Sales Orders router (Pesanan Penjualan)
-app.include_router(sales_orders.router, prefix="/api/sales-orders", tags=["sales-orders"])
+app.include_router(
+    sales_orders.router, prefix="/api/sales-orders", tags=["sales-orders"]
+)
 
 # Currencies router (Multi-currency Management)
 app.include_router(currencies.router, prefix="/api/currencies", tags=["currencies"])
 
 # Bank Reconciliation router (Rekonsiliasi Bank)
-app.include_router(bank_reconciliation.router, prefix="/api/bank-reconciliation", tags=["bank-reconciliation"])
+app.include_router(
+    bank_reconciliation.router,
+    prefix="/api/bank-reconciliation",
+    tags=["bank-reconciliation"],
+)
 
 # ===========================================
 # P4 CORE COMPLETION - 7 NEW MODULES
@@ -378,19 +414,31 @@ app.include_router(bank_reconciliation.router, prefix="/api/bank-reconciliation"
 app.include_router(warehouses.router, prefix="/api/warehouses", tags=["warehouses"])
 
 # Stock Transfers router (Transfer Stok Antar Gudang)
-app.include_router(stock_transfers.router, prefix="/api/stock-transfers", tags=["stock-transfers"])
+app.include_router(
+    stock_transfers.router, prefix="/api/stock-transfers", tags=["stock-transfers"]
+)
 
 # Sales Receipts router (Bukti Penjualan / POS)
-app.include_router(sales_receipts.router, prefix="/api/sales-receipts", tags=["sales-receipts"])
+app.include_router(
+    sales_receipts.router, prefix="/api/sales-receipts", tags=["sales-receipts"]
+)
 
 # Recurring Invoices router (Faktur Berulang)
-app.include_router(recurring_invoices.router, prefix="/api/recurring-invoices", tags=["recurring-invoices"])
+app.include_router(
+    recurring_invoices.router,
+    prefix="/api/recurring-invoices",
+    tags=["recurring-invoices"],
+)
 
 # Item Batches router (Nomor Lot & Kedaluwarsa - FEFO)
-app.include_router(item_batches.router, prefix="/api/item-batches", tags=["item-batches"])
+app.include_router(
+    item_batches.router, prefix="/api/item-batches", tags=["item-batches"]
+)
 
 # Item Serials router (Nomor Seri)
-app.include_router(item_serials.router, prefix="/api/item-serials", tags=["item-serials"])
+app.include_router(
+    item_serials.router, prefix="/api/item-serials", tags=["item-serials"]
+)
 
 # Documents router (Lampiran / Attachments - S3/MinIO)
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
@@ -400,19 +448,27 @@ app.include_router(documents.router, prefix="/api/documents", tags=["documents"]
 # ===========================================
 
 # Fixed Assets router (Aset Tetap - with depreciation)
-app.include_router(fixed_assets.router, prefix="/api/fixed-assets", tags=["fixed-assets"])
+app.include_router(
+    fixed_assets.router, prefix="/api/fixed-assets", tags=["fixed-assets"]
+)
 
 # Budgets router (Anggaran - NO journal, planning only)
 app.include_router(budgets.router, prefix="/api/budgets", tags=["budgets"])
 
 # Cost Centers router (Pusat Biaya - NO journal, dimension)
-app.include_router(cost_centers.router, prefix="/api/cost-centers", tags=["cost-centers"])
+app.include_router(
+    cost_centers.router, prefix="/api/cost-centers", tags=["cost-centers"]
+)
 
 # Recurring Bills router (Tagihan Berulang)
-app.include_router(recurring_bills.router, prefix="/api/recurring-bills", tags=["recurring-bills"])
+app.include_router(
+    recurring_bills.router, prefix="/api/recurring-bills", tags=["recurring-bills"]
+)
 
 # Vendor Deposits router (Uang Muka Vendor)
-app.include_router(vendor_deposits.router, prefix="/api/vendor-deposits", tags=["vendor-deposits"])
+app.include_router(
+    vendor_deposits.router, prefix="/api/vendor-deposits", tags=["vendor-deposits"]
+)
 
 # ===========================================
 # P6 TIER 2 ENTERPRISE - 4 NEW MODULES
@@ -428,17 +484,23 @@ app.include_router(approvals.router, prefix="/api", tags=["approvals"])
 app.include_router(cheques.router, prefix="/api/cheques", tags=["cheques"])
 
 # Financial Ratios router (Rasio Keuangan - NO journal)
-app.include_router(financial_ratios.router, prefix="/api/financial-ratios", tags=["financial-ratios"])
+app.include_router(
+    financial_ratios.router, prefix="/api/financial-ratios", tags=["financial-ratios"]
+)
 
 # ===========================================
 # P7 TIER 3 CORPORATE - 3 NEW MODULES
 # ===========================================
 
 # Consolidation router (Konsolidasi Laporan Multi-Entitas)
-app.include_router(consolidation.router, prefix="/api/consolidation", tags=["consolidation"])
+app.include_router(
+    consolidation.router, prefix="/api/consolidation", tags=["consolidation"]
+)
 
 # Intercompany router (Transaksi Antar Perusahaan - HAS journal)
-app.include_router(intercompany.router, prefix="/api/intercompany", tags=["intercompany"])
+app.include_router(
+    intercompany.router, prefix="/api/intercompany", tags=["intercompany"]
+)
 
 # Branches router (Multi-Cabang - HAS journal for transfers)
 app.include_router(branches.router, prefix="/api/branches", tags=["branches"])
@@ -454,7 +516,11 @@ app.include_router(bom.router, prefix="/api/bom", tags=["bom"])
 app.include_router(production.router, prefix="/api/production", tags=["production"])
 
 # Production Costing router (Kalkulasi Harga Produksi - NO journal)
-app.include_router(production_costing.router, prefix="/api/production-costing", tags=["production-costing"])
+app.include_router(
+    production_costing.router,
+    prefix="/api/production-costing",
+    tags=["production-costing"],
+)
 
 # ===========================================
 # P9 F&B - 3 NEW MODULES
@@ -480,7 +546,9 @@ app.include_router(journals.router, prefix="/api/journals", tags=["journals"])
 app.include_router(ledger.router, prefix="/api/ledger", tags=["ledger"])
 
 # Fiscal Years router (Tahun Fiskal)
-app.include_router(fiscal_years.router, prefix="/api/fiscal-years", tags=["fiscal-years"])
+app.include_router(
+    fiscal_years.router, prefix="/api/fiscal-years", tags=["fiscal-years"]
+)
 
 # Periods router (Periode Akuntansi)
 app.include_router(periods.router, prefix="/api/periods", tags=["periods"])
@@ -538,16 +606,13 @@ async def _get_pool() -> asyncpg.Pool:
     """Get database connection pool."""
     db_config = settings.get_db_config()
     return await asyncpg.create_pool(
-        **db_config,
-        min_size=2,
-        max_size=10,
-        command_timeout=60
+        **db_config, min_size=2, max_size=10, command_timeout=60
     )
 
 
 def _get_user_context(request: Request) -> dict:
     """Extract user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     tenant_id = user.get("tenant_id")
@@ -588,8 +653,8 @@ async def list_payments(
                 params.append(end_date)
                 param_idx += 1
 
-            type_filter_received = "" if payment_type != 'made' else "AND 1=0"
-            type_filter_made = "" if payment_type != 'received' else "AND 1=0"
+            type_filter_received = "" if payment_type != "made" else "AND 1=0"
+            type_filter_made = "" if payment_type != "received" else "AND 1=0"
 
             # Unified query combining sales invoice payments and bill payments
             query = f"""
@@ -640,19 +705,25 @@ async def list_payments(
                     WHERE b.tenant_id = $1 {date_filter} {type_filter_made}
                 )
             """
-            total = await conn.fetchval(count_query, *params[:-2])  # Exclude pagination params
+            total = await conn.fetchval(
+                count_query, *params[:-2]
+            )  # Exclude pagination params
 
             return {
                 "success": True,
                 "data": [
                     {
                         "id": str(row["id"]),
-                        "payment_date": row["payment_date"].isoformat() if row["payment_date"] else None,
+                        "payment_date": row["payment_date"].isoformat()
+                        if row["payment_date"]
+                        else None,
                         "amount": row["amount"],
                         "payment_method": row["payment_method"],
                         "reference_number": row["reference_number"],
                         "payment_type": row["payment_type"],
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                        "created_at": row["created_at"].isoformat()
+                        if row["created_at"]
+                        else None,
                     }
                     for row in rows
                 ],
@@ -660,8 +731,8 @@ async def list_payments(
                     "page": page,
                     "per_page": per_page,
                     "total": total,
-                    "total_pages": (total + per_page - 1) // per_page if total else 0
-                }
+                    "total_pages": (total + per_page - 1) // per_page if total else 0,
+                },
             }
 
     except HTTPException:
@@ -669,7 +740,6 @@ async def list_payments(
     except Exception as e:
         logger.error(f"Error listing payments: {e}")
         raise HTTPException(status_code=500, detail="Failed to list payments")
-
 
 
 # Note: /api/production/orders is handled by the production.py router

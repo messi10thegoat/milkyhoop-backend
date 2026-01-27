@@ -31,12 +31,13 @@ CREATE TABLE IF NOT EXISTS reconciliation_sessions (
     status VARCHAR(20) DEFAULT 'not_started',
 
     -- Audit
-    created_by UUID,
+    created_by UUID NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     completed_at TIMESTAMPTZ,
 
-    CONSTRAINT chk_recon_session_status CHECK (status IN ('not_started', 'in_progress', 'completed', 'cancelled'))
+    CONSTRAINT chk_recon_session_status CHECK (status IN ('not_started', 'in_progress', 'completed', 'cancelled')),
+    CONSTRAINT chk_session_dates CHECK (statement_end_date >= statement_start_date)
 );
 
 COMMENT ON TABLE reconciliation_sessions IS 'Bank reconciliation sessions - tracks statement matching progress';
@@ -63,12 +64,16 @@ CREATE TABLE IF NOT EXISTS bank_statement_lines_v2 (
     running_balance BIGINT,
 
     -- Matching status
-    match_status VARCHAR(20) DEFAULT 'unmatched',
+    match_status VARCHAR(20) NOT NULL DEFAULT 'unmatched',
     match_confidence VARCHAR(10),
     match_difference BIGINT,
 
     -- Raw data for debugging/audit
     raw_data JSONB,
+
+    -- Audit
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_stmt_line_type CHECK (type IN ('debit', 'credit')),
     CONSTRAINT chk_stmt_line_match_status CHECK (match_status IN ('matched', 'unmatched', 'partially_matched', 'excluded')),
@@ -94,16 +99,16 @@ CREATE TABLE IF NOT EXISTS reconciliation_matches (
     match_type VARCHAR(20) NOT NULL,
 
     -- Confidence level
-    confidence VARCHAR(10),
+    confidence VARCHAR(10) NOT NULL,
 
     -- Audit
-    created_by UUID,
+    created_by UUID NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
 
     -- Prevent duplicate matches
     CONSTRAINT uq_recon_match_stmt_txn UNIQUE (statement_line_id, transaction_id),
     CONSTRAINT chk_recon_match_type CHECK (match_type IN ('one_to_one', 'one_to_many', 'many_to_one')),
-    CONSTRAINT chk_recon_match_confidence CHECK (confidence IS NULL OR confidence IN ('exact', 'high', 'medium', 'low', 'manual'))
+    CONSTRAINT chk_recon_match_confidence CHECK (confidence IN ('exact', 'high', 'medium', 'low', 'manual'))
 );
 
 COMMENT ON TABLE reconciliation_matches IS 'Links statement lines to bank transactions';
@@ -130,8 +135,8 @@ CREATE TABLE IF NOT EXISTS reconciliation_adjustments (
     journal_entry_id UUID,
 
     -- Audit
-    created_by UUID,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_recon_adj_type CHECK (type IN ('bank_fee', 'interest', 'correction', 'other'))
 );
@@ -255,8 +260,18 @@ CREATE TRIGGER trg_reconciliation_sessions_updated_at
     BEFORE UPDATE ON reconciliation_sessions
     FOR EACH ROW EXECUTE FUNCTION update_reconciliation_sessions_updated_at();
 
--- Note: bank_statement_lines_v2 does not have updated_at column per spec,
--- but adding trigger function for future use if needed
+CREATE OR REPLACE FUNCTION update_bank_statement_lines_v2_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_bank_statement_lines_v2_updated_at ON bank_statement_lines_v2;
+CREATE TRIGGER trg_bank_statement_lines_v2_updated_at
+    BEFORE UPDATE ON bank_statement_lines_v2
+    FOR EACH ROW EXECUTE FUNCTION update_bank_statement_lines_v2_updated_at();
 
 -- ============================================================================
 -- 9. HELPER FUNCTION - Update reconciliation session stats
