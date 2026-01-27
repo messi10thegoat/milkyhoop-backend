@@ -551,3 +551,134 @@ async def delete_customer(request: Request, customer_id: UUID):
     except Exception as e:
         logger.error(f"Error deleting customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete customer")
+
+
+# =============================================================================
+# CUSTOMER OPEN INVOICES (for receive payments)
+# =============================================================================
+
+@router.get("/{customer_id}/open-invoices")
+async def get_customer_open_invoices(
+    request: Request,
+    customer_id: UUID,
+):
+    """
+    Get open (unpaid/partially paid) invoices for a customer.
+    Used by receive payments to select invoices for allocation.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
+
+            # Get invoices with remaining balance
+            rows = await conn.fetch("""
+                SELECT
+                    id, invoice_number, invoice_date, due_date,
+                    total_amount, amount_paid,
+                    total_amount - COALESCE(amount_paid, 0) as remaining_amount,
+                    CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
+                    GREATEST(0, CURRENT_DATE - due_date) as overdue_days
+                FROM sales_invoices
+                WHERE tenant_id = $1
+                  AND customer_id = $2
+                  AND status IN ('posted', 'partial', 'overdue')
+                  AND total_amount > COALESCE(amount_paid, 0)
+                ORDER BY due_date ASC, invoice_date ASC
+            """, ctx["tenant_id"], customer_id)
+
+            invoices = [
+                {
+                    "id": str(row["id"]),
+                    "invoice_number": row["invoice_number"],
+                    "invoice_date": row["invoice_date"].isoformat(),
+                    "due_date": row["due_date"].isoformat(),
+                    "total_amount": row["total_amount"],
+                    "paid_amount": row["amount_paid"] or 0,
+                    "remaining_amount": row["remaining_amount"],
+                    "is_overdue": row["is_overdue"],
+                    "overdue_days": row["overdue_days"],
+                }
+                for row in rows
+            ]
+
+            total_outstanding = sum(inv["remaining_amount"] for inv in invoices)
+            total_overdue = sum(inv["remaining_amount"] for inv in invoices if inv["is_overdue"])
+
+            return {
+                "invoices": invoices,
+                "summary": {
+                    "total_outstanding": total_outstanding,
+                    "total_overdue": total_overdue,
+                    "invoice_count": len(invoices),
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting open invoices for customer {customer_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get open invoices")
+
+
+# =============================================================================
+# CUSTOMER AVAILABLE DEPOSITS (for receive payments)
+# =============================================================================
+
+@router.get("/{customer_id}/available-deposits")
+async def get_customer_available_deposits(
+    request: Request,
+    customer_id: UUID,
+):
+    """
+    Get customer deposits with remaining balance.
+    Used by receive payments when paying from deposit.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
+
+            # Get deposits with remaining balance
+            rows = await conn.fetch("""
+                SELECT
+                    id, deposit_number, deposit_date,
+                    amount, amount_applied, amount_refunded,
+                    amount - COALESCE(amount_applied, 0) - COALESCE(amount_refunded, 0) as remaining_amount
+                FROM customer_deposits
+                WHERE tenant_id = $1
+                  AND customer_id = $2::text
+                  AND status IN ('posted', 'partial')
+                  AND amount > COALESCE(amount_applied, 0) + COALESCE(amount_refunded, 0)
+                ORDER BY deposit_date ASC
+            """, ctx["tenant_id"], str(customer_id))
+
+            deposits = [
+                {
+                    "id": str(row["id"]),
+                    "deposit_number": row["deposit_number"],
+                    "deposit_date": row["deposit_date"].isoformat(),
+                    "amount": row["amount"],
+                    "amount_applied": row["amount_applied"] or 0,
+                    "amount_refunded": row["amount_refunded"] or 0,
+                    "remaining_amount": row["remaining_amount"],
+                }
+                for row in rows
+            ]
+
+            total_available = sum(dep["remaining_amount"] for dep in deposits)
+
+            return {
+                "deposits": deposits,
+                "total_available": total_available,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting available deposits for customer {customer_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get available deposits")
