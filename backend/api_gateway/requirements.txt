@@ -70,3 +70,6 @@ Pillow==11.0.0
 
 # PDF Generation
 weasyprint==67.0
+
+# Excel Export
+openpyxl==3.1.2
