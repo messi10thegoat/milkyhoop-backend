@@ -560,7 +560,7 @@ async def delete_customer(request: Request, customer_id: UUID):
 @router.get("/{customer_id}/open-invoices")
 async def get_customer_open_invoices(
     request: Request,
-    customer_id: UUID,
+    customer_id: str,  # customers.id is VARCHAR(255), not UUID
 ):
     """
     Get open (unpaid/partially paid) invoices for a customer.
@@ -630,7 +630,7 @@ async def get_customer_open_invoices(
 @router.get("/{customer_id}/available-deposits")
 async def get_customer_available_deposits(
     request: Request,
-    customer_id: UUID,
+    customer_id: str,  # customers.id is VARCHAR(255), not UUID
 ):
     """
     Get customer deposits with remaining balance.

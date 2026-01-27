@@ -58,7 +58,7 @@ _pool: Optional[asyncpg.Pool] = None
 
 # Account codes
 CUSTOMER_DEPOSIT_ACCOUNT = "2-10400"  # Uang Muka Pelanggan (Liability)
-AR_ACCOUNT = "1-10300"  # Piutang Usaha
+AR_ACCOUNT = "1-10400"  # Piutang Usaha (A/R)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -442,13 +442,13 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                         detail="Bank account must be an asset account (Kas/Bank)",
                     )
 
-                # Validate customer exists
+                # Validate customer exists (customers.id is VARCHAR, not UUID)
                 customer = await conn.fetchrow(
                     """
-                    SELECT id, name FROM customers
+                    SELECT id, nama FROM customers
                     WHERE id = $1 AND tenant_id = $2
                 """,
-                    UUID(body.customer_id),
+                    body.customer_id,
                     ctx["tenant_id"],
                 )
 
@@ -570,7 +570,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 """,
                     ctx["tenant_id"],
                     payment_number,
-                    UUID(body.customer_id),
+                    body.customer_id,  # customers.id is VARCHAR, not UUID
                     body.customer_name,
                     body.payment_date,
                     body.payment_method,
