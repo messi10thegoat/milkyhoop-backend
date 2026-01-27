@@ -558,10 +558,9 @@ async def reverse_journal(
                     INSERT INTO journal_entries (
                         tenant_id, journal_number, journal_date, description,
                         source_type, total_debit, total_credit, status,
-                        period_id, reversal_of_id, reversal_reason,
-                        created_by, posted_at, posted_by
+                        period_id, reversal_of_id, reversal_reason, created_by
                     )
-                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'POSTED', $7, $8, $9, $10, NOW(), $10)
+                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'POSTED', $7, $8, $9, $10)
                     RETURNING id
                 """,
                     ctx["tenant_id"],

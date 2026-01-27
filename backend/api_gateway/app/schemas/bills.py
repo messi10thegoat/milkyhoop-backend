@@ -463,6 +463,13 @@ class CreateBillResponseV2(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
+class OutstandingSummaryResponse(BaseModel):
+    """Response for outstanding bills summary."""
+
+    success: bool = True
+    data: Optional[Dict[str, Any]] = None
+
+
 class CalculateBillResponse(BaseModel):
     """Response for bill calculation preview."""
 
