@@ -1638,14 +1638,14 @@ async def list_cogs_accounts(request: Request):
             SELECT id, account_code, name, account_type
             FROM chart_of_accounts
             WHERE tenant_id = $1
-              AND account_type IN (EXPENSE, COGS)
+              AND account_type IN ('EXPENSE', 'COGS')
               AND is_active = true
               AND (
-                  name ILIKE %hpp%
-                  OR name ILIKE %harga pokok%
-                  OR name ILIKE %cost of goods%
-                  OR name ILIKE %cogs%
-                  OR account_code LIKE 5-1%
+                  name ILIKE '%%hpp%%'
+                  OR name ILIKE '%%harga pokok%%'
+                  OR name ILIKE '%%cost of goods%%'
+                  OR name ILIKE '%%cogs%%'
+                  OR account_code LIKE '5-1%%'
               )
             ORDER BY account_code ASC
         """
@@ -1661,7 +1661,7 @@ async def list_cogs_accounts(request: Request):
             for row in rows
         ]
 
-        return CoaAccountsResponse(success=True, data=accounts)
+        return CoaAccountsResponse(success=True, accounts=accounts)
     except Exception as e:
         logger.error(f"Error fetching COGS accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
