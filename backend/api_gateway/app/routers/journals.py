@@ -57,24 +57,28 @@ def get_user_context(request: Request) -> dict:
 
 
 async def get_next_journal_number(conn, tenant_id: str, prefix: str = "JV") -> str:
-    """Get next journal number using sequence."""
-    year_month = date.today().strftime("%y%m")
+    """Get next journal number using sequence (uses year + month columns)."""
+    today = date.today()
+    year = today.year
+    month = today.month
+    year_month_str = today.strftime("%y%m")
 
-    # Get or create sequence for this prefix/month
+    # Get or create sequence for this prefix/year/month
     seq = await conn.fetchval(
         """
-        INSERT INTO journal_number_sequences (tenant_id, prefix, year_month, last_number)
-        VALUES ($1, $2, $3, 1)
-        ON CONFLICT (tenant_id, prefix, year_month)
-        DO UPDATE SET last_number = journal_number_sequences.last_number + 1
+        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+        VALUES ($1, $2, $3, $4, 1)
+        ON CONFLICT (tenant_id, prefix, year, month)
+        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
         RETURNING last_number
     """,
         tenant_id,
         prefix,
-        year_month,
+        year,
+        month,
     )
 
-    return f"{prefix}-{year_month}-{seq:04d}"
+    return f"{prefix}-{year_month_str}-{seq:04d}"
 
 
 # =============================================================================
@@ -297,8 +301,8 @@ async def get_journal(request: Request, journal_id: UUID):
                     if je_row["created_by"]
                     else None,
                     created_at=je_row["created_at"],
-                    posted_at=je_row["posted_at"],
-                    posted_by=str(je_row["posted_by"]) if je_row["posted_by"] else None,
+                    posted_at=je_row["updated_at"] if je_row["status"] == "POSTED" else None,
+                    posted_by=None,
                 ),
             }
 
@@ -367,11 +371,9 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                     INSERT INTO journal_entries (
                         tenant_id, journal_number, journal_date, description,
                         source_type, total_debit, total_credit, status,
-                        period_id, created_by, posted_at, posted_by
+                        period_id, created_by
                     )
-                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, $7, $8, $9,
-                            CASE WHEN $7 = 'POSTED' THEN NOW() ELSE NULL END,
-                            CASE WHEN $7 = 'POSTED' THEN $9 ELSE NULL END)
+                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, $7, $8, $9)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -463,12 +465,11 @@ async def post_journal(request: Request, journal_id: UUID):
             await conn.execute(
                 """
                 UPDATE journal_entries
-                SET status = 'POSTED', posted_at = NOW(), posted_by = $3
+                SET status = 'POSTED', updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
             """,
                 journal_id,
                 ctx["tenant_id"],
-                ctx["user_id"],
             )
 
             return await get_journal(request, journal_id)
