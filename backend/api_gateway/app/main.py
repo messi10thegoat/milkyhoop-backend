@@ -92,6 +92,12 @@ from .routers import recipes
 from .routers import kds
 from .routers import tables
 
+# Accounting Kernel (Layer 0) - 4 Core Modules
+from .routers import journals
+from .routers import ledger
+from .routers import fiscal_years
+from .routers import periods
+
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
 from .middleware.rate_limit_middleware import RateLimitMiddleware
@@ -463,6 +469,22 @@ app.include_router(kds.router, prefix="/api/kds", tags=["kds"])
 # Tables router (Manajemen Meja Restoran - NO journal, operational)
 app.include_router(tables.router, prefix="/api/tables", tags=["tables"])
 
+# ===========================================
+# ACCOUNTING KERNEL (LAYER 0) - 4 CORE MODULES
+# ===========================================
+
+# Journals router (Jurnal Umum - Manual Journal Entries)
+app.include_router(journals.router, prefix="/api/journals", tags=["journals"])
+
+# Ledger router (Buku Besar - Read-only Ledger Views)
+app.include_router(ledger.router, prefix="/api/ledger", tags=["ledger"])
+
+# Fiscal Years router (Tahun Fiskal)
+app.include_router(fiscal_years.router, prefix="/api/fiscal-years", tags=["fiscal-years"])
+
+# Periods router (Periode Akuntansi)
+app.include_router(periods.router, prefix="/api/periods", tags=["periods"])
+
 
 @app.get("/")
 async def root():
@@ -534,86 +556,7 @@ def _get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
-@app.get("/api/journals", tags=["journals"])
-async def list_journals(
-    request: Request,
-    page: int = Query(default=1, ge=1),
-    per_page: int = Query(default=20, ge=1, le=100),
-    status: Optional[str] = Query(default=None),
-    start_date: Optional[date] = Query(default=None),
-    end_date: Optional[date] = Query(default=None),
-):
-    """List all journal entries - alias endpoint for /api/journals."""
-    try:
-        ctx = _get_user_context(request)
-        pool = await _get_pool()
-
-        async with pool.acquire() as conn:
-            conditions = ["je.tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            param_idx = 2
-
-            if status:
-                conditions.append(f"je.status = ${param_idx}")
-                params.append(status)
-                param_idx += 1
-
-            if start_date:
-                conditions.append(f"je.journal_date >= ${param_idx}")
-                params.append(start_date)
-                param_idx += 1
-
-            if end_date:
-                conditions.append(f"je.journal_date <= ${param_idx}")
-                params.append(end_date)
-                param_idx += 1
-
-            where_clause = " AND ".join(conditions)
-
-            # Count total
-            count_query = f"SELECT COUNT(*) FROM journal_entries je WHERE {where_clause}"
-            total = await conn.fetchval(count_query, *params)
-
-            # Get data with pagination
-            query = f"""
-                SELECT je.id, je.journal_number, je.journal_date, je.description,
-                       je.source_type, je.source_id, je.status, je.created_at
-                FROM journal_entries je
-                WHERE {where_clause}
-                ORDER BY je.created_at DESC
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([per_page, (page - 1) * per_page])
-            rows = await conn.fetch(query, *params)
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(row["id"]),
-                        "journal_number": row["journal_number"],
-                        "journal_date": row["journal_date"].isoformat() if row["journal_date"] else None,
-                        "description": row["description"],
-                        "source_type": row["source_type"],
-                        "source_id": str(row["source_id"]) if row["source_id"] else None,
-                        "status": row["status"],
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                    }
-                    for row in rows
-                ],
-                "pagination": {
-                    "page": page,
-                    "per_page": per_page,
-                    "total": total,
-                    "total_pages": (total + per_page - 1) // per_page if total else 0
-                }
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing journals: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list journals")
+# Note: /api/journals is now handled by journals.router (Accounting Kernel Layer 0)
 
 
 @app.get("/api/payments", tags=["payments"])
