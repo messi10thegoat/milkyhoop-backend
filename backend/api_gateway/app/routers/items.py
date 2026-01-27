@@ -1612,3 +1612,59 @@ async def duplicate_item(request: Request, item_id: UUID):
     finally:
         if conn:
             await conn.close()
+
+
+# Alias for inventory_asset (frontend compatibility)
+@router.get("/items/accounts/inventory_asset", response_model=CoaAccountsResponse)
+async def list_inventory_asset_accounts(request: Request):
+    """Alias for /items/accounts/inventory - frontend compatibility."""
+    return await list_inventory_accounts(request)
+
+
+@router.get("/items/accounts/cogs", response_model=CoaAccountsResponse)
+async def list_cogs_accounts(request: Request):
+    """
+    Get list of COGS (Cost of Goods Sold) accounts from Chart of Accounts.
+    
+    Filters for expense accounts related to cost of goods sold.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+
+    try:
+        conn = await get_db_connection()
+
+        query = """
+            SELECT id, account_code, name, account_type
+            FROM chart_of_accounts
+            WHERE tenant_id = $1
+              AND account_type IN (EXPENSE, COGS)
+              AND is_active = true
+              AND (
+                  name ILIKE %hpp%
+                  OR name ILIKE %harga pokok%
+                  OR name ILIKE %cost of goods%
+                  OR name ILIKE %cogs%
+                  OR account_code LIKE 5-1%
+              )
+            ORDER BY account_code ASC
+        """
+        rows = await conn.fetch(query, tenant_id)
+
+        accounts = [
+            CoaAccountOption(
+                id=str(row["id"]),
+                code=row["account_code"],
+                name=row["name"],
+                account_type=row["account_type"]
+            )
+            for row in rows
+        ]
+
+        return CoaAccountsResponse(success=True, data=accounts)
+    except Exception as e:
+        logger.error(f"Error fetching COGS accounts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()

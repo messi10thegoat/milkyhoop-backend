@@ -101,6 +101,7 @@ from .routers import journals
 from .routers import ledger
 from .routers import fiscal_years
 from .routers import periods
+from .routers import user
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -555,6 +556,7 @@ app.include_router(
 
 # Periods router (Periode Akuntansi)
 app.include_router(periods.router, prefix="/api/periods", tags=["periods"])
+app.include_router(user.router, prefix="/api", tags=["user"])
 
 # Expenses router (Biaya & Pengeluaran)
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
