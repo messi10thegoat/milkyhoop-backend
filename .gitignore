@@ -74,3 +74,6 @@ temp/
 
 # Large backup files (store in separate backup system)
 backups/*.sql.gz.age
+
+# Git worktrees
+.worktrees/
