@@ -450,10 +450,12 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 total_amount = subtotal - total_item_discount - invoice_discount + total_tax
 
                 # Convert customer_id
-                customer_uuid = None
-                if body.customer_id:
+                # customer_id is TEXT column, use string directly
+                customer_id_str = body.customer_id if body.customer_id else None
+                # Validate UUID format if provided
+                if customer_id_str:
                     try:
-                        customer_uuid = UUID(body.customer_id)
+                        UUID(customer_id_str)  # Validate format
                     except ValueError:
                         raise HTTPException(status_code=400, detail="Invalid customer_id format")
 
@@ -470,7 +472,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 """,
                     ctx["tenant_id"],
                     invoice_number,
-                    customer_uuid,
+                    customer_id_str,
                     body.customer_name,
                     body.invoice_date,
                     body.due_date,
@@ -714,17 +716,18 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                 ar_id = await conn.fetchval("""
                     INSERT INTO accounts_receivable (
                         tenant_id, customer_id, customer_name,
-                        source_type, source_id,
-                        amount, balance,
-                        issue_date, due_date,
+                        source_type, source_id, invoice_number,
+                        amount, amount_paid,
+                        invoice_date, due_date,
                         status
-                    ) VALUES ($1, $2::text, $3, 'INVOICE', $4, $5, $5, $6, $7, 'OPEN')
+                    ) VALUES ($1, $2::uuid, $3, 'INVOICE', $4, $5, $6, 0, $7, $8, 'OPEN')
                     RETURNING id
                 """,
                     ctx["tenant_id"],
-                    str(invoice["customer_id"]) if invoice["customer_id"] else None,
+                    invoice["customer_id"],
                     invoice["customer_name"],
                     invoice_id,
+                    invoice["invoice_number"],
                     invoice["total_amount"],
                     invoice["invoice_date"],
                     invoice["due_date"]
@@ -735,27 +738,70 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                 # Credit: Penjualan (4-10100)
                 import uuid
                 journal_id = uuid.uuid4()
-                trace_id = uuid.uuid4()
+                trace_id = str(uuid.uuid4())
+
+
+                # Get next journal number using sequence table
+                from datetime import date as dt_date
+                today = dt_date.today()
+                year_month_str = today.strftime("%y%m")
+                journal_seq = await conn.fetchval("""
+                    INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                    VALUES ($1, 'JV', $2, $3, 1)
+                    ON CONFLICT (tenant_id, prefix, year, month)
+                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                    RETURNING last_number
+                """, ctx["tenant_id"], today.year, today.month)
+                journal_number = f"JV-{year_month_str}-{journal_seq:04d}"
+
 
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
-                        status, posted_at, posted_by
-                    ) VALUES (
-                        $1, $2,
-                        'JV-' || TO_CHAR(CURRENT_DATE, 'YYMM') || '-' || LPAD(NEXTVAL('journal_number_seq_' || $2)::TEXT, 4, '0'),
-                        $3, $4, 'INVOICE', $5, $6, 'POSTED', NOW(), $7
-                    )
+                        total_debit, total_credit,
+                        status, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'INVOICE', $6, $7, $8, $8, 'POSTED', $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
+                    journal_number,
                     invoice["invoice_date"],
                     f"Faktur Penjualan {invoice['invoice_number']} - {invoice['customer_name']}",
                     invoice_id,
                     trace_id,
+                    invoice["total_amount"],
                     ctx["user_id"]
                 )
+                # Get AR and Sales accounts
+                ar_account = await conn.fetchrow(
+                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10400'",
+                    ctx["tenant_id"]
+                )
+                sales_account = await conn.fetchrow(
+                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
+                    ctx["tenant_id"]
+                )
+
+                if ar_account and sales_account:
+                    # Insert journal lines: Dr. AR, Cr. Sales
+                    await conn.execute("""
+                        INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number)
+                        VALUES
+                        ($1, $2, $3, 0, $4, 1),
+                        ($1, $5, 0, $3, $4, 2)
+                    """,
+                        journal_id,
+                        ar_account["id"],
+                        invoice["total_amount"],
+                        f"Faktur {invoice['invoice_number']}",
+                        sales_account["id"]
+                    )
+
+                    # Journal totals already set in INSERT statement
+                else:
+                    warnings.append("AR account (1-10400) or Sales account (4-10100) not found. Journal lines not created.")
+
 
                 # =============================================================
                 # COGS CALCULATION AND POSTING
@@ -770,12 +816,12 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 
                     # Check if item is inventory tracked
                     product = await conn.fetchrow("""
-                        SELECT id, code, name, purchase_price, is_inventory
+                        SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory
                         FROM products
-                        WHERE tenant_id = $1::uuid AND id = $2
+                        WHERE tenant_id = $1 AND id = $2
                     """, ctx["tenant_id"], item["item_id"])
 
-                    if not product or not product.get("is_inventory", True):
+                    if not product or not product.get("track_inventory", True):
                         # Skip non-inventory products
                         continue
 
@@ -788,21 +834,21 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 
                     # Fallback to purchase_price if no inventory history
                     if not avg_cost or avg_cost == 0:
-                        avg_cost = product.get("purchase_price", 0) or 0
+                        avg_cost = product.get("purchase_price_amount", 0) or 0
                         cost_source = "PURCHASE_PRICE"
                         if avg_cost > 0:
                             warnings.append(
-                                f"Item {item['item_code'] or product['code']}: Using purchase_price as fallback (no cost history)"
+                                f"Item {item['item_code'] or product['item_code']}: Using purchase_price as fallback (no cost history)"
                             )
 
                     if avg_cost > 0:
                         quantity = float(item["quantity"])
-                        line_cogs = int(quantity * avg_cost)
+                        line_cogs = int(quantity * float(avg_cost))
                         total_cogs += line_cogs
 
                         cogs_items.append({
                             "item_id": str(item["item_id"]),
-                            "item_code": item["item_code"] or product["code"],
+                            "item_code": item["item_code"] or product["item_code"],
                             "quantity": quantity,
                             "unit_cost": avg_cost,
                             "total_cost": line_cogs,
@@ -844,8 +890,8 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                         """,
                             ctx["tenant_id"],
                             item["item_id"],
-                            item["item_code"] or product["code"],
-                            product["name"],
+                            item["item_code"] or product["item_code"],
+                            product["nama_produk"],
                             invoice["invoice_date"],
                             invoice_id,
                             invoice["invoice_number"],
@@ -857,53 +903,49 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                             f"Sale: {invoice['invoice_number']}"
                         )
 
-                        # Update product stock quantity
-                        await conn.execute("""
-                            UPDATE products
-                            SET stock_quantity = COALESCE(stock_quantity, 0) - $2,
-                                updated_at = NOW()
-                            WHERE tenant_id = $1::uuid AND id = $3
-                        """, ctx["tenant_id"], quantity, item["item_id"])
+                        # Stock is tracked via inventory_ledger, not products.stock_quantity
+                        # The kartu_stok insert above already records the movement
 
                 # Create COGS journal if there are inventory items
                 cogs_journal_id = None
                 if total_cogs > 0:
                     cogs_journal_id = uuid.uuid4()
-                    cogs_trace_id = uuid.uuid4()
+                    cogs_trace_id = str(uuid.uuid4())
 
                     # Get account IDs
                     hpp_account = await conn.fetchrow("""
                         SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1::uuid AND code = '5-10100' AND is_active = true
+                        WHERE tenant_id = $1 AND account_code = '5-10100' AND is_active = true
                     """, ctx["tenant_id"])
 
                     inventory_account = await conn.fetchrow("""
                         SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1::uuid AND code = '1-10400' AND is_active = true
+                        WHERE tenant_id = $1 AND account_code = '1-10600' AND is_active = true
                     """, ctx["tenant_id"])
 
                     if hpp_account and inventory_account:
+                        # Get COGS journal number using sequence
+                        cogs_seq = await conn.fetchval("""
+                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                            VALUES ($1, 'COGS', $2, $3, 1)
+                            ON CONFLICT (tenant_id, prefix, year, month)
+                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                            RETURNING last_number
+                        """, ctx["tenant_id"], today.year, today.month)
+                        cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
+
                         # Create COGS journal entry
                         await conn.execute("""
                             INSERT INTO journal_entries (
                                 id, tenant_id, journal_number, journal_date,
                                 description, source_type, source_id, trace_id,
                                 total_debit, total_credit,
-                                status, posted_at, posted_by
-                            ) VALUES (
-                                $1, $2,
-                                'COGS-' || TO_CHAR($3, 'YYMM') || '-' || LPAD((
-                                    SELECT COALESCE(MAX(CAST(SUBSTRING(journal_number FROM 10) AS INT)), 0) + 1
-                                    FROM journal_entries
-                                    WHERE tenant_id = $2 AND journal_number LIKE 'COGS-' || TO_CHAR($3, 'YYMM') || '-%'
-                                )::TEXT, 4, '0'),
-                                $3, $4, 'SALES_INVOICE_COGS', $5, $6,
-                                $7, $7,
-                                'POSTED', NOW(), $8
-                            )
+                                status, created_by
+                            ) VALUES ($1, $2, $3, $4, $5, 'SALES_INVOICE_COGS', $6, $7, $8, $8, 'POSTED', $9)
                         """,
                             cogs_journal_id,
                             ctx["tenant_id"],
+                            cogs_journal_number,
                             invoice["invoice_date"],
                             f"HPP {invoice['invoice_number']} - {invoice['customer_name']}",
                             invoice_id,
@@ -914,8 +956,8 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 
                         # Journal lines: Dr. HPP (5-10100), Cr. Inventory (1-10400)
                         await conn.execute("""
-                            INSERT INTO journal_entry_lines (
-                                journal_id, account_id, description,
+                            INSERT INTO journal_lines (
+                                journal_id, account_id, memo,
                                 debit, credit, line_number
                             ) VALUES
                             ($1, $2, 'HPP Barang Dagang', $3, 0, 1),
@@ -935,7 +977,7 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                 await conn.execute("""
                     UPDATE sales_invoices
                     SET status = 'posted', ar_id = $2, journal_id = $3,
-                        cogs_journal_id = $4, total_cogs = $5, cogs_posted_at = CASE WHEN $5 > 0 THEN NOW() ELSE NULL END,
+                        cogs_journal_id = $4, total_cogs = $5::bigint, cogs_posted_at = CASE WHEN $5::bigint > 0 THEN NOW() ELSE NULL END,
                         posted_at = NOW(), posted_by = $6, updated_at = NOW()
                     WHERE id = $1
                 """, invoice_id, ar_id, journal_id, cogs_journal_id, total_cogs, ctx["user_id"])
@@ -1027,9 +1069,9 @@ async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymen
                 if invoice["ar_id"]:
                     await conn.execute("""
                         UPDATE accounts_receivable
-                        SET balance = balance - $2,
+                        SET amount_paid = amount_paid + $2,
                             status = CASE
-                                WHEN balance - $2 <= 0 THEN 'PAID'
+                                WHEN amount - (amount_paid + $2) <= 0 THEN 'PAID'
                                 ELSE 'PARTIAL'
                             END,
                             updated_at = NOW()
