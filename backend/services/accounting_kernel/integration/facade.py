@@ -924,3 +924,90 @@ class AccountingFacade:
             "is_balanced": tb['is_balanced'],
             "by_type": summary
         }
+
+    # ==================== Accounts Payable ====================
+
+    async def create_payable(
+        self,
+        tenant_id: str,
+        supplier_name: str,
+        bill_number: str,
+        bill_date: date,
+        due_date: date,
+        amount: Decimal,
+        source_type: str = "BILL",
+        source_id: Optional[UUID] = None,
+        supplier_id: Optional[UUID] = None,
+        description: Optional[str] = None,
+        currency: str = "IDR"
+    ) -> Dict:
+        """
+        Create an accounts payable record and corresponding journal entry.
+
+        Args:
+            tenant_id: Tenant UUID
+            supplier_name: Supplier name for display
+            bill_number: Bill/invoice number from supplier
+            bill_date: Bill date
+            due_date: Payment due date
+            amount: Bill amount
+            source_type: Source document type (BILL, PURCHASE, etc.)
+            source_id: Source document UUID
+            supplier_id: Supplier UUID (optional)
+            description: Description (optional)
+            currency: Currency code (default IDR)
+
+        Returns:
+            {success: bool, ap_id: str, journal_id: str, error: str}
+        """
+        await self._ensure_initialized()
+
+        try:
+            from ..constants import SourceType
+
+            # Map string to enum
+            st_enum = SourceType.BILL
+            if source_type == "PURCHASE":
+                st_enum = SourceType.PURCHASE
+
+            # Create AP record via APService
+            ap = await self.ap.create_payable(
+                tenant_id=tenant_id,
+                supplier_id=supplier_id,
+                supplier_name=supplier_name,
+                bill_number=bill_number,
+                bill_date=bill_date,
+                due_date=due_date,
+                amount=amount,
+                description=description or f"AP for {bill_number}",
+                source_type=st_enum,
+                source_id=source_id,
+                currency=currency
+            )
+
+            # Create journal entry for the AP
+            # Debit: Expense/Inventory account (we need an expense account)
+            # Credit: Accounts Payable
+            journal_result = await self.auto_posting.post_bill(
+                tenant_id=tenant_id,
+                bill_date=bill_date,
+                bill_id=source_id or ap.id,
+                total_amount=amount,
+                supplier_name=supplier_name,
+                description=f"AP Invoice {bill_number}"
+            )
+
+            return {
+                "success": True,
+                "ap_id": str(ap.id),
+                "journal_id": str(journal_result.journal_id) if journal_result.journal_id else None,
+                "error": None
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "ap_id": None,
+                "journal_id": None,
+                "error": str(e)
+            }

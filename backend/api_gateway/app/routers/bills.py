@@ -46,6 +46,15 @@ from ..services.bills_service import BillCalculator
 
 # Import services
 from ..services.bills_service import BillsService
+# Import AccountingFacade for AP integration
+try:
+    import sys
+    sys.path.insert(0, "/app/backend/services")
+    from accounting_kernel.integration.facade import AccountingFacade
+    HAS_ACCOUNTING = True
+except ImportError:
+    AccountingFacade = None
+    HAS_ACCOUNTING = False
 from ..services.pdf_service import get_pdf_service
 from ..services.storage_service import get_storage_service
 
@@ -127,11 +136,22 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+# Global accounting facade instance
+_accounting_facade = None
+
+async def get_accounting_facade():
+    """Get or create AccountingFacade instance."""
+    global _accounting_facade
+    if HAS_ACCOUNTING and _accounting_facade is None:
+        pool = await get_pool()
+        _accounting_facade = AccountingFacade(pool)
+    return _accounting_facade
+
 async def get_bills_service() -> BillsService:
-    """Get BillsService instance with connection pool."""
+    """Get BillsService instance with connection pool and accounting facade."""
     pool = await get_pool()
-    # TODO: Integrate AccountingFacade when available
-    return BillsService(pool, accounting_facade=None)
+    facade = await get_accounting_facade() if HAS_ACCOUNTING else None
+    return BillsService(pool, accounting_facade=facade)
 
 
 def get_user_context(request: Request) -> dict:

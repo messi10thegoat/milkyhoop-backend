@@ -10,8 +10,6 @@ from typing import Optional, Literal
 from uuid import UUID
 import logging
 import asyncpg
-from datetime import date
-import json
 
 from ..schemas.sales_invoices import (
     CreateInvoiceRequest,
@@ -40,17 +38,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -60,10 +55,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def calculate_item_totals(item: dict) -> dict:
@@ -85,7 +77,7 @@ def calculate_item_totals(item: dict) -> dict:
         "subtotal": subtotal,
         "discount_amount": discount,
         "tax_amount": tax_amount,
-        "total": total
+        "total": total,
     }
 
 
@@ -135,7 +127,7 @@ async def get_invoice_summary(request: Request):
                     "overdue_count": row["overdue_count"],
                     "total_outstanding": int(row["total_outstanding"]),
                     "total_overdue": int(row["total_overdue"]),
-                }
+                },
             }
 
     except HTTPException:
@@ -183,8 +175,8 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 "discount_amount": total_item_discount + invoice_discount,
                 "tax_amount": total_tax,
                 "total_amount": total_amount,
-                "items": calculated_items
-            }
+                "items": calculated_items,
+            },
         }
 
     except Exception as e:
@@ -200,12 +192,16 @@ async def list_invoices(
     request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    search: Optional[str] = Query(None, description="Search invoice number or customer"),
+    search: Optional[str] = Query(
+        None, description="Search invoice number or customer"
+    ),
     status: Optional[str] = Query(None, description="Filter by status"),
     customer_id: Optional[str] = Query(None, description="Filter by customer"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    sort_by: Literal["invoice_date", "due_date", "total_amount", "created_at"] = Query("created_at"),
+    sort_by: Literal["invoice_date", "due_date", "total_amount", "created_at"] = Query(
+        "created_at"
+    ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List invoices with search, filtering, and pagination."""
@@ -251,15 +247,14 @@ async def list_invoices(
                 "invoice_date": "invoice_date",
                 "due_date": "due_date",
                 "total_amount": "total_amount",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
             # Count
             total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM sales_invoices WHERE {where_clause}",
-                *params
+                f"SELECT COUNT(*) FROM sales_invoices WHERE {where_clause}", *params
             )
 
             # Get items
@@ -279,7 +274,9 @@ async def list_invoices(
                 {
                     "id": str(row["id"]),
                     "invoice_number": row["invoice_number"],
-                    "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+                    "customer_id": str(row["customer_id"])
+                    if row["customer_id"]
+                    else None,
                     "customer_name": row["customer_name"],
                     "invoice_date": row["invoice_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
@@ -291,11 +288,7 @@ async def list_invoices(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -316,34 +309,46 @@ async def get_invoice(request: Request, invoice_id: UUID):
 
         async with pool.acquire() as conn:
             # Get invoice
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT * FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             # Get items
-            items = await conn.fetch("""
+            items = await conn.fetch(
+                """
                 SELECT * FROM sales_invoice_items
                 WHERE invoice_id = $1
                 ORDER BY line_number
-            """, invoice_id)
+            """,
+                invoice_id,
+            )
 
             # Get payments
-            payments = await conn.fetch("""
+            payments = await conn.fetch(
+                """
                 SELECT * FROM sales_invoice_payments
                 WHERE invoice_id = $1
                 ORDER BY payment_date
-            """, invoice_id)
+            """,
+                invoice_id,
+            )
 
             return {
                 "success": True,
                 "data": {
                     "id": str(invoice["id"]),
                     "invoice_number": invoice["invoice_number"],
-                    "customer_id": str(invoice["customer_id"]) if invoice["customer_id"] else None,
+                    "customer_id": str(invoice["customer_id"])
+                    if invoice["customer_id"]
+                    else None,
                     "customer_name": invoice["customer_name"],
                     "invoice_date": invoice["invoice_date"].isoformat(),
                     "due_date": invoice["due_date"].isoformat(),
@@ -360,7 +365,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "items": [
                         {
                             "id": str(item["id"]),
-                            "item_id": str(item["item_id"]) if item["item_id"] else None,
+                            "item_id": str(item["item_id"])
+                            if item["item_id"]
+                            else None,
                             "item_code": item["item_code"],
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
@@ -384,23 +391,35 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "payment_date": p["payment_date"].isoformat(),
                             "payment_method": p["payment_method"],
                             "account_id": str(p["account_id"]),
-                            "bank_account_id": str(p["bank_account_id"]) if p["bank_account_id"] else None,
+                            "bank_account_id": str(p["bank_account_id"])
+                            if p["bank_account_id"]
+                            else None,
                             "reference": p["reference"],
                             "notes": p["notes"],
-                            "journal_id": str(p["journal_id"]) if p["journal_id"] else None,
+                            "journal_id": str(p["journal_id"])
+                            if p["journal_id"]
+                            else None,
                             "created_at": p["created_at"].isoformat(),
                         }
                         for p in payments
                     ],
                     "ar_id": str(invoice["ar_id"]) if invoice["ar_id"] else None,
-                    "journal_id": str(invoice["journal_id"]) if invoice["journal_id"] else None,
-                    "posted_at": invoice["posted_at"].isoformat() if invoice["posted_at"] else None,
-                    "posted_by": str(invoice["posted_by"]) if invoice["posted_by"] else None,
-                    "voided_at": invoice["voided_at"].isoformat() if invoice["voided_at"] else None,
+                    "journal_id": str(invoice["journal_id"])
+                    if invoice["journal_id"]
+                    else None,
+                    "posted_at": invoice["posted_at"].isoformat()
+                    if invoice["posted_at"]
+                    else None,
+                    "posted_by": str(invoice["posted_by"])
+                    if invoice["posted_by"]
+                    else None,
+                    "voided_at": invoice["voided_at"].isoformat()
+                    if invoice["voided_at"]
+                    else None,
                     "voided_reason": invoice["voided_reason"],
                     "created_at": invoice["created_at"].isoformat(),
                     "updated_at": invoice["updated_at"].isoformat(),
-                }
+                },
             }
 
     except HTTPException:
@@ -424,8 +443,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
             async with conn.transaction():
                 # Generate invoice number
                 invoice_number = await conn.fetchval(
-                    "SELECT generate_sales_invoice_number($1, 'INV')",
-                    ctx["tenant_id"]
+                    "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
                 )
 
                 # Calculate totals
@@ -447,7 +465,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 if body.discount_percent > 0:
                     invoice_discount = int(subtotal * body.discount_percent / 100)
 
-                total_amount = subtotal - total_item_discount - invoice_discount + total_tax
+                total_amount = (
+                    subtotal - total_item_discount - invoice_discount + total_tax
+                )
 
                 # Convert customer_id
                 # customer_id is TEXT column, use string directly
@@ -457,10 +477,13 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     try:
                         UUID(customer_id_str)  # Validate format
                     except ValueError:
-                        raise HTTPException(status_code=400, detail="Invalid customer_id format")
+                        raise HTTPException(
+                            status_code=400, detail="Invalid customer_id format"
+                        )
 
                 # Insert invoice
-                invoice_id = await conn.fetchval("""
+                invoice_id = await conn.fetchval(
+                    """
                     INSERT INTO sales_invoices (
                         tenant_id, invoice_number, customer_id, customer_name,
                         invoice_date, due_date, ref_no, notes,
@@ -484,7 +507,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     body.tax_rate,
                     total_tax,
                     total_amount,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Insert items
@@ -496,7 +519,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         except ValueError:
                             pass
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO sales_invoice_items (
                             invoice_id, item_id, item_code, description,
                             quantity, unit, unit_price,
@@ -519,7 +543,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         item["tax_amount"],
                         item["subtotal"],
                         item["total"],
-                        item["line_number"]
+                        item["line_number"],
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -530,8 +554,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     "data": {
                         "id": str(invoice_id),
                         "invoice_number": invoice_number,
-                        "total_amount": total_amount
-                    }
+                        "total_amount": total_amount,
+                    },
                 }
 
     except HTTPException:
@@ -545,7 +569,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
 # UPDATE INVOICE (Draft only)
 # =============================================================================
 @router.patch("/{invoice_id}", response_model=InvoiceResponse)
-async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoiceRequest):
+async def update_invoice(
+    request: Request, invoice_id: UUID, body: UpdateInvoiceRequest
+):
     """Update a draft invoice."""
     try:
         ctx = get_user_context(request)
@@ -553,16 +579,22 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
 
         async with pool.acquire() as conn:
             # Check invoice exists and is draft
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT id, status FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             if invoice["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Only draft invoices can be updated")
+                raise HTTPException(
+                    status_code=400, detail="Only draft invoices can be updated"
+                )
 
             async with conn.transaction():
                 # If items provided, recalculate
@@ -570,7 +602,7 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
                     # Delete existing items
                     await conn.execute(
                         "DELETE FROM sales_invoice_items WHERE invoice_id = $1",
-                        invoice_id
+                        invoice_id,
                     )
 
                     # Calculate and insert new items
@@ -592,7 +624,8 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
                             except ValueError:
                                 pass
 
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO sales_invoice_items (
                                 invoice_id, item_id, item_code, description,
                                 quantity, unit, unit_price,
@@ -615,7 +648,7 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
                             calc["tax_amount"],
                             calc["subtotal"],
                             calc["total"],
-                            calc["line_number"]
+                            calc["line_number"],
                         )
 
                     # Update invoice totals
@@ -623,13 +656,22 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
                     if body.discount_percent and body.discount_percent > 0:
                         invoice_discount = int(subtotal * body.discount_percent / 100)
 
-                    total_amount = subtotal - total_item_discount - invoice_discount + total_tax
+                    total_amount = (
+                        subtotal - total_item_discount - invoice_discount + total_tax
+                    )
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE sales_invoices
                         SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5
                         WHERE id = $1
-                    """, invoice_id, subtotal, invoice_discount, total_tax, total_amount)
+                    """,
+                        invoice_id,
+                        subtotal,
+                        invoice_discount,
+                        total_tax,
+                        total_amount,
+                    )
 
                 # Update other fields
                 update_data = body.model_dump(exclude_unset=True, exclude={"items"})
@@ -661,7 +703,7 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
                 return {
                     "success": True,
                     "message": "Invoice updated successfully",
-                    "data": {"id": str(invoice_id)}
+                    "data": {"id": str(invoice_id)},
                 }
 
     except HTTPException:
@@ -675,7 +717,9 @@ async def update_invoice(request: Request, invoice_id: UUID, body: UpdateInvoice
 # POST INVOICE (Create AR + Journal Entry + COGS)
 # =============================================================================
 @router.post("/{invoice_id}/post", response_model=InvoiceResponse)
-async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequest = None):
+async def post_invoice(
+    request: Request, invoice_id: UUID, body: PostInvoiceRequest = None
+):
     """
     Post invoice to accounting (creates AR, journal entry, and COGS).
 
@@ -691,29 +735,39 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 
         async with pool.acquire() as conn:
             # Check invoice exists and is draft
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT id, invoice_number, customer_id, customer_name, total_amount,
                        invoice_date, due_date, status
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             if invoice["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Only draft invoices can be posted")
+                raise HTTPException(
+                    status_code=400, detail="Only draft invoices can be posted"
+                )
 
             # Get invoice items
-            items = await conn.fetch("""
+            items = await conn.fetch(
+                """
                 SELECT id, item_id, item_code, description, quantity, unit_price
                 FROM sales_invoice_items
                 WHERE invoice_id = $1
-            """, invoice_id)
+            """,
+                invoice_id,
+            )
 
             async with conn.transaction():
                 # Create AR record
-                ar_id = await conn.fetchval("""
+                ar_id = await conn.fetchval(
+                    """
                     INSERT INTO accounts_receivable (
                         tenant_id, customer_id, customer_name,
                         source_type, source_id, invoice_number,
@@ -730,32 +784,38 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                     invoice["invoice_number"],
                     invoice["total_amount"],
                     invoice["invoice_date"],
-                    invoice["due_date"]
+                    invoice["due_date"],
                 )
 
                 # Create journal entry (simplified - actual implementation would use AccountingFacade)
                 # Debit: Piutang Usaha (1-10300)
                 # Credit: Penjualan (4-10100)
                 import uuid
+
                 journal_id = uuid.uuid4()
                 trace_id = str(uuid.uuid4())
 
-
                 # Get next journal number using sequence table
                 from datetime import date as dt_date
+
                 today = dt_date.today()
                 year_month_str = today.strftime("%y%m")
-                journal_seq = await conn.fetchval("""
+                journal_seq = await conn.fetchval(
+                    """
                     INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
                     VALUES ($1, 'JV', $2, $3, 1)
                     ON CONFLICT (tenant_id, prefix, year, month)
                     DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                     RETURNING last_number
-                """, ctx["tenant_id"], today.year, today.month)
+                """,
+                    ctx["tenant_id"],
+                    today.year,
+                    today.month,
+                )
                 journal_number = f"JV-{year_month_str}-{journal_seq:04d}"
 
-
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
@@ -771,21 +831,22 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                     invoice_id,
                     trace_id,
                     invoice["total_amount"],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
                 # Get AR and Sales accounts
                 ar_account = await conn.fetchrow(
                     "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10400'",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
                 sales_account = await conn.fetchrow(
                     "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if ar_account and sales_account:
                     # Insert journal lines: Dr. AR, Cr. Sales
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number)
                         VALUES
                         ($1, $2, $3, 0, $4, 1),
@@ -795,13 +856,14 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                         ar_account["id"],
                         invoice["total_amount"],
                         f"Faktur {invoice['invoice_number']}",
-                        sales_account["id"]
+                        sales_account["id"],
                     )
 
                     # Journal totals already set in INSERT statement
                 else:
-                    warnings.append("AR account (1-10400) or Sales account (4-10100) not found. Journal lines not created.")
-
+                    warnings.append(
+                        "AR account (1-10400) or Sales account (4-10100) not found. Journal lines not created."
+                    )
 
                 # =============================================================
                 # COGS CALCULATION AND POSTING
@@ -815,20 +877,28 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                         continue
 
                     # Check if item is inventory tracked
-                    product = await conn.fetchrow("""
+                    product = await conn.fetchrow(
+                        """
                         SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory
                         FROM products
                         WHERE tenant_id = $1 AND id = $2
-                    """, ctx["tenant_id"], item["item_id"])
+                    """,
+                        ctx["tenant_id"],
+                        item["item_id"],
+                    )
 
                     if not product or not product.get("track_inventory", True):
                         # Skip non-inventory products
                         continue
 
                     # Get weighted average cost from inventory ledger
-                    avg_cost = await conn.fetchval("""
+                    avg_cost = await conn.fetchval(
+                        """
                         SELECT get_weighted_average_cost($1, $2)
-                    """, ctx["tenant_id"], item["item_id"])
+                    """,
+                        ctx["tenant_id"],
+                        item["item_id"],
+                    )
 
                     cost_source = "WEIGHTED_AVG"
 
@@ -846,32 +916,45 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                         line_cogs = int(quantity * float(avg_cost))
                         total_cogs += line_cogs
 
-                        cogs_items.append({
-                            "item_id": str(item["item_id"]),
-                            "item_code": item["item_code"] or product["item_code"],
-                            "quantity": quantity,
-                            "unit_cost": avg_cost,
-                            "total_cost": line_cogs,
-                            "cost_source": cost_source
-                        })
+                        cogs_items.append(
+                            {
+                                "item_id": str(item["item_id"]),
+                                "item_code": item["item_code"] or product["item_code"],
+                                "quantity": quantity,
+                                "unit_cost": avg_cost,
+                                "total_cost": line_cogs,
+                                "cost_source": cost_source,
+                            }
+                        )
 
                         # Update sales_invoice_items with cost info
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             UPDATE sales_invoice_items
                             SET unit_cost = $2, total_cost = $3,
                                 is_inventory_item = true, cost_source = $4
                             WHERE id = $1
-                        """, item["id"], avg_cost, line_cogs, cost_source)
+                        """,
+                            item["id"],
+                            avg_cost,
+                            line_cogs,
+                            cost_source,
+                        )
 
                         # Get current inventory balance for ledger entry
-                        current_balance = await conn.fetchval("""
+                        current_balance = await conn.fetchval(
+                            """
                             SELECT get_inventory_balance($1, $2)
-                        """, ctx["tenant_id"], item["item_id"])
+                        """,
+                            ctx["tenant_id"],
+                            item["item_id"],
+                        )
 
                         new_balance = float(current_balance or 0) - quantity
 
                         # Record inventory movement in ledger
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO inventory_ledger (
                                 tenant_id, product_id, product_code, product_name,
                                 movement_type, movement_date,
@@ -900,7 +983,7 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                             avg_cost,
                             line_cogs,
                             ctx["user_id"],
-                            f"Sale: {invoice['invoice_number']}"
+                            f"Sale: {invoice['invoice_number']}",
                         )
 
                         # Stock is tracked via inventory_ledger, not products.stock_quantity
@@ -913,29 +996,41 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                     cogs_trace_id = str(uuid.uuid4())
 
                     # Get account IDs
-                    hpp_account = await conn.fetchrow("""
+                    hpp_account = await conn.fetchrow(
+                        """
                         SELECT id FROM chart_of_accounts
                         WHERE tenant_id = $1 AND account_code = '5-10100' AND is_active = true
-                    """, ctx["tenant_id"])
+                    """,
+                        ctx["tenant_id"],
+                    )
 
-                    inventory_account = await conn.fetchrow("""
+                    inventory_account = await conn.fetchrow(
+                        """
                         SELECT id FROM chart_of_accounts
                         WHERE tenant_id = $1 AND account_code = '1-10600' AND is_active = true
-                    """, ctx["tenant_id"])
+                    """,
+                        ctx["tenant_id"],
+                    )
 
                     if hpp_account and inventory_account:
                         # Get COGS journal number using sequence
-                        cogs_seq = await conn.fetchval("""
+                        cogs_seq = await conn.fetchval(
+                            """
                             INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
                             VALUES ($1, 'COGS', $2, $3, 1)
                             ON CONFLICT (tenant_id, prefix, year, month)
                             DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                             RETURNING last_number
-                        """, ctx["tenant_id"], today.year, today.month)
+                        """,
+                            ctx["tenant_id"],
+                            today.year,
+                            today.month,
+                        )
                         cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
 
                         # Create COGS journal entry
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_entries (
                                 id, tenant_id, journal_number, journal_date,
                                 description, source_type, source_id, trace_id,
@@ -951,11 +1046,12 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                             invoice_id,
                             cogs_trace_id,
                             total_cogs,
-                            ctx["user_id"]
+                            ctx["user_id"],
                         )
 
                         # Journal lines: Dr. HPP (5-10100), Cr. Inventory (1-10400)
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (
                                 journal_id, account_id, memo,
                                 debit, credit, line_number
@@ -966,29 +1062,43 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
                             cogs_journal_id,
                             hpp_account["id"],
                             total_cogs,
-                            inventory_account["id"]
+                            inventory_account["id"],
                         )
 
-                        logger.info(f"COGS journal created: {cogs_journal_id}, amount: {total_cogs}")
+                        logger.info(
+                            f"COGS journal created: {cogs_journal_id}, amount: {total_cogs}"
+                        )
                     else:
-                        warnings.append("COGS accounts (5-10100 or 1-10400) not found. COGS journal not created.")
+                        warnings.append(
+                            "COGS accounts (5-10100 or 1-10400) not found. COGS journal not created."
+                        )
 
                 # Update invoice status and COGS info
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE sales_invoices
                     SET status = 'posted', ar_id = $2, journal_id = $3,
                         cogs_journal_id = $4, total_cogs = $5::bigint, cogs_posted_at = CASE WHEN $5::bigint > 0 THEN NOW() ELSE NULL END,
                         posted_at = NOW(), posted_by = $6, updated_at = NOW()
                     WHERE id = $1
-                """, invoice_id, ar_id, journal_id, cogs_journal_id, total_cogs, ctx["user_id"])
+                """,
+                    invoice_id,
+                    ar_id,
+                    journal_id,
+                    cogs_journal_id,
+                    total_cogs,
+                    ctx["user_id"],
+                )
 
-                logger.info(f"Invoice posted: {invoice_id}, AR: {ar_id}, COGS: {total_cogs}")
+                logger.info(
+                    f"Invoice posted: {invoice_id}, AR: {ar_id}, COGS: {total_cogs}"
+                )
 
                 response_data = {
                     "id": str(invoice_id),
                     "ar_id": str(ar_id),
                     "journal_id": str(journal_id),
-                    "total_cogs": total_cogs
+                    "total_cogs": total_cogs,
                 }
 
                 if cogs_journal_id:
@@ -1000,8 +1110,9 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 
                 return {
                     "success": True,
-                    "message": "Invoice posted successfully" + (" with COGS" if total_cogs > 0 else ""),
-                    "data": response_data
+                    "message": "Invoice posted successfully"
+                    + (" with COGS" if total_cogs > 0 else ""),
+                    "data": response_data,
                 }
 
     except HTTPException:
@@ -1015,7 +1126,9 @@ async def post_invoice(request: Request, invoice_id: UUID, body: PostInvoiceRequ
 # RECORD PAYMENT
 # =============================================================================
 @router.post("/{invoice_id}/payments", response_model=InvoiceResponse)
-async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymentCreate):
+async def record_payment(
+    request: Request, invoice_id: UUID, body: InvoicePaymentCreate
+):
     """Record a payment for the invoice."""
     try:
         ctx = get_user_context(request)
@@ -1023,31 +1136,41 @@ async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymen
 
         async with pool.acquire() as conn:
             # Check invoice exists and is posted
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT id, status, total_amount, amount_paid, ar_id
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             if invoice["status"] not in ("posted", "partial", "overdue"):
-                raise HTTPException(status_code=400, detail="Invoice must be posted before recording payment")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invoice must be posted before recording payment",
+                )
 
             remaining = invoice["total_amount"] - invoice["amount_paid"]
             if body.amount > remaining:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}"
+                    detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}",
                 )
 
             async with conn.transaction():
                 # Insert payment
                 account_uuid = UUID(body.account_id)
-                bank_account_uuid = UUID(body.bank_account_id) if body.bank_account_id else None
+                bank_account_uuid = (
+                    UUID(body.bank_account_id) if body.bank_account_id else None
+                )
 
-                payment_id = await conn.fetchval("""
+                payment_id = await conn.fetchval(
+                    """
                     INSERT INTO sales_invoice_payments (
                         invoice_id, amount, payment_date, payment_method,
                         account_id, bank_account_id, reference, notes, created_by
@@ -1062,12 +1185,13 @@ async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymen
                     bank_account_uuid,
                     body.reference,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Update AR if exists
                 if invoice["ar_id"]:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE accounts_receivable
                         SET amount_paid = amount_paid + $2,
                             status = CASE
@@ -1076,7 +1200,10 @@ async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymen
                             END,
                             updated_at = NOW()
                         WHERE id = $1
-                    """, invoice["ar_id"], body.amount)
+                    """,
+                        invoice["ar_id"],
+                        body.amount,
+                    )
 
                 logger.info(f"Payment recorded: {payment_id} for invoice {invoice_id}")
 
@@ -1086,8 +1213,8 @@ async def record_payment(request: Request, invoice_id: UUID, body: InvoicePaymen
                     "data": {
                         "id": str(payment_id),
                         "invoice_id": str(invoice_id),
-                        "amount": body.amount
-                    }
+                        "amount": body.amount,
+                    },
                 }
 
     except HTTPException:
@@ -1108,11 +1235,15 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT id, status, amount_paid, ar_id, journal_id
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
@@ -1121,30 +1252,40 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 raise HTTPException(status_code=400, detail="Invoice is already voided")
 
             if invoice["amount_paid"] > 0:
-                raise HTTPException(status_code=400, detail="Cannot void invoice with payments. Refund first.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot void invoice with payments. Refund first.",
+                )
 
             async with conn.transaction():
                 # If posted, void the AR
                 if invoice["ar_id"]:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE accounts_receivable
                         SET status = 'VOID', updated_at = NOW()
                         WHERE id = $1
-                    """, invoice["ar_id"])
+                    """,
+                        invoice["ar_id"],
+                    )
 
                 # Update invoice
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE sales_invoices
                     SET status = 'void', voided_at = NOW(), voided_reason = $2, updated_at = NOW()
                     WHERE id = $1
-                """, invoice_id, body.reason)
+                """,
+                    invoice_id,
+                    body.reason,
+                )
 
                 logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")
 
                 return {
                     "success": True,
                     "message": "Invoice voided successfully",
-                    "data": {"id": str(invoice_id)}
+                    "data": {"id": str(invoice_id)},
                 }
 
     except HTTPException:
@@ -1165,17 +1306,24 @@ async def delete_invoice(request: Request, invoice_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            invoice = await conn.fetchrow("""
+            invoice = await conn.fetchrow(
+                """
                 SELECT id, invoice_number, status
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             if invoice["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Only draft invoices can be deleted. Use void for posted invoices.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only draft invoices can be deleted. Use void for posted invoices.",
+                )
 
             # Delete (cascade will handle items)
             await conn.execute("DELETE FROM sales_invoices WHERE id = $1", invoice_id)
@@ -1185,7 +1333,10 @@ async def delete_invoice(request: Request, invoice_id: UUID):
             return {
                 "success": True,
                 "message": "Invoice deleted successfully",
-                "data": {"id": str(invoice_id), "invoice_number": invoice["invoice_number"]}
+                "data": {
+                    "id": str(invoice_id),
+                    "invoice_number": invoice["invoice_number"],
+                },
             }
 
     except HTTPException:
