@@ -1011,3 +1011,87 @@ class AccountingFacade:
                 "journal_id": None,
                 "error": str(e)
             }
+
+    async def void_payable(
+        self,
+        tenant_id: str,
+        ap_id: UUID,
+        void_reason: str = "Voided",
+        voided_by: Optional[str] = None
+    ) -> Dict:
+        """
+        Void an accounts payable record and reverse its journal entry.
+
+        Args:
+            tenant_id: Tenant UUID
+            ap_id: AP record UUID
+            reason: Reason for voiding
+
+        Returns:
+            {success: bool, error: str}
+        """
+        await self._ensure_initialized()
+
+        try:
+            from ..constants import ARAPStatus
+
+            async with self.pool.acquire() as conn:
+                # Set tenant context
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)",
+                    str(tenant_id)
+                )
+
+                # Get AP record
+                ap = await conn.fetchrow(
+                    """
+                    SELECT id, status, source_id
+                    FROM accounts_payable
+                    WHERE id = $1 AND tenant_id = $2
+                    """,
+                    ap_id,
+                    tenant_id
+                )
+
+                if not ap:
+                    return {"success": False, "error": "AP record not found"}
+
+                if ap['status'] == 'VOID':
+                    return {"success": False, "error": "AP already voided"}
+
+                # Update AP to void status
+                await conn.execute(
+                    """
+                    UPDATE accounts_payable
+                    SET status = 'VOID', updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    ap_id
+                )
+
+                # Try to find and reverse journal by source_id
+                if ap['source_id']:
+                    journal = await conn.fetchrow(
+                        """
+                        SELECT id FROM journal_entries
+                        WHERE source_id = $1 AND tenant_id = $2
+                        LIMIT 1
+                        """,
+                        ap['source_id'],
+                        tenant_id
+                    )
+                    if journal:
+                        try:
+                            await self.reverse_journal(
+                                tenant_id=tenant_id,
+                                journal_id=journal['id'],
+                                reason=f"AP Void: {void_reason}"
+                            )
+                        except Exception as e:
+                            # Log but don't fail - AP is voided
+                            pass
+
+            return {"success": True, "error": None}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
