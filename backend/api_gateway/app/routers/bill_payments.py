@@ -637,6 +637,30 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         conn, ctx["tenant_id"], payload.payment_date
                     )
 
+                # Auto-lookup vendor_name if not provided
+                if not payload.vendor_name:
+                    vendor = await conn.fetchrow(
+                        "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                        UUID(payload.vendor_id), ctx["tenant_id"]
+                    )
+                    if not vendor:
+                        raise HTTPException(status_code=400, detail="Vendor not found")
+                    vendor_name = vendor["name"]
+                else:
+                    vendor_name = payload.vendor_name
+
+                # Auto-lookup bank_account_name if not provided
+                if not payload.bank_account_name:
+                    bank = await conn.fetchrow(
+                        "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        UUID(payload.bank_account_id), ctx["tenant_id"]
+                    )
+                    if not bank:
+                        raise HTTPException(status_code=400, detail="Bank account not found")
+                    bank_account_name = bank["account_name"]
+                else:
+                    bank_account_name = payload.bank_account_name
+
                 payment_number = await generate_payment_number(conn, ctx["tenant_id"])
                 allocated_amount = sum(a.amount_applied for a in payload.allocations)
                 unapplied_amount = (
@@ -673,11 +697,11 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     ctx["tenant_id"],
                     payment_number,
                     payload.vendor_id,
-                    payload.vendor_name,
+                    vendor_name,
                     payload.payment_date,
                     payload.payment_method,
                     payload.bank_account_id,
-                    payload.bank_account_name,
+                    bank_account_name,
                     payload.total_amount,
                     allocated_amount,
                     unapplied_amount,
@@ -751,7 +775,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         payment_id=payment_id,
                         payment_number=payment_number,
                         payment_date=payload.payment_date,
-                        vendor_name=payload.vendor_name,
+                        vendor_name=vendor_name,
                         bank_account_id=payload.bank_account_id,
                         total_amount=payload.total_amount,
                         allocated_amount=allocated_amount,
