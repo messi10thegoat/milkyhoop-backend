@@ -3590,6 +3590,9 @@ async def get_profit_loss_query_params(
     """
     try:
         ctx = get_user_context(request)
+        # Convert string dates to date objects for asyncpg
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -3609,8 +3612,8 @@ async def get_profit_loss_query_params(
                 GROUP BY coa.id, coa.account_code, coa.name
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             revenue_items = []
@@ -3645,8 +3648,8 @@ async def get_profit_loss_query_params(
                 GROUP BY coa.id, coa.account_code, coa.name
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             cogs_items = []
@@ -3678,8 +3681,8 @@ async def get_profit_loss_query_params(
                 GROUP BY coa.id, coa.account_code, coa.name, e.account_id, e.account_name
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             operating_expense_items = []
