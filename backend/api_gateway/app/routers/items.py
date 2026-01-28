@@ -1266,6 +1266,348 @@ async def create_category(request: Request, body: CreateCategoryRequest):
 # =============================================================================
 
 
+@router.get("/items/autocomplete")
+async def autocomplete_items(
+    request: Request,
+    q: str = Query(default="", description="Search query"),
+    limit: int = Query(20, ge=1, le=50),
+    item_type: Optional[str] = Query(None, description="Filter by item type"),
+):
+    """Quick item search for autocomplete in forms."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            type_filter = ""
+            params = [ctx["tenant_id"], f"%{q}%", limit]
+            if item_type:
+                type_filter = " AND item_type = $4"
+                params.append(item_type)
+
+            rows = await conn.fetch(
+                f"""
+                SELECT id, item_code as code, nama_produk as name, item_type, base_unit as unit, sales_price as selling_price, purchase_price
+                FROM products
+                WHERE tenant_id = $1
+                  AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
+                  AND status = 'active'
+                  AND deleted_at IS NULL
+                  {type_filter}
+                ORDER BY name ASC
+                LIMIT $3
+            """,
+                *params,
+            )
+
+            items = [
+                {
+                    "id": str(row["id"]),
+                    "code": row["code"],
+                    "name": row["name"],
+                    "type": row["item_type"],
+                    "unit": row["unit"],
+                    "selling_price": row["selling_price"],
+                    "purchase_price": row["purchase_price"],
+                }
+                for row in rows
+            ]
+            return {"success": True, "items": items}
+    except Exception as e:
+        logger.error(f"Error in autocomplete: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Autocomplete failed")
+
+
+# =============================================================================
+# ITEMS NEXT CODE (for form auto-generation)
+# =============================================================================
+
+
+@router.get("/items/next-code")
+async def get_next_item_code(
+    request: Request,
+    item_type: str = Query(
+        "product", description="Item type: product, service, inventory"
+    ),
+):
+    """Get the next available item code for auto-generation."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            # Prefix based on item type
+            prefix_map = {
+                "product": "PRD",
+                "service": "SVC",
+                "inventory": "INV",
+                "non_inventory": "NI",
+            }
+            prefix = prefix_map.get(item_type, "ITM")
+
+            row = await conn.fetchrow(
+                """
+                SELECT item_code as code FROM products
+                WHERE tenant_id = $1 AND item_code LIKE $2 AND deleted_at IS NULL
+                ORDER BY item_code DESC LIMIT 1
+            """,
+                ctx["tenant_id"],
+                f"{prefix}%",
+            )
+
+            import re
+
+            if row and row["code"]:
+                match = re.search(r"([0-9]+)$", row["code"])
+                if match:
+                    num = int(match.group(1)) + 1
+                    next_code = f"{prefix}{num:05d}"
+                else:
+                    next_code = f"{prefix}00001"
+            else:
+                next_code = f"{prefix}00001"
+
+            return {"success": True, "next_code": next_code}
+    except Exception as e:
+        logger.error(f"Error getting next code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get next code")
+
+
+# =============================================================================
+# ITEMS EXPORT
+# =============================================================================
+
+
+@router.get("/items/export")
+async def export_items(
+    request: Request,
+    format: str = Query("csv", description="Export format: csv, xlsx"),
+):
+    """Export items to CSV or Excel format."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    item_code as code, nama_produk as name, item_type, base_unit as unit, sku,
+                    sales_price as selling_price, purchase_price, 0 as current_stock,
+                    kategori as category, deskripsi as description,
+                    CASE WHEN status = 'active' THEN true ELSE false END as is_active
+                FROM products
+                WHERE tenant_id = $1 AND deleted_at IS NULL
+                ORDER BY item_code ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            if format == "csv":
+                import io
+                import csv
+
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(
+                    [
+                        "Code",
+                        "Name",
+                        "Type",
+                        "Unit",
+                        "SKU",
+                        "Selling Price",
+                        "Purchase Price",
+                        "Stock",
+                        "Category",
+                        "Description",
+                        "Active",
+                    ]
+                )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row["code"],
+                            row["name"],
+                            row["item_type"],
+                            row["unit"],
+                            row["sku"],
+                            row["selling_price"],
+                            row["purchase_price"],
+                            row["current_stock"],
+                            row["category"],
+                            row["description"],
+                            "Yes" if row["is_active"] else "No",
+                        ]
+                    )
+                content = output.getvalue()
+                from fastapi.responses import Response
+
+                return Response(
+                    content=content,
+                    media_type="text/csv",
+                    headers={
+                        "Content-Disposition": "attachment; filename=items_export.csv"
+                    },
+                )
+            else:
+                return {
+                    "success": True,
+                    "message": "Export format not supported yet",
+                    "count": len(rows),
+                }
+    except Exception as e:
+        logger.error(f"Error exporting items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Export failed")
+
+
+# =============================================================================
+# ITEMS BULK IMPORT
+# =============================================================================
+
+
+@router.post("/items/bulk-import")
+async def bulk_import_items(request: Request):
+    """
+    Bulk import items from parsed CSV data.
+    Expects JSON body with array of item data.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        items_data = body.get("items", [])
+
+        if not items_data:
+            raise HTTPException(status_code=400, detail="No items provided")
+
+        created = 0
+        updated = 0
+        errors = []
+
+        async with pool.acquire() as conn:
+            for idx, item in enumerate(items_data):
+                try:
+                    code = item.get("code")
+                    name = item.get("name")
+
+                    if not name:
+                        errors.append({"row": idx + 1, "error": "Name is required"})
+                        continue
+
+                    # Check if item exists by code
+                    existing = None
+                    if code:
+                        existing = await conn.fetchrow(
+                            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2 AND deleted_at IS NULL",
+                            ctx["tenant_id"],
+                            code,
+                        )
+
+                    if existing:
+                        # Update existing
+                        await conn.execute(
+                            """
+                            UPDATE products SET
+                                nama_produk = $1,
+                                item_type = COALESCE($2, item_type),
+                                base_unit = COALESCE($3, base_unit),
+                                sales_price = COALESCE($4, sales_price),
+                                purchase_price = COALESCE($5, purchase_price),
+                                updated_at = NOW()
+                            WHERE id = $6 AND tenant_id = $7
+                        """,
+                            name,
+                            item.get("type"),
+                            item.get("unit"),
+                            item.get("selling_price"),
+                            item.get("purchase_price"),
+                            existing["id"],
+                            ctx["tenant_id"],
+                        )
+                        updated += 1
+                    else:
+                        # Create new
+                        import uuid as uuid_mod
+
+                        new_id = str(uuid_mod.uuid4())
+                        await conn.execute(
+                            """
+                            INSERT INTO products (
+                                id, tenant_id, item_code, nama_produk, satuan, item_type, base_unit,
+                                sales_price, purchase_price, status, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $6, $5, $6, $7, $8, 'active', NOW(), NOW())
+                        """,
+                            new_id,
+                            ctx["tenant_id"],
+                            code,
+                            name,
+                            item.get("type", "product"),
+                            item.get("unit", "pcs"),
+                            item.get("selling_price", 0),
+                            item.get("purchase_price", 0),
+                        )
+                        created += 1
+
+                except Exception as row_error:
+                    errors.append({"row": idx + 1, "error": str(row_error)})
+
+        return {
+            "success": True,
+            "created": created,
+            "updated": updated,
+            "errors": errors,
+            "total_processed": len(items_data),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk import: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Bulk import failed")
+
+
+# =============================================================================
+# ITEMS STATUS UPDATE
+# =============================================================================
+
+
+@router.patch("/items/{item_id}/status")
+async def update_item_status(request: Request, item_id: str):
+    """Update item active/inactive status."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        is_active = body.get("is_active", True)
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE products SET status = CASE WHEN $1 THEN 'active' ELSE 'inactive' END, updated_at = NOW()
+                WHERE id = $2::uuid AND tenant_id = $3
+            """,
+                is_active,
+                item_id,
+                ctx["tenant_id"],
+            )
+
+            if result == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Item not found")
+
+            return {
+                "success": True,
+                "message": "Status updated",
+                "is_active": is_active,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update status")
+
+
+# =============================================================================
+# ITEMS STOCK ADJUSTMENT
+# =============================================================================
+
+
 @router.get("/items/{item_id}/activity", response_model=ItemActivityResponse)
 async def get_item_activity(
     request: Request,
@@ -1857,351 +2199,6 @@ async def list_cogs_accounts(request: Request):
     finally:
         if conn:
             await conn.close()
-
-
-# =============================================================================
-# ITEMS AUTOCOMPLETE (for forms)
-# =============================================================================
-
-
-@router.get("/items/autocomplete")
-async def autocomplete_items(
-    request: Request,
-    q: str = Query(default="", description="Search query"),
-    limit: int = Query(20, ge=1, le=50),
-    item_type: Optional[str] = Query(None, description="Filter by item type"),
-):
-    """Quick item search for autocomplete in forms."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            type_filter = ""
-            params = [ctx["tenant_id"], f"%{q}%", limit]
-            if item_type:
-                type_filter = " AND item_type = $4"
-                params.append(item_type)
-
-            rows = await conn.fetch(
-                f"""
-                SELECT id, code, name, item_type, unit, selling_price, purchase_price
-                FROM items
-                WHERE tenant_id = $1
-                  AND (name ILIKE $2 OR code ILIKE $2 OR sku ILIKE $2)
-                  AND is_active = true
-                  {type_filter}
-                ORDER BY name ASC
-                LIMIT $3
-            """,
-                *params,
-            )
-
-            items = [
-                {
-                    "id": str(row["id"]),
-                    "code": row["code"],
-                    "name": row["name"],
-                    "type": row["item_type"],
-                    "unit": row["unit"],
-                    "selling_price": row["selling_price"],
-                    "purchase_price": row["purchase_price"],
-                }
-                for row in rows
-            ]
-            return {"success": True, "items": items}
-    except Exception as e:
-        logger.error(f"Error in autocomplete: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Autocomplete failed")
-
-
-# =============================================================================
-# ITEMS NEXT CODE (for form auto-generation)
-# =============================================================================
-
-
-@router.get("/items/next-code")
-async def get_next_item_code(
-    request: Request,
-    item_type: str = Query(
-        "product", description="Item type: product, service, inventory"
-    ),
-):
-    """Get the next available item code for auto-generation."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            # Prefix based on item type
-            prefix_map = {
-                "product": "PRD",
-                "service": "SVC",
-                "inventory": "INV",
-                "non_inventory": "NI",
-            }
-            prefix = prefix_map.get(item_type, "ITM")
-
-            row = await conn.fetchrow(
-                """
-                SELECT code FROM items
-                WHERE tenant_id = $1 AND code LIKE $2
-                ORDER BY code DESC LIMIT 1
-            """,
-                ctx["tenant_id"],
-                f"{prefix}%",
-            )
-
-            import re
-
-            if row and row["code"]:
-                match = re.search(r"([0-9]+)$", row["code"])
-                if match:
-                    num = int(match.group(1)) + 1
-                    next_code = f"{prefix}{num:05d}"
-                else:
-                    next_code = f"{prefix}00001"
-            else:
-                next_code = f"{prefix}00001"
-
-            return {"success": True, "next_code": next_code}
-    except Exception as e:
-        logger.error(f"Error getting next code: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get next code")
-
-
-# =============================================================================
-# ITEMS EXPORT
-# =============================================================================
-
-
-@router.get("/items/export")
-async def export_items(
-    request: Request,
-    format: str = Query("csv", description="Export format: csv, xlsx"),
-):
-    """Export items to CSV or Excel format."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT
-                    code, name, item_type, unit, sku,
-                    selling_price, purchase_price, current_stock,
-                    category, description, is_active
-                FROM items
-                WHERE tenant_id = $1
-                ORDER BY code ASC
-            """,
-                ctx["tenant_id"],
-            )
-
-            if format == "csv":
-                import io
-                import csv
-
-                output = io.StringIO()
-                writer = csv.writer(output)
-                writer.writerow(
-                    [
-                        "Code",
-                        "Name",
-                        "Type",
-                        "Unit",
-                        "SKU",
-                        "Selling Price",
-                        "Purchase Price",
-                        "Stock",
-                        "Category",
-                        "Description",
-                        "Active",
-                    ]
-                )
-                for row in rows:
-                    writer.writerow(
-                        [
-                            row["code"],
-                            row["name"],
-                            row["item_type"],
-                            row["unit"],
-                            row["sku"],
-                            row["selling_price"],
-                            row["purchase_price"],
-                            row["current_stock"],
-                            row["category"],
-                            row["description"],
-                            "Yes" if row["is_active"] else "No",
-                        ]
-                    )
-                content = output.getvalue()
-                from fastapi.responses import Response
-
-                return Response(
-                    content=content,
-                    media_type="text/csv",
-                    headers={
-                        "Content-Disposition": "attachment; filename=items_export.csv"
-                    },
-                )
-            else:
-                return {
-                    "success": True,
-                    "message": "Export format not supported yet",
-                    "count": len(rows),
-                }
-    except Exception as e:
-        logger.error(f"Error exporting items: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Export failed")
-
-
-# =============================================================================
-# ITEMS BULK IMPORT
-# =============================================================================
-
-
-@router.post("/items/bulk-import")
-async def bulk_import_items(request: Request):
-    """
-    Bulk import items from parsed CSV data.
-    Expects JSON body with array of item data.
-    """
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        body = await request.json()
-        items_data = body.get("items", [])
-
-        if not items_data:
-            raise HTTPException(status_code=400, detail="No items provided")
-
-        created = 0
-        updated = 0
-        errors = []
-
-        async with pool.acquire() as conn:
-            for idx, item in enumerate(items_data):
-                try:
-                    code = item.get("code")
-                    name = item.get("name")
-
-                    if not name:
-                        errors.append({"row": idx + 1, "error": "Name is required"})
-                        continue
-
-                    # Check if item exists by code
-                    existing = None
-                    if code:
-                        existing = await conn.fetchrow(
-                            "SELECT id FROM items WHERE tenant_id = $1 AND code = $2",
-                            ctx["tenant_id"],
-                            code,
-                        )
-
-                    if existing:
-                        # Update existing
-                        await conn.execute(
-                            """
-                            UPDATE items SET
-                                name = $1,
-                                item_type = COALESCE($2, item_type),
-                                unit = COALESCE($3, unit),
-                                selling_price = COALESCE($4, selling_price),
-                                purchase_price = COALESCE($5, purchase_price),
-                                updated_at = NOW()
-                            WHERE id = $6 AND tenant_id = $7
-                        """,
-                            name,
-                            item.get("type"),
-                            item.get("unit"),
-                            item.get("selling_price"),
-                            item.get("purchase_price"),
-                            existing["id"],
-                            ctx["tenant_id"],
-                        )
-                        updated += 1
-                    else:
-                        # Create new
-                        import uuid as uuid_mod
-
-                        new_id = str(uuid_mod.uuid4())
-                        await conn.execute(
-                            """
-                            INSERT INTO items (
-                                id, tenant_id, code, name, item_type, unit,
-                                selling_price, purchase_price, is_active
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
-                        """,
-                            new_id,
-                            ctx["tenant_id"],
-                            code,
-                            name,
-                            item.get("type", "product"),
-                            item.get("unit", "pcs"),
-                            item.get("selling_price", 0),
-                            item.get("purchase_price", 0),
-                        )
-                        created += 1
-
-                except Exception as row_error:
-                    errors.append({"row": idx + 1, "error": str(row_error)})
-
-        return {
-            "success": True,
-            "created": created,
-            "updated": updated,
-            "errors": errors,
-            "total_processed": len(items_data),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in bulk import: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Bulk import failed")
-
-
-# =============================================================================
-# ITEMS STATUS UPDATE
-# =============================================================================
-
-
-@router.patch("/items/{item_id}/status")
-async def update_item_status(request: Request, item_id: str):
-    """Update item active/inactive status."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        body = await request.json()
-        is_active = body.get("is_active", True)
-
-        async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE items SET is_active = $1, updated_at = NOW()
-                WHERE id = $2 AND tenant_id = $3
-            """,
-                is_active,
-                item_id,
-                ctx["tenant_id"],
-            )
-
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Item not found")
-
-            return {
-                "success": True,
-                "message": "Status updated",
-                "is_active": is_active,
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update status")
-
-
-# =============================================================================
-# ITEMS STOCK ADJUSTMENT
-# =============================================================================
 
 
 @router.post("/items/{item_id}/stock-adjustment")

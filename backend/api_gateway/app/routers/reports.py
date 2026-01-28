@@ -1206,7 +1206,7 @@ async def get_trial_balance_full(
                     SELECT
                         coa.id,
                         coa.account_code as code,
-                        coa.name,
+                        coa.name as account_name,
                         coa.account_type,
                         coa.category,
                         coa.level,
@@ -1289,7 +1289,7 @@ async def get_trial_balance_full(
                 account = {
                     "id": str(row["id"]),
                     "account_code": row["code"],
-                    "account_name": row["name"],
+                    "account_name": row["account_name"],
                     "account_type": acc_type,
                     "category": category.lower() if category else acc_type,
                     "level": row["level"] or 2,
@@ -1726,15 +1726,15 @@ async def get_profit_loss_by_basis(
                 SELECT
                     jl.account_id,
                     coa.account_code,
-                    coa.account_name,
+                    coa.name as account_name,
                     SUM(jl.credit - jl.debit)::BIGINT as total_amount
                 FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1
-                AND je.entry_date BETWEEN $2 AND $3
+                AND je.journal_date BETWEEN $2 AND $3
                 AND coa.account_type = 'OTHER_INCOME'
-                GROUP BY jl.account_id, coa.account_code, coa.account_name
+                GROUP BY jl.account_id, coa.account_code, coa.name
                 HAVING SUM(jl.credit - jl.debit) != 0
             """,
                 tenant_id,
@@ -1957,15 +1957,15 @@ async def get_cash_accrual_comparison(request: Request, periode: str):
                 SELECT
                     jl.account_id,
                     coa.account_code,
-                    coa.account_name,
+                    coa.name as account_name,
                     SUM(jl.credit - jl.debit)::BIGINT as total_amount
                 FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1
-                AND je.entry_date BETWEEN $2 AND $3
+                AND je.journal_date BETWEEN $2 AND $3
                 AND coa.account_type = 'OTHER_INCOME'
-                GROUP BY jl.account_id, coa.account_code, coa.account_name
+                GROUP BY jl.account_id, coa.account_code, coa.name
                 HAVING SUM(jl.credit - jl.debit) != 0
             """,
                 tenant_id,
@@ -2777,10 +2777,10 @@ async def get_drill_down(
                     COALESCE(SUM(jl.debit), 0) as total_debit,
                     COALESCE(SUM(jl.credit), 0) as total_credit
                 FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                   AND je.tenant_id = $2
-                  AND je.entry_date < $3
+                  AND je.journal_date < $3
                   AND je.status = 'POSTED'
             """,
                 account_id,
@@ -2802,10 +2802,10 @@ async def get_drill_down(
                 """
                 SELECT COUNT(*)
                 FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                   AND je.tenant_id = $2
-                  AND je.entry_date BETWEEN $3 AND $4
+                  AND je.journal_date BETWEEN $3 AND $4
                   AND je.status = 'POSTED'
             """,
                 account_id,
@@ -2821,7 +2821,7 @@ async def get_drill_down(
                 SELECT
                     je.id as journal_id,
                     je.journal_number,
-                    je.entry_date,
+                    je.journal_date,
                     je.source_type,
                     je.source_id,
                     je.description,
@@ -2829,12 +2829,12 @@ async def get_drill_down(
                     jl.debit,
                     jl.credit
                 FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_entry_id
+                JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                   AND je.tenant_id = $2
-                  AND je.entry_date BETWEEN $3 AND $4
+                  AND je.journal_date BETWEEN $3 AND $4
                   AND je.status = 'POSTED'
-                ORDER BY je.entry_date, je.created_at
+                ORDER BY je.journal_date, je.created_at
                 OFFSET $5 LIMIT $6
             """,
                 account_id,
@@ -3043,7 +3043,7 @@ async def get_cash_flow_report(
             # Operating Activities - Inflows
             customer_receipts = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(amount), 0)
+                SELECT COALESCE(SUM(total_amount), 0)
                 FROM receive_payments
                 WHERE tenant_id = $1
                   AND payment_date BETWEEN $2 AND $3
@@ -3061,7 +3061,7 @@ async def get_cash_flow_report(
                 FROM bill_payments
                 WHERE tenant_id = $1
                   AND payment_date BETWEEN $2 AND $3
-                  AND status = 'posted'
+
             """,
                 ctx["tenant_id"],
                 start_date,
@@ -3090,8 +3090,8 @@ async def get_cash_flow_report(
                 FROM bank_transfers
                 WHERE tenant_id = $1
                   AND transfer_date BETWEEN $2 AND $3
-                  AND status = 'completed'
-                  AND transfer_type = 'equity_injection'
+                  AND status = 'posted'
+
             """,
                 ctx["tenant_id"],
                 start_date,
@@ -3104,8 +3104,8 @@ async def get_cash_flow_report(
                 FROM bank_transfers
                 WHERE tenant_id = $1
                   AND transfer_date BETWEEN $2 AND $3
-                  AND status = 'completed'
-                  AND transfer_type = 'dividend'
+                  AND status = 'posted'
+
             """,
                 ctx["tenant_id"],
                 start_date,
@@ -3435,12 +3435,12 @@ async def get_aging_payable(request: Request):
                     v.id as vendor_id,
                     v.name as vendor_name,
                     b.id as bill_id,
-                    b.bill_number,
-                    b.bill_date,
+                    b.invoice_number as bill_number,
+                    b.issue_date as bill_date,
                     b.due_date,
-                    b.total_amount,
+                    b.grand_total as total_amount,
                     COALESCE(b.amount_paid, 0) as amount_paid,
-                    b.total_amount - COALESCE(b.amount_paid, 0) as balance,
+                    b.grand_total - COALESCE(b.amount_paid, 0) as balance,
                     GREATEST(0, CURRENT_DATE - b.due_date) as days_overdue,
                     CASE
                         WHEN CURRENT_DATE <= b.due_date THEN 'current'
@@ -3452,8 +3452,8 @@ async def get_aging_payable(request: Request):
                 FROM bills b
                 JOIN vendors v ON v.id = b.vendor_id
                 WHERE b.tenant_id = $1
-                  AND b.status IN ('posted', 'partial', 'overdue')
-                  AND b.total_amount > COALESCE(b.amount_paid, 0)
+                  AND b.status_v2 IN ('posted', 'partial')
+                  AND b.grand_total > COALESCE(b.amount_paid, 0)
                 ORDER BY b.due_date ASC
             """,
                 ctx["tenant_id"],
@@ -3524,15 +3524,15 @@ async def get_vendor_aging_bills(request: Request, vendor_id: str):
             rows = await conn.fetch(
                 """
                 SELECT
-                    id, bill_number, bill_date, due_date,
-                    total_amount, COALESCE(amount_paid, 0) as amount_paid,
-                    total_amount - COALESCE(amount_paid, 0) as balance,
+                    id, invoice_number as bill_number, issue_date as bill_date, due_date,
+                    grand_total as total_amount, COALESCE(amount_paid, 0) as amount_paid,
+                    grand_total - COALESCE(amount_paid, 0) as balance,
                     GREATEST(0, CURRENT_DATE - due_date) as days_overdue
                 FROM bills
                 WHERE tenant_id = $1
                   AND vendor_id::text = $2
-                  AND status IN ('posted', 'partial', 'overdue')
-                  AND total_amount > COALESCE(amount_paid, 0)
+                  AND status_v2 IN ('posted', 'partial')
+                  AND grand_total > COALESCE(amount_paid, 0)
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
@@ -3590,14 +3590,14 @@ async def get_profit_loss_query_params(
                 SELECT
                     COALESCE(coa.id::text, 'revenue') as account_id,
                     COALESCE(coa.account_code, '4-1000') as account_code,
-                    COALESCE(coa.account_name, 'Pendapatan Penjualan') as account_name,
+                    COALESCE(coa.name, 'Pendapatan Penjualan') as account_name,
                     SUM(si.total_amount)::BIGINT as amount
                 FROM sales_invoices si
                 LEFT JOIN chart_of_accounts coa ON coa.account_type = 'REVENUE' AND coa.tenant_id = si.tenant_id
                 WHERE si.tenant_id = $1
                   AND si.invoice_date BETWEEN $2 AND $3
                   AND si.status IN ('posted', 'paid', 'partial', 'overdue')
-                GROUP BY coa.id, coa.account_code, coa.account_name
+                GROUP BY coa.id, coa.account_code, coa.name
             """,
                 ctx["tenant_id"],
                 start_date,
@@ -3623,7 +3623,7 @@ async def get_profit_loss_query_params(
                 SELECT
                     COALESCE(coa.id::text, 'cogs') as account_id,
                     COALESCE(coa.account_code, '5-1000') as account_code,
-                    COALESCE(coa.account_name, 'Harga Pokok Penjualan') as account_name,
+                    COALESCE(coa.name, 'Harga Pokok Penjualan') as account_name,
                     COALESCE(SUM(bi.amount), 0)::BIGINT as amount
                 FROM bills b
                 JOIN bill_items bi ON bi.bill_id = b.id
@@ -3633,7 +3633,7 @@ async def get_profit_loss_query_params(
                   AND b.bill_date BETWEEN $2 AND $3
                   AND b.status IN ('posted', 'paid', 'partial')
                   AND (i.item_type = 'inventory' OR i.item_type IS NULL)
-                GROUP BY coa.id, coa.account_code, coa.account_name
+                GROUP BY coa.id, coa.account_code, coa.name
             """,
                 ctx["tenant_id"],
                 start_date,
@@ -3659,14 +3659,14 @@ async def get_profit_loss_query_params(
                 SELECT
                     COALESCE(coa.id::text, e.category) as account_id,
                     COALESCE(coa.account_code, '6-1000') as account_code,
-                    COALESCE(coa.account_name, e.category) as account_name,
+                    COALESCE(coa.name, e.category) as account_name,
                     SUM(e.total_amount)::BIGINT as amount
                 FROM expenses e
                 LEFT JOIN chart_of_accounts coa ON coa.account_type = 'EXPENSE' AND coa.tenant_id = e.tenant_id
                 WHERE e.tenant_id = $1
                   AND e.expense_date BETWEEN $2 AND $3
                   AND e.status = 'posted'
-                GROUP BY coa.id, coa.account_code, coa.account_name, e.category
+                GROUP BY coa.id, coa.account_code, coa.name, e.category
             """,
                 ctx["tenant_id"],
                 start_date,

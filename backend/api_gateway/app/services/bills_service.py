@@ -483,7 +483,8 @@ class BillsService:
                 if vendor_id and not vendor_name:
                     # Look up vendor name from suppliers table
                     vendor_row = await conn.fetchrow(
-                        "SELECT nama_supplier FROM suppliers WHERE id = $1", vendor_id
+                        "SELECT nama_supplier FROM suppliers WHERE id = $1",
+                        str(vendor_id),
                     )
                     if vendor_row:
                         vendor_name = vendor_row["nama_supplier"]
@@ -1595,7 +1596,7 @@ class BillsService:
                     try:
                         qty = int(item["qty"])
                         price = int(item["price"])
-                    except (ValueError, TypeError) as e:
+                    except (ValueError, TypeError):
                         return {
                             "success": False,
                             "message": f"Item {idx}: qty dan price harus berupa angka",

@@ -539,6 +539,12 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                 else:
                     subtotal = body.amount or 0
 
+                # Validate subtotal is positive
+                if subtotal <= 0:
+                    raise HTTPException(
+                        status_code=400, detail="Expense amount must be greater than 0"
+                    )
+
                 tax_amount = int(subtotal * float(body.tax_rate or 0) / 100)
                 pph_amount = int(subtotal * float(body.pph_rate or 0) / 100)
                 total_amount = subtotal + tax_amount - pph_amount
