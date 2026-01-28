@@ -27,6 +27,10 @@ from ..schemas.bill_payments import (
 )
 from ..config import settings
 
+# Account codes for bill payment journals
+AP_ACCOUNT = "2-10100"  # Hutang Usaha (Accounts Payable)
+PURCHASE_DISCOUNT_ACCOUNT = "5-10200"  # Diskon Pembelian (Purchase Discount)
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -88,6 +92,226 @@ async def generate_payment_number(conn, tenant_id: str) -> str:
         return (
             f"PAY-{year_month.replace('-', '')}-{uuid_module.uuid4().hex[:6].upper()}"
         )
+
+
+async def create_bill_payment_journal(
+    conn,
+    ctx: dict,
+    payment_id,
+    payment_number: str,
+    payment_date,
+    vendor_name: str,
+    bank_account_id,
+    total_amount: int,
+    allocated_amount: int,
+    discount_amount: int = 0,
+    discount_account_id=None,
+    bank_fee_amount: int = 0,
+    bank_fee_account_id=None,
+    source_type: str = "cash",
+    source_deposit_id=None,
+    unapplied_amount: int = 0,
+) -> tuple:
+    """
+    Create journal entry for bill payment.
+
+    Journal Entry (when payment is posted):
+    - Dr. Accounts Payable (2-10100) = allocated_amount (reduces what we owe)
+    - Dr. Biaya Bank (expense) = bank_fee_amount (expense for bank fees)
+    - Cr. Bank/Cash Account = total_amount + bank_fee_amount (money out)
+    - Cr. Potongan Pembelian (5-10200) = discount_amount (discount received from vendor)
+
+    Returns: (journal_id, journal_number)
+    """
+    # Get bank account COA ID
+    bank_coa_id = None
+    if bank_account_id:
+        bank = await conn.fetchrow(
+            "SELECT coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+            bank_account_id
+            if isinstance(bank_account_id, UUID)
+            else UUID(str(bank_account_id)),
+            ctx["tenant_id"],
+        )
+        if bank:
+            bank_coa_id = bank["coa_id"]
+
+    # Get AP account (Hutang Usaha)
+    ap_account_id = await conn.fetchval(
+        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
+        ctx["tenant_id"],
+        AP_ACCOUNT,
+    )
+    if not ap_account_id:
+        raise HTTPException(
+            status_code=500, detail=f"AP account ({AP_ACCOUNT}) not found"
+        )
+
+    # Get or default purchase discount account
+    purchase_discount_account_id = discount_account_id
+    if discount_amount > 0 and not purchase_discount_account_id:
+        purchase_discount_account_id = await conn.fetchval(
+            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
+            ctx["tenant_id"],
+            PURCHASE_DISCOUNT_ACCOUNT,
+        )
+
+    # Get vendor deposit account for unapplied amounts (overpayments to vendor)
+    vendor_deposit_account_id = None
+    if unapplied_amount > 0:
+        vendor_deposit_account_id = await conn.fetchval(
+            """SELECT id FROM chart_of_accounts
+               WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%')
+               LIMIT 1""",
+            ctx["tenant_id"],
+        )
+
+    # Generate journal number using database function
+    journal_number = await conn.fetchval(
+        "SELECT get_next_journal_number($1, 'BP')", ctx["tenant_id"]
+    )
+    if not journal_number:
+        journal_number = f"JRN-{payment_number}"
+
+    # Calculate total debit (must equal total credit for balanced journal)
+    total_debit = float(allocated_amount + bank_fee_amount)
+    if unapplied_amount > 0:
+        total_debit += float(unapplied_amount)
+
+    journal_id = uuid_module.uuid4()
+    trace_id = uuid_module.uuid4()
+
+    # Create journal entry header
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, trace_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', $6, $7, 'POSTED', $8, $8, $9)
+        """,
+        journal_id,
+        ctx["tenant_id"],
+        journal_number,
+        payment_date,
+        f"Pembayaran ke {vendor_name} - {payment_number}",
+        payment_id if isinstance(payment_id, UUID) else UUID(str(payment_id)),
+        str(trace_id),
+        total_debit,
+        ctx["user_id"],
+    )
+
+    line_number = 0
+
+    # Dr. Accounts Payable (reduces liability)
+    if allocated_amount > 0:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, $5, 0, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            ap_account_id,
+            float(allocated_amount),
+            f"Pelunasan hutang usaha - {vendor_name}",
+        )
+
+    # Dr. Bank Fee (expense)
+    if bank_fee_amount > 0 and bank_fee_account_id:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, $5, 0, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            bank_fee_account_id
+            if isinstance(bank_fee_account_id, UUID)
+            else UUID(str(bank_fee_account_id)),
+            float(bank_fee_amount),
+            "Biaya administrasi bank",
+        )
+
+    # Dr. Vendor Deposit (if overpaying)
+    if unapplied_amount > 0 and vendor_deposit_account_id:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, $5, 0, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            vendor_deposit_account_id,
+            float(unapplied_amount),
+            f"Uang muka vendor - {vendor_name}",
+        )
+
+    # Cr. Bank/Cash (money going out)
+    cash_out = total_amount + bank_fee_amount
+    if cash_out > 0 and bank_coa_id:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            bank_coa_id,
+            float(cash_out),
+            f"Pembayaran dari bank - {payment_number}",
+        )
+    elif cash_out > 0 and source_type == "deposit" and source_deposit_id:
+        deposit_coa = await conn.fetchval(
+            """SELECT id FROM chart_of_accounts
+               WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%')
+               LIMIT 1""",
+            ctx["tenant_id"],
+        )
+        if deposit_coa:
+            line_number += 1
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, 0, $5, $6)
+                """,
+                uuid_module.uuid4(),
+                journal_id,
+                line_number,
+                deposit_coa,
+                float(cash_out),
+                f"Aplikasi uang muka vendor - {payment_number}",
+            )
+
+    # Cr. Potongan Pembelian (discount received)
+    if discount_amount > 0 and purchase_discount_account_id:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            purchase_discount_account_id
+            if isinstance(purchase_discount_account_id, UUID)
+            else UUID(str(purchase_discount_account_id)),
+            float(discount_amount),
+            "Potongan pembelian",
+        )
+
+    logger.info(f"Bill payment journal created: {journal_id}, number: {journal_number}")
+
+    return journal_id, journal_number
 
 
 @router.get("", response_model=BillPaymentListResponse)
@@ -517,6 +741,39 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             alloc.bill_id,
                         )
 
+                # Create journal entry for posted payments
+                journal_id = None
+                journal_number = None
+                if not payload.save_as_draft:
+                    journal_id, journal_number = await create_bill_payment_journal(
+                        conn=conn,
+                        ctx=ctx,
+                        payment_id=payment_id,
+                        payment_number=payment_number,
+                        payment_date=payload.payment_date,
+                        vendor_name=payload.vendor_name,
+                        bank_account_id=payload.bank_account_id,
+                        total_amount=payload.total_amount,
+                        allocated_amount=allocated_amount,
+                        discount_amount=payload.discount_amount,
+                        discount_account_id=payload.discount_account_id,
+                        bank_fee_amount=payload.bank_fee_amount,
+                        bank_fee_account_id=payload.bank_fee_account_id,
+                        source_type=payload.source_type,
+                        source_deposit_id=payload.source_deposit_id,
+                        unapplied_amount=unapplied_amount,
+                    )
+
+                    # Update payment with journal info
+                    await conn.execute(
+                        """UPDATE bill_payments_v2
+                           SET journal_id = $1, journal_number = $2
+                           WHERE id = $3""",
+                        journal_id,
+                        journal_number,
+                        payment_id,
+                    )
+
                 return BillPaymentResponse(
                     success=True,
                     message=f"Payment {payment_number} {'created as draft' if payload.save_as_draft else 'posted'}",
@@ -620,16 +877,52 @@ async def post_bill_payment(request: Request, payment_id: str):
                         alloc["bill_id"],
                     )
 
+                # Get full payment details for journal creation
+                full_payment = await conn.fetchrow(
+                    """SELECT * FROM bill_payments_v2 WHERE id = $1::uuid""",
+                    payment_id,
+                )
+
+                # Create journal entry
+                journal_id, journal_number = await create_bill_payment_journal(
+                    conn=conn,
+                    ctx=ctx,
+                    payment_id=payment_id,
+                    payment_number=payment["payment_number"],
+                    payment_date=payment["payment_date"],
+                    vendor_name=full_payment["vendor_name"],
+                    bank_account_id=full_payment["bank_account_id"],
+                    total_amount=full_payment["total_amount"],
+                    allocated_amount=full_payment["allocated_amount"] or 0,
+                    discount_amount=full_payment["discount_amount"] or 0,
+                    discount_account_id=full_payment["discount_account_id"],
+                    bank_fee_amount=full_payment["bank_fee_amount"] or 0,
+                    bank_fee_account_id=full_payment["bank_fee_account_id"],
+                    source_type=full_payment.get("source_type") or "cash",
+                    source_deposit_id=full_payment.get("source_deposit_id"),
+                    unapplied_amount=full_payment["unapplied_amount"] or 0,
+                )
+
                 await conn.execute(
-                    "UPDATE bill_payments_v2 SET status = 'posted', posted_at = NOW(), posted_by = $1, updated_at = NOW() WHERE id = $2::uuid",
+                    """UPDATE bill_payments_v2
+                       SET status = 'posted', posted_at = NOW(), posted_by = $1,
+                           journal_id = $2, journal_number = $3, updated_at = NOW()
+                       WHERE id = $4::uuid""",
                     ctx["user_id"],
+                    journal_id,
+                    journal_number,
                     payment_id,
                 )
 
                 return BillPaymentResponse(
                     success=True,
                     message=f"Payment {payment['payment_number']} posted",
-                    data={"id": payment_id, "status": "posted"},
+                    data={
+                        "id": payment_id,
+                        "status": "posted",
+                        "journal_id": str(journal_id),
+                        "journal_number": journal_number,
+                    },
                 )
     except HTTPException:
         raise
@@ -680,7 +973,8 @@ async def void_bill_payment(
                 )
                 if not ap_account_id:
                     raise HTTPException(
-                        status_code=500, detail="AP account not found in chart of accounts"
+                        status_code=500,
+                        detail="AP account not found in chart of accounts",
                     )
 
                 # Calculate amounts for journal
@@ -826,7 +1120,9 @@ async def void_bill_payment(
                     payment_id,
                 )
 
-                logger.info(f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}")
+                logger.info(
+                    f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
+                )
 
                 return BillPaymentResponse(
                     success=True,
