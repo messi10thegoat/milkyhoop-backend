@@ -95,6 +95,8 @@ from .routers import tables
 
 # Expenses module
 from .routers import expenses
+from .routers import kasbank
+from .routers import expense_extended
 
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
@@ -102,6 +104,7 @@ from .routers import ledger
 from .routers import fiscal_years
 from .routers import periods
 from .routers import user
+from .routers import bill_payments
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -304,6 +307,9 @@ app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
 
 # Bills router (Faktur Pembelian CRUD + Payments)
 app.include_router(bills.router, prefix="/api/bills", tags=["bills"])
+app.include_router(
+    bill_payments.router, prefix="/api/bill-payments", tags=["bill-payments"]
+)
 
 # Vendors router (Supplier/Vendor Master Data)
 app.include_router(vendors.router, prefix="/api/vendors", tags=["vendors"])
@@ -560,6 +566,8 @@ app.include_router(user.router, prefix="/api", tags=["user"])
 
 # Expenses router (Biaya & Pengeluaran)
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
+app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
+app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
 
 
 @app.get("/")

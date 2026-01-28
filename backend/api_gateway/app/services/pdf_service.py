@@ -151,3 +151,39 @@ def get_pdf_service() -> PDFService:
     if _pdf_service is None:
         _pdf_service = PDFService()
     return _pdf_service
+
+    def generate_sales_invoice_pdf(self, invoice: Dict[str, Any]) -> bytes:
+        """
+        Generate PDF for a sales invoice.
+
+        Args:
+            invoice: Invoice data dict with items, customer info, and totals.
+                     Expected fields: invoice_number, customer_name,
+                     invoice_date, due_date, status, items, subtotal, total_amount, etc.
+
+        Returns:
+            PDF content as bytes
+        """
+        template = self.jinja_env.get_template("sales_invoice.html")
+
+        # Get status label
+        status = invoice.get("status", "draft")
+        status_label = self.STATUS_LABELS.get(status, status.upper())
+
+        # Render HTML
+        html_content = template.render(
+            invoice=invoice,
+            status_label=status_label,
+            generated_at=datetime.now(),
+        )
+
+        # Load CSS
+        css_path = TEMPLATE_DIR / "invoice.css"
+        stylesheets = []
+        if css_path.exists():
+            stylesheets.append(CSS(filename=str(css_path)))
+
+        # Generate PDF
+        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+
+        return pdf_bytes

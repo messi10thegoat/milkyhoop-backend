@@ -146,8 +146,8 @@ async def auto_create_coa_for_bank_account(
         INSERT INTO chart_of_accounts (
             id, tenant_id, account_code, name, description,
             account_type, normal_balance, parent_code,
-            is_header, is_detail, is_bank_account, is_active, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, true, true, $9)
+            is_header, is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true)
     """,
         coa_id,
         tenant_id,
@@ -1251,3 +1251,278 @@ async def adjust_bank_balance(
             f"Error adjusting bank account {bank_account_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to adjust bank account")
+
+
+# =============================================================================
+# BANK ACCOUNT TRANSACTIONS
+# =============================================================================
+
+
+@router.get("/{bank_account_id}/transactions")
+async def get_bank_account_transactions(
+    request: Request,
+    bank_account_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Get transaction history for a bank account."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        offset = (page - 1) * limit
+        async with pool.acquire() as conn:
+            account = await conn.fetchrow(
+                "SELECT id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                bank_account_id,
+                ctx["tenant_id"],
+            )
+            if not account:
+                raise HTTPException(status_code=404, detail="Bank account not found")
+
+            # Build query with optional date filters
+            date_filter = ""
+            params = [ctx["tenant_id"], bank_account_id]
+            param_idx = 3
+
+            if start_date:
+                date_filter += f" AND date >= ${param_idx}"
+                params.append(start_date)
+                param_idx += 1
+            if end_date:
+                date_filter += f" AND date <= ${param_idx}"
+                params.append(end_date)
+                param_idx += 1
+
+            params.extend([limit, offset])
+
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM (
+                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
+                        payment_date as date, amount, 'Payment Received' as description
+                    FROM receive_payments
+                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2 AND status = 'posted'
+                    UNION ALL
+                    SELECT id::text, 'expense' as type, expense_number as reference,
+                        expense_date as date, -total_amount as amount, description
+                    FROM expenses
+                    WHERE tenant_id = $1 AND payment_account_id::text = $2 AND status = 'posted'
+                    UNION ALL
+                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
+                        transfer_date as date, -amount, 'Transfer Out' as description
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND from_account_id::text = $2 AND status = 'completed'
+                    UNION ALL
+                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
+                        transfer_date as date, amount, 'Transfer In' as description
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND to_account_id::text = $2 AND status = 'completed'
+                ) t
+                WHERE 1=1 {date_filter}
+                ORDER BY date DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """,
+                *params,
+            )
+
+            transactions = [
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "reference": row["reference"],
+                    "date": row["date"].isoformat() if row["date"] else None,
+                    "amount": row["amount"],
+                    "description": row["description"],
+                }
+                for row in rows
+            ]
+
+            return {
+                "transactions": transactions,
+                "page": page,
+                "limit": limit,
+                "account_name": account["account_name"],
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting bank transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get transactions")
+
+
+# =============================================================================
+# BANK ACCOUNT STATEMENT
+# =============================================================================
+
+
+@router.get("/{bank_account_id}/statement")
+async def get_bank_account_statement(
+    request: Request,
+    bank_account_id: str,
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+):
+    """Get a statement-style report for a bank account."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            account = await conn.fetchrow(
+                "SELECT id, account_name, current_balance FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                bank_account_id,
+                ctx["tenant_id"],
+            )
+            if not account:
+                raise HTTPException(status_code=404, detail="Bank account not found")
+
+            # Get opening balance (balance before start_date)
+            opening = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(
+                    CASE
+                        WHEN type IN ('receive_payment', 'transfer_in') THEN amount
+                        ELSE -amount
+                    END
+                ), 0) as opening
+                FROM (
+                    SELECT amount, 'receive_payment' as type
+                    FROM receive_payments
+                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2
+                      AND payment_date < $3 AND status = 'posted'
+                    UNION ALL
+                    SELECT total_amount as amount, 'expense' as type
+                    FROM expenses
+                    WHERE tenant_id = $1 AND payment_account_id::text = $2
+                      AND expense_date < $3 AND status = 'posted'
+                    UNION ALL
+                    SELECT amount, 'transfer_out' as type
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND from_account_id::text = $2
+                      AND transfer_date < $3 AND status = 'completed'
+                    UNION ALL
+                    SELECT amount, 'transfer_in' as type
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND to_account_id::text = $2
+                      AND transfer_date < $3 AND status = 'completed'
+                ) t
+            """,
+                ctx["tenant_id"],
+                bank_account_id,
+                start_date,
+            )
+
+            # Get transactions in period
+            rows = await conn.fetch(
+                """
+                SELECT * FROM (
+                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
+                        payment_date as date, amount, 'Payment Received' as description
+                    FROM receive_payments
+                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2
+                      AND payment_date BETWEEN $3 AND $4 AND status = 'posted'
+                    UNION ALL
+                    SELECT id::text, 'expense' as type, expense_number as reference,
+                        expense_date as date, -total_amount as amount, description
+                    FROM expenses
+                    WHERE tenant_id = $1 AND payment_account_id::text = $2
+                      AND expense_date BETWEEN $3 AND $4 AND status = 'posted'
+                    UNION ALL
+                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
+                        transfer_date as date, -amount, 'Transfer Out' as description
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND from_account_id::text = $2
+                      AND transfer_date BETWEEN $3 AND $4 AND status = 'completed'
+                    UNION ALL
+                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
+                        transfer_date as date, amount, 'Transfer In' as description
+                    FROM bank_transfers
+                    WHERE tenant_id = $1 AND to_account_id::text = $2
+                      AND transfer_date BETWEEN $3 AND $4 AND status = 'completed'
+                ) t ORDER BY date ASC, id ASC
+            """,
+                ctx["tenant_id"],
+                bank_account_id,
+                start_date,
+                end_date,
+            )
+
+            transactions = []
+            running_balance = opening or 0
+            for row in rows:
+                running_balance += row["amount"]
+                transactions.append(
+                    {
+                        "id": row["id"],
+                        "type": row["type"],
+                        "reference": row["reference"],
+                        "date": row["date"].isoformat() if row["date"] else None,
+                        "amount": row["amount"],
+                        "description": row["description"],
+                        "running_balance": running_balance,
+                    }
+                )
+
+            total_deposits = sum(t["amount"] for t in transactions if t["amount"] > 0)
+            total_withdrawals = sum(
+                abs(t["amount"]) for t in transactions if t["amount"] < 0
+            )
+
+            return {
+                "account_name": account["account_name"],
+                "start_date": start_date,
+                "end_date": end_date,
+                "opening_balance": opening or 0,
+                "closing_balance": running_balance,
+                "total_deposits": total_deposits,
+                "total_withdrawals": total_withdrawals,
+                "transactions": transactions,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting statement: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get statement")
+
+
+# =============================================================================
+# BANK ACCOUNT DROPDOWN
+# =============================================================================
+
+
+@router.get("/dropdown")
+async def get_bank_accounts_dropdown(request: Request):
+    """Get bank accounts for dropdown/select components."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, account_name, account_number, bank_name, current_balance, currency
+                FROM bank_accounts
+                WHERE tenant_id = $1 AND is_active = true
+                ORDER BY account_name ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            accounts = [
+                {
+                    "id": str(row["id"]),
+                    "name": row["account_name"],
+                    "account_number": row["account_number"],
+                    "bank_name": row["bank_name"],
+                    "balance": row["current_balance"],
+                    "currency": row["currency"] or "IDR",
+                }
+                for row in rows
+            ]
+
+            return {"accounts": accounts}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting dropdown: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get accounts")

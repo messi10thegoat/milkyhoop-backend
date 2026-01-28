@@ -87,7 +87,6 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
-
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     """Check if the accounting period for the transaction date is open."""
     period = await conn.fetchrow(
@@ -105,7 +104,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})"
+            detail=f"Cannot post to {period_status} period ({period_name})",
         )
 
 
@@ -444,7 +443,9 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
 
                 # Check if accounting period is open (only if not saving as draft)
                 if not body.save_as_draft:
-                    await check_period_is_open(conn, ctx["tenant_id"], body.payment_date)
+                    await check_period_is_open(
+                        conn, ctx["tenant_id"], body.payment_date
+                    )
 
                 # Validate bank account exists and is asset type
                 bank_account = await conn.fetchrow(

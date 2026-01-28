@@ -35,17 +35,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -55,10 +52,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -77,7 +71,7 @@ async def health_check():
 async def autocomplete_customers(
     request: Request,
     q: str = Query(default="", description="Search query"),
-    limit: int = Query(10, ge=1, le=50)
+    limit: int = Query(10, ge=1, le=50),
 ):
     """
     Quick customer search for autocomplete in forms.
@@ -167,7 +161,7 @@ async def list_customers(
                 "name": "nama",
                 "code": "nomor_member",
                 "created_at": "created_at",
-                "updated_at": "updated_at"
+                "updated_at": "updated_at",
             }
             sort_field = valid_sorts.get(sort_by, "nama")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -202,16 +196,14 @@ async def list_customers(
                     "total_transactions": row["total_transaksi"],
                     "total_value": row["total_nilai"],
                     "outstanding_balance": row["saldo_hutang"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
                 }
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -259,11 +251,19 @@ async def get_customer(request: Request, customer_id: str):
                     "total_transactions": row["total_transaksi"],
                     "total_value": row["total_nilai"],
                     "outstanding_balance": row["saldo_hutang"],
-                    "last_transaction_at": row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None,
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-                    "default_currency_id": str(row["default_currency_id"]) if row["default_currency_id"] else None,
-                }
+                    "last_transaction_at": row["last_transaction_at"].isoformat()
+                    if row["last_transaction_at"]
+                    else None,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "updated_at": row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else None,
+                    "default_currency_id": str(row["default_currency_id"])
+                    if row["default_currency_id"]
+                    else None,
+                },
             }
 
     except HTTPException:
@@ -291,7 +291,8 @@ async def get_customer_balance(request: Request, customer_id: str):
             # Check if customer exists
             customer = await conn.fetchrow(
                 "SELECT id, nama, saldo_hutang FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                customer_id,
+                ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
@@ -315,17 +316,21 @@ async def get_customer_balance(request: Request, customer_id: str):
                 "data": {
                     "customer_id": str(customer_id),
                     "customer_name": customer["nama"],
-                    "total_balance": int(balance["total_balance"] or customer["saldo_hutang"] or 0),
+                    "total_balance": int(
+                        balance["total_balance"] or customer["saldo_hutang"] or 0
+                    ),
                     "open_invoices": balance["open_count"] or 0,
                     "partial_invoices": balance["partial_count"] or 0,
                     "overdue_invoices": balance["overdue_count"] or 0,
-                }
+                },
             }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting customer balance {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting customer balance {customer_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get customer balance")
 
 
@@ -348,63 +353,57 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
         async with pool.acquire() as conn:
             # Check for duplicate name
             existing = await conn.fetchval(
-                "SELECT id FROM customers WHERE tenant_id = $1 AND name = $2",
-                ctx["tenant_id"], body.name
+                "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2",
+                ctx["tenant_id"],
+                body.name,
             )
             if existing:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Customer with name '{body.name}' already exists"
+                    detail=f"Customer with name '{body.name}' already exists",
                 )
 
             # Check for duplicate code if provided
             if body.code:
                 existing_code = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND code = $2",
-                    ctx["tenant_id"], body.code
+                    "SELECT id FROM customers WHERE tenant_id = $1 AND nomor_member = $2",
+                    ctx["tenant_id"],
+                    body.code,
                 )
                 if existing_code:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Customer with code '{body.code}' already exists"
+                        detail=f"Customer with code '{body.code}' already exists",
                     )
 
-            # Insert customer
-            customer_id = await conn.fetchval("""
+            # Generate UUID for customer ID
+            import uuid as uuid_mod
+
+            new_id = str(uuid_mod.uuid4())
+
+            # Insert customer (using Indonesian column names)
+            await conn.execute(
+                """
                 INSERT INTO customers (
-                    tenant_id, code, name, contact_person, phone, email,
-                    address, city, province, postal_code, tax_id,
-                    payment_terms_days, credit_limit, notes, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                RETURNING id
+                    id, tenant_id, nomor_member, nama, telepon, email, alamat
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
+                new_id,
                 ctx["tenant_id"],
                 body.code,
                 body.name,
-                body.contact_person,
                 body.phone,
                 body.email,
                 body.address,
-                body.city,
-                body.province,
-                body.postal_code,
-                body.tax_id,
-                body.payment_terms_days,
-                body.credit_limit,
-                body.notes,
-                ctx["user_id"]
             )
+            customer_id = new_id
 
             logger.info(f"Customer created: {customer_id}, name={body.name}")
 
             return {
                 "success": True,
                 "message": "Customer created successfully",
-                "data": {
-                    "id": str(customer_id),
-                    "name": body.name,
-                    "code": body.code
-                }
+                "data": {"id": str(customer_id), "name": body.name, "code": body.code},
             }
 
     except HTTPException:
@@ -418,7 +417,9 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
 # UPDATE CUSTOMER
 # =============================================================================
 @router.patch("/{customer_id}", response_model=CustomerResponse)
-async def update_customer(request: Request, customer_id: UUID, body: UpdateCustomerRequest):
+async def update_customer(
+    request: Request, customer_id: str, body: UpdateCustomerRequest
+):
     """
     Update an existing customer.
 
@@ -431,22 +432,25 @@ async def update_customer(request: Request, customer_id: UUID, body: UpdateCusto
         async with pool.acquire() as conn:
             # Check if customer exists
             existing = await conn.fetchrow(
-                "SELECT id, name FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
             # Check for duplicate name if name is being changed
-            if body.name and body.name != existing["name"]:
+            if body.name and body.name != existing["nama"]:
                 duplicate = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND name = $2 AND id != $3",
-                    ctx["tenant_id"], body.name, customer_id
+                    "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND id != $3",
+                    ctx["tenant_id"],
+                    body.name,
+                    customer_id,
                 )
                 if duplicate:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Customer with name '{body.name}' already exists"
+                        detail=f"Customer with name '{body.name}' already exists",
                     )
 
             # Build update query dynamically
@@ -455,15 +459,25 @@ async def update_customer(request: Request, customer_id: UUID, body: UpdateCusto
                 return {
                     "success": True,
                     "message": "No changes provided",
-                    "data": {"id": str(customer_id)}
+                    "data": {"id": str(customer_id)},
                 }
+
+            # Map schema field names to database column names
+            field_mapping = {
+                "name": "nama",
+                "code": "nomor_member",
+                "phone": "telepon",
+                "address": "alamat",
+                "type": "tipe",
+            }
 
             updates = []
             params = []
             param_idx = 1
 
             for field, value in update_data.items():
-                updates.append(f"{field} = ${param_idx}")
+                db_field = field_mapping.get(field, field)
+                updates.append(f"{db_field} = ${param_idx}")
                 params.append(value)
                 param_idx += 1
 
@@ -482,7 +496,7 @@ async def update_customer(request: Request, customer_id: UUID, body: UpdateCusto
             return {
                 "success": True,
                 "message": "Customer updated successfully",
-                "data": {"id": str(customer_id)}
+                "data": {"id": str(customer_id)},
             }
 
     except HTTPException:
@@ -496,7 +510,7 @@ async def update_customer(request: Request, customer_id: UUID, body: UpdateCusto
 # DELETE CUSTOMER (Soft delete by setting is_active = false)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
-async def delete_customer(request: Request, customer_id: UUID):
+async def delete_customer(request: Request, customer_id: str):
     """
     Soft delete a customer by setting is_active to false.
 
@@ -510,40 +524,51 @@ async def delete_customer(request: Request, customer_id: UUID):
         async with pool.acquire() as conn:
             # Check if customer exists
             existing = await conn.fetchrow(
-                "SELECT id, name FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
             # Check for outstanding AR balance
-            balance = await conn.fetchval("""
-                SELECT COALESCE(SUM(balance), 0)
+            balance = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount - amount_paid), 0)
                 FROM accounts_receivable
                 WHERE tenant_id = $1
-                  AND customer_id = $2::text
+                  AND customer_id::text = $2
                   AND status IN ('OPEN', 'PARTIAL')
-            """, ctx["tenant_id"], str(customer_id))
+            """,
+                ctx["tenant_id"],
+                str(customer_id),
+            )
 
             if balance and balance > 0:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot delete customer with outstanding balance of Rp {balance:,}"
+                    detail=f"Cannot delete customer with outstanding balance of Rp {balance:,}",
                 )
 
             # Soft delete
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE customers
                 SET is_active = false, updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, customer_id, ctx["tenant_id"])
+            """,
+                customer_id,
+                ctx["tenant_id"],
+            )
 
-            logger.info(f"Customer soft deleted: {customer_id}, name={existing['name']}")
+            logger.info(
+                f"Customer soft deleted: {customer_id}, name={existing['nama']}"
+            )
 
             return {
                 "success": True,
                 "message": "Customer deleted successfully",
-                "data": {"id": str(customer_id), "name": existing["name"]}
+                "data": {"id": str(customer_id), "name": existing["nama"]},
             }
 
     except HTTPException:
@@ -556,6 +581,7 @@ async def delete_customer(request: Request, customer_id: UUID):
 # =============================================================================
 # CUSTOMER OPEN INVOICES (for receive payments)
 # =============================================================================
+
 
 @router.get("/{customer_id}/open-invoices")
 async def get_customer_open_invoices(
@@ -574,7 +600,8 @@ async def get_customer_open_invoices(
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
             # Get invoices with remaining balance
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT
                     id, invoice_number, invoice_date, due_date,
                     total_amount, amount_paid,
@@ -587,7 +614,10 @@ async def get_customer_open_invoices(
                   AND status IN ('posted', 'partial', 'overdue')
                   AND total_amount > COALESCE(amount_paid, 0)
                 ORDER BY due_date ASC, invoice_date ASC
-            """, ctx["tenant_id"], customer_id)
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
 
             invoices = [
                 {
@@ -605,7 +635,9 @@ async def get_customer_open_invoices(
             ]
 
             total_outstanding = sum(inv["remaining_amount"] for inv in invoices)
-            total_overdue = sum(inv["remaining_amount"] for inv in invoices if inv["is_overdue"])
+            total_overdue = sum(
+                inv["remaining_amount"] for inv in invoices if inv["is_overdue"]
+            )
 
             return {
                 "invoices": invoices,
@@ -613,19 +645,23 @@ async def get_customer_open_invoices(
                     "total_outstanding": total_outstanding,
                     "total_overdue": total_overdue,
                     "invoice_count": len(invoices),
-                }
+                },
             }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting open invoices for customer {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting open invoices for customer {customer_id}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to get open invoices")
 
 
 # =============================================================================
 # CUSTOMER AVAILABLE DEPOSITS (for receive payments)
 # =============================================================================
+
 
 @router.get("/{customer_id}/available-deposits")
 async def get_customer_available_deposits(
@@ -644,18 +680,22 @@ async def get_customer_available_deposits(
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
             # Get deposits with remaining balance
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT
                     id, deposit_number, deposit_date,
                     amount, amount_applied, amount_refunded,
                     amount - COALESCE(amount_applied, 0) - COALESCE(amount_refunded, 0) as remaining_amount
                 FROM customer_deposits
                 WHERE tenant_id = $1
-                  AND customer_id = $2::text
+                  AND customer_id::text = $2
                   AND status IN ('posted', 'partial')
                   AND amount > COALESCE(amount_applied, 0) + COALESCE(amount_refunded, 0)
                 ORDER BY deposit_date ASC
-            """, ctx["tenant_id"], str(customer_id))
+            """,
+                ctx["tenant_id"],
+                str(customer_id),
+            )
 
             deposits = [
                 {
@@ -680,13 +720,17 @@ async def get_customer_available_deposits(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting available deposits for customer {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting available deposits for customer {customer_id}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to get available deposits")
 
 
 # =============================================================================
 # CUSTOMER NEXT CODE (for form auto-generation)
 # =============================================================================
+
 
 @router.get("/next-code")
 async def get_next_customer_code(request: Request):
@@ -697,9 +741,10 @@ async def get_next_customer_code(request: Request):
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT nomor_member FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             import re
+
             if row and row["nomor_member"]:
                 match = re.match(r"^([A-Z]*)([0-9]+)$", row["nomor_member"])
                 if match:
@@ -722,6 +767,7 @@ async def get_next_customer_code(request: Request):
 # CUSTOMER TRANSACTIONS HISTORY
 # =============================================================================
 
+
 @router.get("/{customer_id}/transactions")
 async def get_customer_transactions(
     request: Request,
@@ -737,34 +783,57 @@ async def get_customer_transactions(
         async with pool.acquire() as conn:
             customer = await conn.fetchrow(
                 "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                customer_id,
+                ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM (
                     SELECT id::text, 'sales_invoice' as type, invoice_number as number,
                         invoice_date as date, total_amount as amount, 'Invoice' as description, status
                     FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
                     UNION ALL
                     SELECT id::text, 'payment' as type, payment_number as number,
-                        payment_date as date, amount, 'Payment' as description, status
-                    FROM receive_payments WHERE tenant_id = $1 AND customer_id::text = $2
+                        payment_date as date, total_amount as amount, 'Payment' as description, status
+                    FROM receive_payments WHERE tenant_id = $1 AND customer_id = $2
                 ) t ORDER BY date DESC LIMIT $3 OFFSET $4
-            """, ctx["tenant_id"], customer_id, limit, offset)
-            count = await conn.fetchval("""
+            """,
+                ctx["tenant_id"],
+                customer_id,
+                limit,
+                offset,
+            )
+            count = await conn.fetchval(
+                """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
                     UNION ALL SELECT id FROM receive_payments WHERE tenant_id = $1 AND customer_id::text = $2
                 ) t
-            """, ctx["tenant_id"], customer_id)
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
             transactions = [
-                {"id": row["id"], "type": row["type"], "number": row["number"],
-                 "date": row["date"].isoformat() if row["date"] else None,
-                 "amount": row["amount"], "description": row["description"], "status": row["status"]}
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "number": row["number"],
+                    "date": row["date"].isoformat() if row["date"] else None,
+                    "amount": row["amount"],
+                    "description": row["description"],
+                    "status": row["status"],
+                }
                 for row in rows
             ]
-            return {"transactions": transactions, "total": count, "page": page, "limit": limit, "has_more": offset + limit < count}
+            return {
+                "transactions": transactions,
+                "total": count,
+                "page": page,
+                "limit": limit,
+                "has_more": offset + limit < count,
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -776,6 +845,7 @@ async def get_customer_transactions(
 # CUSTOMER CREDIT INFO
 # =============================================================================
 
+
 @router.get("/{customer_id}/credit")
 async def get_customer_credit(request: Request, customer_id: str):
     """Get customer's credit limit and usage information."""
@@ -785,13 +855,18 @@ async def get_customer_credit(request: Request, customer_id: str):
         async with pool.acquire() as conn:
             customer = await conn.fetchrow(
                 "SELECT id, nama, saldo_hutang, credit_limit FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                customer_id,
+                ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
             credit_limit = customer["credit_limit"] or 0
             used_credit = customer["saldo_hutang"] or 0
-            return {"credit_limit": credit_limit, "used_credit": used_credit, "available_credit": max(0, credit_limit - used_credit)}
+            return {
+                "credit_limit": credit_limit,
+                "used_credit": used_credit,
+                "available_credit": max(0, credit_limit - used_credit),
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -802,6 +877,7 @@ async def get_customer_credit(request: Request, customer_id: str):
 # =============================================================================
 # CUSTOMER OPENING BALANCE
 # =============================================================================
+
 
 @router.post("/{customer_id}/opening-balance")
 async def set_customer_opening_balance(request: Request, customer_id: str):
@@ -814,15 +890,22 @@ async def set_customer_opening_balance(request: Request, customer_id: str):
         async with pool.acquire() as conn:
             customer = await conn.fetchrow(
                 "SELECT id FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id, ctx["tenant_id"]
+                customer_id,
+                ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
             await conn.execute(
                 "UPDATE customers SET saldo_hutang = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                amount, customer_id, ctx["tenant_id"]
+                amount,
+                customer_id,
+                ctx["tenant_id"],
             )
-            return {"success": True, "message": "Opening balance updated", "data": {"customer_id": customer_id, "amount": amount}}
+            return {
+                "success": True,
+                "message": "Opening balance updated",
+                "data": {"customer_id": customer_id, "amount": amount},
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -834,6 +917,7 @@ async def set_customer_opening_balance(request: Request, customer_id: str):
 # CUSTOMER MERGE PREVIEW
 # =============================================================================
 
+
 @router.post("/merge/preview")
 async def preview_customer_merge(request: Request):
     """Preview what will happen when merging customers."""
@@ -844,29 +928,39 @@ async def preview_customer_merge(request: Request):
         source_ids = body.get("source_ids", [])
         target_id = body.get("target_id")
         if not source_ids or not target_id:
-            raise HTTPException(status_code=400, detail="source_ids and target_id required")
+            raise HTTPException(
+                status_code=400, detail="source_ids and target_id required"
+            )
         async with pool.acquire() as conn:
             sources = await conn.fetch(
                 "SELECT id, nama, nomor_member, total_transaksi, saldo_hutang FROM customers WHERE id = ANY($1) AND tenant_id = $2",
-                source_ids, ctx["tenant_id"]
+                source_ids,
+                ctx["tenant_id"],
             )
             target = await conn.fetchrow(
                 "SELECT id, nama, nomor_member FROM customers WHERE id = $1 AND tenant_id = $2",
-                target_id, ctx["tenant_id"]
+                target_id,
+                ctx["tenant_id"],
             )
             if not target:
                 raise HTTPException(status_code=404, detail="Target not found")
             invoice_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND customer_id = ANY($2)",
-                ctx["tenant_id"], source_ids
+                ctx["tenant_id"],
+                source_ids,
             )
             return {
                 "success": True,
                 "preview": {
-                    "source_customers": [{"id": str(s["id"]), "name": s["nama"]} for s in sources],
-                    "target_customer": {"id": str(target["id"]), "name": target["nama"]},
-                    "records_to_move": {"invoices": invoice_count}
-                }
+                    "source_customers": [
+                        {"id": str(s["id"]), "name": s["nama"]} for s in sources
+                    ],
+                    "target_customer": {
+                        "id": str(target["id"]),
+                        "name": target["nama"],
+                    },
+                    "records_to_move": {"invoices": invoice_count},
+                },
             }
     except HTTPException:
         raise
@@ -879,6 +973,7 @@ async def preview_customer_merge(request: Request):
 # CUSTOMER MERGE EXECUTE
 # =============================================================================
 
+
 @router.post("/merge")
 async def merge_customers(request: Request):
     """Merge multiple customers into one target customer."""
@@ -889,18 +984,27 @@ async def merge_customers(request: Request):
         source_ids = body.get("source_ids", [])
         target_id = body.get("target_id")
         if not source_ids or not target_id:
-            raise HTTPException(status_code=400, detail="source_ids and target_id required")
+            raise HTTPException(
+                status_code=400, detail="source_ids and target_id required"
+            )
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE sales_invoices SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id, ctx["tenant_id"], source_ids
+                    target_id,
+                    ctx["tenant_id"],
+                    source_ids,
                 )
                 await conn.execute(
                     "UPDATE customers SET is_active = false WHERE id = ANY($1) AND tenant_id = $2",
-                    source_ids, ctx["tenant_id"]
+                    source_ids,
+                    ctx["tenant_id"],
                 )
-            return {"success": True, "message": f"Merged {len(source_ids)} customers", "target_id": target_id}
+            return {
+                "success": True,
+                "message": f"Merged {len(source_ids)} customers",
+                "target_id": target_id,
+            }
     except HTTPException:
         raise
     except Exception as e:

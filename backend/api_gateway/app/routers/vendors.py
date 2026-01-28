@@ -180,7 +180,7 @@ async def check_duplicate(
                     FROM vendors
                     WHERE tenant_id = $1
                       AND is_active = true
-                      AND REPLACE(REPLACE(tax_id, '.', ''), '-', '') = $2
+                      AND REPLACE(REPLACE(tax_id, ., ), -, ) = $2
                 """
                 params = [ctx["tenant_id"], normalized_npwp]
 
@@ -318,14 +318,15 @@ async def get_vendor(request: Request, vendor_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Query only columns that exist in the vendors table
             query = """
                 SELECT id, code, name, contact_person, phone, email,
                        address, city, province, postal_code, tax_id,
                        payment_terms_days, credit_limit, notes,
-                       account_number, vendor_type,
-                       bank_name, bank_account_number, bank_account_holder,
-                       tax_address, tax_city, tax_province, tax_postal_code,
-                       opening_balance, opening_balance_date,
+                       vendor_type, nik, is_pkp,
+                       default_tax_code, default_pph_type, default_pph_rate,
+                       company_name, display_name, mobile_phone, website,
+                       currency, opening_balance, opening_balance_date,
                        is_active, created_at, updated_at
                 FROM vendors
                 WHERE id = $1 AND tenant_id = $2
@@ -352,16 +353,20 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "payment_terms_days": row["payment_terms_days"],
                     "credit_limit": row["credit_limit"],
                     "notes": row["notes"],
-                    # Extended fields
-                    "account_number": row["account_number"],
+                    # Extended fields from actual table
                     "vendor_type": row["vendor_type"],
-                    "bank_name": row["bank_name"],
-                    "bank_account_number": row["bank_account_number"],
-                    "bank_account_holder": row["bank_account_holder"],
-                    "tax_address": row["tax_address"],
-                    "tax_city": row["tax_city"],
-                    "tax_province": row["tax_province"],
-                    "tax_postal_code": row["tax_postal_code"],
+                    "nik": row["nik"],
+                    "is_pkp": row["is_pkp"],
+                    "default_tax_code": row["default_tax_code"],
+                    "default_pph_type": row["default_pph_type"],
+                    "default_pph_rate": float(row["default_pph_rate"])
+                    if row["default_pph_rate"]
+                    else None,
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
+                    "mobile_phone": row["mobile_phone"],
+                    "website": row["website"],
+                    "currency": row["currency"],
                     "opening_balance": row["opening_balance"],
                     "opening_balance_date": row["opening_balance_date"].isoformat()
                     if row["opening_balance_date"]
@@ -419,33 +424,33 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
             balance_query = """
                 SELECT
                     COALESCE(SUM(
-                        CASE WHEN status_v2 NOT IN ('draft', 'void', 'paid')
+                        CASE WHEN status_v2 NOT IN (draft, void, paid)
                         THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
                         ELSE 0 END
                     ), 0) as total_balance,
                     COUNT(*) FILTER (
-                        WHERE status_v2 = 'posted' AND COALESCE(amount_paid, 0) = 0
+                        WHERE status_v2 = posted AND COALESCE(amount_paid, 0) = 0
                     ) as unpaid_count,
                     COUNT(*) FILTER (
-                        WHERE status_v2 = 'posted'
+                        WHERE status_v2 = posted
                         AND COALESCE(amount_paid, 0) > 0
                         AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
                     ) as partial_count,
                     COUNT(*) FILTER (
                         WHERE due_date < CURRENT_DATE
-                        AND status_v2 NOT IN ('draft', 'void', 'paid')
+                        AND status_v2 NOT IN (draft, void, paid)
                         AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
                     ) as overdue_count,
                     COALESCE(SUM(
                         CASE WHEN due_date < CURRENT_DATE
-                        AND status_v2 NOT IN ('draft', 'void', 'paid')
+                        AND status_v2 NOT IN (draft, void, paid)
                         THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
                         ELSE 0 END
                     ), 0) as overdue_amount,
                     COALESCE(SUM(COALESCE(grand_total, amount)), 0) as total_billed,
                     COALESCE(SUM(COALESCE(amount_paid, 0)), 0) as total_paid
                 FROM bills
-                WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 != 'void'
+                WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 != void
             """
             balance = await conn.fetchrow(balance_query, ctx["tenant_id"], vendor_id)
 
@@ -513,49 +518,38 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                         detail=f"Vendor with code '{body.code}' already exists",
                     )
 
-            # Insert vendor
+            # Insert vendor (using only columns that exist in the table)
             vendor_id = await conn.fetchval(
                 """
                 INSERT INTO vendors (
                     tenant_id, code, name, contact_person, phone, email,
                     address, city, province, postal_code, tax_id,
                     payment_terms_days, credit_limit, notes,
-                    account_number, vendor_type,
-                    bank_name, bank_account_number, bank_account_holder,
-                    tax_address, tax_city, tax_province, tax_postal_code,
-                    opening_balance, opening_balance_date,
+                    vendor_type, opening_balance, opening_balance_date,
                     created_by
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+                    $15, $16, $17, $18
                 )
                 RETURNING id
                 """,
                 ctx["tenant_id"],
                 body.code,
                 body.name,
-                body.contact_person,
+                getattr(body, "contact_person", None),
                 body.phone,
                 body.email,
-                body.address,
-                body.city,
-                body.province,
-                body.postal_code,
-                body.tax_id,
-                body.payment_terms_days,
-                body.credit_limit,
-                body.notes,
-                body.account_number,
-                body.vendor_type,
-                body.bank_name,
-                body.bank_account_number,
-                body.bank_account_holder,
-                body.tax_address,
-                body.tax_city,
-                body.tax_province,
-                body.tax_postal_code,
-                body.opening_balance,
-                body.opening_balance_date,
+                getattr(body, "address", None),
+                getattr(body, "city", None),
+                getattr(body, "province", None),
+                getattr(body, "postal_code", None),
+                getattr(body, "tax_id", None),
+                getattr(body, "payment_terms_days", 30),
+                getattr(body, "credit_limit", None),
+                getattr(body, "notes", None),
+                getattr(body, "vendor_type", "BADAN"),
+                getattr(body, "opening_balance", 0),
+                getattr(body, "opening_balance_date", None),
                 ctx["user_id"],
             )
 
@@ -772,6 +766,7 @@ async def delete_vendor(request: Request, vendor_id: UUID):
 # VENDOR NEXT CODE (for form auto-generation)
 # =============================================================================
 
+
 @router.get("/next-code")
 async def get_next_vendor_code(request: Request):
     """Get the next available vendor code for auto-generation."""
@@ -781,9 +776,10 @@ async def get_next_vendor_code(request: Request):
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT code FROM vendors WHERE tenant_id = $1 AND code IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             import re
+
             if row and row["code"]:
                 match = re.match(r"^([A-Z]*)([0-9]+)$", row["code"])
                 if match:
@@ -806,6 +802,7 @@ async def get_next_vendor_code(request: Request):
 # VENDOR TRANSACTIONS HISTORY
 # =============================================================================
 
+
 @router.get("/{vendor_id}/transactions")
 async def get_vendor_transactions(
     request: Request,
@@ -821,34 +818,58 @@ async def get_vendor_transactions(
         async with pool.acquire() as conn:
             vendor = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, ctx["tenant_id"]
+                vendor_id,
+                ctx["tenant_id"],
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
-            rows = await conn.fetch("""
+            # Fixed: use correct column names from bills and purchase_orders tables
+            rows = await conn.fetch(
+                """
                 SELECT * FROM (
-                    SELECT id::text, 'bill' as type, bill_number as number,
-                        bill_date as date, total_amount as amount, 'Bill' as description, status
+                    SELECT id::text, 'bill' as type, invoice_number as number,
+                        issue_date as date, COALESCE(grand_total, amount) as amount, 'Bill' as description, status_v2 as status
                     FROM bills WHERE tenant_id = $1 AND vendor_id::text = $2
                     UNION ALL
                     SELECT id::text, 'purchase_order' as type, po_number as number,
-                        order_date as date, total_amount as amount, 'Purchase Order' as description, status
+                        po_date as date, total_amount as amount, 'Purchase Order' as description, status
                     FROM purchase_orders WHERE tenant_id = $1 AND vendor_id::text = $2
                 ) t ORDER BY date DESC LIMIT $3 OFFSET $4
-            """, ctx["tenant_id"], vendor_id, limit, offset)
-            count = await conn.fetchval("""
+            """,
+                ctx["tenant_id"],
+                vendor_id,
+                limit,
+                offset,
+            )
+            count = await conn.fetchval(
+                """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM bills WHERE tenant_id = $1 AND vendor_id::text = $2
                     UNION ALL SELECT id FROM purchase_orders WHERE tenant_id = $1 AND vendor_id::text = $2
                 ) t
-            """, ctx["tenant_id"], vendor_id)
+            """,
+                ctx["tenant_id"],
+                vendor_id,
+            )
             transactions = [
-                {"id": row["id"], "type": row["type"], "number": row["number"],
-                 "date": row["date"].isoformat() if row["date"] else None,
-                 "amount": row["amount"], "description": row["description"], "status": row["status"]}
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "number": row["number"],
+                    "date": row["date"].isoformat() if row["date"] else None,
+                    "amount": row["amount"],
+                    "description": row["description"],
+                    "status": row["status"],
+                }
                 for row in rows
             ]
-            return {"transactions": transactions, "total": count, "page": page, "limit": limit, "has_more": offset + limit < count}
+            return {
+                "transactions": transactions,
+                "total": count,
+                "page": page,
+                "limit": limit,
+                "has_more": offset + limit < count,
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -860,6 +881,7 @@ async def get_vendor_transactions(
 # VENDOR OPEN BILLS (for pay bills feature)
 # =============================================================================
 
+
 @router.get("/{vendor_id}/open-bills")
 async def get_vendor_open_bills(request: Request, vendor_id: str):
     """Get open (unpaid/partially paid) bills for a vendor."""
@@ -867,24 +889,33 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            # Fixed: use correct column names from bills table
+            # invoice_number instead of bill_number
+            # issue_date instead of bill_date
+            # grand_total/amount instead of total_amount
+            # status_v2 instead of status
+            rows = await conn.fetch(
+                """
                 SELECT
-                    id, bill_number, bill_date, due_date,
-                    total_amount, amount_paid,
-                    total_amount - COALESCE(amount_paid, 0) as remaining_amount,
+                    id, invoice_number, issue_date, due_date,
+                    COALESCE(grand_total, amount) as total_amount, amount_paid,
+                    COALESCE(grand_total, amount) - COALESCE(amount_paid, 0) as remaining_amount,
                     CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue
                 FROM bills
                 WHERE tenant_id = $1
                   AND vendor_id::text = $2
-                  AND status IN ('posted', 'partial', 'overdue')
-                  AND total_amount > COALESCE(amount_paid, 0)
+                  AND status_v2 = 'posted'
+                  AND COALESCE(grand_total, amount) > COALESCE(amount_paid, 0)
                 ORDER BY due_date ASC
-            """, ctx["tenant_id"], vendor_id)
+            """,
+                ctx["tenant_id"],
+                vendor_id,
+            )
             bills = [
                 {
                     "id": str(row["id"]),
-                    "bill_number": row["bill_number"],
-                    "bill_date": row["bill_date"].isoformat(),
+                    "bill_number": row["invoice_number"],
+                    "bill_date": row["issue_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
                     "total_amount": row["total_amount"],
                     "paid_amount": row["amount_paid"] or 0,
@@ -906,6 +937,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
 # VENDOR OPENING BALANCE
 # =============================================================================
 
+
 @router.post("/{vendor_id}/opening-balance")
 async def set_vendor_opening_balance(request: Request, vendor_id: str):
     """Set or update vendor opening AP balance."""
@@ -917,15 +949,23 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
         async with pool.acquire() as conn:
             vendor = await conn.fetchrow(
                 "SELECT id FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id, ctx["tenant_id"]
+                vendor_id,
+                ctx["tenant_id"],
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
+            # Fixed: use opening_balance instead of balance (which doesn't exist)
             await conn.execute(
-                "UPDATE vendors SET balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                amount, vendor_id, ctx["tenant_id"]
+                "UPDATE vendors SET opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                amount,
+                vendor_id,
+                ctx["tenant_id"],
             )
-            return {"success": True, "message": "Opening balance updated", "data": {"vendor_id": vendor_id, "amount": amount}}
+            return {
+                "success": True,
+                "message": "Opening balance updated",
+                "data": {"vendor_id": vendor_id, "amount": amount},
+            }
     except HTTPException:
         raise
     except Exception as e:

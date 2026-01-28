@@ -57,6 +57,7 @@ def get_user_context(request: Request) -> dict:
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
+
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     """Check if the accounting period for the transaction date is open."""
     period = await conn.fetchrow(
@@ -74,7 +75,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})"
+            detail=f"Cannot post to {period_status} period ({period_name})",
         )
 
 
@@ -1367,3 +1368,226 @@ async def delete_invoice(request: Request, invoice_id: UUID):
     except Exception as e:
         logger.error(f"Error deleting invoice {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete invoice")
+
+
+# =============================================================================
+# INVOICE HISTORY (Audit Trail)
+# =============================================================================
+@router.get("/{invoice_id}/history")
+async def get_invoice_history(
+    request: Request,
+    invoice_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Get audit history for a sales invoice."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Verify invoice exists and belongs to tenant
+            invoice = await conn.fetchrow(
+                """
+                SELECT id, invoice_number FROM sales_invoices
+                WHERE id = $1 AND tenant_id = $2
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
+            if not invoice:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
+            # Get history from audit_logs
+            # Note: audit_logs table uses camelCase columns and metadata JSONB
+            rows = await conn.fetch(
+                """
+                SELECT id, "createdAt", "eventType", "userId", metadata
+                FROM audit_logs
+                WHERE metadata->>'entity_type' = 'SALES_INVOICE'
+                  AND metadata->>'entity_id' = $1::text
+                ORDER BY "createdAt" DESC
+                LIMIT $2
+            """,
+                str(invoice_id),
+                limit,
+            )
+
+            history = []
+            for row in rows:
+                metadata = row["metadata"] or {}
+                changes = metadata.get("changes")
+
+                history.append(
+                    {
+                        "id": str(row["id"]),
+                        "action": row["eventType"] or metadata.get("action", "UNKNOWN"),
+                        "user": {
+                            "id": row["userId"] or "",
+                            "name": metadata.get("user_name", "System"),
+                        },
+                        "changes": changes,
+                        "created_at": row["createdAt"].isoformat()
+                        if row["createdAt"]
+                        else None,
+                    }
+                )
+
+            return {"success": True, "data": history}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting invoice history {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get invoice history")
+
+
+# =============================================================================
+# GENERATE PDF
+# =============================================================================
+from io import BytesIO
+from datetime import datetime, timedelta
+from fastapi.responses import StreamingResponse
+from ..services.pdf_service import get_pdf_service
+from ..services.storage_service import get_storage_service
+
+
+@router.get("/{invoice_id}/pdf")
+async def get_invoice_pdf(
+    request: Request,
+    invoice_id: UUID,
+    format: Literal["url", "inline"] = Query(
+        "url",
+        description="Response format: 'url' returns presigned URL, 'inline' returns PDF bytes",
+    ),
+):
+    """
+    Generate PDF for a sales invoice.
+
+    **Format options:**
+    - url (default): Returns presigned URL for download/share (expires in 1 hour)
+    - inline: Returns PDF bytes directly for browser preview
+
+    **Usage:**
+    - For download button: use ?format=url and redirect to returned URL
+    - For inline preview: use ?format=inline and embed in iframe/viewer
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Fetch invoice with full details
+            invoice = await conn.fetchrow(
+                """
+                SELECT * FROM sales_invoices
+                WHERE id = $1 AND tenant_id = $2
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
+            if not invoice:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
+            # Fetch items
+            items = await conn.fetch(
+                """
+                SELECT * FROM sales_invoice_items
+                WHERE invoice_id = $1 ORDER BY line_number
+            """,
+                invoice_id,
+            )
+
+            # Convert to dict for template
+            invoice_data = {
+                "id": str(invoice["id"]),
+                "invoice_number": invoice["invoice_number"],
+                "customer_id": str(invoice["customer_id"])
+                if invoice["customer_id"]
+                else None,
+                "customer_name": invoice["customer_name"],
+                "invoice_date": invoice["invoice_date"].isoformat()
+                if invoice["invoice_date"]
+                else None,
+                "due_date": invoice["due_date"].isoformat()
+                if invoice["due_date"]
+                else None,
+                "ref_no": invoice["ref_no"],
+                "notes": invoice["notes"],
+                "subtotal": invoice["subtotal"],
+                "discount_percent": float(invoice["discount_percent"] or 0),
+                "discount_amount": invoice["discount_amount"],
+                "tax_rate": float(invoice["tax_rate"] or 0),
+                "tax_amount": invoice["tax_amount"],
+                "total_amount": invoice["total_amount"],
+                "amount_paid": invoice["amount_paid"],
+                "status": invoice["status"],
+                "items": [
+                    {
+                        "id": str(item["id"]),
+                        "item_code": item["item_code"],
+                        "description": item["description"],
+                        "quantity": float(item["quantity"]),
+                        "unit": item["unit"],
+                        "unit_price": item["unit_price"],
+                        "discount_percent": float(item["discount_percent"] or 0),
+                        "discount_amount": item["discount_amount"],
+                        "tax_rate": float(item["tax_rate"] or 0),
+                        "tax_amount": item["tax_amount"],
+                        "subtotal": item["subtotal"],
+                        "total": item["total"],
+                        "line_number": item["line_number"],
+                    }
+                    for item in items
+                ],
+            }
+
+        # Generate PDF
+        pdf_service = get_pdf_service()
+        pdf_bytes = pdf_service.generate_sales_invoice_pdf(invoice_data)
+
+        # Generate filename
+        invoice_num = invoice["invoice_number"] or str(invoice_id)[:8]
+        filename = f"Faktur-{invoice_num}.pdf"
+
+        if format == "inline":
+            return StreamingResponse(
+                BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Cache-Control": "private, max-age=300",
+                },
+            )
+
+        # Upload to storage and return presigned URL
+        storage = get_storage_service()
+        file_path = f"{ctx['tenant_id']}/invoices/{invoice_id}.pdf"
+
+        url = await storage.upload_bytes(
+            content=pdf_bytes,
+            file_path=file_path,
+            content_type="application/pdf",
+            metadata={"invoice_id": str(invoice_id), "invoice_number": invoice_num},
+        )
+
+        # Calculate expiry
+        expires_at = datetime.utcnow() + timedelta(seconds=storage.config.url_expiry)
+
+        return {
+            "success": True,
+            "data": {
+                "url": url,
+                "expires_at": expires_at.isoformat() + "Z",
+                "filename": filename,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error generating PDF for invoice {invoice_id}: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate PDF")

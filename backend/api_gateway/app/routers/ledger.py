@@ -477,3 +477,26 @@ async def get_account_balance(
     except Exception as e:
         logger.error(f"Get account balance error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get account balance")
+
+
+# =============================================================================
+# GET ACCOUNT TRANSACTIONS (Alias for GET /{account_id})
+# =============================================================================
+@router.get("/{account_id}/transactions", response_model=AccountLedgerResponse)
+async def get_account_transactions(
+    request: Request,
+    account_id: UUID,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Get transactions for an account (alias for GET /{account_id})."""
+    return await get_account_ledger(
+        request=request,
+        account_id=account_id,
+        start_date=start_date,
+        end_date=end_date,
+        page=page,
+        limit=limit,
+    )

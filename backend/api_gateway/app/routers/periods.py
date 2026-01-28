@@ -9,7 +9,8 @@ from typing import Optional
 from uuid import UUID
 import logging
 import asyncpg
-from datetime import date
+from datetime import datetime
+import json
 
 from ..schemas.periods import (
     UpdatePeriodRequest,
@@ -39,17 +40,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -59,10 +57,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -72,7 +67,9 @@ def get_user_context(request: Request) -> dict:
 async def list_periods(
     request: Request,
     fiscal_year_id: Optional[UUID] = Query(None, description="Filter by fiscal year"),
-    status: Optional[str] = Query(None, description="Filter by status: OPEN, CLOSED, LOCKED"),
+    status: Optional[str] = Query(
+        None, description="Filter by status: OPEN, CLOSED, LOCKED"
+    ),
     year: Optional[int] = Query(None, description="Filter by calendar year"),
 ):
     """List all accounting periods."""
@@ -157,7 +154,8 @@ async def get_current_period(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT fp.id, fp.period_name, fp.period_number, fp.start_date, fp.end_date,
                        fp.status, fp.fiscal_year_id, fy.name as fiscal_year_name
                 FROM fiscal_periods fp
@@ -167,11 +165,14 @@ async def get_current_period(request: Request):
                   AND CURRENT_DATE BETWEEN fp.start_date AND fp.end_date
                 ORDER BY fp.start_date DESC
                 LIMIT 1
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             if not row:
                 # Try to find any open period
-                row = await conn.fetchrow("""
+                row = await conn.fetchrow(
+                    """
                     SELECT fp.id, fp.period_name, fp.period_number, fp.start_date, fp.end_date,
                            fp.status, fp.fiscal_year_id, fy.name as fiscal_year_name
                     FROM fiscal_periods fp
@@ -179,10 +180,16 @@ async def get_current_period(request: Request):
                     WHERE fp.tenant_id = $1 AND fp.status = 'OPEN'
                     ORDER BY fp.start_date DESC
                     LIMIT 1
-                """, ctx["tenant_id"])
+                """,
+                    ctx["tenant_id"],
+                )
 
             if not row:
-                return {"success": True, "data": None, "message": "No open period found"}
+                return {
+                    "success": True,
+                    "data": None,
+                    "message": "No open period found",
+                }
 
             return {
                 "success": True,
@@ -190,12 +197,14 @@ async def get_current_period(request: Request):
                     id=str(row["id"]),
                     period_name=row["period_name"],
                     period_number=row["period_number"],
-                    fiscal_year_id=str(row["fiscal_year_id"]) if row["fiscal_year_id"] else None,
+                    fiscal_year_id=str(row["fiscal_year_id"])
+                    if row["fiscal_year_id"]
+                    else None,
                     fiscal_year_name=row["fiscal_year_name"],
                     start_date=row["start_date"],
                     end_date=row["end_date"],
                     status=row["status"],
-                )
+                ),
             }
 
     except HTTPException:
@@ -218,14 +227,18 @@ async def get_period(request: Request, period_id: UUID):
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT fp.id, fp.period_name, fp.period_number, fp.start_date, fp.end_date,
                        fp.status, fp.closed_at, fp.closed_by, fp.lock_reason,
                        fp.fiscal_year_id, fy.name as fiscal_year_name
                 FROM fiscal_periods fp
                 LEFT JOIN fiscal_years fy ON fy.id = fp.fiscal_year_id
                 WHERE fp.id = $1 AND fp.tenant_id = $2
-            """, period_id, ctx["tenant_id"])
+            """,
+                period_id,
+                ctx["tenant_id"],
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Period not found")
@@ -236,7 +249,9 @@ async def get_period(request: Request, period_id: UUID):
                     id=str(row["id"]),
                     period_name=row["period_name"],
                     period_number=row["period_number"],
-                    fiscal_year_id=str(row["fiscal_year_id"]) if row["fiscal_year_id"] else None,
+                    fiscal_year_id=str(row["fiscal_year_id"])
+                    if row["fiscal_year_id"]
+                    else None,
                     fiscal_year_name=row["fiscal_year_name"],
                     start_date=row["start_date"],
                     end_date=row["end_date"],
@@ -244,7 +259,7 @@ async def get_period(request: Request, period_id: UUID):
                     closed_at=row["closed_at"],
                     closed_by=str(row["closed_by"]) if row["closed_by"] else None,
                     closing_notes=row["lock_reason"],
-                )
+                ),
             }
 
     except HTTPException:
@@ -268,16 +283,22 @@ async def update_period(request: Request, period_id: UUID, body: UpdatePeriodReq
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check period exists
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id, status FROM fiscal_periods
                 WHERE id = $1 AND tenant_id = $2
-            """, period_id, ctx["tenant_id"])
+            """,
+                period_id,
+                ctx["tenant_id"],
+            )
 
             if not existing:
                 raise HTTPException(status_code=404, detail="Period not found")
 
             if existing["status"] == "LOCKED":
-                raise HTTPException(status_code=403, detail="Cannot modify locked period")
+                raise HTTPException(
+                    status_code=403, detail="Cannot modify locked period"
+                )
 
             # Update fields
             updates = []
@@ -295,11 +316,14 @@ async def update_period(request: Request, period_id: UUID, body: UpdatePeriodReq
             params.extend([period_id, ctx["tenant_id"]])
             update_clause = ", ".join(updates)
 
-            await conn.execute(f"""
+            await conn.execute(
+                f"""
                 UPDATE fiscal_periods
                 SET {update_clause}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            """, *params)
+            """,
+                *params,
+            )
 
             return await get_period(request, period_id)
 
@@ -324,29 +348,45 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Validate using helper function
-            validation = await conn.fetchrow("""
+            validation = await conn.fetchrow(
+                """
                 SELECT * FROM validate_period_close($1, $2)
-            """, ctx["tenant_id"], period_id)
+            """,
+                ctx["tenant_id"],
+                period_id,
+            )
 
             if not validation["can_close"]:
                 error_code = validation["error_code"]
                 if error_code == "PERIOD_NOT_FOUND":
-                    raise HTTPException(status_code=404, detail=validation["error_message"])
+                    raise HTTPException(
+                        status_code=404, detail=validation["error_message"]
+                    )
                 elif error_code in ("PERIOD_ALREADY_CLOSED", "PERIOD_LOCKED"):
-                    raise HTTPException(status_code=409, detail=validation["error_message"])
+                    raise HTTPException(
+                        status_code=409, detail=validation["error_message"]
+                    )
                 elif error_code == "PREVIOUS_PERIOD_OPEN":
                     return ClosePeriodResponse(
                         success=False,
-                        errors=[ClosePeriodError(code=error_code, message=validation["error_message"])]
+                        errors=[
+                            ClosePeriodError(
+                                code=error_code, message=validation["error_message"]
+                            )
+                        ],
                     )
                 elif error_code == "DRAFT_JOURNALS_EXIST":
                     # Get draft journal details
-                    draft_rows = await conn.fetch("""
+                    draft_rows = await conn.fetch(
+                        """
                         SELECT id, journal_number, description, journal_date
                         FROM journal_entries
                         WHERE tenant_id = $1 AND period_id = $2 AND status = 'DRAFT'
                         LIMIT 10
-                    """, ctx["tenant_id"], period_id)
+                    """,
+                        ctx["tenant_id"],
+                        period_id,
+                    )
 
                     draft_journals = [
                         DraftJournalInfo(
@@ -360,24 +400,34 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
 
                     return ClosePeriodResponse(
                         success=False,
-                        errors=[ClosePeriodError(code=error_code, message=validation["error_message"])],
-                        warnings=[ClosePeriodWarning(
-                            code="DRAFT_JOURNALS_EXIST",
-                            message=f"{validation['draft_count']} draft journal(s) exist",
-                            draft_journals=draft_journals,
-                        )]
+                        errors=[
+                            ClosePeriodError(
+                                code=error_code, message=validation["error_message"]
+                            )
+                        ],
+                        warnings=[
+                            ClosePeriodWarning(
+                                code="DRAFT_JOURNALS_EXIST",
+                                message=f"{validation['draft_count']} draft journal(s) exist",
+                                draft_journals=draft_journals,
+                            )
+                        ],
                     )
 
             # Handle warning case (drafts exist but not strict mode)
             warnings = []
             if validation["error_code"] == "WARNING_DRAFT_EXISTS":
                 if not body.force:
-                    draft_rows = await conn.fetch("""
+                    draft_rows = await conn.fetch(
+                        """
                         SELECT id, journal_number, description, journal_date
                         FROM journal_entries
                         WHERE tenant_id = $1 AND period_id = $2 AND status = 'DRAFT'
                         LIMIT 10
-                    """, ctx["tenant_id"], period_id)
+                    """,
+                        ctx["tenant_id"],
+                        period_id,
+                    )
 
                     draft_journals = [
                         DraftJournalInfo(
@@ -391,25 +441,33 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
 
                     return ClosePeriodResponse(
                         success=False,
-                        warnings=[ClosePeriodWarning(
-                            code="DRAFT_JOURNALS_EXIST",
-                            message=validation["error_message"],
-                            draft_journals=draft_journals,
-                        )]
+                        warnings=[
+                            ClosePeriodWarning(
+                                code="DRAFT_JOURNALS_EXIST",
+                                message=validation["error_message"],
+                                draft_journals=draft_journals,
+                            )
+                        ],
                     )
                 else:
-                    warnings.append(ClosePeriodWarning(
-                        code="FORCE_CLOSE",
-                        message=f"Period closed with {validation['draft_count']} draft journal(s)",
-                    ))
+                    warnings.append(
+                        ClosePeriodWarning(
+                            code="FORCE_CLOSE",
+                            message=f"Period closed with {validation['draft_count']} draft journal(s)",
+                        )
+                    )
 
             # Get period info for TB generation
-            period = await conn.fetchrow("""
+            period = await conn.fetchrow(
+                """
                 SELECT start_date, end_date FROM fiscal_periods WHERE id = $1
-            """, period_id)
+            """,
+                period_id,
+            )
 
             # Generate trial balance snapshot
-            tb_data = await conn.fetch("""
+            tb_data = await conn.fetch(
+                """
                 SELECT
                     coa.id as account_id,
                     coa.account_code,
@@ -427,16 +485,19 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 GROUP BY coa.id
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.account_code
-            """, ctx["tenant_id"], period["end_date"])
+            """,
+                ctx["tenant_id"],
+                period["end_date"],
+            )
 
-            import json
             lines_json = json.dumps([dict(row) for row in tb_data], default=str)
             total_debit = sum(row["total_debit"] for row in tb_data)
             total_credit = sum(row["total_credit"] for row in tb_data)
             is_balanced = total_debit == total_credit
 
             # Save TB snapshot
-            snapshot_id = await conn.fetchval("""
+            snapshot_id = await conn.fetchval(
+                """
                 INSERT INTO trial_balance_snapshots
                     (tenant_id, period_id, as_of_date, snapshot_type, lines,
                      total_debit, total_credit, is_balanced, generated_by)
@@ -450,15 +511,29 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     generated_at = NOW(),
                     generated_by = EXCLUDED.generated_by
                 RETURNING id
-            """, ctx["tenant_id"], period_id, period["end_date"], lines_json,
-                total_debit, total_credit, is_balanced, ctx["user_id"])
+            """,
+                ctx["tenant_id"],
+                period_id,
+                period["end_date"],
+                lines_json,
+                total_debit,
+                total_credit,
+                is_balanced,
+                ctx["user_id"],
+            )
 
             # Close the period
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE fiscal_periods
                 SET status = 'CLOSED', closed_at = NOW(), closed_by = $3, lock_reason = $4
                 WHERE id = $1 AND tenant_id = $2
-            """, period_id, ctx["tenant_id"], ctx["user_id"], body.closing_notes)
+            """,
+                period_id,
+                ctx["tenant_id"],
+                ctx["user_id"],
+                body.closing_notes,
+            )
 
             # Get updated period
             period_response = await get_period(request, period_id)
@@ -474,7 +549,7 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                         total_credit=float(total_credit),
                         is_balanced=is_balanced,
                         generated_at=datetime.now(),
-                    )
+                    ),
                 },
                 warnings=warnings,
             )
@@ -500,46 +575,61 @@ async def reopen_period(request: Request, period_id: UUID, body: ReopenPeriodReq
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check tenant settings
-            settings_row = await conn.fetchrow("""
+            settings_row = await conn.fetchrow(
+                """
                 SELECT allow_period_reopen FROM accounting_settings
                 WHERE tenant_id = $1
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             if settings_row and not settings_row["allow_period_reopen"]:
                 raise HTTPException(
                     status_code=403,
-                    detail="Period reopening is disabled for this tenant"
+                    detail="Period reopening is disabled for this tenant",
                 )
 
             # Check period
-            period = await conn.fetchrow("""
+            period = await conn.fetchrow(
+                """
                 SELECT id, status FROM fiscal_periods
                 WHERE id = $1 AND tenant_id = $2
-            """, period_id, ctx["tenant_id"])
+            """,
+                period_id,
+                ctx["tenant_id"],
+            )
 
             if not period:
                 raise HTTPException(status_code=404, detail="Period not found")
 
             if period["status"] == "LOCKED":
-                raise HTTPException(status_code=403, detail="Cannot reopen locked period")
+                raise HTTPException(
+                    status_code=403, detail="Cannot reopen locked period"
+                )
 
             if period["status"] == "OPEN":
                 raise HTTPException(status_code=400, detail="Period is already open")
 
             # Reopen period
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE fiscal_periods
                 SET status = 'OPEN', closed_at = NULL, closed_by = NULL
                 WHERE id = $1 AND tenant_id = $2
-            """, period_id, ctx["tenant_id"])
+            """,
+                period_id,
+                ctx["tenant_id"],
+            )
 
             # Log audit trail
-            await conn.execute("""
-                INSERT INTO audit_logs (tenant_id, entity_type, entity_id, action, actor_id, details)
-                VALUES ($1, 'fiscal_period', $2, 'reopen', $3, $4)
-            """, ctx["tenant_id"], str(period_id), ctx["user_id"],
-                json.dumps({"reason": body.reason}))
-
+            await conn.execute(
+                """
+                INSERT INTO audit_logs (id, "userId", "eventType", metadata, success, "createdAt")
+                VALUES (gen_random_uuid()::text, $1, 'PERIOD_REOPEN', $2, true, NOW())
+            """,
+                str(ctx["user_id"]) if ctx["user_id"] else None,
+                json.dumps({"period_id": str(period_id), "reason": body.reason}),
+            )
             return await get_period(request, period_id)
 
     except HTTPException:
@@ -547,8 +637,3 @@ async def reopen_period(request: Request, period_id: UUID, body: ReopenPeriodReq
     except Exception as e:
         logger.error(f"Reopen period error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to reopen period")
-
-
-# Import for datetime
-from datetime import datetime
-import json

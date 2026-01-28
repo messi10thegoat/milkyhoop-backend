@@ -35,17 +35,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -55,10 +52,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def build_tree(accounts: list, parent_code=None) -> list:
@@ -75,7 +69,7 @@ def build_tree(accounts: list, parent_code=None) -> list:
                 "normal_balance": account["normal_balance"],
                 "is_active": account["is_active"],
                 "is_header": account.get("is_header", False),
-                "children": children
+                "children": children,
             }
             tree.append(item)
     return tree
@@ -96,8 +90,10 @@ async def health_check():
 @router.get("/dropdown", response_model=AccountDropdownResponse)
 async def get_account_dropdown(
     request: Request,
-    type: Optional[str] = Query(None, description="Filter by account type (ASSET, LIABILITY, etc.)"),
-    search: Optional[str] = Query(None, description="Search code or name")
+    type: Optional[str] = Query(
+        None, description="Filter by account type (ASSET, LIABILITY, etc.)"
+    ),
+    search: Optional[str] = Query(None, description="Search code or name"),
 ):
     """
     Get accounts for dropdown/select components.
@@ -118,7 +114,9 @@ async def get_account_dropdown(
                 param_idx += 1
 
             if search:
-                conditions.append(f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})")
+                conditions.append(
+                    f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -160,7 +158,7 @@ async def get_account_dropdown(
 async def get_accounts_tree(
     request: Request,
     type: Optional[str] = Query(None, description="Filter by account type"),
-    include_inactive: bool = Query(False, description="Include inactive accounts")
+    include_inactive: bool = Query(False, description="Include inactive accounts"),
 ):
     """
     Get accounts in hierarchical tree structure.
@@ -273,7 +271,7 @@ async def list_accounts(
                 "code": "account_code",
                 "name": "name",
                 "type": "account_type",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "account_code")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -310,10 +308,7 @@ async def list_accounts(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total
-            }
+            return {"items": items, "total": total}
 
     except HTTPException:
         raise
@@ -361,9 +356,13 @@ async def get_account(request: Request, account_id: UUID):
                     "is_header": row["is_header"],
                     "description": row["description"],
                     "category": row["category"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-                }
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "updated_at": row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else None,
+                },
             }
 
     except HTTPException:
@@ -381,7 +380,7 @@ async def get_account_balance(
     request: Request,
     account_id: UUID,
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)")
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
 ):
     """
     Get account balance from journal lines.
@@ -394,7 +393,8 @@ async def get_account_balance(
             # Get account info
             account = await conn.fetchrow(
                 "SELECT id, account_code, name, account_type, normal_balance FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                account_id, ctx["tenant_id"]
+                account_id,
+                ctx["tenant_id"],
             )
             if not account:
                 raise HTTPException(status_code=404, detail="Account not found")
@@ -413,7 +413,9 @@ async def get_account_balance(
                 date_conditions.append(f"je.entry_date <= ${param_idx}::date")
                 params.append(end_date)
 
-            date_clause = " AND " + " AND ".join(date_conditions) if date_conditions else ""
+            date_clause = (
+                " AND " + " AND ".join(date_conditions) if date_conditions else ""
+            )
 
             # Get balance from journal lines
             balance_query = f"""
@@ -449,7 +451,7 @@ async def get_account_balance(
                     "debit_total": debit_total,
                     "credit_total": credit_total,
                     "balance": net_balance,
-                }
+                },
             }
 
     except HTTPException:
@@ -479,12 +481,13 @@ async def create_account(request: Request, body: CreateAccountRequest):
             # Check for duplicate code
             existing = await conn.fetchval(
                 "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if existing:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Account with code '{body.code}' already exists"
+                    detail=f"Account with code '{body.code}' already exists",
                 )
 
             # Validate parent if specified
@@ -493,10 +496,13 @@ async def create_account(request: Request, body: CreateAccountRequest):
                 # parent_id can be UUID or account_code
                 parent = await conn.fetchrow(
                     "SELECT id, account_code, account_type FROM chart_of_accounts WHERE (id::text = $1 OR account_code = $1) AND tenant_id = $2",
-                    body.parent_id, ctx["tenant_id"]
+                    body.parent_id,
+                    ctx["tenant_id"],
                 )
                 if not parent:
-                    raise HTTPException(status_code=400, detail="Parent account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Parent account not found"
+                    )
 
                 parent_code = parent["account_code"]
 
@@ -504,7 +510,7 @@ async def create_account(request: Request, body: CreateAccountRequest):
                 if parent["account_type"] != body.type:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Child account type must match parent type ({parent['account_type']})"
+                        detail=f"Child account type must match parent type ({parent['account_type']})",
                     )
 
             # Determine level based on parent
@@ -512,12 +518,14 @@ async def create_account(request: Request, body: CreateAccountRequest):
             if parent_code:
                 parent_level = await conn.fetchval(
                     "SELECT level FROM chart_of_accounts WHERE account_code = $1 AND tenant_id = $2",
-                    parent_code, ctx["tenant_id"]
+                    parent_code,
+                    ctx["tenant_id"],
                 )
                 level = (parent_level or 1) + 1
 
             # Insert account
-            account_id = await conn.fetchval("""
+            account_id = await conn.fetchval(
+                """
                 INSERT INTO chart_of_accounts (
                     tenant_id, account_code, name, account_type, normal_balance, parent_code, level, is_active
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, true)
@@ -529,7 +537,7 @@ async def create_account(request: Request, body: CreateAccountRequest):
                 body.type,
                 body.normal_balance,
                 parent_code,
-                level
+                level,
             )
 
             logger.info(f"Account created: {account_id}, code={body.code}")
@@ -537,11 +545,7 @@ async def create_account(request: Request, body: CreateAccountRequest):
             return {
                 "success": True,
                 "message": "Account created successfully",
-                "data": {
-                    "id": str(account_id),
-                    "code": body.code,
-                    "name": body.name
-                }
+                "data": {"id": str(account_id), "code": body.code, "name": body.name},
             }
 
     except HTTPException:
@@ -555,7 +559,9 @@ async def create_account(request: Request, body: CreateAccountRequest):
 # UPDATE ACCOUNT
 # =============================================================================
 @router.patch("/{account_id}", response_model=AccountResponse)
-async def update_account(request: Request, account_id: UUID, body: UpdateAccountRequest):
+async def update_account(
+    request: Request, account_id: UUID, body: UpdateAccountRequest
+):
     """
     Update an existing account.
 
@@ -570,22 +576,25 @@ async def update_account(request: Request, account_id: UUID, body: UpdateAccount
         async with pool.acquire() as conn:
             # Check if account exists
             existing = await conn.fetchrow(
-                "SELECT id, code, is_system FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                account_id, ctx["tenant_id"]
+                "SELECT id, account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                account_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Account not found")
 
             # Check for duplicate code if code is being changed
-            if body.code and body.code != existing["code"]:
+            if body.code and body.code != existing["account_code"]:
                 duplicate = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = $2 AND id != $3",
-                    ctx["tenant_id"], body.code, account_id
+                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND id != $3",
+                    ctx["tenant_id"],
+                    body.code,
+                    account_id,
                 )
                 if duplicate:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Account with code '{body.code}' already exists"
+                        detail=f"Account with code '{body.code}' already exists",
                     )
 
             # Build update query dynamically
@@ -594,33 +603,40 @@ async def update_account(request: Request, account_id: UUID, body: UpdateAccount
                 return {
                     "success": True,
                     "message": "No changes provided",
-                    "data": {"id": str(account_id)}
+                    "data": {"id": str(account_id)},
                 }
 
-            # Handle parent_id conversion
+            # Map schema field names to database column names
+            field_mapping = {
+                "code": "account_code",
+                "parent_id": "parent_code",
+            }
+
+            # Handle parent_id -> parent_code lookup
             if "parent_id" in update_data:
                 if update_data["parent_id"]:
-                    try:
-                        update_data["parent_id"] = UUID(update_data["parent_id"])
-                    except ValueError:
-                        raise HTTPException(status_code=400, detail="Invalid parent_id format")
+                    # Look up parent to get account_code
+                    parent = await conn.fetchrow(
+                        "SELECT account_code FROM chart_of_accounts WHERE (id::text = $1 OR account_code = $1) AND tenant_id = $2",
+                        update_data["parent_id"],
+                        ctx["tenant_id"],
+                    )
+                    update_data["parent_id"] = (
+                        parent["account_code"] if parent else None
+                    )
                 else:
                     update_data["parent_id"] = None
 
-            # Handle metadata conversion
-            if "metadata" in update_data and update_data["metadata"] is not None:
-                import json
-                update_data["metadata"] = json.dumps(update_data["metadata"])
+            # Remove metadata if present (column does not exist)
+            update_data.pop("metadata", None)
 
             updates = []
             params = []
             param_idx = 1
 
             for field, value in update_data.items():
-                if field == "metadata":
-                    updates.append(f"{field} = ${param_idx}::jsonb")
-                else:
-                    updates.append(f"{field} = ${param_idx}")
+                db_field = field_mapping.get(field, field)
+                updates.append(f"{db_field} = ${param_idx}")
                 params.append(value)
                 param_idx += 1
 
@@ -639,7 +655,7 @@ async def update_account(request: Request, account_id: UUID, body: UpdateAccount
             return {
                 "success": True,
                 "message": "Account updated successfully",
-                "data": {"id": str(account_id)}
+                "data": {"id": str(account_id)},
             }
 
     except HTTPException:
@@ -669,54 +685,59 @@ async def delete_account(request: Request, account_id: UUID):
         async with pool.acquire() as conn:
             # Check if account exists
             existing = await conn.fetchrow(
-                "SELECT id, code, is_system FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                account_id, ctx["tenant_id"]
+                "SELECT id, account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                account_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Account not found")
 
             # Check if system account
-            if existing["is_system"]:
+            if False:  # is_system column removed
                 raise HTTPException(
-                    status_code=400,
-                    detail="System accounts cannot be deleted"
+                    status_code=400, detail="System accounts cannot be deleted"
                 )
 
             # Check for children
             has_children = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM chart_of_accounts WHERE parent_id = $1)",
-                account_id
+                "SELECT EXISTS(SELECT 1 FROM chart_of_accounts WHERE parent_code = (SELECT account_code FROM chart_of_accounts WHERE id = $1))",
+                account_id,
             )
             if has_children:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Cannot delete account with child accounts"
+                    status_code=400, detail="Cannot delete account with child accounts"
                 )
 
             # Check for journal entries
             has_transactions = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM journal_lines WHERE account_id = $1 LIMIT 1)",
-                account_id
+                account_id,
             )
             if has_transactions:
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot delete account with existing transactions. Deactivate instead."
+                    detail="Cannot delete account with existing transactions. Deactivate instead.",
                 )
 
             # Soft delete
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE chart_of_accounts
                 SET is_active = false, updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, account_id, ctx["tenant_id"])
+            """,
+                account_id,
+                ctx["tenant_id"],
+            )
 
-            logger.info(f"Account soft deleted: {account_id}, code={existing['code']}")
+            logger.info(
+                f"Account soft deleted: {account_id}, code={existing['account_code']}"
+            )
 
             return {
                 "success": True,
                 "message": "Account deleted successfully",
-                "data": {"id": str(account_id), "code": existing["code"]}
+                "data": {"id": str(account_id), "code": existing["account_code"]},
             }
 
     except HTTPException:

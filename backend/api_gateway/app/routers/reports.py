@@ -73,6 +73,21 @@ async def get_db_connection():
     return await asyncpg.connect(**db_config)
 
 
+def get_user_context(request: Request) -> dict:
+    """Extract and validate user context from request."""
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    user = request.state.user
+    tenant_id = user.get("tenant_id")
+    user_id = user.get("user_id")
+
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Invalid user context")
+
+    return {"tenant_id": tenant_id, "user_id": user_id, "user": user}
+
+
 # ========================================
 # Helper Functions
 # ========================================
@@ -1031,6 +1046,332 @@ async def get_trial_balance_summary(
         logger.error(f"Get trial balance summary error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail="Failed to generate trial balance summary"
+        )
+
+
+# ========================================
+# Enhanced Trial Balance (Neraca Saldo) - Full Report Format
+# ========================================
+
+
+class TrialBalanceAccountEnhanced(BaseModel):
+    """Enhanced account row with opening/period/closing columns."""
+
+    id: str
+    account_code: str
+    account_name: str
+    account_type: str
+    category: str
+    level: int = 2
+    is_header: bool = False
+    parent_id: Optional[str] = None
+
+    # Opening balances (start of period)
+    opening_debit: float = 0
+    opening_credit: float = 0
+
+    # Period movements
+    period_debit: float = 0
+    period_credit: float = 0
+
+    # Closing balances (end of period)
+    closing_debit: float = 0
+    closing_credit: float = 0
+
+    # Display
+    indent_level: int = 0
+
+
+class TrialBalanceByTypeTotal(BaseModel):
+    """Totals for a single account type."""
+
+    count: int
+    closing_debit: float
+    closing_credit: float
+
+
+class TrialBalanceSummaryEnhanced(BaseModel):
+    """Enhanced summary with opening/period/closing totals."""
+
+    total_opening_debit: float
+    total_opening_credit: float
+    opening_difference: float
+    is_opening_balanced: bool
+
+    total_period_debit: float
+    total_period_credit: float
+    period_difference: float
+    is_period_balanced: bool
+
+    total_closing_debit: float
+    total_closing_credit: float
+    closing_difference: float
+    is_closing_balanced: bool
+
+    is_fully_balanced: bool
+    account_count: int
+    by_type: dict
+
+
+class TrialBalanceFullReport(BaseModel):
+    """Full trial balance report structure."""
+
+    id: str
+    report_date: str
+    generated_at: str
+    period_id: Optional[str] = None
+    period_name: Optional[str] = None
+    period_start_date: Optional[str] = None
+    period_end_date: Optional[str] = None
+    accounts: List[TrialBalanceAccountEnhanced]
+    summary: TrialBalanceSummaryEnhanced
+    include_zero_balance: bool
+    group_by_type: bool
+
+
+class TrialBalanceFullResponse(BaseModel):
+    """API response wrapper."""
+
+    data: TrialBalanceFullReport
+
+
+@router.get("/trial-balance/full", response_model=TrialBalanceFullResponse)
+async def get_trial_balance_full(
+    request: Request,
+    period_id: Optional[str] = Query(default=None, description="Period ID (UUID)"),
+    show_zero_balance: bool = Query(
+        default=False, description="Include accounts with zero balance"
+    ),
+    group_by_type: bool = Query(default=True, description="Group accounts by type"),
+):
+    """
+    Get comprehensive Trial Balance report with opening/period/closing columns.
+
+    This enhanced endpoint returns:
+    - Opening balances (at period start)
+    - Period movements (transactions during period)
+    - Closing balances (opening + movements)
+    - Summary totals by account type
+
+    Query Parameters:
+    - period_id: Optional fiscal period UUID (default: current open period)
+    - show_zero_balance: Include accounts with zero balance (default: false)
+    - group_by_type: Group accounts by type (default: true)
+    """
+    try:
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            # Get period info
+            if period_id:
+                period_row = await conn.fetchrow(
+                    """SELECT id, name, start_date, end_date
+                       FROM fiscal_periods WHERE id = $1 AND tenant_id = $2""",
+                    uuid.UUID(period_id),
+                    tenant_id,
+                )
+            else:
+                # Get current open period
+                period_row = await conn.fetchrow(
+                    """SELECT id, name, start_date, end_date
+                       FROM fiscal_periods
+                       WHERE tenant_id = $1 AND status = 'open'
+                       ORDER BY start_date DESC LIMIT 1""",
+                    tenant_id,
+                )
+
+            if not period_row:
+                # Fallback to current month if no period found
+                today = date.today()
+                period_start = date(today.year, today.month, 1)
+                _, last_day = monthrange(today.year, today.month)
+                period_end = date(today.year, today.month, last_day)
+                period_name = today.strftime("%B %Y")
+                period_id_val = None
+            else:
+                period_start = period_row["start_date"]
+                period_end = period_row["end_date"]
+                period_name = period_row["name"]
+                period_id_val = str(period_row["id"])
+
+            # Get all accounts with balances
+            accounts_query = """
+                WITH account_balances AS (
+                    SELECT
+                        coa.id,
+                        coa.account_code as code,
+                        coa.name,
+                        coa.account_type,
+                        coa.category,
+                        coa.level,
+                        coa.is_header,
+                        coa.parent_code as parent_id,
+                        coa.normal_balance,
+                        -- Opening balance (before period start)
+                        COALESCE(SUM(CASE WHEN je.journal_date < $2 THEN jl.debit ELSE 0 END), 0) as opening_debit,
+                        COALESCE(SUM(CASE WHEN je.journal_date < $2 THEN jl.credit ELSE 0 END), 0) as opening_credit,
+                        -- Period movements (within period)
+                        COALESCE(SUM(CASE WHEN je.journal_date >= $2 AND je.journal_date <= $3 THEN jl.debit ELSE 0 END), 0) as period_debit,
+                        COALESCE(SUM(CASE WHEN je.journal_date >= $2 AND je.journal_date <= $3 THEN jl.credit ELSE 0 END), 0) as period_credit
+                    FROM chart_of_accounts coa
+                    LEFT JOIN journal_lines jl ON jl.account_id = coa.id
+                    LEFT JOIN journal_entries je ON je.id = jl.journal_id
+                        AND je.status = 'POSTED'
+                        AND je.journal_date <= $3
+                    WHERE coa.tenant_id = $1 AND coa.is_active = true
+                    GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.level, coa.is_header, coa.parent_code, coa.normal_balance
+                )
+                SELECT *,
+                    opening_debit + period_debit as closing_debit,
+                    opening_credit + period_credit as closing_credit
+                FROM account_balances
+                ORDER BY code
+            """
+
+            rows = await conn.fetch(accounts_query, tenant_id, period_start, period_end)
+
+            accounts = []
+            summary = {
+                "total_opening_debit": 0,
+                "total_opening_credit": 0,
+                "total_period_debit": 0,
+                "total_period_credit": 0,
+                "total_closing_debit": 0,
+                "total_closing_credit": 0,
+                "by_type": {
+                    "asset": {"count": 0, "closing_debit": 0, "closing_credit": 0},
+                    "liability": {"count": 0, "closing_debit": 0, "closing_credit": 0},
+                    "equity": {"count": 0, "closing_debit": 0, "closing_credit": 0},
+                    "revenue": {"count": 0, "closing_debit": 0, "closing_credit": 0},
+                    "expense": {"count": 0, "closing_debit": 0, "closing_credit": 0},
+                },
+            }
+
+            # Map DB types to frontend types
+            type_mapping = {
+                "ASSET": "asset",
+                "LIABILITY": "liability",
+                "EQUITY": "equity",
+                "INCOME": "revenue",
+                "REVENUE": "revenue",
+                "EXPENSE": "expense",
+            }
+
+            for row in rows:
+                opening_d = float(row["opening_debit"])
+                opening_c = float(row["opening_credit"])
+                period_d = float(row["period_debit"])
+                period_c = float(row["period_credit"])
+                closing_d = float(row["closing_debit"])
+                closing_c = float(row["closing_credit"])
+
+                # Skip zero balance accounts unless requested
+                if not show_zero_balance and not row["is_header"]:
+                    if (
+                        closing_d == 0
+                        and closing_c == 0
+                        and period_d == 0
+                        and period_c == 0
+                    ):
+                        continue
+
+                acc_type = type_mapping.get(
+                    row["account_type"], row["account_type"].lower()
+                )
+                category = row["category"] or acc_type
+
+                account = {
+                    "id": str(row["id"]),
+                    "account_code": row["code"],
+                    "account_name": row["name"],
+                    "account_type": acc_type,
+                    "category": category.lower() if category else acc_type,
+                    "level": row["level"] or 2,
+                    "is_header": row["is_header"] or False,
+                    "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "opening_debit": opening_d,
+                    "opening_credit": opening_c,
+                    "period_debit": period_d,
+                    "period_credit": period_c,
+                    "closing_debit": closing_d,
+                    "closing_credit": closing_c,
+                    "indent_level": (row["level"] or 2) - 1,
+                }
+                accounts.append(account)
+
+                # Update summary (only for non-header accounts)
+                if not row["is_header"]:
+                    summary["total_opening_debit"] += opening_d
+                    summary["total_opening_credit"] += opening_c
+                    summary["total_period_debit"] += period_d
+                    summary["total_period_credit"] += period_c
+                    summary["total_closing_debit"] += closing_d
+                    summary["total_closing_credit"] += closing_c
+
+                    if acc_type in summary["by_type"]:
+                        summary["by_type"][acc_type]["count"] += 1
+                        summary["by_type"][acc_type]["closing_debit"] += closing_d
+                        summary["by_type"][acc_type]["closing_credit"] += closing_c
+
+            # Calculate differences and balanced flags
+            summary["opening_difference"] = (
+                summary["total_opening_debit"] - summary["total_opening_credit"]
+            )
+            summary["is_opening_balanced"] = abs(summary["opening_difference"]) < 0.01
+
+            summary["period_difference"] = (
+                summary["total_period_debit"] - summary["total_period_credit"]
+            )
+            summary["is_period_balanced"] = abs(summary["period_difference"]) < 0.01
+
+            summary["closing_difference"] = (
+                summary["total_closing_debit"] - summary["total_closing_credit"]
+            )
+            summary["is_closing_balanced"] = abs(summary["closing_difference"]) < 0.01
+
+            summary["is_fully_balanced"] = (
+                summary["is_opening_balanced"]
+                and summary["is_period_balanced"]
+                and summary["is_closing_balanced"]
+            )
+            summary["account_count"] = len(
+                [a for a in accounts if not a.get("is_header")]
+            )
+
+            report = {
+                "id": f"tb-{period_id_val or 'current'}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                "report_date": datetime.utcnow().isoformat(),
+                "generated_at": datetime.utcnow().isoformat(),
+                "period_id": period_id_val,
+                "period_name": period_name,
+                "period_start_date": period_start.isoformat() if period_start else None,
+                "period_end_date": period_end.isoformat() if period_end else None,
+                "accounts": accounts,
+                "summary": summary,
+                "include_zero_balance": show_zero_balance,
+                "group_by_type": group_by_type,
+            }
+
+            logger.info(
+                f"Trial Balance Full report generated: tenant={tenant_id}, "
+                f"period={period_name}, accounts={len(accounts)}, "
+                f"balanced={summary['is_fully_balanced']}"
+            )
+
+            return {"data": report}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get trial balance full error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate trial balance report: {str(e)}"
         )
 
 
@@ -2574,3 +2915,816 @@ async def get_drill_down(
         raise HTTPException(
             status_code=500, detail="Failed to generate drill-down report"
         )
+
+
+# =============================================================================
+# PENDAPATAN (Revenue) REPORT
+# =============================================================================
+
+
+@router.get("/pendapatan/{periode}")
+async def get_pendapatan_report(
+    request: Request,
+    periode: str,
+):
+    """
+    Get revenue (pendapatan) report for a period.
+    Periode format: YYYY-MM for monthly or YYYY for yearly.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Parse period
+            if len(periode) == 7:  # YYYY-MM format
+                start_date = f"{periode}-01"
+                # Get last day of month
+                import calendar
+
+                year, month = map(int, periode.split("-"))
+                last_day = calendar.monthrange(year, month)[1]
+                end_date = f"{periode}-{last_day:02d}"
+            else:  # YYYY format
+                start_date = f"{periode}-01-01"
+                end_date = f"{periode}-12-31"
+
+            # Get revenue from sales invoices
+            sales_revenue = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(total_amount), 0)
+                FROM sales_invoices
+                WHERE tenant_id = $1
+                  AND invoice_date BETWEEN $2 AND $3
+                  AND status IN ('posted', 'paid', 'partial')
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            # Get revenue by category (from sales invoice lines)
+            revenue_by_category = await conn.fetch(
+                """
+                SELECT
+                    COALESCE(i.category, 'Uncategorized') as category,
+                    SUM(sil.amount) as total
+                FROM sales_invoice_lines sil
+                JOIN sales_invoices si ON si.id = sil.invoice_id
+                LEFT JOIN items i ON i.id = sil.item_id
+                WHERE si.tenant_id = $1
+                  AND si.invoice_date BETWEEN $2 AND $3
+                  AND si.status IN ('posted', 'paid', 'partial')
+                GROUP BY COALESCE(i.category, 'Uncategorized')
+                ORDER BY total DESC
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            # Get top customers
+            top_customers = await conn.fetch(
+                """
+                SELECT
+                    c.nama as customer_name,
+                    SUM(si.total_amount) as total
+                FROM sales_invoices si
+                JOIN customers c ON c.id = si.customer_id
+                WHERE si.tenant_id = $1
+                  AND si.invoice_date BETWEEN $2 AND $3
+                  AND si.status IN ('posted', 'paid', 'partial')
+                GROUP BY c.id, c.nama
+                ORDER BY total DESC
+                LIMIT 10
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            return {
+                "success": True,
+                "period": periode,
+                "total_revenue": sales_revenue,
+                "by_category": [
+                    {"category": row["category"], "total": row["total"]}
+                    for row in revenue_by_category
+                ],
+                "top_customers": [
+                    {"name": row["customer_name"], "total": row["total"]}
+                    for row in top_customers
+                ],
+            }
+    except Exception as e:
+        logger.error(f"Error getting pendapatan report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get revenue report")
+
+
+# =============================================================================
+# CASH FLOW REPORT
+# =============================================================================
+
+
+@router.get("/cash-flow")
+async def get_cash_flow_report(
+    request: Request,
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+):
+    """
+    Get cash flow statement for a period.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Operating Activities - Inflows
+            customer_receipts = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM receive_payments
+                WHERE tenant_id = $1
+                  AND payment_date BETWEEN $2 AND $3
+                  AND status = 'posted'
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            # Operating Activities - Outflows
+            vendor_payments = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM bill_payments
+                WHERE tenant_id = $1
+                  AND payment_date BETWEEN $2 AND $3
+                  AND status = 'posted'
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            expenses = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(total_amount), 0)
+                FROM expenses
+                WHERE tenant_id = $1
+                  AND expense_date BETWEEN $2 AND $3
+                  AND status = 'posted'
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            operating_net = customer_receipts - vendor_payments - expenses
+
+            # Financing Activities
+            bank_transfers_in = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM bank_transfers
+                WHERE tenant_id = $1
+                  AND transfer_date BETWEEN $2 AND $3
+                  AND status = 'completed'
+                  AND transfer_type = 'equity_injection'
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            bank_transfers_out = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM bank_transfers
+                WHERE tenant_id = $1
+                  AND transfer_date BETWEEN $2 AND $3
+                  AND status = 'completed'
+                  AND transfer_type = 'dividend'
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            financing_net = (bank_transfers_in or 0) - (bank_transfers_out or 0)
+
+            # Opening cash balance
+            opening_cash = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(current_balance), 0)
+                FROM bank_accounts
+                WHERE tenant_id = $1
+                  AND account_type IN ('cash', 'bank')
+            """,
+                ctx["tenant_id"],
+            )
+
+            # Calculate closing
+            net_change = operating_net + financing_net
+            closing_cash = opening_cash + net_change
+
+            return {
+                "success": True,
+                "period": {"start": start_date, "end": end_date},
+                "operating_activities": {
+                    "inflows": {
+                        "customer_receipts": customer_receipts,
+                    },
+                    "outflows": {
+                        "vendor_payments": vendor_payments,
+                        "expenses": expenses,
+                    },
+                    "net": operating_net,
+                },
+                "investing_activities": {
+                    "inflows": 0,
+                    "outflows": 0,
+                    "net": 0,
+                },
+                "financing_activities": {
+                    "inflows": bank_transfers_in or 0,
+                    "outflows": bank_transfers_out or 0,
+                    "net": financing_net,
+                },
+                "summary": {
+                    "opening_cash": opening_cash,
+                    "net_change": net_change,
+                    "closing_cash": closing_cash,
+                },
+            }
+    except Exception as e:
+        logger.error(f"Error getting cash flow: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get cash flow report")
+
+
+# =============================================================================
+# BALANCE SHEET REPORT
+# =============================================================================
+
+
+@router.get("/balance-sheet")
+async def get_balance_sheet(
+    request: Request,
+    as_of_date: str = Query(..., description="As of date YYYY-MM-DD"),
+):
+    """
+    Get balance sheet as of a specific date.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        # Convert string to date object for SQL queries
+        as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+
+        async with pool.acquire() as conn:
+            # Assets
+            cash_bank = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(current_balance), 0)
+                FROM bank_accounts
+                WHERE tenant_id = $1 AND is_active = true
+            """,
+                ctx["tenant_id"],
+            )
+
+            accounts_receivable = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
+                FROM sales_invoices
+                WHERE tenant_id = $1
+                  AND invoice_date <= $2
+                  AND status IN ('posted', 'partial', 'overdue')
+            """,
+                ctx["tenant_id"],
+                as_of,
+            )
+
+            inventory = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(current_stock * COALESCE(purchase_price, 0)), 0)
+                FROM items
+                WHERE tenant_id = $1
+                  AND item_type = 'inventory'
+                  AND is_active = true
+            """,
+                ctx["tenant_id"],
+            )
+
+            total_assets = cash_bank + accounts_receivable + inventory
+
+            # Liabilities
+            accounts_payable = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
+                FROM bills
+                WHERE tenant_id = $1
+                  AND bill_date <= $2
+                  AND status IN ('posted', 'partial', 'overdue')
+            """,
+                ctx["tenant_id"],
+                as_of,
+            )
+
+            total_liabilities = accounts_payable
+
+            # Equity (Assets - Liabilities)
+            equity = total_assets - total_liabilities
+
+            return {
+                "success": True,
+                "as_of_date": as_of_date,
+                "assets": {
+                    "current_assets": {
+                        "cash_and_bank": cash_bank,
+                        "accounts_receivable": accounts_receivable,
+                        "inventory": inventory,
+                    },
+                    "total_current_assets": total_assets,
+                    "fixed_assets": 0,
+                    "total_assets": total_assets,
+                },
+                "liabilities": {
+                    "current_liabilities": {
+                        "accounts_payable": accounts_payable,
+                    },
+                    "total_current_liabilities": total_liabilities,
+                    "long_term_liabilities": 0,
+                    "total_liabilities": total_liabilities,
+                },
+                "equity": {
+                    "retained_earnings": equity,
+                    "total_equity": equity,
+                },
+                "total_liabilities_and_equity": total_liabilities + equity,
+            }
+    except Exception as e:
+        logger.error(f"Error getting balance sheet: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get balance sheet")
+
+
+# =============================================================================
+# AGING RECEIVABLE REPORT
+# =============================================================================
+
+
+@router.get("/aging-receivable")
+async def get_aging_receivable(request: Request):
+    """
+    Get accounts receivable aging report.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    c.id as customer_id,
+                    c.nama as customer_name,
+                    si.id as invoice_id,
+                    si.invoice_number,
+                    si.invoice_date,
+                    si.due_date,
+                    si.total_amount,
+                    COALESCE(si.amount_paid, 0) as amount_paid,
+                    si.total_amount - COALESCE(si.amount_paid, 0) as balance,
+                    GREATEST(0, CURRENT_DATE - si.due_date) as days_overdue,
+                    CASE
+                        WHEN CURRENT_DATE <= si.due_date THEN 'current'
+                        WHEN CURRENT_DATE - si.due_date <= 30 THEN '1-30'
+                        WHEN CURRENT_DATE - si.due_date <= 60 THEN '31-60'
+                        WHEN CURRENT_DATE - si.due_date <= 90 THEN '61-90'
+                        ELSE '90+'
+                    END as aging_bucket
+                FROM sales_invoices si
+                JOIN customers c ON c.id = si.customer_id
+                WHERE si.tenant_id = $1
+                  AND si.status IN ('posted', 'partial', 'overdue')
+                  AND si.total_amount > COALESCE(si.amount_paid, 0)
+                ORDER BY si.due_date ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            # Group by customer
+            by_customer = {}
+            for row in rows:
+                cid = str(row["customer_id"])
+                if cid not in by_customer:
+                    by_customer[cid] = {
+                        "customer_id": cid,
+                        "customer_name": row["customer_name"],
+                        "invoices": [],
+                        "totals": {
+                            "current": 0,
+                            "1-30": 0,
+                            "31-60": 0,
+                            "61-90": 0,
+                            "90+": 0,
+                        },
+                    }
+                by_customer[cid]["invoices"].append(
+                    {
+                        "invoice_id": str(row["invoice_id"]),
+                        "invoice_number": row["invoice_number"],
+                        "invoice_date": row["invoice_date"].isoformat(),
+                        "due_date": row["due_date"].isoformat(),
+                        "total_amount": row["total_amount"],
+                        "amount_paid": row["amount_paid"],
+                        "balance": row["balance"],
+                        "days_overdue": row["days_overdue"],
+                        "aging_bucket": row["aging_bucket"],
+                    }
+                )
+                by_customer[cid]["totals"][row["aging_bucket"]] += row["balance"]
+
+            # Summary totals
+            summary = {"current": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+            for cust in by_customer.values():
+                for bucket, amount in cust["totals"].items():
+                    summary[bucket] += amount
+
+            return {
+                "success": True,
+                "customers": list(by_customer.values()),
+                "summary": summary,
+                "total_outstanding": sum(summary.values()),
+            }
+    except Exception as e:
+        logger.error(f"Error getting AR aging: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get AR aging")
+
+
+# =============================================================================
+# AGING RECEIVABLE - CUSTOMER INVOICES
+# =============================================================================
+
+
+@router.get("/aging-receivable/customer/{customer_id}/invoices")
+async def get_customer_aging_invoices(request: Request, customer_id: str):
+    """Get unpaid invoices for a specific customer."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    id, invoice_number, invoice_date, due_date,
+                    total_amount, COALESCE(amount_paid, 0) as amount_paid,
+                    total_amount - COALESCE(amount_paid, 0) as balance,
+                    GREATEST(0, CURRENT_DATE - due_date) as days_overdue
+                FROM sales_invoices
+                WHERE tenant_id = $1
+                  AND customer_id = $2
+                  AND status IN ('posted', 'partial', 'overdue')
+                  AND total_amount > COALESCE(amount_paid, 0)
+                ORDER BY due_date ASC
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
+
+            invoices = [
+                {
+                    "id": str(row["id"]),
+                    "invoice_number": row["invoice_number"],
+                    "invoice_date": row["invoice_date"].isoformat(),
+                    "due_date": row["due_date"].isoformat(),
+                    "total_amount": row["total_amount"],
+                    "amount_paid": row["amount_paid"],
+                    "balance": row["balance"],
+                    "days_overdue": row["days_overdue"],
+                }
+                for row in rows
+            ]
+
+            return {"success": True, "invoices": invoices}
+    except Exception as e:
+        logger.error(f"Error getting customer invoices: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get invoices")
+
+
+# =============================================================================
+# AGING PAYABLE REPORT
+# =============================================================================
+
+
+@router.get("/aging-payable")
+async def get_aging_payable(request: Request):
+    """
+    Get accounts payable aging report.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    v.id as vendor_id,
+                    v.name as vendor_name,
+                    b.id as bill_id,
+                    b.bill_number,
+                    b.bill_date,
+                    b.due_date,
+                    b.total_amount,
+                    COALESCE(b.amount_paid, 0) as amount_paid,
+                    b.total_amount - COALESCE(b.amount_paid, 0) as balance,
+                    GREATEST(0, CURRENT_DATE - b.due_date) as days_overdue,
+                    CASE
+                        WHEN CURRENT_DATE <= b.due_date THEN 'current'
+                        WHEN CURRENT_DATE - b.due_date <= 30 THEN '1-30'
+                        WHEN CURRENT_DATE - b.due_date <= 60 THEN '31-60'
+                        WHEN CURRENT_DATE - b.due_date <= 90 THEN '61-90'
+                        ELSE '90+'
+                    END as aging_bucket
+                FROM bills b
+                JOIN vendors v ON v.id = b.vendor_id
+                WHERE b.tenant_id = $1
+                  AND b.status IN ('posted', 'partial', 'overdue')
+                  AND b.total_amount > COALESCE(b.amount_paid, 0)
+                ORDER BY b.due_date ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            # Group by vendor
+            by_vendor = {}
+            for row in rows:
+                vid = str(row["vendor_id"])
+                if vid not in by_vendor:
+                    by_vendor[vid] = {
+                        "vendor_id": vid,
+                        "vendor_name": row["vendor_name"],
+                        "bills": [],
+                        "totals": {
+                            "current": 0,
+                            "1-30": 0,
+                            "31-60": 0,
+                            "61-90": 0,
+                            "90+": 0,
+                        },
+                    }
+                by_vendor[vid]["bills"].append(
+                    {
+                        "bill_id": str(row["bill_id"]),
+                        "bill_number": row["bill_number"],
+                        "bill_date": row["bill_date"].isoformat(),
+                        "due_date": row["due_date"].isoformat(),
+                        "total_amount": row["total_amount"],
+                        "amount_paid": row["amount_paid"],
+                        "balance": row["balance"],
+                        "days_overdue": row["days_overdue"],
+                        "aging_bucket": row["aging_bucket"],
+                    }
+                )
+                by_vendor[vid]["totals"][row["aging_bucket"]] += row["balance"]
+
+            # Summary totals
+            summary = {"current": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+            for vendor in by_vendor.values():
+                for bucket, amount in vendor["totals"].items():
+                    summary[bucket] += amount
+
+            return {
+                "success": True,
+                "vendors": list(by_vendor.values()),
+                "summary": summary,
+                "total_outstanding": sum(summary.values()),
+            }
+    except Exception as e:
+        logger.error(f"Error getting AP aging: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get AP aging")
+
+
+# =============================================================================
+# AGING PAYABLE - VENDOR BILLS
+# =============================================================================
+
+
+@router.get("/aging-payable/vendor/{vendor_id}/bills")
+async def get_vendor_aging_bills(request: Request, vendor_id: str):
+    """Get unpaid bills for a specific vendor."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    id, bill_number, bill_date, due_date,
+                    total_amount, COALESCE(amount_paid, 0) as amount_paid,
+                    total_amount - COALESCE(amount_paid, 0) as balance,
+                    GREATEST(0, CURRENT_DATE - due_date) as days_overdue
+                FROM bills
+                WHERE tenant_id = $1
+                  AND vendor_id::text = $2
+                  AND status IN ('posted', 'partial', 'overdue')
+                  AND total_amount > COALESCE(amount_paid, 0)
+                ORDER BY due_date ASC
+            """,
+                ctx["tenant_id"],
+                vendor_id,
+            )
+
+            bills = [
+                {
+                    "id": str(row["id"]),
+                    "bill_number": row["bill_number"],
+                    "bill_date": row["bill_date"].isoformat(),
+                    "due_date": row["due_date"].isoformat(),
+                    "total_amount": row["total_amount"],
+                    "amount_paid": row["amount_paid"],
+                    "balance": row["balance"],
+                    "days_overdue": row["days_overdue"],
+                }
+                for row in rows
+            ]
+
+            return {"success": True, "bills": bills}
+    except Exception as e:
+        logger.error(f"Error getting vendor bills: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get bills")
+
+
+# =============================================================================
+# PROFIT-LOSS WITH QUERY PARAMS (Frontend compatible)
+# =============================================================================
+
+
+@router.get("/profit-loss")
+async def get_profit_loss_query_params(
+    request: Request,
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    comparison: Optional[str] = Query(
+        None,
+        description="Comparison period: 'previous-period', 'previous-year', 'none'",
+    ),
+    branch_id: Optional[str] = Query(None, description="Filter by branch"),
+):
+    """
+    Get Profit & Loss report using query parameters.
+    Compatible with frontend hooks.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Get revenue from sales invoices
+            revenue_rows = await conn.fetch(
+                """
+                SELECT
+                    COALESCE(coa.id::text, 'revenue') as account_id,
+                    COALESCE(coa.account_code, '4-1000') as account_code,
+                    COALESCE(coa.account_name, 'Pendapatan Penjualan') as account_name,
+                    SUM(si.total_amount)::BIGINT as amount
+                FROM sales_invoices si
+                LEFT JOIN chart_of_accounts coa ON coa.account_type = 'REVENUE' AND coa.tenant_id = si.tenant_id
+                WHERE si.tenant_id = $1
+                  AND si.invoice_date BETWEEN $2 AND $3
+                  AND si.status IN ('posted', 'paid', 'partial', 'overdue')
+                GROUP BY coa.id, coa.account_code, coa.account_name
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            revenue_items = []
+            total_revenue = 0
+            for row in revenue_rows:
+                revenue_items.append(
+                    {
+                        "accountId": row["account_id"],
+                        "accountCode": row["account_code"],
+                        "accountName": row["account_name"],
+                        "amount": int(row["amount"] or 0),
+                    }
+                )
+                total_revenue += int(row["amount"] or 0)
+
+            # Get cost of goods sold from bill items marked as COGS
+            cogs_rows = await conn.fetch(
+                """
+                SELECT
+                    COALESCE(coa.id::text, 'cogs') as account_id,
+                    COALESCE(coa.account_code, '5-1000') as account_code,
+                    COALESCE(coa.account_name, 'Harga Pokok Penjualan') as account_name,
+                    COALESCE(SUM(bi.amount), 0)::BIGINT as amount
+                FROM bills b
+                JOIN bill_items bi ON bi.bill_id = b.id
+                LEFT JOIN items i ON i.id = bi.item_id
+                LEFT JOIN chart_of_accounts coa ON coa.account_type = 'COGS' AND coa.tenant_id = b.tenant_id
+                WHERE b.tenant_id = $1
+                  AND b.bill_date BETWEEN $2 AND $3
+                  AND b.status IN ('posted', 'paid', 'partial')
+                  AND (i.item_type = 'inventory' OR i.item_type IS NULL)
+                GROUP BY coa.id, coa.account_code, coa.account_name
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            cogs_items = []
+            total_cogs = 0
+            for row in cogs_rows:
+                cogs_items.append(
+                    {
+                        "accountId": row["account_id"],
+                        "accountCode": row["account_code"],
+                        "accountName": row["account_name"],
+                        "amount": int(row["amount"] or 0),
+                    }
+                )
+                total_cogs += int(row["amount"] or 0)
+
+            # Get operating expenses
+            expense_rows = await conn.fetch(
+                """
+                SELECT
+                    COALESCE(coa.id::text, e.category) as account_id,
+                    COALESCE(coa.account_code, '6-1000') as account_code,
+                    COALESCE(coa.account_name, e.category) as account_name,
+                    SUM(e.total_amount)::BIGINT as amount
+                FROM expenses e
+                LEFT JOIN chart_of_accounts coa ON coa.account_type = 'EXPENSE' AND coa.tenant_id = e.tenant_id
+                WHERE e.tenant_id = $1
+                  AND e.expense_date BETWEEN $2 AND $3
+                  AND e.status = 'posted'
+                GROUP BY coa.id, coa.account_code, coa.account_name, e.category
+            """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            operating_expense_items = []
+            total_operating_expenses = 0
+            for row in expense_rows:
+                operating_expense_items.append(
+                    {
+                        "accountId": row["account_id"],
+                        "accountCode": row["account_code"],
+                        "accountName": row["account_name"],
+                        "amount": int(row["amount"] or 0),
+                    }
+                )
+                total_operating_expenses += int(row["amount"] or 0)
+
+            # Calculate totals
+            gross_profit = total_revenue - total_cogs
+            operating_income = gross_profit - total_operating_expenses
+            net_income_before_tax = operating_income
+            tax_expense = 0  # TODO: Implement tax calculation
+            net_income = net_income_before_tax - tax_expense
+
+            return {
+                "success": True,
+                "data": {
+                    "period": {"startDate": start_date, "endDate": end_date},
+                    "revenue": {
+                        "label": "Pendapatan",
+                        "total": total_revenue,
+                        "items": revenue_items,
+                    },
+                    "costOfGoodsSold": {
+                        "label": "Harga Pokok Penjualan",
+                        "total": total_cogs,
+                        "items": cogs_items,
+                    },
+                    "grossProfit": gross_profit,
+                    "operatingExpenses": {
+                        "label": "Biaya Operasional",
+                        "total": total_operating_expenses,
+                        "items": operating_expense_items,
+                    },
+                    "operatingIncome": operating_income,
+                    "otherIncome": {
+                        "label": "Pendapatan Lain",
+                        "total": 0,
+                        "items": [],
+                    },
+                    "otherExpenses": {"label": "Biaya Lain", "total": 0, "items": []},
+                    "incomeBeforeTax": net_income_before_tax,
+                    "taxExpense": tax_expense,
+                    "netIncome": net_income,
+                },
+            }
+    except Exception as e:
+        logger.error(f"Error getting profit/loss report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get profit/loss report")
