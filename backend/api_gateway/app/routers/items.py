@@ -2285,7 +2285,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
         async with pool.acquire() as conn:
             # Get current stock
             item = await conn.fetchrow(
-                "SELECT id, name, current_stock FROM items WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, name, current_stock FROM products WHERE id = $1 AND tenant_id = $2",
                 item_id,
                 ctx["tenant_id"],
             )
@@ -2351,7 +2351,7 @@ async def get_item_journal_entries(
 
         async with pool.acquire() as conn:
             item = await conn.fetchrow(
-                "SELECT id, name FROM items WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, name FROM products WHERE id = $1 AND tenant_id = $2",
                 item_id,
                 ctx["tenant_id"],
             )
