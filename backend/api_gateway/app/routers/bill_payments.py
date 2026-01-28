@@ -291,7 +291,7 @@ async def get_bill_payment(request: Request, payment_id: str):
 
             allocations = await conn.fetch(
                 """
-                SELECT bpa.id, bpa.bill_id, b.invoice_number as bill_number, b.total_amount as bill_amount,
+                SELECT bpa.id, bpa.bill_id, b.invoice_number as bill_number, b.amount as bill_amount,
                        bpa.remaining_before, bpa.amount_applied, bpa.remaining_after
                 FROM bill_payment_allocations bpa JOIN bills b ON b.id = bpa.bill_id
                 WHERE bpa.payment_id = $1::uuid ORDER BY bpa.created_at""",
@@ -443,7 +443,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
                         $29, NOW(), NOW(),
                         CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
-                        CASE WHEN $28::varchar = 'posted' THEN $29 ELSE NULL END
+                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END
                     )""",
                     payment_id,
                     ctx["tenant_id"],
@@ -478,7 +478,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                 for alloc in payload.allocations:
                     bill = await conn.fetchrow(
-                        "SELECT total_amount, COALESCE(amount_paid, 0) as amount_paid FROM bills WHERE id = $1::uuid",
+                        "SELECT amount as total_amount, COALESCE(amount_paid, 0) as amount_paid FROM bills WHERE id = $1::uuid",
                         alloc.bill_id,
                     )
                     if not bill:
@@ -509,7 +509,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         await conn.execute(
                             """
                             UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
-                                status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= total_amount THEN 'paid'
+                                status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
                                               WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
                                 updated_at = NOW()
                             WHERE id = $2::uuid""",
@@ -612,7 +612,7 @@ async def post_bill_payment(request: Request, payment_id: str):
                     await conn.execute(
                         """
                         UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
-                            status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= total_amount THEN 'paid'
+                            status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
                                           WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
                             updated_at = NOW()
                         WHERE id = $2""",
@@ -677,7 +677,7 @@ async def void_bill_payment(
                         """
                         UPDATE bills SET amount_paid = GREATEST(0, COALESCE(amount_paid, 0) - $1),
                             status = CASE WHEN GREATEST(0, COALESCE(amount_paid, 0) - $1) = 0 THEN 'posted'
-                                          WHEN GREATEST(0, COALESCE(amount_paid, 0) - $1) < total_amount THEN 'partial'
+                                          WHEN GREATEST(0, COALESCE(amount_paid, 0) - $1) < amount THEN 'partial'
                                           ELSE status END,
                             updated_at = NOW()
                         WHERE id = $2""",
@@ -715,15 +715,15 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
 
             bills = await conn.fetch(
                 """
-                SELECT id, invoice_number, bill_date, due_date, total_amount,
+                SELECT id, invoice_number, issue_date as bill_date, due_date, amount as total_amount,
                     COALESCE(amount_paid, 0) as paid_amount,
-                    total_amount - COALESCE(amount_paid, 0) as remaining_amount,
+                    amount - COALESCE(amount_paid, 0) as remaining_amount,
                     due_date < CURRENT_DATE as is_overdue,
                     GREATEST(0, CURRENT_DATE - due_date) as overdue_days
                 FROM bills
                 WHERE tenant_id = $1 AND vendor_id = $2::uuid
                   AND status IN ('posted', 'partial', 'overdue')
-                  AND total_amount > COALESCE(amount_paid, 0)
+                  AND amount > COALESCE(amount_paid, 0)
                 ORDER BY due_date ASC, bill_date ASC""",
                 ctx["tenant_id"],
                 vendor_id,
