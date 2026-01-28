@@ -478,7 +478,7 @@ async def create_account(request: Request, body: CreateAccountRequest):
         async with pool.acquire() as conn:
             # Check for duplicate code
             existing = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = $2",
+                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
                 ctx["tenant_id"], body.code
             )
             if existing:
@@ -488,33 +488,39 @@ async def create_account(request: Request, body: CreateAccountRequest):
                 )
 
             # Validate parent if specified
-            parent_uuid = None
+            parent_code = None
             if body.parent_id:
-                try:
-                    parent_uuid = UUID(body.parent_id)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid parent_id format")
-
+                # parent_id can be UUID or account_code
                 parent = await conn.fetchrow(
-                    "SELECT id, type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                    parent_uuid, ctx["tenant_id"]
+                    "SELECT id, account_code, account_type FROM chart_of_accounts WHERE (id::text = $1 OR account_code = $1) AND tenant_id = $2",
+                    body.parent_id, ctx["tenant_id"]
                 )
                 if not parent:
                     raise HTTPException(status_code=400, detail="Parent account not found")
 
+                parent_code = parent["account_code"]
+
                 # Parent and child should have same type
-                if parent["type"] != body.type:
+                if parent["account_type"] != body.type:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Child account type must match parent type ({parent['type']})"
+                        detail=f"Child account type must match parent type ({parent['account_type']})"
                     )
 
+            # Determine level based on parent
+            level = 1
+            if parent_code:
+                parent_level = await conn.fetchval(
+                    "SELECT level FROM chart_of_accounts WHERE account_code = $1 AND tenant_id = $2",
+                    parent_code, ctx["tenant_id"]
+                )
+                level = (parent_level or 1) + 1
+
             # Insert account
-            import json
             account_id = await conn.fetchval("""
                 INSERT INTO chart_of_accounts (
-                    tenant_id, code, name, type, normal_balance, parent_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                    tenant_id, account_code, name, account_type, normal_balance, parent_code, level, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, true)
                 RETURNING id
             """,
                 ctx["tenant_id"],
@@ -522,8 +528,8 @@ async def create_account(request: Request, body: CreateAccountRequest):
                 body.name,
                 body.type,
                 body.normal_balance,
-                parent_uuid,
-                json.dumps(body.metadata or {})
+                parent_code,
+                level
             )
 
             logger.info(f"Account created: {account_id}, code={body.code}")
