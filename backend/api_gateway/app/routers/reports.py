@@ -1171,7 +1171,7 @@ async def get_trial_balance_full(
             # Get period info
             if period_id:
                 period_row = await conn.fetchrow(
-                    """SELECT id, name, start_date, end_date
+                    """SELECT id, period_name as name, start_date, end_date
                        FROM fiscal_periods WHERE id = $1 AND tenant_id = $2""",
                     uuid.UUID(period_id),
                     tenant_id,
@@ -1179,9 +1179,9 @@ async def get_trial_balance_full(
             else:
                 # Get current open period
                 period_row = await conn.fetchrow(
-                    """SELECT id, name, start_date, end_date
+                    """SELECT id, period_name as name, start_date, end_date
                        FROM fiscal_periods
-                       WHERE tenant_id = $1 AND status = 'open'
+                       WHERE tenant_id = $1 AND status = 'OPEN'
                        ORDER BY start_date DESC LIMIT 1""",
                     tenant_id,
                 )
