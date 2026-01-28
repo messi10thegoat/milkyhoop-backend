@@ -641,7 +641,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 if not payload.vendor_name:
                     vendor = await conn.fetchrow(
                         "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                        UUID(payload.vendor_id), ctx["tenant_id"]
+                        UUID(payload.vendor_id),
+                        ctx["tenant_id"],
                     )
                     if not vendor:
                         raise HTTPException(status_code=400, detail="Vendor not found")
@@ -653,10 +654,13 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 if not payload.bank_account_name:
                     bank = await conn.fetchrow(
                         "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(payload.bank_account_id), ctx["tenant_id"]
+                        UUID(payload.bank_account_id),
+                        ctx["tenant_id"],
                     )
                     if not bank:
-                        raise HTTPException(status_code=400, detail="Bank account not found")
+                        raise HTTPException(
+                            status_code=400, detail="Bank account not found"
+                        )
                     bank_account_name = bank["account_name"]
                 else:
                     bank_account_name = payload.bank_account_name

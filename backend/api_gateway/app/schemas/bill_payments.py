@@ -62,11 +62,19 @@ class CreateBillPaymentRequest(BaseModel):
     """Request body for creating a bill payment."""
 
     vendor_id: str = Field(..., description="Vendor UUID")
-    vendor_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up from vendor_id if not provided")
+    vendor_name: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="Auto-looked up from vendor_id if not provided",
+    )
     payment_date: date
     payment_method: PaymentMethod = "bank_transfer"
     bank_account_id: str = Field(..., description="Kas/Bank account UUID")
-    bank_account_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up from bank_account_id if not provided")
+    bank_account_name: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="Auto-looked up from bank_account_id if not provided",
+    )
     total_amount: int = Field(..., gt=0, description="Total payment amount in IDR")
 
     # Optional discount and fees
@@ -101,8 +109,6 @@ class CreateBillPaymentRequest(BaseModel):
     save_as_draft: bool = Field(
         False, description="If true, save as draft without posting"
     )
-
-
 
     @field_validator("source_deposit_id")
     @classmethod

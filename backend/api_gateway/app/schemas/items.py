@@ -93,6 +93,29 @@ class CreateItemRequest(BaseModel):
     sales_account_id: Optional[str] = Field(None, description="Sales account UUID from CoA")
     purchase_account_id: Optional[str] = Field(None, description="Purchase/COGS account UUID from CoA")
 
+    # Item Code/SKU (like QB Name/Number, Xero Code, Zoho SKU)
+    item_code: Optional[str] = Field(None, max_length=50, description="Item code/SKU for inventory")
+    sku: Optional[str] = Field(None, max_length=50, description="Stock Keeping Unit")
+
+    # Additional Account IDs (CoA references for proper accounting)
+    inventory_account_id: Optional[str] = Field(None, description="Inventory asset account UUID from CoA")
+    cogs_account_id: Optional[str] = Field(None, description="Cost of Goods Sold account UUID from CoA")
+
+    # Costing method
+    costing_method: Literal["weighted_average", "fifo"] = Field("weighted_average", description="Inventory costing method")
+
+    # Opening Stock (for importing existing inventory)
+    opening_stock: Optional[float] = Field(None, ge=0, description="Initial stock quantity")
+    opening_stock_rate: Optional[float] = Field(None, ge=0, description="Cost per unit for opening stock")
+    opening_stock_date: Optional[str] = Field(None, description="Date for opening stock (YYYY-MM-DD)")
+
+    # Usage flags
+    for_sales: bool = Field(True, description="Whether item is available for sales")
+    for_purchases: bool = Field(True, description="Whether item is available for purchases")
+
+    # Warehouse
+    warehouse_id: Optional[str] = Field(None, description="Default warehouse UUID")
+
     # Unit conversions (goods only)
     conversions: List[UnitConversionInput] = Field(default_factory=list, description="Unit conversions")
 
@@ -153,6 +176,29 @@ class UpdateItemRequest(BaseModel):
     reorder_level: Optional[float] = Field(None, ge=0)
     preferred_vendor_id: Optional[str] = None
 
+    # Item Code/SKU
+    item_code: Optional[str] = Field(None, max_length=50)
+    sku: Optional[str] = Field(None, max_length=50)
+
+    # Additional Account IDs
+    inventory_account_id: Optional[str] = None
+    cogs_account_id: Optional[str] = None
+
+    # Costing method
+    costing_method: Optional[Literal["weighted_average", "fifo"]] = None
+
+    # Opening Stock
+    opening_stock: Optional[float] = Field(None, ge=0)
+    opening_stock_rate: Optional[float] = Field(None, ge=0)
+    opening_stock_date: Optional[str] = None
+
+    # Usage flags
+    for_sales: Optional[bool] = None
+    for_purchases: Optional[bool] = None
+
+    # Warehouse
+    warehouse_id: Optional[str] = None
+
     # Unit conversions (replace all)
     conversions: Optional[List[UnitConversionUpdate]] = None
 
@@ -212,6 +258,14 @@ class ItemListItem(BaseModel):
     vendor_name: Optional[str] = None
     sales_tax: Optional[str] = None
     purchase_tax: Optional[str] = None
+    # Item Code/SKU
+    item_code: Optional[str] = None
+    sku: Optional[str] = None
+    # Costing method
+    costing_method: Optional[str] = None
+    # Usage flags
+    for_sales: bool = True
+    for_purchases: bool = True
     # Stock info (only for track_inventory=true)
     current_stock: Optional[float] = None
     stock_value: Optional[float] = None

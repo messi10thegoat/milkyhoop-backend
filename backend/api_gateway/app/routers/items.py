@@ -23,6 +23,7 @@ import asyncpg
 import json
 import uuid
 from uuid import UUID
+from datetime import date as dateclass
 
 from ..schemas.items import (
     CreateItemRequest,
@@ -233,7 +234,7 @@ async def list_items(
         total = await conn.fetchval(count_query, *params)
 
         # Add ordering and pagination
-        query_parts.append("ORDER BY p.nama_produk ASC")
+        query_parts.append("ORDER BY p.created_at DESC")
         query_parts.append(f"LIMIT ${param_idx} OFFSET ${param_idx + 1}")
         params.extend([limit, offset])
 
@@ -286,6 +287,11 @@ async def list_items(
                     vendor_name=row.get("vendor_name"),
                     sales_tax=row.get("sales_tax"),
                     purchase_tax=row.get("purchase_tax"),
+                    item_code=row.get("item_code"),
+                    sku=row.get("sku"),
+                    costing_method=row.get("costing_method", "weighted_average"),
+                    for_sales=row.get("for_sales", True),
+                    for_purchases=row.get("for_purchases", True),
                     current_stock=row.get("current_stock"),
                     stock_value=row.get("stock_value"),
                     low_stock=row.get("low_stock", False),
@@ -353,6 +359,14 @@ async def create_item(request: Request, body: CreateItemRequest):
         # Start transaction
         async with conn.transaction():
             # Insert item
+            # Parse opening_stock_date if provided
+            opening_date = None
+            if body.opening_stock_date:
+                try:
+                    opening_date = dateclass.fromisoformat(body.opening_stock_date)
+                except (ValueError, TypeError):
+                    opening_date = None
+
             insert_query = """
                 INSERT INTO products (
                     tenant_id, nama_produk, satuan, base_unit, kategori, deskripsi, barcode,
@@ -361,6 +375,9 @@ async def create_item(request: Request, body: CreateItemRequest):
                     sales_price, purchase_price, harga_jual,
                     image_url, reorder_level, preferred_vendor_id,
                     sales_account_id, purchase_account_id,
+                    item_code, sku, inventory_account_id, cogs_account_id,
+                    costing_method, opening_stock, opening_stock_rate, opening_stock_date,
+                    for_sales, for_purchases, warehouse_id,
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -369,6 +386,9 @@ async def create_item(request: Request, body: CreateItemRequest):
                     $15, $16, $17,
                     $18, $19, $20,
                     $21, $22,
+                    $23, $24, $25, $26,
+                    $27, $28, $29, $30,
+                    $31, $32, $33,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -397,6 +417,17 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.preferred_vendor_id,
                 body.sales_account_id,
                 body.purchase_account_id,
+                body.item_code,
+                body.sku,
+                body.inventory_account_id,
+                body.cogs_account_id,
+                body.costing_method,
+                body.opening_stock,
+                body.opening_stock_rate,
+                opening_date,
+                body.for_sales,
+                body.for_purchases,
+                body.warehouse_id,
             )
 
             # Insert unit conversions (goods only)
@@ -565,6 +596,18 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 "image_url": "image_url",
                 "reorder_level": "reorder_level",
                 "preferred_vendor_id": "preferred_vendor_id",
+                # New fields for QB/Xero/Zoho compatibility
+                "item_code": "item_code",
+                "sku": "sku",
+                "inventory_account_id": "inventory_account_id",
+                "cogs_account_id": "cogs_account_id",
+                "costing_method": "costing_method",
+                "opening_stock": "opening_stock",
+                "opening_stock_rate": "opening_stock_rate",
+                "opening_stock_date": "opening_stock_date",
+                "for_sales": "for_sales",
+                "for_purchases": "for_purchases",
+                "warehouse_id": "warehouse_id",
             }
 
             body_dict = body.model_dump(exclude_unset=True, exclude={"conversions"})
@@ -1758,6 +1801,29 @@ async def get_item(request: Request, item_id: UUID):
                 "purchase_account_id": str(row["purchase_account_id"])
                 if row.get("purchase_account_id")
                 else None,
+                "inventory_account_id": str(row["inventory_account_id"])
+                if row.get("inventory_account_id")
+                else None,
+                "cogs_account_id": str(row["cogs_account_id"])
+                if row.get("cogs_account_id")
+                else None,
+                "item_code": row.get("item_code"),
+                "sku": row.get("sku"),
+                "costing_method": row.get("costing_method", "weighted_average"),
+                "opening_stock": float(row["opening_stock"])
+                if row.get("opening_stock")
+                else None,
+                "opening_stock_rate": float(row["opening_stock_rate"])
+                if row.get("opening_stock_rate")
+                else None,
+                "opening_stock_date": str(row["opening_stock_date"])
+                if row.get("opening_stock_date")
+                else None,
+                "for_sales": row.get("for_sales", True),
+                "for_purchases": row.get("for_purchases", True),
+                "warehouse_id": str(row["warehouse_id"])
+                if row.get("warehouse_id")
+                else None,
                 "sales_tax": row.get("sales_tax"),
                 "purchase_tax": row.get("purchase_tax"),
                 "sales_price": row.get("sales_price") or row.get("harga_jual"),
@@ -2299,11 +2365,11 @@ async def get_item_journal_entries(
                     j.id, j.journal_number, j.journal_date, j.description,
                     jl.account_id, jl.debit, jl.credit,
                     a.name as account_name
-                FROM journals j
+                FROM journal_entries j
                 JOIN journal_lines jl ON jl.journal_id = j.id
-                LEFT JOIN accounts a ON a.id = jl.account_id
+                LEFT JOIN chart_of_accounts a ON a.id = jl.account_id
                 WHERE j.tenant_id = $1
-                  AND jl.item_id::text = $2
+                  AND 1=0 -- item_id tracking not implemented
                 ORDER BY j.journal_date DESC, j.created_at DESC
                 LIMIT $3 OFFSET $4
             """,

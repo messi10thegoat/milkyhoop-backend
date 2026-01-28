@@ -159,15 +159,18 @@ class AccountSummary(BaseModel):
     """Bank account with reconciliation status."""
 
     id: str
-    account_name: str
+    name: str
     account_number: Optional[str] = None
-    bank_name: Optional[str] = None
-    currency: str = "IDR"
     current_balance: int
     last_reconciled_date: Optional[str] = None
     last_reconciled_balance: Optional[int] = None
-    has_active_session: bool = False
-    unreconciled_count: int = 0
+    statement_balance: Optional[int] = None
+    statement_date: Optional[str] = None
+    unreconciled_difference: Optional[int] = None
+    needs_reconciliation: bool = True
+    days_since_reconciliation: Optional[int] = None
+    active_session_id: Optional[str] = None
+    active_session_status: Optional[str] = None
 
 
 class SessionStatistics(BaseModel):
@@ -183,6 +186,12 @@ class SessionStatistics(BaseModel):
     matched_total: int = 0
     difference: Optional[int] = 0
     is_balanced: bool = False
+    # Fields returned by router
+    matched_count: int = 0
+    unmatched_count: int = 0
+    excluded_count: int = 0
+    total_cleared: int = 0
+    total_uncleared: int = 0
 
 
 class SessionListItem(BaseModel):
@@ -200,7 +209,7 @@ class SessionListItem(BaseModel):
     status: Literal["in_progress", "completed", "cancelled"]
     matched_count: int = 0
     total_lines: int = 0
-    difference: Optional[int] = 0
+    difference: Optional[int] = None
     created_at: str
     completed_at: Optional[str] = None
 
@@ -297,9 +306,11 @@ class SessionDetail(BaseModel):
     statement_beginning_balance: int
     statement_ending_balance: int
 
-    # System balances
-    system_beginning_balance: int
-    system_ending_balance: int
+    # System balances - optional to match router
+    system_beginning_balance: Optional[int] = None
+    system_ending_balance: Optional[int] = None
+    cleared_balance: Optional[int] = None
+    difference: Optional[int] = None
 
     # Status
     status: Literal["in_progress", "completed", "cancelled"]
@@ -309,8 +320,8 @@ class SessionDetail(BaseModel):
     adjustments: List[AdjustmentItem] = []
 
     # Audit
-    created_at: str
-    updated_at: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     created_by: Optional[str] = None
     completed_at: Optional[str] = None
     completed_by: Optional[str] = None

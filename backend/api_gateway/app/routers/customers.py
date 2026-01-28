@@ -122,9 +122,9 @@ async def list_customers(
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     tipe: Optional[str] = Query(None, description="Filter by customer type"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
-        "name", description="Sort field"
+        "created_at", description="Sort field"
     ),
-    sort_order: Literal["asc", "desc"] = Query("asc", description="Sort order"),
+    sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
 ):
     """
     List customers with search, filtering, and pagination.
@@ -227,7 +227,12 @@ async def get_customer(request: Request, customer_id: str):
                 SELECT id, nomor_member, nama, tipe, telepon, email, alamat,
                        points, points_per_50k, total_transaksi, total_nilai,
                        saldo_hutang, last_transaction_at, created_at, updated_at,
-                       default_currency_id
+                       default_currency_id, is_active,
+                       contact_person, city, province, postal_code,
+                       tax_id, payment_terms_days, credit_limit, notes,
+                       mobile_phone, website, company_name, display_name,
+                       customer_type, is_pkp, nik, currency,
+                       ar_opening_balance, opening_balance_date, opening_balance_notes
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -242,10 +247,41 @@ async def get_customer(request: Request, customer_id: str):
                     "id": str(row["id"]),
                     "code": row["nomor_member"],
                     "name": row["nama"],
-                    "type": row["tipe"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
+                    
+                    # Contact
+                    "contact_person": row["contact_person"],
                     "phone": row["telepon"],
+                    "mobile_phone": row["mobile_phone"],
                     "email": row["email"],
+                    "website": row["website"],
+                    
+                    # Address
                     "address": row["alamat"],
+                    "city": row["city"],
+                    "province": row["province"],
+                    "postal_code": row["postal_code"],
+                    
+                    # Tax info
+                    "tax_id": row["tax_id"],
+                    "nik": row["nik"],
+                    "is_pkp": row["is_pkp"] or False,
+                    "customer_type": row["customer_type"],
+                    
+                    # Financial
+                    "currency": row["currency"] or "IDR",
+                    "payment_terms_days": row["payment_terms_days"] or 0,
+                    "credit_limit": row["credit_limit"],
+                    
+                    # Opening balance
+                    "ar_opening_balance": row["ar_opening_balance"] or 0,
+                    "opening_balance_date": row["opening_balance_date"].isoformat()
+                    if row["opening_balance_date"]
+                    else None,
+                    "opening_balance_notes": row["opening_balance_notes"],
+                    
+                    # Statistics
                     "points": row["points"],
                     "points_per_50k": row["points_per_50k"],
                     "total_transactions": row["total_transaksi"],
@@ -254,14 +290,18 @@ async def get_customer(request: Request, customer_id: str):
                     "last_transaction_at": row["last_transaction_at"].isoformat()
                     if row["last_transaction_at"]
                     else None,
+                    
+                    # Metadata
+                    "default_currency_id": str(row["default_currency_id"])
+                    if row["default_currency_id"]
+                    else None,
+                    "is_active": row["is_active"],
+                    "notes": row["notes"],
                     "created_at": row["created_at"].isoformat()
                     if row["created_at"]
                     else None,
                     "updated_at": row["updated_at"].isoformat()
                     if row["updated_at"]
-                    else None,
-                    "default_currency_id": str(row["default_currency_id"])
-                    if row["default_currency_id"]
                     else None,
                 },
             }
@@ -271,8 +311,6 @@ async def get_customer(request: Request, customer_id: str):
     except Exception as e:
         logger.error(f"Error getting customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get customer")
-
-
 # =============================================================================
 # GET CUSTOMER BALANCE (AR Balance)
 # =============================================================================
@@ -380,30 +418,75 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
             import uuid as uuid_mod
 
             new_id = str(uuid_mod.uuid4())
+            
+            # Parse opening_balance_date if provided
+            opening_date = None
+            if body.opening_balance_date:
+                try:
+                    from datetime import datetime
+                    opening_date = datetime.strptime(body.opening_balance_date, "%Y-%m-%d").date()
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid opening_balance_date format. Use YYYY-MM-DD"
+                    )
 
-            # Insert customer (using Indonesian column names)
+            # Insert customer with ALL fields
             await conn.execute(
                 """
                 INSERT INTO customers (
-                    id, tenant_id, nomor_member, nama, telepon, email, alamat
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    id, tenant_id, nomor_member, nama, telepon, email, alamat,
+                    contact_person, city, province, postal_code,
+                    tax_id, payment_terms_days, credit_limit, notes,
+                    mobile_phone, website, company_name, display_name,
+                    customer_type, is_pkp, nik, currency,
+                    ar_opening_balance, opening_balance_date, opening_balance_notes,
+                    created_by
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7,
+                    $8, $9, $10, $11,
+                    $12, $13, $14, $15,
+                    $16, $17, $18, $19,
+                    $20, $21, $22, $23,
+                    $24, $25, $26,
+                    $27
+                )
             """,
-                new_id,
-                ctx["tenant_id"],
-                body.code,
-                body.name,
-                body.phone,
-                body.email,
-                body.address,
+                new_id,                           # $1  id
+                ctx["tenant_id"],                 # $2  tenant_id
+                body.code,                        # $3  nomor_member
+                body.name,                        # $4  nama
+                body.phone,                       # $5  telepon
+                body.email,                       # $6  email
+                body.address,                     # $7  alamat
+                body.contact_person,              # $8  contact_person
+                body.city,                        # $9  city
+                body.province,                    # $10 province
+                body.postal_code,                 # $11 postal_code
+                body.tax_id,                      # $12 tax_id
+                body.payment_terms_days,          # $13 payment_terms_days
+                body.credit_limit,                # $14 credit_limit
+                body.notes,                       # $15 notes
+                body.mobile_phone,                # $16 mobile_phone
+                body.website,                     # $17 website
+                body.company_name,                # $18 company_name
+                body.display_name or body.name,   # $19 display_name (default to name)
+                body.customer_type or "BADAN",    # $20 customer_type
+                body.is_pkp,                      # $21 is_pkp
+                body.nik,                         # $22 nik
+                body.currency or "IDR",           # $23 currency
+                body.ar_opening_balance or 0,    # $24 ar_opening_balance
+                opening_date,                     # $25 opening_balance_date
+                body.opening_balance_notes,       # $26 opening_balance_notes
+                ctx["user_id"],                   # $27 created_by
             )
-            customer_id = new_id
 
-            logger.info(f"Customer created: {customer_id}, name={body.name}")
+            logger.info(f"Customer created: {new_id}, name={body.name}")
 
             return {
                 "success": True,
                 "message": "Customer created successfully",
-                "data": {"id": str(customer_id), "name": body.name, "code": body.code},
+                "data": {"id": str(new_id), "name": body.name, "code": body.code},
             }
 
     except HTTPException:
@@ -411,11 +494,6 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
     except Exception as e:
         logger.error(f"Error creating customer: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create customer")
-
-
-# =============================================================================
-# UPDATE CUSTOMER
-# =============================================================================
 @router.patch("/{customer_id}", response_model=CustomerResponse)
 async def update_customer(
     request: Request, customer_id: str, body: UpdateCustomerRequest
@@ -468,7 +546,7 @@ async def update_customer(
                 "code": "nomor_member",
                 "phone": "telepon",
                 "address": "alamat",
-                "type": "tipe",
+                # New fields use same name in both schema and DB
             }
 
             updates = []
@@ -476,6 +554,17 @@ async def update_customer(
             param_idx = 1
 
             for field, value in update_data.items():
+                # Handle special date field
+                if field == "opening_balance_date" and value:
+                    try:
+                        from datetime import datetime
+                        value = datetime.strptime(value, "%Y-%m-%d").date()
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Invalid opening_balance_date format. Use YYYY-MM-DD"
+                        )
+                
                 db_field = field_mapping.get(field, field)
                 updates.append(f"{db_field} = ${param_idx}")
                 params.append(value)
@@ -486,7 +575,7 @@ async def update_customer(
 
             query = f"""
                 UPDATE customers
-                SET {', '.join(updates)}
+                SET {", ".join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
             """
             await conn.execute(query, *params)
@@ -504,8 +593,6 @@ async def update_customer(
     except Exception as e:
         logger.error(f"Error updating customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update customer")
-
-
 # =============================================================================
 # DELETE CUSTOMER (Soft delete by setting is_active = false)
 # =============================================================================

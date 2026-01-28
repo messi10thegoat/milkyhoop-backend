@@ -65,6 +65,14 @@ class CreateVendorRequest(BaseModel):
     opening_balance_date: Optional[str] = Field(
         None, description="Opening balance date YYYY-MM-DD"
     )
+    
+    # Extended fields (QB/Xero/Zoho aligned)
+    company_name: Optional[str] = Field(None, max_length=255, description="Legal company name")
+    display_name: Optional[str] = Field(None, max_length=255, description="Display name for invoices")
+    mobile_phone: Optional[str] = Field(None, max_length=50, description="Mobile phone number")
+    website: Optional[str] = Field(None, max_length=255, description="Website URL")
+    is_pkp: Optional[bool] = Field(False, description="Is PKP (Pengusaha Kena Pajak)")
+    currency: Optional[str] = Field("IDR", max_length=3, description="Default currency code")
 
     @field_validator("email")
     @classmethod
@@ -117,6 +125,14 @@ class UpdateVendorRequest(BaseModel):
     # Opening balance
     opening_balance: Optional[int] = None
     opening_balance_date: Optional[str] = None
+    
+    # Extended fields (QB/Xero/Zoho aligned)
+    company_name: Optional[str] = None
+    display_name: Optional[str] = None
+    mobile_phone: Optional[str] = None
+    website: Optional[str] = None
+    is_pkp: Optional[bool] = None
+    currency: Optional[str] = None
 
     @field_validator("email")
     @classmethod
@@ -194,6 +210,14 @@ class VendorDetail(BaseModel):
     # Opening balance
     opening_balance: Optional[int] = None
     opening_balance_date: Optional[str] = None
+    
+    # Extended fields
+    company_name: Optional[str] = None
+    display_name: Optional[str] = None
+    mobile_phone: Optional[str] = None
+    website: Optional[str] = None
+    is_pkp: Optional[bool] = None
+    currency: Optional[str] = None
 
     is_active: bool
     created_at: str

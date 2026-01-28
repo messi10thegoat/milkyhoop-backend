@@ -180,7 +180,7 @@ async def check_duplicate(
                     FROM vendors
                     WHERE tenant_id = $1
                       AND is_active = true
-                      AND REPLACE(REPLACE(tax_id, ., ), -, ) = $2
+                      AND REPLACE(REPLACE(tax_id, '.', ''), '-', '') = $2
                 """
                 params = [ctx["tenant_id"], normalized_npwp]
 
@@ -221,9 +221,9 @@ async def list_vendors(
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
-        "name", description="Sort field"
+        "created_at", description="Sort field"
     ),
-    sort_order: Literal["asc", "desc"] = Query("asc", description="Sort order"),
+    sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
 ):
     """
     List vendors with search, filtering, and pagination.
@@ -327,6 +327,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                        default_tax_code, default_pph_type, default_pph_rate,
                        company_name, display_name, mobile_phone, website,
                        currency, opening_balance, opening_balance_date,
+                       bank_name, bank_account_number, bank_account_holder,
                        is_active, created_at, updated_at
                 FROM vendors
                 WHERE id = $1 AND tenant_id = $2
@@ -371,6 +372,10 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "opening_balance_date": row["opening_balance_date"].isoformat()
                     if row["opening_balance_date"]
                     else None,
+                    # Bank details
+                    "bank_name": row["bank_name"],
+                    "bank_account_number": row["bank_account_number"],
+                    "bank_account_holder": row["bank_account_holder"],
                     # Status and timestamps
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
@@ -487,7 +492,26 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
     **Constraints:**
     - Vendor name must be unique within tenant
     - Vendor code (if provided) must be unique within tenant
+
+    **Extended fields (QB/Xero/Zoho aligned):**
+    - company_name, display_name: Legal and display names
+    - mobile_phone, website: Additional contact info
+    - is_pkp, currency: Tax and currency settings
+    - bank_name, bank_account_number, bank_account_holder: Payment details
     """
+    from datetime import datetime, date
+
+    def parse_date(date_str):
+        """Parse date string to date object."""
+        if not date_str:
+            return None
+        if isinstance(date_str, date):
+            return date_str
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -518,7 +542,10 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                         detail=f"Vendor with code '{body.code}' already exists",
                     )
 
-            # Insert vendor (using only columns that exist in the table)
+            # Parse opening_balance_date from string to date
+            opening_date = parse_date(getattr(body, "opening_balance_date", None))
+
+            # Insert vendor with ALL fields including extended columns
             vendor_id = await conn.fetchval(
                 """
                 INSERT INTO vendors (
@@ -526,10 +553,13 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                     address, city, province, postal_code, tax_id,
                     payment_terms_days, credit_limit, notes,
                     vendor_type, opening_balance, opening_balance_date,
+                    company_name, display_name, mobile_phone, website,
+                    is_pkp, currency,
+                    bank_name, bank_account_number, bank_account_holder,
                     created_by
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18
+                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
                 )
                 RETURNING id
                 """,
@@ -549,7 +579,16 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                 getattr(body, "notes", None),
                 getattr(body, "vendor_type", "BADAN"),
                 getattr(body, "opening_balance", 0),
-                getattr(body, "opening_balance_date", None),
+                opening_date,
+                getattr(body, "company_name", None),
+                getattr(body, "display_name", None),
+                getattr(body, "mobile_phone", None),
+                getattr(body, "website", None),
+                getattr(body, "is_pkp", False),
+                getattr(body, "currency", "IDR"),
+                getattr(body, "bank_name", None),
+                getattr(body, "bank_account_number", None),
+                getattr(body, "bank_account_holder", None),
                 ctx["user_id"],
             )
 
@@ -566,8 +605,6 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
     except Exception as e:
         logger.error(f"Error creating vendor: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create vendor")
-
-
 # =============================================================================
 # UPDATE VENDOR
 # =============================================================================
