@@ -294,7 +294,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=invoice_date,
             description=description or f"Invoice - {customer_name}",
-            source_type=SourceType.INVOICE.value,
+            source_type=SourceType.INVOICE,
             source_id=invoice_id,
             trace_id=str(invoice_id),  # String for idempotency
             lines=lines
@@ -339,7 +339,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=bill_date,
             description=description or f"Bill dari {supplier_name}",
-            source_type=SourceType.BILL.value,
+            source_type=SourceType.BILL,
             source_id=bill_id,
             trace_id=str(bill_id),  # String for idempotency
             lines=lines
@@ -385,7 +385,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=payment_date,
             description=description or f"Pembayaran dari {customer_name}",
-            source_type=SourceType.PAYMENT_RECEIVED.value,
+            source_type=SourceType.PAYMENT_RECEIVED,
             source_id=payment_id,
             trace_id=str(payment_id),  # String for idempotency
             lines=lines
@@ -431,7 +431,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=payment_date,
             description=description or f"Pembayaran ke {supplier_name}",
-            source_type=SourceType.PAYMENT_BILL.value,
+            source_type=SourceType.PAYMENT_BILL,
             source_id=payment_id,
             trace_id=str(payment_id),  # String for idempotency
             lines=lines
@@ -482,7 +482,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=expense_date,
             description=description,
-            source_type=SourceType.MANUAL.value,
+            source_type=SourceType.MANUAL,
             source_id=expense_id,
             trace_id=str(expense_id),  # String for idempotency
             lines=lines
@@ -525,7 +525,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=transfer_date,
             description=description or "Transfer antar rekening",
-            source_type=SourceType.MANUAL.value,
+            source_type=SourceType.MANUAL,
             source_id=transfer_id,
             trace_id=str(transfer_id),  # String for idempotency
             lines=lines
@@ -588,7 +588,7 @@ class AutoPostingService:
             tenant_id=tenant_id,
             journal_date=adjustment_date,
             description=f"Penyesuaian Persediaan: {reason}",
-            source_type=SourceType.ADJUSTMENT.value,
+            source_type=SourceType.ADJUSTMENT,
             source_id=adjustment_id,
             trace_id=str(adjustment_id),  # String for idempotency
             lines=lines

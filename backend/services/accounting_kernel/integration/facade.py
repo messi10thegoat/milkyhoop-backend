@@ -997,6 +997,15 @@ class AccountingFacade:
                 description=f"AP Invoice {bill_number}"
             )
 
+            # Check if journal creation succeeded
+            if not journal_result.success:
+                return {
+                    "success": False,
+                    "ap_id": str(ap.id),
+                    "journal_id": None,
+                    "error": f"Journal creation failed: {journal_result.error}"
+                }
+
             return {
                 "success": True,
                 "ap_id": str(ap.id),

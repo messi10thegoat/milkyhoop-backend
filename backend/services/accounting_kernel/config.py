@@ -54,8 +54,8 @@ class AccountingConfig:
     # Default account codes
     CASH_ACCOUNT: str = "1-10100"
     BANK_ACCOUNT: str = "1-10200"
-    AR_ACCOUNT: str = "1-10300"
-    INVENTORY_ACCOUNT: str = "1-10400"
+    AR_ACCOUNT: str = "1-10400"
+    INVENTORY_ACCOUNT: str = "1-10600"
     VAT_INPUT_ACCOUNT: str = "1-10500"
 
     AP_ACCOUNT: str = "2-10100"
