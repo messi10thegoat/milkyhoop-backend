@@ -148,7 +148,7 @@ async def list_customers(
                 conditions.append(
                     f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
                     f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                    f"OR telepon ILIKE \${param_idx})"
+                    f"OR telepon ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1

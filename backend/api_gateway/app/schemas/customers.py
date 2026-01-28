@@ -91,6 +91,7 @@ class UpdateCustomerRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     company_name: Optional[str] = None
     display_name: Optional[str] = None
+    display_name: Optional[str] = None
     
     # Contact info
     contact_person: Optional[str] = None
@@ -145,6 +146,7 @@ class CustomerListItem(BaseModel):
     code: Optional[str] = None
     name: str
     company_name: Optional[str] = None
+    display_name: Optional[str] = None
     customer_type: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -182,6 +184,7 @@ class CustomerDetail(BaseModel):
     code: Optional[str] = None
     name: str
     company_name: Optional[str] = None
+    display_name: Optional[str] = None
     display_name: Optional[str] = None
     
     # Contact
@@ -262,6 +265,7 @@ class CustomerAutocompleteItem(BaseModel):
     code: Optional[str] = None
     phone: Optional[str] = None
     company_name: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class CustomerAutocompleteResponse(BaseModel):

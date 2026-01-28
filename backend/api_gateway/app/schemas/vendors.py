@@ -153,6 +153,21 @@ class VendorListItem(BaseModel):
     id: str
     code: Optional[str] = None
     name: str
+    company_name: Optional[str] = None
+    display_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    payment_terms_days: int
+    is_active: bool
+    created_at: str
+
+
+    """Vendor item for list responses."""
+
+    id: str
+    code: Optional[str] = None
+    name: str
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
