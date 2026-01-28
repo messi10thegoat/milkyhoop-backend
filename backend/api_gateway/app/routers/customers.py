@@ -682,3 +682,227 @@ async def get_customer_available_deposits(
     except Exception as e:
         logger.error(f"Error getting available deposits for customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get available deposits")
+
+
+# =============================================================================
+# CUSTOMER NEXT CODE (for form auto-generation)
+# =============================================================================
+
+@router.get("/next-code")
+async def get_next_customer_code(request: Request):
+    """Get the next available customer code for auto-generation."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT nomor_member FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                ctx["tenant_id"]
+            )
+            import re
+            if row and row["nomor_member"]:
+                match = re.match(r"^([A-Z]*)([0-9]+)$", row["nomor_member"])
+                if match:
+                    prefix = match.group(1) or "C"
+                    num = int(match.group(2)) + 1
+                    next_code = f"{prefix}{num:04d}"
+                else:
+                    next_code = "C0001"
+            else:
+                next_code = "C0001"
+            return {"success": True, "next_code": next_code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting next customer code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get next code")
+
+
+# =============================================================================
+# CUSTOMER TRANSACTIONS HISTORY
+# =============================================================================
+
+@router.get("/{customer_id}/transactions")
+async def get_customer_transactions(
+    request: Request,
+    customer_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Get transaction history for a customer."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        offset = (page - 1) * limit
+        async with pool.acquire() as conn:
+            customer = await conn.fetchrow(
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id, ctx["tenant_id"]
+            )
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            rows = await conn.fetch("""
+                SELECT * FROM (
+                    SELECT id::text, 'sales_invoice' as type, invoice_number as number,
+                        invoice_date as date, total_amount as amount, 'Invoice' as description, status
+                    FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
+                    UNION ALL
+                    SELECT id::text, 'payment' as type, payment_number as number,
+                        payment_date as date, amount, 'Payment' as description, status
+                    FROM receive_payments WHERE tenant_id = $1 AND customer_id::text = $2
+                ) t ORDER BY date DESC LIMIT $3 OFFSET $4
+            """, ctx["tenant_id"], customer_id, limit, offset)
+            count = await conn.fetchval("""
+                SELECT COUNT(*) FROM (
+                    SELECT id FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
+                    UNION ALL SELECT id FROM receive_payments WHERE tenant_id = $1 AND customer_id::text = $2
+                ) t
+            """, ctx["tenant_id"], customer_id)
+            transactions = [
+                {"id": row["id"], "type": row["type"], "number": row["number"],
+                 "date": row["date"].isoformat() if row["date"] else None,
+                 "amount": row["amount"], "description": row["description"], "status": row["status"]}
+                for row in rows
+            ]
+            return {"transactions": transactions, "total": count, "page": page, "limit": limit, "has_more": offset + limit < count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get transactions")
+
+
+# =============================================================================
+# CUSTOMER CREDIT INFO
+# =============================================================================
+
+@router.get("/{customer_id}/credit")
+async def get_customer_credit(request: Request, customer_id: str):
+    """Get customer's credit limit and usage information."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            customer = await conn.fetchrow(
+                "SELECT id, nama, saldo_hutang, credit_limit FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id, ctx["tenant_id"]
+            )
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            credit_limit = customer["credit_limit"] or 0
+            used_credit = customer["saldo_hutang"] or 0
+            return {"credit_limit": credit_limit, "used_credit": used_credit, "available_credit": max(0, credit_limit - used_credit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting credit: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get credit info")
+
+
+# =============================================================================
+# CUSTOMER OPENING BALANCE
+# =============================================================================
+
+@router.post("/{customer_id}/opening-balance")
+async def set_customer_opening_balance(request: Request, customer_id: str):
+    """Set or update customer opening AR balance."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        amount = body.get("amount", 0)
+        async with pool.acquire() as conn:
+            customer = await conn.fetchrow(
+                "SELECT id FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id, ctx["tenant_id"]
+            )
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            await conn.execute(
+                "UPDATE customers SET saldo_hutang = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                amount, customer_id, ctx["tenant_id"]
+            )
+            return {"success": True, "message": "Opening balance updated", "data": {"customer_id": customer_id, "amount": amount}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting opening balance: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to set opening balance")
+
+
+# =============================================================================
+# CUSTOMER MERGE PREVIEW
+# =============================================================================
+
+@router.post("/merge/preview")
+async def preview_customer_merge(request: Request):
+    """Preview what will happen when merging customers."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        source_ids = body.get("source_ids", [])
+        target_id = body.get("target_id")
+        if not source_ids or not target_id:
+            raise HTTPException(status_code=400, detail="source_ids and target_id required")
+        async with pool.acquire() as conn:
+            sources = await conn.fetch(
+                "SELECT id, nama, nomor_member, total_transaksi, saldo_hutang FROM customers WHERE id = ANY($1) AND tenant_id = $2",
+                source_ids, ctx["tenant_id"]
+            )
+            target = await conn.fetchrow(
+                "SELECT id, nama, nomor_member FROM customers WHERE id = $1 AND tenant_id = $2",
+                target_id, ctx["tenant_id"]
+            )
+            if not target:
+                raise HTTPException(status_code=404, detail="Target not found")
+            invoice_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND customer_id = ANY($2)",
+                ctx["tenant_id"], source_ids
+            )
+            return {
+                "success": True,
+                "preview": {
+                    "source_customers": [{"id": str(s["id"]), "name": s["nama"]} for s in sources],
+                    "target_customer": {"id": str(target["id"]), "name": target["nama"]},
+                    "records_to_move": {"invoices": invoice_count}
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing merge: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview merge")
+
+
+# =============================================================================
+# CUSTOMER MERGE EXECUTE
+# =============================================================================
+
+@router.post("/merge")
+async def merge_customers(request: Request):
+    """Merge multiple customers into one target customer."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        source_ids = body.get("source_ids", [])
+        target_id = body.get("target_id")
+        if not source_ids or not target_id:
+            raise HTTPException(status_code=400, detail="source_ids and target_id required")
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE sales_invoices SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
+                    target_id, ctx["tenant_id"], source_ids
+                )
+                await conn.execute(
+                    "UPDATE customers SET is_active = false WHERE id = ANY($1) AND tenant_id = $2",
+                    source_ids, ctx["tenant_id"]
+                )
+            return {"success": True, "message": f"Merged {len(source_ids)} customers", "target_id": target_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error merging: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to merge")

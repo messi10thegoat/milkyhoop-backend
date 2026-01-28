@@ -766,3 +766,168 @@ async def delete_vendor(request: Request, vendor_id: UUID):
     except Exception as e:
         logger.error(f"Error deleting vendor {vendor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete vendor")
+
+
+# =============================================================================
+# VENDOR NEXT CODE (for form auto-generation)
+# =============================================================================
+
+@router.get("/next-code")
+async def get_next_vendor_code(request: Request):
+    """Get the next available vendor code for auto-generation."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT code FROM vendors WHERE tenant_id = $1 AND code IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                ctx["tenant_id"]
+            )
+            import re
+            if row and row["code"]:
+                match = re.match(r"^([A-Z]*)([0-9]+)$", row["code"])
+                if match:
+                    prefix = match.group(1) or "V"
+                    num = int(match.group(2)) + 1
+                    next_code = f"{prefix}{num:04d}"
+                else:
+                    next_code = "V0001"
+            else:
+                next_code = "V0001"
+            return {"success": True, "next_code": next_code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting next vendor code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get next code")
+
+
+# =============================================================================
+# VENDOR TRANSACTIONS HISTORY
+# =============================================================================
+
+@router.get("/{vendor_id}/transactions")
+async def get_vendor_transactions(
+    request: Request,
+    vendor_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Get transaction history for a vendor."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        offset = (page - 1) * limit
+        async with pool.acquire() as conn:
+            vendor = await conn.fetchrow(
+                "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                vendor_id, ctx["tenant_id"]
+            )
+            if not vendor:
+                raise HTTPException(status_code=404, detail="Vendor not found")
+            rows = await conn.fetch("""
+                SELECT * FROM (
+                    SELECT id::text, 'bill' as type, bill_number as number,
+                        bill_date as date, total_amount as amount, 'Bill' as description, status
+                    FROM bills WHERE tenant_id = $1 AND vendor_id::text = $2
+                    UNION ALL
+                    SELECT id::text, 'purchase_order' as type, po_number as number,
+                        order_date as date, total_amount as amount, 'Purchase Order' as description, status
+                    FROM purchase_orders WHERE tenant_id = $1 AND vendor_id::text = $2
+                ) t ORDER BY date DESC LIMIT $3 OFFSET $4
+            """, ctx["tenant_id"], vendor_id, limit, offset)
+            count = await conn.fetchval("""
+                SELECT COUNT(*) FROM (
+                    SELECT id FROM bills WHERE tenant_id = $1 AND vendor_id::text = $2
+                    UNION ALL SELECT id FROM purchase_orders WHERE tenant_id = $1 AND vendor_id::text = $2
+                ) t
+            """, ctx["tenant_id"], vendor_id)
+            transactions = [
+                {"id": row["id"], "type": row["type"], "number": row["number"],
+                 "date": row["date"].isoformat() if row["date"] else None,
+                 "amount": row["amount"], "description": row["description"], "status": row["status"]}
+                for row in rows
+            ]
+            return {"transactions": transactions, "total": count, "page": page, "limit": limit, "has_more": offset + limit < count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting vendor transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get transactions")
+
+
+# =============================================================================
+# VENDOR OPEN BILLS (for pay bills feature)
+# =============================================================================
+
+@router.get("/{vendor_id}/open-bills")
+async def get_vendor_open_bills(request: Request, vendor_id: str):
+    """Get open (unpaid/partially paid) bills for a vendor."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    id, bill_number, bill_date, due_date,
+                    total_amount, amount_paid,
+                    total_amount - COALESCE(amount_paid, 0) as remaining_amount,
+                    CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue
+                FROM bills
+                WHERE tenant_id = $1
+                  AND vendor_id::text = $2
+                  AND status IN ('posted', 'partial', 'overdue')
+                  AND total_amount > COALESCE(amount_paid, 0)
+                ORDER BY due_date ASC
+            """, ctx["tenant_id"], vendor_id)
+            bills = [
+                {
+                    "id": str(row["id"]),
+                    "bill_number": row["bill_number"],
+                    "bill_date": row["bill_date"].isoformat(),
+                    "due_date": row["due_date"].isoformat(),
+                    "total_amount": row["total_amount"],
+                    "paid_amount": row["amount_paid"] or 0,
+                    "remaining_amount": row["remaining_amount"],
+                    "is_overdue": row["is_overdue"],
+                }
+                for row in rows
+            ]
+            total_outstanding = sum(b["remaining_amount"] for b in bills)
+            return {"bills": bills, "total_outstanding": total_outstanding}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting open bills: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get open bills")
+
+
+# =============================================================================
+# VENDOR OPENING BALANCE
+# =============================================================================
+
+@router.post("/{vendor_id}/opening-balance")
+async def set_vendor_opening_balance(request: Request, vendor_id: str):
+    """Set or update vendor opening AP balance."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+        amount = body.get("amount", 0)
+        async with pool.acquire() as conn:
+            vendor = await conn.fetchrow(
+                "SELECT id FROM vendors WHERE id = $1 AND tenant_id = $2",
+                vendor_id, ctx["tenant_id"]
+            )
+            if not vendor:
+                raise HTTPException(status_code=404, detail="Vendor not found")
+            await conn.execute(
+                "UPDATE vendors SET balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                amount, vendor_id, ctx["tenant_id"]
+            )
+            return {"success": True, "message": "Opening balance updated", "data": {"vendor_id": vendor_id, "amount": amount}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting opening balance: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to set opening balance")

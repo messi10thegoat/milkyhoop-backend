@@ -87,6 +87,28 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
+
+async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
+    """Check if the accounting period for the transaction date is open."""
+    period = await conn.fetchrow(
+        """
+        SELECT id, period_name, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+        ORDER BY start_date DESC LIMIT 1
+        """,
+        tenant_id,
+        transaction_date,
+    )
+
+    if period and period["status"] in ("CLOSED", "LOCKED"):
+        period_name = period["period_name"]
+        period_status = period["status"].lower()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot post to {period_status} period ({period_name})"
+        )
+
+
 # =============================================================================
 # LIST RECEIVE PAYMENTS
 # =============================================================================
@@ -419,6 +441,10 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
+
+                # Check if accounting period is open (only if not saving as draft)
+                if not body.save_as_draft:
+                    await check_period_is_open(conn, ctx["tenant_id"], body.payment_date)
 
                 # Validate bank account exists and is asset type
                 bank_account = await conn.fetchrow(
