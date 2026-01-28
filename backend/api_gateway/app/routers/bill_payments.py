@@ -650,8 +650,14 @@ async def void_bill_payment(
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # Get full payment details including account IDs
                 payment = await conn.fetchrow(
-                    "SELECT id, payment_number, payment_date, status FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
+                    """
+                    SELECT bp.*, ba.coa_id as bank_coa_id
+                    FROM bill_payments_v2 bp
+                    LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+                    WHERE bp.id = $1::uuid AND bp.tenant_id = $2
+                    """,
                     payment_id,
                     ctx["tenant_id"],
                 )
@@ -667,6 +673,123 @@ async def void_bill_payment(
                     conn, ctx["tenant_id"], payment["payment_date"]
                 )
 
+                # Get AP account (Hutang Usaha)
+                ap_account_id = await conn.fetchval(
+                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '2-10100'",
+                    ctx["tenant_id"],
+                )
+                if not ap_account_id:
+                    raise HTTPException(
+                        status_code=500, detail="AP account not found in chart of accounts"
+                    )
+
+                # Calculate amounts for journal
+                allocated_amount = payment["allocated_amount"] or 0
+                discount_amount = payment["discount_amount"] or 0
+                bank_fee_amount = payment["bank_fee_amount"] or 0
+                total_amount = payment["total_amount"] or 0
+                bank_coa_id = payment["bank_coa_id"]
+
+                # Generate void journal number
+                void_journal_number = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
+                )
+                if not void_journal_number:
+                    void_journal_number = f"VD-{payment['payment_number']}"
+
+                void_journal_id = uuid_module.uuid4()
+
+                # Calculate total for journal (must balance)
+                # Reversing entry is OPPOSITE of original payment journal:
+                # Original: Dr AP, Dr BankFee, Cr Bank, Cr Discount
+                # Reversal: Cr AP, Cr BankFee, Dr Bank, Dr Discount
+                journal_total = float(total_amount + bank_fee_amount)
+
+                # Create reversing journal entry header
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date,
+                        description, source_type, source_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BILL_PAYMENT_VOID', $5::uuid, 'POSTED', $6, $6, $7)
+                    """,
+                    void_journal_id,
+                    ctx["tenant_id"],
+                    void_journal_number,
+                    f"Void {payment['payment_number']} - {payment['vendor_name']} - {payload.void_reason}",
+                    payment_id,
+                    journal_total,
+                    ctx["user_id"],
+                )
+
+                line_number = 0
+
+                # Dr. Bank/Cash (reverses the original credit to bank)
+                if bank_coa_id and (total_amount + bank_fee_amount) > 0:
+                    line_number += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid_module.uuid4(),
+                        void_journal_id,
+                        line_number,
+                        bank_coa_id,
+                        float(total_amount + bank_fee_amount),
+                        f"Reversal - Bank {payment['bank_account_name'] or ''}",
+                    )
+
+                # Dr. Potongan Pembelian / Purchase Discount (reverses the original credit)
+                if discount_amount > 0 and payment.get("discount_account_id"):
+                    line_number += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid_module.uuid4(),
+                        void_journal_id,
+                        line_number,
+                        payment["discount_account_id"],
+                        float(discount_amount),
+                        "Reversal - Purchase Discount",
+                    )
+
+                # Cr. Accounts Payable (reverses the original debit)
+                if allocated_amount > 0:
+                    line_number += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        uuid_module.uuid4(),
+                        void_journal_id,
+                        line_number,
+                        ap_account_id,
+                        float(allocated_amount),
+                        f"Reversal - AP {payment['vendor_name']}",
+                    )
+
+                # Cr. Biaya Bank / Bank Fee (reverses the original debit)
+                if bank_fee_amount > 0 and payment.get("bank_fee_account_id"):
+                    line_number += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        uuid_module.uuid4(),
+                        void_journal_id,
+                        line_number,
+                        payment["bank_fee_account_id"],
+                        float(bank_fee_amount),
+                        "Reversal - Bank Fee",
+                    )
+
+                # Reverse bill allocations (reduce paid_amount on bills)
                 allocations = await conn.fetch(
                     "SELECT bill_id, amount_applied FROM bill_payment_allocations WHERE payment_id = $1::uuid",
                     payment_id,
@@ -685,17 +808,34 @@ async def void_bill_payment(
                         alloc["bill_id"],
                     )
 
+                # Update payment status and link void journal
                 await conn.execute(
-                    "UPDATE bill_payments_v2 SET status = 'voided', voided_at = NOW(), voided_by = $1, void_reason = $2, updated_at = NOW() WHERE id = $3::uuid",
+                    """
+                    UPDATE bill_payments_v2
+                    SET status = 'voided',
+                        void_journal_id = $1,
+                        voided_at = NOW(),
+                        voided_by = $2,
+                        void_reason = $3,
+                        updated_at = NOW()
+                    WHERE id = $4::uuid
+                    """,
+                    void_journal_id,
                     ctx["user_id"],
                     payload.void_reason,
                     payment_id,
                 )
 
+                logger.info(f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}")
+
                 return BillPaymentResponse(
                     success=True,
                     message=f"Payment {payment['payment_number']} voided",
-                    data={"id": payment_id, "status": "voided"},
+                    data={
+                        "id": payment_id,
+                        "status": "voided",
+                        "void_journal_id": str(void_journal_id),
+                    },
                 )
     except HTTPException:
         raise
