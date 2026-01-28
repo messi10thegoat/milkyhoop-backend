@@ -649,7 +649,7 @@ async def get_session_statistics(conn, session_id: UUID) -> SessionStatistics:
             COUNT(*) FILTER (WHERE is_cleared = true) as matched_transactions,
             COUNT(*) FILTER (WHERE is_cleared = false) as unmatched_transactions
         FROM bank_transactions bt
-        JOIN reconciliation_sessions rs ON bt.account_id = rs.account_id
+        JOIN reconciliation_sessions rs ON bt.bank_account_id = rs.account_id
         WHERE rs.id = $1
           AND bt.transaction_date BETWEEN rs.statement_start_date AND rs.statement_end_date
         """,
@@ -1214,12 +1214,12 @@ async def list_statement_lines(
                 f"""
                 SELECT
                     bsl.id,
-                    bsl.line_number,
-                    bsl.transaction_date,
+                    ROW_NUMBER() OVER (ORDER BY bsl.date) as line_number,
+                    bsl.date as transaction_date,
                     bsl.description,
                     bsl.reference,
                     bsl.amount,
-                    bsl.is_credit,
+                    CASE WHEN bsl.type = 'credit' THEN true ELSE false END as is_credit,
                     bsl.running_balance,
                     bsl.match_status,
                     bsl.created_at,
@@ -1228,7 +1228,7 @@ async def list_statement_lines(
                 FROM bank_statement_lines_v2 bsl
                 LEFT JOIN reconciliation_matches rm ON rm.statement_line_id = bsl.id
                 WHERE {where_clause}
-                ORDER BY bsl.line_number
+                ORDER BY bsl.date
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
                 """,
                 *params,
@@ -1254,7 +1254,7 @@ async def list_statement_lines(
                         line_number=row["line_number"],
                         transaction_date=str(row["transaction_date"]),
                         description=row["description"] or "",
-                        reference=row["reference"],
+                        reference=row['reference_number'],
                         amount=row["amount"],
                         is_credit=row["is_credit"],
                         running_balance=row["running_balance"],
@@ -1317,7 +1317,7 @@ async def list_transactions(
                 raise HTTPException(status_code=404, detail="Session not found")
 
             conditions = [
-                "bt.account_id = $1",
+                "bt.bank_account_id = $1",
                 "bt.tenant_id = $2",
                 "bt.transaction_date >= $3",
                 "bt.transaction_date <= $4",
@@ -1342,7 +1342,7 @@ async def list_transactions(
 
             if search:
                 conditions.append(
-                    f"(bt.description ILIKE ${param_idx} OR bt.reference ILIKE ${param_idx})"
+                    f"(bt.description ILIKE ${param_idx} OR bt.reference_number ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
@@ -1362,17 +1362,16 @@ async def list_transactions(
                     bt.transaction_type,
                     bt.transaction_date,
                     bt.description,
-                    bt.reference,
+                    bt.reference_number,
                     bt.amount,
-                    bt.is_credit,
-                    bt.source_type,
-                    bt.source_id,
-                    bt.source_number,
+                    CASE WHEN bt.amount >= 0 THEN true ELSE false END as is_credit,
+                    bt.reference_type as source_type,
+                    bt.reference_id as source_id,
+                    bt.reference_number as source_number,
                     bt.is_cleared,
                     bt.matched_statement_line_id,
-                    c.name as contact_name
+                    bt.payee_payer as contact_name
                 FROM bank_transactions bt
-                LEFT JOIN contacts c ON c.id = bt.contact_id
                 WHERE {where_clause}
                 ORDER BY bt.transaction_date DESC, bt.created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -1398,7 +1397,7 @@ async def list_transactions(
                         transaction_type=row["transaction_type"] or "other",
                         transaction_date=str(row["transaction_date"]),
                         description=row["description"],
-                        reference=row["reference"],
+                        reference=row['reference_number'],
                         amount=row["amount"],
                         is_credit=row["is_credit"],
                         source_type=row["source_type"] or "manual",
@@ -1452,7 +1451,7 @@ async def create_match(
 
             # Verify statement line
             statement_line = await conn.fetchrow(
-                "SELECT id, amount, is_credit, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
+                "SELECT id, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
                 UUID(body.statement_line_id),
                 session_id,
             )
@@ -1469,7 +1468,7 @@ async def create_match(
             tx_ids = [UUID(tx_id) for tx_id in body.transaction_ids]
             transactions = await conn.fetch(
                 """
-                SELECT id, amount, is_credit, is_cleared
+                SELECT id, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit, is_cleared
                 FROM bank_transactions
                 WHERE id = ANY($1) AND account_id = $2 AND tenant_id = $3
                 """,
@@ -1708,7 +1707,7 @@ async def auto_match(
             # Get unmatched statement lines
             unmatched_lines = await conn.fetch(
                 """
-                SELECT id, transaction_date, description, reference, amount, is_credit
+                SELECT id, date as transaction_date, description, reference, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit
                 FROM bank_statement_lines_v2
                 WHERE session_id = $1 AND match_status = 'unmatched'
                 ORDER BY transaction_date
@@ -1719,7 +1718,7 @@ async def auto_match(
             # Get uncleared transactions
             uncleared_txs = await conn.fetch(
                 """
-                SELECT id, transaction_date, description, reference, amount, is_credit
+                SELECT id, transaction_date, description, reference_number as reference, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit
                 FROM bank_transactions
                 WHERE account_id = $1
                   AND tenant_id = $2
@@ -1913,7 +1912,7 @@ async def create_transaction_from_line(
             # Get statement line
             statement_line = await conn.fetchrow(
                 """
-                SELECT id, transaction_date, description, reference, amount, is_credit, match_status
+                SELECT id, date as transaction_date, description, reference, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status
                 FROM bank_statement_lines_v2
                 WHERE id = $1 AND session_id = $2
                 """,
