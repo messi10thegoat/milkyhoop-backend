@@ -86,7 +86,7 @@ async def autocomplete_customers(
                 SELECT id, nama, nomor_member, telepon
                 FROM customers
                 WHERE tenant_id = $1
-                  AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR telepon ILIKE $2)
+                  AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR telepon ILIKE $2)
                 ORDER BY nama ASC
                 LIMIT $3
             """
@@ -96,6 +96,8 @@ async def autocomplete_customers(
                 {
                     "id": str(row["id"]),
                     "name": row["nama"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "code": row["nomor_member"],
                     "phone": row["telepon"],
                 }
@@ -121,6 +123,7 @@ async def list_customers(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     tipe: Optional[str] = Query(None, description="Filter by customer type"),
+    is_active: bool = Query(True, description="Filter by active status"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
         "created_at", description="Sort field"
     ),
@@ -144,7 +147,8 @@ async def list_customers(
             if search:
                 conditions.append(
                     f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
-                    f"OR telepon ILIKE ${param_idx})"
+                    f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                    f"OR telepon ILIKE \${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
@@ -153,6 +157,11 @@ async def list_customers(
                 conditions.append(f"tipe = ${param_idx}")
                 params.append(tipe)
                 param_idx += 1
+
+            # Filter by is_active (defaults to True, showing only active customers)
+            conditions.append(f"is_active = ${param_idx}")
+            params.append(is_active)
+            param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -172,8 +181,8 @@ async def list_customers(
 
             # Get items
             query = f"""
-                SELECT id, nomor_member, nama, tipe, telepon, email, alamat,
-                       points, total_transaksi, total_nilai, saldo_hutang, created_at
+                SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
+                       points, total_transaksi, total_nilai, saldo_hutang, is_active, created_at
                 FROM customers
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -188,6 +197,8 @@ async def list_customers(
                     "id": str(row["id"]),
                     "code": row["nomor_member"],
                     "name": row["nama"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "type": row["tipe"],
                     "phone": row["telepon"],
                     "email": row["email"],
@@ -196,6 +207,7 @@ async def list_customers(
                     "total_transactions": row["total_transaksi"],
                     "total_value": row["total_nilai"],
                     "outstanding_balance": row["saldo_hutang"],
+                    "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat()
                     if row["created_at"]
                     else None,
@@ -224,7 +236,7 @@ async def get_customer(request: Request, customer_id: str):
 
         async with pool.acquire() as conn:
             query = """
-                SELECT id, nomor_member, nama, tipe, telepon, email, alamat,
+                SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
                        points, points_per_50k, total_transaksi, total_nilai,
                        saldo_hutang, last_transaction_at, created_at, updated_at,
                        default_currency_id, is_active,
@@ -247,6 +259,8 @@ async def get_customer(request: Request, customer_id: str):
                     "id": str(row["id"]),
                     "code": row["nomor_member"],
                     "name": row["nama"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "company_name": row["company_name"],
                     "display_name": row["display_name"],
                     

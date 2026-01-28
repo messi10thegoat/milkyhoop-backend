@@ -2350,51 +2350,95 @@ async def get_item_journal_entries(
         offset = (page - 1) * limit
 
         async with pool.acquire() as conn:
+            # Verify item exists
             item = await conn.fetchrow(
-                "SELECT id, name FROM products WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, nama_produk as name FROM products WHERE id = $1 AND tenant_id = $2",
                 item_id,
                 ctx["tenant_id"],
             )
+            
             if not item:
                 raise HTTPException(status_code=404, detail="Item not found")
 
             # Get journal entries that reference this item
-            rows = await conn.fetch(
+            entries = await conn.fetch(
                 """
-                SELECT
-                    j.id, j.journal_number, j.journal_date, j.description,
-                    jl.account_id, jl.debit, jl.credit,
-                    a.name as account_name
-                FROM journal_entries j
-                JOIN journal_lines jl ON jl.journal_id = j.id
-                LEFT JOIN chart_of_accounts a ON a.id = jl.account_id
-                WHERE j.tenant_id = $1
-                  AND 1=0 -- item_id tracking not implemented
-                ORDER BY j.journal_date DESC, j.created_at DESC
+                SELECT DISTINCT
+                    je.id,
+                    je.journal_number,
+                    je.journal_date,
+                    je.description,
+                    je.created_at
+                FROM journal_entries je
+                INNER JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE je.tenant_id = $1
+                    AND jl.item_id = $2
+                    AND je.status = 'POSTED'
+                ORDER BY je.journal_date DESC, je.created_at DESC
                 LIMIT $3 OFFSET $4
-            """,
+                """,
                 ctx["tenant_id"],
                 item_id,
                 limit,
                 offset,
             )
 
-            entries = [
-                {
-                    "id": str(row["id"]),
-                    "journal_number": row["journal_number"],
-                    "date": row["journal_date"].isoformat()
-                    if row["journal_date"]
-                    else None,
-                    "description": row["description"],
-                    "account_name": row["account_name"],
-                    "debit": row["debit"],
-                    "credit": row["credit"],
-                }
-                for row in rows
-            ]
+            # Get total count
+            total = await conn.fetchval(
+                """
+                SELECT COUNT(DISTINCT je.id)
+                FROM journal_entries je
+                INNER JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE je.tenant_id = $1
+                    AND jl.item_id = $2
+                    AND je.status = 'POSTED'
+                """,
+                ctx["tenant_id"],
+                item_id,
+            )
 
-            return {"success": True, "entries": entries, "page": page, "limit": limit}
+            # Build response with lines for each entry
+            result_entries = []
+            for entry in entries:
+                # Get lines for this journal entry
+                lines = await conn.fetch(
+                    """
+                    SELECT
+                        jl.line_number,
+                        a.account_code,
+                        a.name as account_name,
+                        jl.memo,
+                        jl.debit,
+                        jl.credit
+                    FROM journal_lines jl
+                    INNER JOIN chart_of_accounts a ON a.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                    """,
+                    entry["id"],
+                )
+
+                result_entries.append({
+                    "id": str(entry["id"]),
+                    "date": entry["journal_date"].isoformat(),
+                    "reference": entry["journal_number"],
+                    "description": entry["description"],
+                    "lines": [
+                        {
+                            "accountName": f"{line['account_code']} - {line['account_name']}",
+                            "debit": float(line["debit"]),
+                            "credit": float(line["credit"]),
+                        }
+                        for line in lines
+                    ],
+                })
+
+            return {
+                "success": True,
+                "entries": result_entries,
+                "total": total or 0
+            }
+
     except HTTPException:
         raise
     except Exception as e:

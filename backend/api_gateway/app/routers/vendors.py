@@ -88,7 +88,7 @@ async def autocomplete_vendors(
                 FROM vendors
                 WHERE tenant_id = $1
                   AND is_active = true
-                  AND (name ILIKE $2 OR code ILIKE $2 OR phone ILIKE $2)
+                  AND (name ILIKE $2 OR code ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR phone ILIKE $2)
                 ORDER BY name ASC
                 LIMIT $3
             """
@@ -98,6 +98,8 @@ async def autocomplete_vendors(
                 {
                     "id": str(row["id"]),
                     "name": row["name"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "code": row["code"],
                     "phone": row["phone"],
                 }
@@ -164,6 +166,8 @@ async def check_duplicate(
                     {
                         "id": str(row["id"]),
                         "name": row["name"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                         "company": row["company_name"],
                         "npwp": row["tax_id"],
                     }
@@ -195,6 +199,8 @@ async def check_duplicate(
                     {
                         "id": str(row["id"]),
                         "name": row["name"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                         "company": row["company_name"],
                         "npwp": row["tax_id"],
                     }
@@ -219,7 +225,7 @@ async def list_vendors(
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    is_active: bool = Query(True, description="Filter by active status"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
         "created_at", description="Sort field"
     ),
@@ -244,6 +250,7 @@ async def list_vendors(
             if search:
                 conditions.append(
                     f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
+                    f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
                     f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
@@ -272,7 +279,7 @@ async def list_vendors(
 
             # Get items
             query = f"""
-                SELECT id, code, name, contact_person, phone, email,
+                SELECT id, code, name, company_name, display_name, contact_person, phone, email,
                        payment_terms_days, is_active, created_at
                 FROM vendors
                 WHERE {where_clause}
@@ -288,6 +295,8 @@ async def list_vendors(
                     "id": str(row["id"]),
                     "code": row["code"],
                     "name": row["name"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "contact_person": row["contact_person"],
                     "phone": row["phone"],
                     "email": row["email"],
@@ -320,7 +329,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
         async with pool.acquire() as conn:
             # Query only columns that exist in the vendors table
             query = """
-                SELECT id, code, name, contact_person, phone, email,
+                SELECT id, code, name, company_name, display_name, contact_person, phone, email,
                        address, city, province, postal_code, tax_id,
                        payment_terms_days, credit_limit, notes,
                        vendor_type, nik, is_pkp,
@@ -343,6 +352,8 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "id": str(row["id"]),
                     "code": row["code"],
                     "name": row["name"],
+                    "company_name": row["company_name"],
+                    "display_name": row["display_name"],
                     "contact_person": row["contact_person"],
                     "phone": row["phone"],
                     "email": row["email"],
