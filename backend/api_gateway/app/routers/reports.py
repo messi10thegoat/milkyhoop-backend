@@ -2122,7 +2122,7 @@ async def get_timing_differences(
                     b.id,
                     b.bill_number,
                     v.name as vendor_name,
-                    b.bill_date,
+                    b.issue_date,
                     b.due_date,
                     b.grand_total as total_amount,
                     b.amount_paid as paid_amount,
@@ -2131,8 +2131,8 @@ async def get_timing_differences(
                 LEFT JOIN vendors v ON v.id = b.vendor_id
                 WHERE b.tenant_id = $1
                 AND b.status IN ('approved', 'partial', 'overdue')
-                AND b.bill_date <= $2
-                ORDER BY b.bill_date
+                AND b.issue_date <= $2
+                ORDER BY b.issue_date
             """,
                 tenant_id,
                 as_of_date,
@@ -2967,15 +2967,15 @@ async def get_pendapatan_report(
             revenue_by_category = await conn.fetch(
                 """
                 SELECT
-                    COALESCE(i.category, 'Uncategorized') as category,
-                    SUM(sil.amount) as total
-                FROM sales_invoice_lines sil
-                JOIN sales_invoices si ON si.id = sil.invoice_id
-                LEFT JOIN items i ON i.id = sil.item_id
+                    COALESCE(p.kategori, 'Uncategorized') as category,
+                    SUM(sii.total) as total
+                FROM sales_invoice_items sii
+                JOIN sales_invoices si ON si.id = sii.invoice_id
+                LEFT JOIN products p ON p.id = sii.item_id
                 WHERE si.tenant_id = $1
                   AND si.invoice_date BETWEEN $2 AND $3
                   AND si.status IN ('posted', 'paid', 'partial')
-                GROUP BY COALESCE(i.category, 'Uncategorized')
+                GROUP BY COALESCE(p.kategori, 'Uncategorized')
                 ORDER BY total DESC
             """,
                 ctx["tenant_id"],
@@ -3039,6 +3039,10 @@ async def get_cash_flow_report(
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        # Parse string dates to date objects for asyncpg
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+
         async with pool.acquire() as conn:
             # Operating Activities - Inflows
             customer_receipts = await conn.fetchval(
@@ -3050,8 +3054,8 @@ async def get_cash_flow_report(
                   AND status = 'posted'
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             # Operating Activities - Outflows
@@ -3064,8 +3068,8 @@ async def get_cash_flow_report(
 
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             expenses = await conn.fetchval(
@@ -3077,8 +3081,8 @@ async def get_cash_flow_report(
                   AND status = 'posted'
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             operating_net = customer_receipts - vendor_payments - expenses
@@ -3094,8 +3098,8 @@ async def get_cash_flow_report(
 
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             bank_transfers_out = await conn.fetchval(
@@ -3108,8 +3112,8 @@ async def get_cash_flow_report(
 
             """,
                 ctx["tenant_id"],
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             financing_net = (bank_transfers_in or 0) - (bank_transfers_out or 0)
@@ -3208,13 +3212,18 @@ async def get_balance_sheet(
 
             inventory = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(current_stock * COALESCE(purchase_price, 0)), 0)
-                FROM items
-                WHERE tenant_id = $1
-                  AND item_type = 'inventory'
-                  AND is_active = true
+                SELECT COALESCE(SUM(il.quantity_balance * il.unit_cost), 0)
+                FROM inventory_ledger il
+                INNER JOIN (
+                    SELECT product_id, MAX(created_at) as max_created
+                    FROM inventory_ledger
+                    WHERE tenant_id = $1 AND movement_date <= $2
+                    GROUP BY product_id
+                ) latest ON il.product_id = latest.product_id AND il.created_at = latest.max_created
+                WHERE il.tenant_id = $1 AND il.quantity_balance > 0
             """,
                 ctx["tenant_id"],
+                as_of,
             )
 
             total_assets = cash_bank + accounts_receivable + inventory
@@ -3222,10 +3231,10 @@ async def get_balance_sheet(
             # Liabilities
             accounts_payable = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
+                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0)
                 FROM bills
                 WHERE tenant_id = $1
-                  AND bill_date <= $2
+                  AND issue_date <= $2
                   AND status IN ('posted', 'partial', 'overdue')
             """,
                 ctx["tenant_id"],
@@ -3624,15 +3633,15 @@ async def get_profit_loss_query_params(
                     COALESCE(coa.id::text, 'cogs') as account_id,
                     COALESCE(coa.account_code, '5-1000') as account_code,
                     COALESCE(coa.name, 'Harga Pokok Penjualan') as account_name,
-                    COALESCE(SUM(bi.amount), 0)::BIGINT as amount
+                    COALESCE(SUM(bi.total), 0)::BIGINT as amount
                 FROM bills b
                 JOIN bill_items bi ON bi.bill_id = b.id
-                LEFT JOIN items i ON i.id = bi.item_id
+                LEFT JOIN products p ON p.id = bi.product_id
                 LEFT JOIN chart_of_accounts coa ON coa.account_type = 'COGS' AND coa.tenant_id = b.tenant_id
                 WHERE b.tenant_id = $1
-                  AND b.bill_date BETWEEN $2 AND $3
+                  AND b.issue_date BETWEEN $2 AND $3
                   AND b.status IN ('posted', 'paid', 'partial')
-                  AND (i.item_type = 'inventory' OR i.item_type IS NULL)
+                  AND (p.item_type = 'inventory' OR p.item_type IS NULL)
                 GROUP BY coa.id, coa.account_code, coa.name
             """,
                 ctx["tenant_id"],
@@ -3657,16 +3666,16 @@ async def get_profit_loss_query_params(
             expense_rows = await conn.fetch(
                 """
                 SELECT
-                    COALESCE(coa.id::text, e.category) as account_id,
+                    COALESCE(coa.id::text, e.account_id::text) as account_id,
                     COALESCE(coa.account_code, '6-1000') as account_code,
-                    COALESCE(coa.name, e.category) as account_name,
+                    COALESCE(coa.name, e.account_name) as account_name,
                     SUM(e.total_amount)::BIGINT as amount
                 FROM expenses e
                 LEFT JOIN chart_of_accounts coa ON coa.account_type = 'EXPENSE' AND coa.tenant_id = e.tenant_id
                 WHERE e.tenant_id = $1
                   AND e.expense_date BETWEEN $2 AND $3
                   AND e.status = 'posted'
-                GROUP BY coa.id, coa.account_code, coa.name, e.category
+                GROUP BY coa.id, coa.account_code, coa.name, e.account_id, e.account_name
             """,
                 ctx["tenant_id"],
                 start_date,
