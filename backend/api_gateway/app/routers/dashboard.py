@@ -385,12 +385,16 @@ async def get_dashboard_summary(
                     END as account_type,
                     COALESCE(b.debit_balance - b.credit_balance, 0) as balance
                 FROM chart_of_accounts c
-                LEFT JOIN account_balances_daily b ON b.account_id = c.id
-                    AND b.balance_date = (
-                        SELECT MAX(balance_date)
-                        FROM account_balances_daily
-                        WHERE account_id = c.id
-                    )
+                LEFT JOIN (
+                        SELECT 
+                            jl.account_id,
+                            COALESCE(SUM(jl.debit), 0) as debit_balance,
+                            COALESCE(SUM(jl.credit), 0) as credit_balance
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE je.status = 'POSTED'
+                        GROUP BY jl.account_id
+                    ) b ON b.account_id = c.id
                 WHERE c.tenant_id = $1
                   AND c.account_code LIKE '1-1%'
                   AND (c.account_code LIKE '1-101%' OR c.account_code LIKE '1-102%')
@@ -643,12 +647,16 @@ async def get_kas_bank_detail(request: Request):
                     END as account_type,
                     COALESCE(b.debit_balance - b.credit_balance, 0) as balance
                 FROM chart_of_accounts c
-                LEFT JOIN account_balances_daily b ON b.account_id = c.id
-                    AND b.balance_date = (
-                        SELECT MAX(balance_date)
-                        FROM account_balances_daily
-                        WHERE account_id = c.id
-                    )
+                LEFT JOIN (
+                        SELECT 
+                            jl.account_id,
+                            COALESCE(SUM(jl.debit), 0) as debit_balance,
+                            COALESCE(SUM(jl.credit), 0) as credit_balance
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE je.status = 'POSTED'
+                        GROUP BY jl.account_id
+                    ) b ON b.account_id = c.id
                 WHERE c.tenant_id = $1
                   AND c.account_code LIKE '1-1%'
                   AND (c.account_code LIKE '1-101%' OR c.account_code LIKE '1-102%')
