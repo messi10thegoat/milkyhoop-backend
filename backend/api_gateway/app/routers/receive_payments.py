@@ -452,7 +452,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     """
                     SELECT id, account_code, name, account_type
                     FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2
+                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
                     UUID(body.bank_account_id),
                     ctx["tenant_id"],
@@ -473,7 +473,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 customer = await conn.fetchrow(
                     """
                     SELECT id, nama FROM customers
-                    WHERE id = $1 AND tenant_id = $2
+                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
                     body.customer_id,
                     ctx["tenant_id"],
@@ -526,7 +526,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                         """
                         SELECT id, invoice_number, total_amount, amount_paid, status, customer_id
                         FROM sales_invoices
-                        WHERE id = $1 AND tenant_id = $2
+                        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                     """,
                         UUID(alloc.invoice_id),
                         ctx["tenant_id"],
@@ -695,7 +695,7 @@ async def update_receive_payment(
                 payment = await conn.fetchrow(
                     """
                     SELECT id, status FROM receive_payments
-                    WHERE id = $1 AND tenant_id = $2
+                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
                     payment_id,
                     ctx["tenant_id"],
@@ -747,7 +747,7 @@ async def update_receive_payment(
                             """
                             SELECT id, invoice_number, total_amount, amount_paid, customer_id
                             FROM sales_invoices
-                            WHERE id = $1 AND tenant_id = $2
+                            WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                         """,
                             UUID(alloc.invoice_id),
                             ctx["tenant_id"],
@@ -883,7 +883,7 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
             payment = await conn.fetchrow(
                 """
                 SELECT id, status, payment_number FROM receive_payments
-                WHERE id = $1 AND tenant_id = $2
+                WHERE id = $1 AND tenant_id = $2 FOR UPDATE
             """,
                 payment_id,
                 ctx["tenant_id"],
@@ -931,7 +931,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     payment = await conn.fetchrow(
         """
         SELECT * FROM receive_payments
-        WHERE id = $1 AND tenant_id = $2
+        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
     """,
         payment_id,
         ctx["tenant_id"],
@@ -1320,7 +1320,7 @@ async def void_receive_payment(
                 payment = await conn.fetchrow(
                     """
                     SELECT * FROM receive_payments
-                    WHERE id = $1 AND tenant_id = $2
+                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
                     payment_id,
                     ctx["tenant_id"],

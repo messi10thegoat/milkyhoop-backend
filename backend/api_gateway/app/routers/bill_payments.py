@@ -730,7 +730,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                 for alloc in payload.allocations:
                     bill = await conn.fetchrow(
-                        "SELECT amount as total_amount, COALESCE(amount_paid, 0) as amount_paid FROM bills WHERE id = $1::uuid",
+                        "SELECT amount as total_amount, COALESCE(amount_paid, 0) as amount_paid FROM bills WHERE id = $1::uuid FOR UPDATE",
                         alloc.bill_id,
                     )
                     if not bill:
