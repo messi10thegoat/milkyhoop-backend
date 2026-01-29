@@ -109,6 +109,7 @@ class CreateBillPaymentRequest(BaseModel):
     save_as_draft: bool = Field(
         False, description="If true, save as draft without posting"
     )
+    idempotency_key: Optional[str] = Field(None, max_length=255, description="Unique key to prevent duplicate payments")
 
     @field_validator("source_deposit_id")
     @classmethod

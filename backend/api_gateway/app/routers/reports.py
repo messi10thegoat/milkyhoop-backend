@@ -277,7 +277,7 @@ class LabaRugiResponse(BaseModel):
 # ========================================
 
 
-@router.get("/neraca/{periode}", response_model=NeracaResponse)
+@router.get("/neraca/{periode}", deprecated=True, description="DEPRECATED: Uses legacy transaksi_harian. Use /trial-balance for journal-based data", response_model=NeracaResponse)
 async def get_neraca(request: Request, periode: str):
     """
     Get Laporan Posisi Keuangan (Neraca/Balance Sheet) for a given period.
@@ -528,7 +528,7 @@ async def get_neraca(request: Request, periode: str):
         raise HTTPException(status_code=500, detail="Failed to generate neraca report")
 
 
-@router.get("/arus-kas/{periode}", response_model=ArusKasResponse)
+@router.get("/arus-kas/{periode}", deprecated=True, description="DEPRECATED: Uses legacy transaksi_harian. Use /cash-flow-journal instead", response_model=ArusKasResponse)
 async def get_arus_kas(request: Request, periode: str):
     """
     Get Laporan Arus Kas (Cash Flow Statement) for a given period.
@@ -696,7 +696,7 @@ async def get_arus_kas(request: Request, periode: str):
         )
 
 
-@router.get("/laba-rugi/{periode}", response_model=LabaRugiResponse)
+@router.get("/laba-rugi/{periode}", deprecated=True, description="DEPRECATED: Uses legacy transaksi_harian. Use /profit-loss/{periode} instead", response_model=LabaRugiResponse)
 async def get_laba_rugi(
     request: Request,
     periode: str,
@@ -1380,7 +1380,8 @@ async def get_trial_balance_full(
 # ========================================
 
 
-@router.get("/accounting-settings", response_model=AccountingSettingsDetailResponse)
+@router.get("/accounting-settings", deprecated=True, description="DEPRECATED: Use GET /api/settings/accounting instead")
+@router.get("/accounting-settings-old", response_model=AccountingSettingsDetailResponse)
 async def get_accounting_settings(request: Request):
     """
     Get tenant's accounting settings.
@@ -1459,7 +1460,7 @@ async def get_accounting_settings(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get accounting settings")
 
 
-@router.patch("/accounting-settings", response_model=AccountingSettingsDetailResponse)
+@router.patch("/accounting-settings", deprecated=True, description="DEPRECATED: Use PATCH /api/settings/accounting instead", response_model=AccountingSettingsDetailResponse)
 async def update_accounting_settings(
     request: Request, data: UpdateAccountingSettingsRequest
 ):
@@ -2620,7 +2621,7 @@ async def get_ap_aging_for_vendor(
         )
 
 
-@router.post("/aging-snapshot", response_model=CreateSnapshotResponse)
+@router.post("/aging-snapshot", deprecated=True, description="DEPRECATED: Use POST /api/settings/aging-snapshot instead", response_model=CreateSnapshotResponse)
 async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
     """Create an aging snapshot for trend analysis."""
     try:
@@ -3026,7 +3027,7 @@ async def get_pendapatan_report(
 # =============================================================================
 
 
-@router.get("/cash-flow")
+@router.get("/cash-flow", deprecated=True, description="DEPRECATED: Uses transaction tables. Use journal-based cash flow endpoint")
 async def get_cash_flow_report(
     request: Request,
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
@@ -3172,7 +3173,7 @@ async def get_cash_flow_report(
 # =============================================================================
 
 
-@router.get("/balance-sheet")
+@router.get("/balance-sheet", deprecated=True, description="DEPRECATED: Uses pre-computed balances. Use /trial-balance for journal-derived data")
 async def get_balance_sheet(
     request: Request,
     as_of_date: str = Query(..., description="As of date YYYY-MM-DD"),

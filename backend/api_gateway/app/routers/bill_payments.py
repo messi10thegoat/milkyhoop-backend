@@ -632,6 +632,20 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # Idempotency check (Law 14)
+                if payload.idempotency_key:
+                    existing = await conn.fetchrow(
+                        "SELECT id, payment_number, status FROM bill_payments_v2 WHERE tenant_id = $1 AND idempotency_key = $2",
+                        ctx["tenant_id"], payload.idempotency_key
+                    )
+                    if existing:
+                        return BillPaymentResponse(
+                            success=True,
+                            message=f"Payment {existing['payment_number']} already exists (idempotent)",
+                            data={"id": str(existing["id"]), "payment_number": existing['payment_number'], "status": existing["status"]}
+                        )
+
+
                 if not payload.save_as_draft:
                     await check_period_is_open(
                         conn, ctx["tenant_id"], payload.payment_date
@@ -689,13 +703,13 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
                         amount_in_base_currency, check_number, check_due_date, check_bank_name,
                         source_type, source_deposit_id, reference_number, notes, tags, status,
-                        created_by, created_at, updated_at, posted_at, posted_by
+                        created_by, created_at, updated_at, posted_at, posted_by, idempotency_key
                     ) VALUES (
                         $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
                         $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
                         $29, NOW(), NOW(),
                         CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
-                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END
+                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30
                     )""",
                     payment_id,
                     ctx["tenant_id"],
@@ -726,6 +740,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     payload.tags,
                     status,
                     ctx["user_id"],
+                    payload.idempotency_key,
                 )
 
                 for alloc in payload.allocations:

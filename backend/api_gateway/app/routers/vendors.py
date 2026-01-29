@@ -1002,6 +1002,9 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
+            # TODO: Law 1 Violation - Opening balance should be created via journal entry
+            # This directly updates balance without journal, violating ledger supremacy
+            # See: Iron Laws compliance audit - Law 1 (Ledger Supremacy)
             # Fixed: use opening_balance instead of balance (which doesn't exist)
             await conn.execute(
                 "UPDATE vendors SET opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",

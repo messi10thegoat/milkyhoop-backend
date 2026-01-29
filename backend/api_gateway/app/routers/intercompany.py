@@ -686,6 +686,9 @@ async def reconcile_transactions(request: Request, body: ReconcileRequest):
                         )
 
                         # Update IC balance
+                        # TODO: Law 1 Violation - Direct balance update bypasses journal ledger
+                        # This should create a journal entry instead of directly updating balance
+                        # See: Iron Laws compliance audit - Law 1 (Ledger Supremacy)
                         await conn.execute(
                             """
                             UPDATE intercompany_balances

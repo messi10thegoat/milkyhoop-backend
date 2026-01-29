@@ -441,6 +441,24 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
+                # Idempotency check (Law 14)
+                if body.idempotency_key:
+                    existing = await conn.fetchrow(
+                        "SELECT id, payment_number, status FROM receive_payments WHERE tenant_id = $1 AND idempotency_key = $2",
+                        ctx["tenant_id"], body.idempotency_key
+                    )
+                    if existing:
+                        return ReceivePaymentDetailResponse(
+                            success=True,
+                            message=f"Payment {existing['payment_number']} already exists (idempotent)",
+                            data=ReceivePaymentDetail(
+                                id=str(existing["id"]),
+                                payment_number=existing["payment_number"],
+                                status=existing["status"]
+                            )
+                        )
+
+
                 # Check if accounting period is open (only if not saving as draft)
                 if not body.save_as_draft:
                     await check_period_is_open(
@@ -591,8 +609,8 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                         source_type, source_deposit_id,
                         total_amount, allocated_amount, unapplied_amount,
                         discount_amount, discount_account_id,
-                        reference_number, notes, status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18)
+                        reference_number, notes, status, created_by, idempotency_key
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18, $19)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -615,6 +633,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     body.reference_number,
                     body.notes,
                     ctx["user_id"],
+                    body.idempotency_key,
                 )
 
                 # Insert allocations
