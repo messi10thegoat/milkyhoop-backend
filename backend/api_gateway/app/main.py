@@ -51,6 +51,7 @@ from backend.api_gateway.app.routers import public_chat
 from backend.api_gateway.app.routers import tenant_chat
 from .routers import reports
 from .routers import accounting_settings
+from .routers import financial_reports_journal
 from .routers import dashboard
 from .routers import qr_auth
 from .routers import device
@@ -353,6 +354,7 @@ app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-l
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(accounting_settings.router, prefix="/api", tags=["settings"])
+app.include_router(financial_reports_journal.router, prefix="/api/reports", tags=["reports-journal"])
 
 # Dashboard Summary router (aggregated KPIs)
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
