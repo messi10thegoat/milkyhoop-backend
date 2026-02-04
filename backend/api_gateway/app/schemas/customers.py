@@ -305,3 +305,28 @@ class CustomerDuplicateCheckResponse(BaseModel):
 
     byName: List[CustomerDuplicateItem] = Field(default_factory=list)
     byNpwp: List[CustomerDuplicateItem] = Field(default_factory=list)
+
+
+# =============================================================================
+# ACTIVITY RESPONSE (Audit Trail)
+# =============================================================================
+
+
+class CustomerActivity(BaseModel):
+    """Customer activity item for audit trail."""
+
+    id: str
+    type: str
+    description: str
+    actor_name: Optional[str] = None
+    timestamp: str
+    details: Optional[str] = None
+
+
+class CustomerActivityResponse(BaseModel):
+    """Response for customer activity endpoint."""
+
+    success: bool
+    activities: List[CustomerActivity]
+    total: int
+    has_more: bool

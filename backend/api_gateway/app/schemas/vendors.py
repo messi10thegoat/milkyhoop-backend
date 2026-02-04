@@ -324,3 +324,53 @@ class VendorDuplicateCheckResponse(BaseModel):
 
     byName: List[VendorDuplicateItem] = Field(default_factory=list)
     byNpwp: List[VendorDuplicateItem] = Field(default_factory=list)
+
+
+# =============================================================================
+# MERGE VENDOR MODELS
+# =============================================================================
+
+
+class MergeVendorRequest(BaseModel):
+    """Request body for merging vendors."""
+    
+    source_vendor_id: str = Field(
+        ..., description="ID of the vendor to merge FROM (will be deactivated)"
+    )
+    target_vendor_id: str = Field(
+        ..., description="ID of the vendor to merge INTO (will receive all records)"
+    )
+
+
+
+
+class MergeVendorResponse(BaseModel):
+    """Response for merge vendor endpoint."""
+    
+    success: bool = True
+    message: str
+    data: Optional[Dict[str, Any]] = None
+
+
+# =============================================================================
+# VENDOR ACTIVITY MODELS
+# =============================================================================
+
+
+class VendorActivity(BaseModel):
+    id: str
+    type: str
+    description: str
+    actor_name: Optional[str] = None
+    timestamp: str
+    details: Optional[str] = None
+    field_name: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+
+
+class VendorActivityResponse(BaseModel):
+    success: bool
+    activities: List[VendorActivity]
+    total: int
+    has_more: bool

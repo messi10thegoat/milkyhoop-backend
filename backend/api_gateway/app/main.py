@@ -235,15 +235,15 @@ app.add_middleware(RBACMiddleware)
 # 8. Authentication (validates tokens)
 app.add_middleware(AuthMiddleware)
 
-# 9. CORS - DISABLED (nginx handles CORS to prevent duplicate headers)
-# See: nginx sites-enabled/milkyhoop.conf
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=settings.CORS_ORIGINS,
-#     allow_credentials=True,
-#     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-#     allow_headers=settings.CORS_ALLOW_HEADERS,
-# )
+# 9. CORS - Enabled in API Gateway
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

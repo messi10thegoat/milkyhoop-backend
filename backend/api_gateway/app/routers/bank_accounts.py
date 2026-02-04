@@ -157,7 +157,6 @@ async def auto_create_coa_for_bank_account(
         coa_type,
         normal_balance,
         parent_code,
-        user_id,
     )
 
     return {"coa_id": coa_id, "coa_code": next_code, "coa_type": coa_type}
@@ -297,6 +296,45 @@ async def list_bank_accounts(
 
 # =============================================================================
 # GET BANK ACCOUNT DETAIL
+# BANK ACCOUNT DROPDOWN
+# =============================================================================
+
+
+@router.get("/dropdown")
+async def get_bank_accounts_dropdown(request: Request):
+    """Get bank accounts for dropdown/select components."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, account_name, account_number, bank_name, current_balance, currency
+                FROM bank_accounts
+                WHERE tenant_id = $1 AND is_active = true
+                ORDER BY account_name ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            accounts = [
+                {
+                    "id": str(row["id"]),
+                    "name": row["account_name"],
+                    "account_number": row["account_number"],
+                    "bank_name": row["bank_name"],
+                    "balance": row["current_balance"],
+                    "currency": row["currency"] or "IDR",
+                }
+                for row in rows
+            ]
+
+            return {"accounts": accounts}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting dropdown: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get accounts")
 # =============================================================================
 
 
@@ -318,6 +356,18 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
 
             if not row:
                 raise HTTPException(status_code=404, detail="Bank account not found")
+
+            # Get transaction count for this bank account
+            # Count real transactions (exclude opening balance)
+            transaction_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM bank_transactions
+                WHERE bank_account_id = $1 AND tenant_id = $2
+                AND transaction_type != 'opening'
+            """,
+                bank_account_id,
+                ctx["tenant_id"],
+            )
 
             return {
                 "success": True,
@@ -345,6 +395,7 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                     "created_by": str(row["created_by"]) if row["created_by"] else None,
+                    "transaction_count": transaction_count,
                 },
             }
 
@@ -493,7 +544,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         id, tenant_id, account_name, account_number, bank_name, bank_branch,
                         swift_code, coa_id, opening_balance, current_balance,
                         account_type, currency, is_default, notes, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12, $13, $14)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)
                 """,
                     bank_account_id,
                     ctx["tenant_id"],
@@ -803,66 +854,137 @@ async def update_bank_account(
 
 @router.delete("/{bank_account_id}", response_model=BankAccountResponse)
 async def delete_bank_account(request: Request, bank_account_id: UUID):
-    """Soft delete a bank account (set is_active = false)."""
+    """
+    Delete a bank account.
+    
+    - If account has 0 transactions: HARD DELETE (removes bank_account and related CoA)
+    - If account has transactions: SOFT DELETE (sets is_active = false)
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Get existing account
-            ba = await conn.fetchrow(
-                """
-                SELECT * FROM bank_accounts
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bank_account_id,
-                ctx["tenant_id"],
-            )
-
-            if not ba:
-                raise HTTPException(status_code=404, detail="Bank account not found")
-
-            if not ba["is_active"]:
-                raise HTTPException(
-                    status_code=400, detail="Bank account already inactive"
-                )
-
-            # Check if has transactions
-            tx_count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM bank_transactions
-                WHERE bank_account_id = $1
-            """,
-                bank_account_id,
-            )
-
-            if tx_count > 0:
-                # Soft delete only
-                await conn.execute(
+            async with conn.transaction():
+                # Get existing account
+                ba = await conn.fetchrow(
                     """
-                    UPDATE bank_accounts
-                    SET is_active = false, is_default = false, updated_at = NOW()
-                    WHERE id = $1
+                    SELECT * FROM bank_accounts
+                    WHERE id = $1 AND tenant_id = $2
                 """,
                     bank_account_id,
+                    ctx["tenant_id"],
                 )
 
-                return {
-                    "success": True,
-                    "message": "Bank account deactivated (has transactions)",
-                    "data": {"id": str(bank_account_id), "is_active": False},
-                }
-            else:
-                # Hard delete if no transactions
-                await conn.execute(
-                    "DELETE FROM bank_accounts WHERE id = $1", bank_account_id
+                if not ba:
+                    raise HTTPException(status_code=404, detail="Bank account not found")
+
+                # Check if has REAL transactions (exclude opening balance - that's just initialization)
+                tx_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM bank_transactions
+                    WHERE bank_account_id = $1 AND tenant_id = $2
+                    AND transaction_type != 'opening'
+                """,
+                    bank_account_id,
+                    ctx["tenant_id"],
                 )
 
-                return {
-                    "success": True,
-                    "message": "Bank account deleted",
-                    "data": {"id": str(bank_account_id)},
-                }
+                if tx_count > 0:
+                    # Soft delete only - account has transaction history
+                    if not ba["is_active"]:
+                        raise HTTPException(
+                            status_code=400, detail="Bank account already inactive"
+                        )
+
+                    await conn.execute(
+                        """
+                        UPDATE bank_accounts
+                        SET is_active = false, is_default = false, updated_at = NOW()
+                        WHERE id = $1
+                    """,
+                        bank_account_id,
+                    )
+
+                    logger.info(f"Bank account soft deleted (has {tx_count} transactions): {bank_account_id}")
+
+                    return {
+                        "success": True,
+                        "message": f"Bank account deactivated (has {tx_count} transactions)",
+                        "data": {"id": str(bank_account_id), "is_active": False, "hard_deleted": False},
+                    }
+                else:
+                    # HARD DELETE - no real transactions, safe to permanently remove
+                    coa_id = ba["coa_id"]
+                    account_name = ba["account_name"]
+
+                    # Delete opening balance journal lines first (FK to journal_entries)
+                    await conn.execute(
+                        """
+                        DELETE FROM journal_lines 
+                        WHERE journal_id IN (
+                            SELECT id FROM journal_entries 
+                            WHERE source_type = 'OPENING' 
+                            AND source_id = $1 
+                            AND tenant_id = $2
+                        )
+                    """,
+                        bank_account_id,
+                        ctx["tenant_id"],
+                    )
+
+                    # Delete opening balance journal entries
+                    await conn.execute(
+                        """
+                        DELETE FROM journal_entries 
+                        WHERE source_type = 'OPENING' 
+                        AND source_id = $1 
+                        AND tenant_id = $2
+                    """,
+                        bank_account_id,
+                        ctx["tenant_id"],
+                    )
+
+                    # Delete opening balance bank transactions
+                    await conn.execute(
+                        """
+                        DELETE FROM bank_transactions
+                        WHERE bank_account_id = $1 
+                        AND tenant_id = $2 
+                        AND transaction_type = 'opening'
+                    """,
+                        bank_account_id,
+                        ctx["tenant_id"],
+                    )
+
+                    # Delete the bank account (references coa_id)
+                    await conn.execute(
+                        """
+                        DELETE FROM bank_accounts
+                        WHERE id = $1 AND tenant_id = $2
+                    """,
+                        bank_account_id,
+                        ctx["tenant_id"],
+                    )
+
+                    # Delete the related CoA entry
+                    if coa_id:
+                        await conn.execute(
+                            """
+                            DELETE FROM chart_of_accounts
+                            WHERE id = $1 AND tenant_id = $2
+                        """,
+                            coa_id,
+                            ctx["tenant_id"],
+                        )
+
+                    logger.info(f"Bank account hard deleted with opening balance cleanup: {bank_account_id}, CoA: {coa_id}")
+
+                    return {
+                        "success": True,
+                        "message": f"Bank account '{account_name}' permanently deleted",
+                        "data": {"id": str(bank_account_id), "hard_deleted": True},
+                    }
 
     except HTTPException:
         raise
@@ -1301,24 +1423,24 @@ async def get_bank_account_transactions(
                 f"""
                 SELECT * FROM (
                     SELECT id::text, 'receive_payment' as type, payment_number as reference,
-                        payment_date as date, amount, 'Payment Received' as description
+                        payment_date as date, total_amount as amount, 'Payment Received' as description
                     FROM receive_payments
-                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2 AND status = 'posted'
+                    WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'expense' as type, expense_number as reference,
-                        expense_date as date, -total_amount as amount, description
+                        expense_date as date, -total_amount as amount, COALESCE(notes, 'Expense') as description
                     FROM expenses
-                    WHERE tenant_id = $1 AND payment_account_id::text = $2 AND status = 'posted'
+                    WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'transfer_out' as type, transfer_number as reference,
                         transfer_date as date, -amount, 'Transfer Out' as description
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_account_id::text = $2 AND status = 'completed'
+                    WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'transfer_in' as type, transfer_number as reference,
                         transfer_date as date, amount, 'Transfer In' as description
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_account_id::text = $2 AND status = 'completed'
+                    WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
                 ) t
                 WHERE 1=1 {date_filter}
                 ORDER BY date DESC
@@ -1365,6 +1487,10 @@ async def get_bank_account_statement(
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
 ):
     """Get a statement-style report for a bank account."""
+    # Parse date strings to date objects
+    from datetime import datetime
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1387,30 +1513,30 @@ async def get_bank_account_statement(
                     END
                 ), 0) as opening
                 FROM (
-                    SELECT amount, 'receive_payment' as type
+                    SELECT total_amount as amount, 'receive_payment' as type
                     FROM receive_payments
-                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2
+                    WHERE tenant_id = $1 AND bank_account_id::text = $2
                       AND payment_date < $3 AND status = 'posted'
                     UNION ALL
                     SELECT total_amount as amount, 'expense' as type
                     FROM expenses
-                    WHERE tenant_id = $1 AND payment_account_id::text = $2
+                    WHERE tenant_id = $1 AND paid_through_id::text = $2
                       AND expense_date < $3 AND status = 'posted'
                     UNION ALL
                     SELECT amount, 'transfer_out' as type
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_account_id::text = $2
-                      AND transfer_date < $3 AND status = 'completed'
+                    WHERE tenant_id = $1 AND from_bank_id::text = $2
+                      AND transfer_date < $3 AND status = 'posted'
                     UNION ALL
                     SELECT amount, 'transfer_in' as type
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_account_id::text = $2
-                      AND transfer_date < $3 AND status = 'completed'
+                    WHERE tenant_id = $1 AND to_bank_id::text = $2
+                      AND transfer_date < $3 AND status = 'posted'
                 ) t
             """,
                 ctx["tenant_id"],
                 bank_account_id,
-                start_date,
+                start_dt,
             )
 
             # Get transactions in period
@@ -1418,34 +1544,34 @@ async def get_bank_account_statement(
                 """
                 SELECT * FROM (
                     SELECT id::text, 'receive_payment' as type, payment_number as reference,
-                        payment_date as date, amount, 'Payment Received' as description
+                        payment_date as date, total_amount as amount, 'Payment Received' as description
                     FROM receive_payments
-                    WHERE tenant_id = $1 AND deposit_to_account_id::text = $2
+                    WHERE tenant_id = $1 AND bank_account_id::text = $2
                       AND payment_date BETWEEN $3 AND $4 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'expense' as type, expense_number as reference,
-                        expense_date as date, -total_amount as amount, description
+                        expense_date as date, -total_amount as amount, COALESCE(notes, 'Expense') as description
                     FROM expenses
-                    WHERE tenant_id = $1 AND payment_account_id::text = $2
+                    WHERE tenant_id = $1 AND paid_through_id::text = $2
                       AND expense_date BETWEEN $3 AND $4 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'transfer_out' as type, transfer_number as reference,
                         transfer_date as date, -amount, 'Transfer Out' as description
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_account_id::text = $2
-                      AND transfer_date BETWEEN $3 AND $4 AND status = 'completed'
+                    WHERE tenant_id = $1 AND from_bank_id::text = $2
+                      AND transfer_date BETWEEN $3 AND $4 AND status = 'posted'
                     UNION ALL
                     SELECT id::text, 'transfer_in' as type, transfer_number as reference,
                         transfer_date as date, amount, 'Transfer In' as description
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_account_id::text = $2
-                      AND transfer_date BETWEEN $3 AND $4 AND status = 'completed'
+                    WHERE tenant_id = $1 AND to_bank_id::text = $2
+                      AND transfer_date BETWEEN $3 AND $4 AND status = 'posted'
                 ) t ORDER BY date ASC, id ASC
             """,
                 ctx["tenant_id"],
                 bank_account_id,
-                start_date,
-                end_date,
+                start_dt,
+                end_dt,
             )
 
             transactions = []
@@ -1487,42 +1613,3 @@ async def get_bank_account_statement(
 
 
 # =============================================================================
-# BANK ACCOUNT DROPDOWN
-# =============================================================================
-
-
-@router.get("/dropdown")
-async def get_bank_accounts_dropdown(request: Request):
-    """Get bank accounts for dropdown/select components."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, account_name, account_number, bank_name, current_balance, currency
-                FROM bank_accounts
-                WHERE tenant_id = $1 AND is_active = true
-                ORDER BY account_name ASC
-            """,
-                ctx["tenant_id"],
-            )
-
-            accounts = [
-                {
-                    "id": str(row["id"]),
-                    "name": row["account_name"],
-                    "account_number": row["account_number"],
-                    "bank_name": row["bank_name"],
-                    "balance": row["current_balance"],
-                    "currency": row["currency"] or "IDR",
-                }
-                for row in rows
-            ]
-
-            return {"accounts": accounts}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting dropdown: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get accounts")

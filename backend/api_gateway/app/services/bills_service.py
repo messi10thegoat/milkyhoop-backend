@@ -586,6 +586,104 @@ class BillsService:
                         journal_id,
                         bill_id,
                     )
+
+                    # UPDATE INVENTORY for inventory-tracked items
+                    # Get default warehouse for tenant
+                    default_warehouse = await conn.fetchrow(
+                        "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
+                        tenant_id
+                    )
+                    warehouse_id = default_warehouse["id"] if default_warehouse else None
+
+                    for item in items:
+                        product_id = item.get("product_id")
+                        if not product_id:
+                            continue
+
+                        # Check if product is inventory-tracked
+                        product = await conn.fetchrow(
+                            """
+                            SELECT id, nama_produk, item_code, track_inventory, item_type
+                            FROM products WHERE id = $1
+                            """,
+                            product_id
+                        )
+                        
+                        if not product or product["item_type"] != "goods" or not product.get("track_inventory", True):
+                            continue
+
+                        quantity = Decimal(str(item["quantity"]))
+                        unit_cost = Decimal(str(item["unit_price"]))
+                        total_cost = quantity * unit_cost
+
+                        # Get current balance
+                        balance_row = await conn.fetchrow(
+                            """
+                            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                            """,
+                            tenant_id, product_id
+                        )
+                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        new_balance = current_balance + quantity
+
+                        # Calculate weighted average cost
+                        avg_cost_row = await conn.fetchrow(
+                            """
+                            SELECT 
+                                COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                            """,
+                            tenant_id, product_id
+                        )
+                        
+                        if avg_cost_row and avg_cost_row["total_qty"] > 0:
+                            old_value = Decimal(str(avg_cost_row["total_value"]))
+                            old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                            new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                        else:
+                            new_avg_cost = unit_cost
+
+                        # Insert inventory_ledger entry
+                        await conn.execute(
+                            """
+                            INSERT INTO inventory_ledger (
+                                tenant_id, product_id, product_code, product_name,
+                                movement_type, movement_date, source_type, source_id, source_number,
+                                quantity_in, quantity_out, quantity_balance,
+                                unit_cost, total_cost, average_cost,
+                                warehouse_id, journal_id, created_by, notes
+                            ) VALUES (
+                                $1, $2, $3, $4,
+                                'PURCHASE', $5, 'BILL', $6, $7,
+                                $8, 0, $9,
+                                $10, $11, $12,
+                                $13, $14, $15, $16
+                            )
+                            """,
+                            tenant_id,
+                            product_id,
+                            product.get("item_code"),
+                            product.get("nama_produk"),
+                            issue_date,
+                            bill_id,
+                            invoice_number,
+                            quantity,
+                            new_balance,
+                            unit_cost,
+                            total_cost,
+                            new_avg_cost,
+                            warehouse_id,
+                            journal_id,
+                            user_id,
+                            f"Purchase from {vendor_name}"
+                        )
+
+                        logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
+
                 else:
                     # Accounting kernel not available - this is a configuration error
                     logger.error(
@@ -623,7 +721,7 @@ class BillsService:
             # Check if bill exists and is unpaid
             bill = await conn.fetchrow(
                 """
-                SELECT id, amount_paid, status
+                SELECT id, amount_paid, status, status_v2
                 FROM bills
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -645,6 +743,14 @@ class BillsService:
                 return {
                     "success": False,
                     "message": "Cannot update voided bill",
+                    "data": None,
+                }
+
+            # Check status_v2 (only draft can be edited)
+            if bill.get("status_v2") and bill["status_v2"] != "draft":
+                return {
+                    "success": False,
+                    "message": f"Cannot edit bill with status '{bill['status_v2']}'. Only draft bills can be edited.",
                     "data": None,
                 }
 
@@ -751,7 +857,7 @@ class BillsService:
             # Check if bill exists and is unpaid
             bill = await conn.fetchrow(
                 """
-                SELECT id, amount_paid, status
+                SELECT id, amount_paid, status, status_v2
                 FROM bills
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -761,6 +867,17 @@ class BillsService:
 
             if not bill:
                 return {"success": False, "message": "Bill not found"}
+
+            # Check voided status
+            if bill["status"] == "void":
+                return {"success": False, "message": "Cannot delete voided bill"}
+
+            # Check status_v2 (only draft can be deleted)
+            if bill.get("status_v2") and bill["status_v2"] != "draft":
+                return {
+                    "success": False,
+                    "message": f"Cannot delete bill with status '{bill['status_v2']}'. Only draft bills can be deleted. Use void instead.",
+                }
 
             if bill["amount_paid"] > 0:
                 return {
@@ -1800,6 +1917,104 @@ class BillsService:
                     user_id,
                     bill_id,
                 )
+
+                # UPDATE INVENTORY for inventory-tracked items
+                # Get bill items with product details
+                bill_items = await conn.fetch(
+                    """
+                    SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
+                           p.nama_produk, p.item_code, p.track_inventory, p.item_type
+                    FROM bill_items bi
+                    LEFT JOIN products p ON p.id = bi.product_id
+                    WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
+                    """,
+                    bill_id
+                )
+
+                # Get default warehouse for tenant
+                default_warehouse = await conn.fetchrow(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
+                    tenant_id
+                )
+                warehouse_id = default_warehouse["id"] if default_warehouse else None
+
+                for item in bill_items:
+                    # Only process inventory-tracked goods
+                    if item["item_type"] != "goods" or not item.get("track_inventory", True):
+                        continue
+
+                    product_id = item["product_id"]
+                    quantity = Decimal(str(item["quantity"]))
+                    unit_cost = Decimal(str(item["unit_price"]))
+                    total_cost = quantity * unit_cost
+
+                    # Get current balance for this product
+                    balance_row = await conn.fetchrow(
+                        """
+                        SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
+                        FROM inventory_ledger
+                        WHERE tenant_id = $1 AND product_id = $2
+                        """,
+                        tenant_id, product_id
+                    )
+                    current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                    new_balance = current_balance + quantity
+
+                    # Calculate weighted average cost
+                    avg_cost_row = await conn.fetchrow(
+                        """
+                        SELECT 
+                            COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+                            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                        FROM inventory_ledger
+                        WHERE tenant_id = $1 AND product_id = $2
+                        """,
+                        tenant_id, product_id
+                    )
+                    
+                    if avg_cost_row and avg_cost_row["total_qty"] > 0:
+                        old_value = Decimal(str(avg_cost_row["total_value"]))
+                        old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                        new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                    else:
+                        new_avg_cost = unit_cost
+
+                    # Insert inventory_ledger entry
+                    await conn.execute(
+                        """
+                        INSERT INTO inventory_ledger (
+                            tenant_id, product_id, product_code, product_name,
+                            movement_type, movement_date, source_type, source_id, source_number,
+                            quantity_in, quantity_out, quantity_balance,
+                            unit_cost, total_cost, average_cost,
+                            warehouse_id, journal_id, created_by, notes
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            'PURCHASE', $5, 'BILL', $6, $7,
+                            $8, 0, $9,
+                            $10, $11, $12,
+                            $13, $14, $15, $16
+                        )
+                        """,
+                        tenant_id,
+                        product_id,
+                        item.get("item_code"),
+                        item.get("nama_produk"),
+                        bill["issue_date"],
+                        bill_id,
+                        bill["invoice_number"],
+                        quantity,
+                        new_balance,
+                        unit_cost,
+                        total_cost,
+                        new_avg_cost,
+                        warehouse_id,
+                        journal_id,
+                        user_id,
+                        f"Purchase from {bill['vendor_name']}"
+                    )
+
+                    logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
 
                 logger.info(f"Bill posted: {bill_id}")
 

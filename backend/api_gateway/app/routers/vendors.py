@@ -12,6 +12,8 @@ import logging
 import asyncpg
 
 from ..schemas.vendors import (
+    VendorActivity,
+    VendorActivityResponse,
     CreateVendorRequest,
     UpdateVendorRequest,
     VendorResponse,
@@ -20,6 +22,8 @@ from ..schemas.vendors import (
     VendorAutocompleteResponse,
     VendorBalanceResponse,
     VendorDuplicateCheckResponse,
+    MergeVendorRequest,
+    MergeVendorResponse,
 )
 from ..config import settings
 
@@ -84,7 +88,7 @@ async def autocomplete_vendors(
 
         async with pool.acquire() as conn:
             query = """
-                SELECT id, name, code, phone
+                SELECT id, name, code, phone, company_name, display_name
                 FROM vendors
                 WHERE tenant_id = $1
                   AND is_active = true
@@ -226,7 +230,10 @@ async def list_vendors(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     is_active: bool = Query(True, description="Filter by active status"),
-    sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
+    has_balance: Optional[bool] = Query(None, description="Filter vendors with ap_balance > 0"),
+    is_pkp: Optional[bool] = Query(None, description="Filter PKP vendors"),
+    has_overdue: Optional[bool] = Query(None, description="Filter vendors with overdue invoices"),
+    sort_by: Literal["name", "code", "created_at", "updated_at", "ap_balance", "company_name"] = Query(
         "created_at", description="Sort field"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
@@ -261,6 +268,24 @@ async def list_vendors(
                 params.append(is_active)
                 param_idx += 1
 
+            # Filter by has_balance (vendors with opening_balance > 0)
+            if has_balance is True:
+                conditions.append("COALESCE(opening_balance, 0) > 0")
+
+            # Filter by is_pkp (PKP vendors only)
+            if is_pkp is True:
+                conditions.append("is_pkp = true")
+
+            # Filter by has_overdue (vendors with overdue bills)
+            if has_overdue is True:
+                conditions.append("""EXISTS (
+                    SELECT 1 FROM bills
+                    WHERE bills.vendor_id = vendors.id
+                    AND bills.due_date < CURRENT_DATE
+                    AND bills.status_v2 NOT IN ('paid', 'void', 'draft')
+                    AND COALESCE(bills.grand_total, bills.amount) > COALESCE(bills.amount_paid, 0)
+                )""")
+
             where_clause = " AND ".join(conditions)
 
             # Validate sort field
@@ -269,23 +294,47 @@ async def list_vendors(
                 "code": "code",
                 "created_at": "created_at",
                 "updated_at": "updated_at",
+                "company_name": "company_name",
             }
             sort_field = valid_sorts.get(sort_by, "name")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
+            use_ap_balance_sort = sort_by == "ap_balance"
 
             # Get total count
             count_query = f"SELECT COUNT(*) FROM vendors WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
 
-            # Get items
-            query = f"""
-                SELECT id, code, name, company_name, display_name, contact_person, phone, email,
-                       payment_terms_days, is_active, created_at
-                FROM vendors
-                WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
+            # Get items - handle ap_balance sorting with subquery
+            if use_ap_balance_sort:
+                # Build WHERE clause with table alias
+                where_aliased = where_clause.replace("tenant_id", "v.tenant_id").replace("is_active", "v.is_active")
+                query = f"""
+                    SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email,
+                           v.payment_terms_days, v.is_active, v.created_at,
+                           COALESCE(ap.ap_balance, 0) as ap_balance
+                    FROM vendors v
+                    LEFT JOIN LATERAL (
+                        SELECT COALESCE(SUM(
+                            CASE WHEN status_v2 NOT IN ('draft', 'void', 'paid')
+                            THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
+                            ELSE 0 END
+                        ), 0) as ap_balance
+                        FROM bills
+                        WHERE vendor_id = v.id AND tenant_id = v.tenant_id
+                    ) ap ON true
+                    WHERE {where_aliased}
+                    ORDER BY COALESCE(ap.ap_balance, 0) {sort_dir}
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """
+            else:
+                query = f"""
+                    SELECT id, code, name, company_name, display_name, contact_person, phone, email,
+                           payment_terms_days, is_active, created_at
+                    FROM vendors
+                    WHERE {where_clause}
+                    ORDER BY {sort_field} {sort_dir}
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
@@ -440,7 +489,7 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
             balance_query = """
                 SELECT
                     COALESCE(SUM(
-                        CASE WHEN status_v2 NOT IN (draft, void, paid)
+                        CASE WHEN status_v2 NOT IN ('draft', 'void', 'paid')
                         THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
                         ELSE 0 END
                     ), 0) as total_balance,
@@ -454,12 +503,12 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
                     ) as partial_count,
                     COUNT(*) FILTER (
                         WHERE due_date < CURRENT_DATE
-                        AND status_v2 NOT IN (draft, void, paid)
+                        AND status_v2 NOT IN ('draft', 'void', 'paid')
                         AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
                     ) as overdue_count,
                     COALESCE(SUM(
                         CASE WHEN due_date < CURRENT_DATE
-                        AND status_v2 NOT IN (draft, void, paid)
+                        AND status_v2 NOT IN ('draft', 'void', 'paid')
                         THEN COALESCE(grand_total, amount) - COALESCE(amount_paid, 0)
                         ELSE 0 END
                     ), 0) as overdue_amount,
@@ -605,6 +654,21 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
 
             logger.info(f"Vendor created: {vendor_id}, name={body.name}")
 
+            # Log activity: Vendor created
+            user_id = ctx.get("user_id")
+            user = request.state.user
+            user_name = user.get("fullname") or user.get("username") or user.get("email") or "System"
+            await conn.execute(
+                """
+                INSERT INTO vendor_activities (vendor_id, tenant_id, type, description, actor_id, actor_name)
+                VALUES ($1, $2, 'created', 'Vendor dibuat', $3, $4)
+                """,
+                vendor_id,
+                ctx["tenant_id"],
+                user_id,
+                user_name,
+            )
+
             return {
                 "success": True,
                 "message": "Vendor created successfully",
@@ -625,15 +689,23 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
     Update an existing vendor.
 
     Only provided fields will be updated (partial update).
+    Activity logging tracks all field changes.
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check if vendor exists
+            # Fetch existing vendor with all fields for change tracking
             existing = await conn.fetchrow(
-                "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                """SELECT id, name, code, contact_person, phone, email,
+                          address, city, province, postal_code, tax_id,
+                          payment_terms_days, credit_limit, notes,
+                          vendor_type, company_name, display_name,
+                          mobile_phone, website, is_pkp, currency,
+                          bank_name, bank_account_number, bank_account_holder,
+                          is_active
+                   FROM vendors WHERE id = $1 AND tenant_id = $2""",
                 vendor_id,
                 ctx["tenant_id"],
             )
@@ -683,6 +755,68 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
             await conn.execute(query, *params)
 
             logger.info(f"Vendor updated: {vendor_id}")
+
+            # Log activity: Track changes for each updated field
+            user_id = ctx.get("user_id")
+            user = request.state.user
+            user_name = user.get("fullname") or user.get("username") or user.get("email") or "System"
+            
+            field_labels = {
+                "name": "Nama",
+                "code": "Kode",
+                "contact_person": "Kontak",
+                "phone": "Telepon",
+                "email": "Email",
+                "address": "Alamat",
+                "city": "Kota",
+                "province": "Provinsi",
+                "postal_code": "Kode Pos",
+                "tax_id": "NPWP",
+                "payment_terms_days": "Termin Pembayaran",
+                "credit_limit": "Limit Kredit",
+                "notes": "Catatan",
+                "vendor_type": "Tipe Vendor",
+                "company_name": "Nama Perusahaan",
+                "display_name": "Nama Tampilan",
+                "mobile_phone": "HP",
+                "website": "Website",
+                "is_pkp": "PKP",
+                "currency": "Mata Uang",
+                "bank_name": "Bank",
+                "bank_account_number": "No Rekening",
+                "bank_account_holder": "Pemilik Rekening",
+                "is_active": "Status Aktif",
+            }
+            
+            changes_logged = []
+            for field, new_value in update_data.items():
+                old_value = existing.get(field)
+                # Normalize values for comparison
+                if old_value != new_value:
+                    label = field_labels.get(field, field)
+                    old_display = str(old_value) if old_value is not None else "-"
+                    new_display = str(new_value) if new_value is not None else "-"
+                    
+                    # Log each change
+                    await conn.execute(
+                        """
+                        INSERT INTO vendor_activities 
+                        (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
+                        VALUES ($1, $2, 'updated', $3, $4, $5, $6, $7, $8)
+                        """,
+                        vendor_id,
+                        ctx["tenant_id"],
+                        f"{label} diubah",
+                        field,
+                        old_display,
+                        new_display,
+                        user_id,
+                        user_name,
+                    )
+                    changes_logged.append(f"{label}: {old_display} -> {new_display}")
+            
+            if changes_logged:
+                logger.info(f"Vendor {vendor_id} changes logged: {changes_logged}")
 
             return {
                 "success": True,
@@ -741,6 +875,27 @@ async def toggle_vendor_status(
             )
 
             logger.info(f"Vendor status changed: {vendor_id}, status={status}")
+
+            # Log activity: Status change
+            user_id = ctx.get("user_id")
+            user = request.state.user
+            user_name = user.get("fullname") or user.get("username") or user.get("email") or "System"
+            old_status = "aktif" if existing["is_active"] else "nonaktif"
+            new_status = "aktif" if is_active else "nonaktif"
+            
+            await conn.execute(
+                """
+                INSERT INTO vendor_activities 
+                (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
+                VALUES ($1, $2, 'status_changed', 'Status vendor diubah', 'is_active', $3, $4, $5, $6)
+                """,
+                vendor_id,
+                ctx["tenant_id"],
+                old_status,
+                new_status,
+                user_id,
+                user_name,
+            )
 
             return {
                 "success": True,
@@ -988,34 +1143,666 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
 
 @router.post("/{vendor_id}/opening-balance")
 async def set_vendor_opening_balance(request: Request, vendor_id: str):
-    """Set or update vendor opening AP balance."""
+    """
+    Set vendor opening AP balance via journal entry.
+    
+    Iron Laws Compliance:
+    - Law 3 (Append-Only): Creates journal entry, no direct UPDATE
+    - Law 4 (Double-Entry): Debit AP, Credit Opening Balance Equity  
+    - Law 6 (Source Traceability): source_type = VENDOR_OPENING_BALANCE
+    - Law 7 (No Balance Override): Balance computed from journals
+    
+    Journal Entry:
+        Debit:  2-10100 Hutang Usaha (AP) - increases payable
+        Credit: 3-50000 Modal Saldo Awal (Opening Balance Equity)
+    """
+    from datetime import date as date_type
+    from decimal import Decimal as Dec
+    
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        body = await request.json()
-        amount = body.get("amount", 0)
+        
+        raw_body = await request.json()
+        amount = Dec(str(raw_body.get("amount", 0)))
+        as_of_date = raw_body.get("as_of_date")
+        if as_of_date:
+            as_of_date = date_type.fromisoformat(as_of_date) if isinstance(as_of_date, str) else as_of_date
+        else:
+            as_of_date = date_type.today()
+        description = raw_body.get("description")
+        
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+        
         async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            
+            async with conn.transaction():
+                # 1. Verify vendor exists
+                vendor = await conn.fetchrow(
+                    "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    vendor_id,
+                    ctx["tenant_id"],
+                )
+                if not vendor:
+                    raise HTTPException(status_code=404, detail="Vendor not found")
+                
+                vendor_name = vendor["name"]
+                
+                # 2. Check for existing opening balance journal (idempotency)
+                existing_journal = await conn.fetchrow(
+                    """
+                    SELECT id, journal_number, total_debit, status
+                    FROM journal_entries
+                    WHERE tenant_id = $1 
+                      AND source_type = 'VENDOR_OPENING_BALANCE'
+                      AND source_id = $2
+                      AND status = 'POSTED'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                    UUID(vendor_id),
+                )
+                
+                if existing_journal:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Vendor already has opening balance journal {existing_journal['journal_number']}. "
+                               f"Current balance: {existing_journal['total_debit']}. "
+                               f"To update, first reverse the existing journal."
+                    )
+                
+                # 3. Get AP account (2-10100 - Hutang Usaha)
+                ap_account = await conn.fetchrow(
+                    """
+                    SELECT id, account_code, name 
+                    FROM chart_of_accounts 
+                    WHERE tenant_id = $1 AND account_code = '2-10100' AND is_active = true
+                    """,
+                    ctx["tenant_id"],
+                )
+                if not ap_account:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="AP account (2-10100) not found. Please verify chart of accounts."
+                    )
+                
+                # 4. Get Opening Balance Equity account (3-50000 - Modal Saldo Awal)
+                equity_account = await conn.fetchrow(
+                    """
+                    SELECT id, account_code, name 
+                    FROM chart_of_accounts 
+                    WHERE tenant_id = $1 AND account_code = '3-50000' AND is_active = true
+                    """,
+                    ctx["tenant_id"],
+                )
+                if not equity_account:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Opening Balance Equity account (3-50000) not found. Please run migrations."
+                    )
+                
+                # 5. Generate journal number (OB-V-YYMMDD-XXX)
+                year_month_str = as_of_date.strftime("%y%m%d")
+                existing_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM journal_entries 
+                    WHERE tenant_id = $1 AND journal_number LIKE $2
+                    """,
+                    ctx["tenant_id"],
+                    f"OB-V-{year_month_str}%"
+                )
+                journal_number = f"OB-V-{year_month_str}-{str(existing_count + 1).zfill(3)}"
+                
+                # 6. Create journal entry
+                journal_description = description or f"Opening Balance - Vendor: {vendor_name}"
+                
+                journal_id = await conn.fetchval(
+                    """
+                    INSERT INTO journal_entries (
+                        tenant_id, journal_number, journal_date, description,
+                        source_type, source_id, total_debit, total_credit, 
+                        status, is_opening_balance, created_by
+                    ) VALUES (
+                        $1, $2, $3, $4, 
+                        'VENDOR_OPENING_BALANCE', $5, $6, $6,
+                        'POSTED', true, $7
+                    ) RETURNING id
+                    """,
+                    ctx["tenant_id"],
+                    journal_number,
+                    as_of_date,
+                    journal_description,
+                    UUID(vendor_id),
+                    amount,
+                    ctx["user_id"],
+                )
+                
+                # 7. Create journal lines (double-entry)
+                # Line 1: Debit AP (increases payable - what we owe)
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (
+                        journal_id, line_number, account_id, debit, credit, memo
+                    ) VALUES ($1, 1, $2, $3, 0, $4)
+                    """,
+                    journal_id,
+                    ap_account["id"],
+                    amount,
+                    f"Opening Balance AP - {vendor_name}",
+                )
+                
+                # Line 2: Credit Opening Balance Equity (balancing entry)
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (
+                        journal_id, line_number, account_id, debit, credit, memo
+                    ) VALUES ($1, 2, $2, 0, $3, $4)
+                    """,
+                    journal_id,
+                    equity_account["id"],
+                    amount,
+                    f"Opening Balance Equity - {vendor_name}",
+                )
+                
+                # 8. Create AP subledger entry for tracking
+                await conn.execute(
+                    """
+                    INSERT INTO accounts_payable (
+                        tenant_id, supplier_id, supplier_name, bill_number,
+                        bill_date, due_date, amount, amount_paid, status,
+                        description, source_type, source_id
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $5, $6, 0, 'OPEN',
+                        $7, 'VENDOR_OPENING_BALANCE', $8
+                    )
+                    """,
+                    ctx["tenant_id"],
+                    UUID(vendor_id),
+                    vendor_name,
+                    f"OB-{vendor_name[:10]}-{as_of_date.strftime('%Y%m%d')}",
+                    as_of_date,
+                    amount,
+                    f"Opening Balance - {vendor_name}",
+                    journal_id,
+                )
+                
+                return {
+                    "success": True,
+                    "message": "Vendor opening balance created via journal entry",
+                    "data": {
+                        "vendor_id": vendor_id,
+                        "vendor_name": vendor_name,
+                        "amount": float(amount),
+                        "as_of_date": as_of_date.isoformat(),
+                        "journal_id": str(journal_id),
+                        "journal_number": journal_number,
+                        "journal_entry": {
+                            "debit": {
+                                "account_code": ap_account["account_code"],
+                                "account_name": ap_account["name"],
+                                "amount": float(amount),
+                            },
+                            "credit": {
+                                "account_code": equity_account["account_code"],
+                                "account_name": equity_account["name"],
+                                "amount": float(amount),
+                            },
+                        },
+                        "iron_laws_compliance": {
+                            "law_3_append_only": True,
+                            "law_4_double_entry": True,
+                            "law_6_source_traceable": True,
+                            "law_7_no_balance_override": True,
+                        },
+                    },
+                }
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting vendor opening balance: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to set vendor opening balance: {str(e)}")
+# =============================================================================
+# VENDOR JOURNAL ENTRIES (Ledger Supremacy - Law 1)
+# =============================================================================
+
+
+@router.get("/{vendor_id}/journal-entries")
+async def get_vendor_journal_entries(
+    request: Request,
+    vendor_id: UUID,
+    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    source_type: Optional[str] = Query(None, description="Filter by source type (PURCHASE_INVOICE, PAYMENT_MADE)"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """
+    Get journal entries related to a vendor.
+    
+    Data comes from journal_entries table (Law 1: Ledger Supremacy).
+    Read-only endpoint (Law 2: Journal Immutability).
+    Results are deterministic and reproducible (Law 9: Deterministic Reporting).
+    
+    Journal entries are linked via:
+    - bills.journal_id (source_type = PURCHASE_INVOICE)
+    - bill_payments_v2.journal_id (source_type = PAYMENT_MADE)
+    - vendor_deposits.journal_id (source_type = VENDOR_DEPOSIT)
+    - vendor_credits.journal_id (source_type = VENDOR_CREDIT)
+    
+    Returns entries sorted by journal_date DESC for deterministic ordering.
+    """
+    from datetime import datetime
+    
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Check if vendor exists
             vendor = await conn.fetchrow(
-                "SELECT id FROM vendors WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
                 vendor_id,
                 ctx["tenant_id"],
             )
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
-            # Fixed: use opening_balance instead of balance (which doesn't exist)
-            await conn.execute(
-                "UPDATE vendors SET opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                amount,
-                vendor_id,
-                ctx["tenant_id"],
-            )
+
+            # Build conditions for filtering
+            conditions = ["je.tenant_id = $1", "je.status = 'POSTED'"]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            # Date filters
+            if start_date:
+                try:
+                    parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    conditions.append(f"je.journal_date >= ${param_idx}")
+                    params.append(parsed_start)
+                    param_idx += 1
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+
+            if end_date:
+                try:
+                    parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    conditions.append(f"je.journal_date <= ${param_idx}")
+                    params.append(parsed_end)
+                    param_idx += 1
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+            # Source type filter
+            if source_type:
+                source_type_upper = source_type.upper()
+                conditions.append(f"je.source_type = ${param_idx}")
+                params.append(source_type_upper)
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+            offset = (page - 1) * limit
+            vendor_id_param_idx = param_idx
+            limit_param_idx = param_idx + 1
+            offset_param_idx = param_idx + 2
+            
+            params.extend([vendor_id, limit, offset])
+
+            # Query journal entries linked to this vendor through bills, payments, deposits, credits
+            query = f"""
+                WITH vendor_journals AS (
+                    -- Bills (Purchase Invoices)
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN bills b ON b.journal_id = je.id
+                    WHERE {where_clause}
+                      AND b.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Bill Payments
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN bill_payments_v2 bp ON bp.journal_id = je.id
+                    WHERE {where_clause}
+                      AND bp.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Vendor Deposits
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN vendor_deposits vd ON vd.journal_id = je.id
+                    WHERE {where_clause}
+                      AND vd.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Vendor Credits
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN vendor_credits vc ON vc.journal_id = je.id
+                    WHERE {where_clause}
+                      AND vc.vendor_id = ${vendor_id_param_idx}
+                )
+                SELECT 
+                    je.id,
+                    je.journal_date,
+                    je.journal_number,
+                    je.description,
+                    je.source_type,
+                    je.total_debit,
+                    je.total_credit,
+                    je.status,
+                    je.created_at
+                FROM journal_entries je
+                INNER JOIN vendor_journals vj ON vj.journal_id = je.id
+                ORDER BY je.journal_date DESC, je.created_at DESC
+                LIMIT ${limit_param_idx} OFFSET ${offset_param_idx}
+            """
+
+            rows = await conn.fetch(query, *params)
+
+            # Get journal lines for each entry
+            entries = []
+            for row in rows:
+                # Fetch lines with account names
+                lines_query = """
+                    SELECT 
+                        jl.id,
+                        jl.line_number,
+                        jl.account_id,
+                        coa.name as account_name,
+                        coa.account_code,
+                        jl.debit,
+                        jl.credit,
+                        jl.memo
+                    FROM journal_lines jl
+                    INNER JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number ASC
+                """
+                line_rows = await conn.fetch(lines_query, row["id"])
+                
+                lines = [
+                    {
+                        "id": str(lr["id"]),
+                        "line_number": lr["line_number"],
+                        "account_id": str(lr["account_id"]),
+                        "account_name": lr["account_name"],
+                        "account_code": lr["account_code"],
+                        "debit": float(lr["debit"]) if lr["debit"] else 0,
+                        "credit": float(lr["credit"]) if lr["credit"] else 0,
+                        "memo": lr["memo"],
+                    }
+                    for lr in line_rows
+                ]
+
+                entries.append({
+                    "id": str(row["id"]),
+                    "date": row["journal_date"].isoformat(),
+                    "journal_number": row["journal_number"],
+                    "description": row["description"],
+                    "source_type": row["source_type"],
+                    "total_debit": float(row["total_debit"]) if row["total_debit"] else 0,
+                    "total_credit": float(row["total_credit"]) if row["total_credit"] else 0,
+                    "status": row["status"],
+                    "lines": lines,
+                })
+
+            # Get total count for pagination
+            count_query = f"""
+                WITH vendor_journals AS (
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN bills b ON b.journal_id = je.id
+                    WHERE {where_clause}
+                      AND b.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN bill_payments_v2 bp ON bp.journal_id = je.id
+                    WHERE {where_clause}
+                      AND bp.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN vendor_deposits vd ON vd.journal_id = je.id
+                    WHERE {where_clause}
+                      AND vd.vendor_id = ${vendor_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN vendor_credits vc ON vc.journal_id = je.id
+                    WHERE {where_clause}
+                      AND vc.vendor_id = ${vendor_id_param_idx}
+                )
+                SELECT COUNT(*) FROM vendor_journals
+            """
+            # Only need params up to vendor_id for count query
+            count_params = params[:-2]  # Exclude limit and offset
+            total = await conn.fetchval(count_query, *count_params)
+
             return {
                 "success": True,
-                "message": "Opening balance updated",
-                "data": {"vendor_id": vendor_id, "amount": amount},
+                "data": {
+                    "entries": entries,
+                    "vendor_id": str(vendor_id),
+                    "vendor_name": vendor["name"],
+                    "total": total,
+                    "page": page,
+                    "limit": limit,
+                    "has_more": offset + limit < total,
+                },
             }
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error setting opening balance: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to set opening balance")
+        logger.error(f"Error getting vendor journal entries {vendor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
+# =============================================================================
+# VENDOR ACTIVITY HISTORY (Read-only - Law 12: Audit Trail Immutability)
+# =============================================================================
+
+
+@router.get("/{vendor_id}/activity", response_model=VendorActivityResponse)
+async def get_vendor_activity(
+    request: Request,
+    vendor_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Get activity log / audit trail for a vendor."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    conn = None
+
+    try:
+        conn = await pool.acquire()
+
+        # Verify vendor exists
+        vendor_exists = await conn.fetchval(
+            "SELECT id FROM vendors WHERE id = $1 AND tenant_id = $2",
+            vendor_id,
+            ctx["tenant_id"],
+        )
+        if not vendor_exists:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        # Get total count
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM vendor_activities WHERE vendor_id = $1 AND tenant_id = $2",
+            vendor_id,
+            ctx["tenant_id"],
+        )
+
+        # Get activities
+        query = """
+            SELECT id, type, description, details, actor_name, timestamp, field_name, old_value, new_value
+            FROM vendor_activities
+            WHERE vendor_id = $1 AND tenant_id = $2
+            ORDER BY timestamp DESC
+            LIMIT $3 OFFSET $4
+        """
+        rows = await conn.fetch(query, vendor_id, ctx["tenant_id"], limit, offset)
+
+        activities = [
+            VendorActivity(
+                id=str(row["id"]),
+                type=row["type"],
+                description=row["description"],
+                details=row.get("details"),
+                actor_name=row.get("actor_name"),
+                timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
+                field_name=row.get("field_name"),
+                old_value=row.get("old_value"),
+                new_value=row.get("new_value"),
+            )
+            for row in rows
+        ]
+
+        return VendorActivityResponse(
+            success=True,
+            activities=activities,
+            total=total or 0,
+            has_more=(offset + limit) < (total or 0),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting vendor activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await pool.release(conn)
+
+# =============================================================================
+# MERGE VENDORS (Iron Laws Compliant)
+# =============================================================================
+@router.post("/merge", response_model=MergeVendorResponse)
+async def merge_vendors(
+    request: Request,
+    body: MergeVendorRequest,
+):
+    """
+    Merge two vendors by transferring all records from source to target.
+    
+    Iron Laws Compliance:
+    - Law 2: Does NOT modify journal_entries
+    - Law 6: Maintains audit trail via merged_into_id
+    - Law 12: Logs to master_data_audit_log
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        source_id = UUID(body.source_vendor_id)
+        target_id = UUID(body.target_vendor_id)
+        
+        if source_id == target_id:
+            raise HTTPException(status_code=400, detail="Source and target vendor cannot be the same")
+        
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Validate source vendor
+                source_vendor = await conn.fetchrow(
+                    "SELECT id, name, is_active, merged_into_id, notes FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    source_id, ctx["tenant_id"],
+                )
+                if not source_vendor:
+                    raise HTTPException(status_code=404, detail="Source vendor not found")
+                if source_vendor["merged_into_id"]:
+                    raise HTTPException(status_code=400, detail="Source vendor was already merged")
+                
+                # Validate target vendor
+                target_vendor = await conn.fetchrow(
+                    "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    target_id, ctx["tenant_id"],
+                )
+                if not target_vendor:
+                    raise HTTPException(status_code=404, detail="Target vendor not found")
+                if not target_vendor["is_active"]:
+                    raise HTTPException(status_code=400, detail="Target vendor must be active")
+                
+                summary = {}
+                
+                # Transfer bills
+                result = await conn.execute(
+                    "UPDATE bills SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
+                    target_id, source_id, target_vendor["name"], ctx["tenant_id"],
+                )
+                summary["bills"] = int(result.split()[-1])
+                
+                # Transfer bill_payments_v2
+                result = await conn.execute(
+                    "UPDATE bill_payments_v2 SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
+                    target_id, source_id, target_vendor["name"], ctx["tenant_id"],
+                )
+                summary["payments"] = int(result.split()[-1])
+                
+                # Transfer purchase_orders
+                result = await conn.execute(
+                    "UPDATE purchase_orders SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
+                    target_id, source_id, target_vendor["name"], ctx["tenant_id"],
+                )
+                summary["purchase_orders"] = int(result.split()[-1])
+                
+                # Transfer expenses
+                result = await conn.execute(
+                    "UPDATE expenses SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
+                    target_id, source_id, target_vendor["name"], ctx["tenant_id"],
+                )
+                summary["expenses"] = int(result.split()[-1])
+                
+                # Soft-delete source vendor
+                merge_note = f"[MERGED] into '{target_vendor['name']}' (ID: {target_id})"
+                existing_notes = source_vendor["notes"] or ""
+                new_notes = f"{existing_notes}\n{merge_note}".strip()
+                
+                await conn.execute(
+                    "UPDATE vendors SET is_active = false, merged_into_id = $1, notes = $3, updated_at = NOW() WHERE id = $2 AND tenant_id = $4",
+                    target_id, source_id, new_notes, ctx["tenant_id"],
+                )
+                
+                # Log to audit
+                try:
+                    user_id = ctx.get("user_id")
+                    await conn.execute(
+                        """INSERT INTO master_data_audit_log (tenant_id, entity_type, entity_id, entity_name, action, field_name, new_value, changed_by, notes)
+                        VALUES ($1, 'vendor', $2, $3, 'MERGE', 'merged_into_id', $4, $5, $6)""",
+                        UUID(ctx["tenant_id"]), source_id, source_vendor["name"], str(target_id), user_id,
+                        f"Merged into {target_vendor['name']}. Transferred: {summary}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Audit log failed: {e}")
+                
+                total = sum(summary.values())
+                logger.info(f"Vendor merge: {source_id} -> {target_id}, transferred {total} records")
+                
+                return MergeVendorResponse(
+                    success=True,
+                    message=f"Merged '{source_vendor['name']}' into '{target_vendor['name']}'. {total} records transferred.",
+                    data={
+                        "source": {"id": str(source_id), "name": source_vendor["name"]},
+                        "target": {"id": str(target_id), "name": target_vendor["name"]},
+                        "summary": summary,
+                    },
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Merge error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to merge: {str(e)}")

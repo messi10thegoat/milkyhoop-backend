@@ -34,6 +34,10 @@ class LabaRugiSummary(BaseModel):
     pengeluaran: int  # Total expenses (HPP + beban)
     period: str  # "7 Hari" | "30 Hari" | "Bulan Ini"
     margin_persen: float = 0.0  # Profit margin %
+    # Period comparison fields
+    prev_profit: Optional[int] = None  # Previous period profit
+    prev_pendapatan: Optional[int] = None  # Previous period revenue
+    profit_change_pct: Optional[float] = None  # % change vs previous
 
 
 class PiutangSummary(BaseModel):
@@ -48,6 +52,9 @@ class PiutangSummary(BaseModel):
     overdue_90_plus: int = 0
     oldest_customer: Optional[str] = None  # Customer with oldest overdue
     oldest_days: Optional[int] = None  # Days overdue for oldest
+    # Period comparison fields
+    prev_total: Optional[int] = None  # Previous period total AR
+    change_pct: Optional[float] = None  # % change vs previous
 
 
 class HutangSummary(BaseModel):
@@ -62,6 +69,9 @@ class HutangSummary(BaseModel):
     overdue_90_plus: int = 0
     nearest_supplier: Optional[str] = None  # Supplier with nearest due date
     nearest_days: Optional[int] = None  # Days until due (positive = future, negative = overdue)
+    # Period comparison fields
+    prev_total: Optional[int] = None  # Previous period total AP
+    change_pct: Optional[float] = None  # % change vs previous
 
 
 class BankAccount(BaseModel):
@@ -79,6 +89,19 @@ class KasBankSummary(BaseModel):
     kas: int  # Total cash
     bank: int  # Total bank
     accounts: List[BankAccount] = []
+    # Period comparison fields
+    prev_total: Optional[int] = None  # Previous period total cash+bank
+    change_pct: Optional[float] = None  # % change vs previous
+
+
+class KPIMetrics(BaseModel):
+    """DSO and DPO KPI metrics for dashboard"""
+    dso: float                   # Days Sales Outstanding
+    dso_benchmark: int = 45      # Industry benchmark
+    dso_status: str              # "good" | "ok" | "warning" | "critical"
+    dpo: float                   # Days Payable Outstanding
+    dpo_benchmark: int = 30      # Industry benchmark
+    dpo_status: str              # "good" | "ok" | "warning"
 
 
 class DashboardSummaryResponse(BaseModel):
@@ -87,6 +110,7 @@ class DashboardSummaryResponse(BaseModel):
     piutang: PiutangSummary
     hutang: HutangSummary
     kas_bank: KasBankSummary
+    kpi: Optional[KPIMetrics] = None  # DSO/DPO metrics
     generated_at: str
 
 
@@ -191,6 +215,39 @@ def get_day_label(date: datetime) -> str:
     return DAY_NAMES[date.weekday()]
 
 
+def calculate_dso_status(dso: float) -> str:
+    """Calculate DSO status (lower is better)"""
+    if dso <= 30:
+        return "good"
+    elif dso <= 45:
+        return "ok"
+    elif dso <= 60:
+        return "warning"
+    else:
+        return "critical"
+
+
+def calculate_dpo_status(dpo: float) -> str:
+    """Calculate DPO status (moderate is best)"""
+    if 25 <= dpo <= 35:
+        return "good"
+    elif 15 <= dpo <= 45:
+        return "ok"
+    else:
+        return "warning"
+
+
+def get_days_in_period(period: str) -> int:
+    """Get number of days for a period"""
+    if period == "7d":
+        return 7
+    elif period == "30d":
+        return 30
+    else:  # month
+        now = datetime.now()
+        return now.day  # Days elapsed in current month
+
+
 def get_period_dates(period: str) -> tuple:
     """
     Get date range for period.
@@ -216,6 +273,49 @@ def get_period_dates(period: str) -> tuple:
     end_epoch = int(now.timestamp() * 1000)
 
     return start_epoch, end_epoch, period_label
+
+
+def get_prev_period_dates(period: str) -> tuple:
+    """
+    Get date range for PREVIOUS period (for comparison).
+    - If current period is "30d" (last 30 days), previous is 30-60 days ago
+    - If current period is "7d", previous is 7-14 days ago
+    - If current period is "month", previous is last month
+    
+    Returns: (start_epoch_ms, end_epoch_ms)
+    """
+    now = datetime.now()
+
+    if period == '7d':
+        # Previous 7 days: 7-14 days ago
+        start_date = now - timedelta(days=14)
+        end_date = now - timedelta(days=7)
+    elif period == '30d':
+        # Previous 30 days: 30-60 days ago
+        start_date = now - timedelta(days=60)
+        end_date = now - timedelta(days=30)
+    else:  # month
+        # Previous month
+        first_of_current_month = datetime(now.year, now.month, 1)
+        # Last day of previous month
+        end_date = first_of_current_month - timedelta(days=1)
+        # First day of previous month
+        start_date = datetime(end_date.year, end_date.month, 1)
+
+    # Convert to epoch milliseconds for BIGINT comparison
+    start_epoch = int(start_date.timestamp() * 1000)
+    end_epoch = int(end_date.timestamp() * 1000)
+
+    return start_epoch, end_epoch
+
+
+def calc_change_pct(current: int, prev: int) -> float:
+    """Calculate percentage change from previous to current period."""
+    if prev > 0:
+        return round((current - prev) / prev * 100, 1)
+    elif current > 0:
+        return 100.0  # Went from 0 to something = 100% increase
+    return 0.0
 
 
 # ========================================
@@ -245,6 +345,7 @@ async def get_dashboard_summary(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         start_date, end_date, period_label = get_period_dates(period)
+        prev_start_date, prev_end_date = get_prev_period_dates(period)
 
         conn = await get_db_connection()
         try:
@@ -271,12 +372,23 @@ async def get_dashboard_summary(
             profit = pendapatan - pengeluaran
             margin_persen = round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0
 
+            # Previous period P&L
+            prev_pl_row = await conn.fetchrow(pl_query, tenant_id, prev_start_date, prev_end_date)
+            prev_pendapatan = int(prev_pl_row['pendapatan']) if prev_pl_row else 0
+            prev_hpp = int(prev_pl_row['hpp']) if prev_pl_row else 0
+            prev_beban = int(prev_pl_row['beban']) if prev_pl_row else 0
+            prev_profit = prev_pendapatan - (prev_hpp + prev_beban)
+            profit_change_pct = calc_change_pct(profit, prev_profit)
+
             laba_rugi = LabaRugiSummary(
                 profit=profit,
                 pendapatan=pendapatan,
                 pengeluaran=pengeluaran,
                 period=period_label,
-                margin_persen=margin_persen
+                margin_persen=margin_persen,
+                prev_profit=prev_profit,
+                prev_pendapatan=prev_pendapatan,
+                profit_change_pct=profit_change_pct
             )
 
             # ============================
@@ -312,8 +424,38 @@ async def get_dashboard_summary(
             """
             oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
 
+            # Previous period AR comparison (simplified: sum of AR transactions in prev period)
+            prev_ar_query = """
+                SELECT COALESCE(SUM(saldo_hutang), 0) as total
+                FROM customers
+                WHERE tenant_id = $1
+                  AND tipe = 'pelanggan'
+                  AND saldo_hutang > 0
+            """
+            # Note: AR balance is point-in-time, so prev_total represents same metric
+            # For true comparison, we'd need historical snapshots
+            ar_total = int(ar_row['total']) if ar_row else 0
+            # Estimate prev by looking at transaction volume change
+            prev_ar_estimate_query = """
+                SELECT COALESCE(SUM(CASE WHEN jenis_transaksi = 'penjualan' THEN total_nominal ELSE 0 END), 0) as sales
+                FROM public.transaksi_harian
+                WHERE tenant_id = $1
+                  AND timestamp >= $2 AND timestamp <= $3
+                  AND status = 'approved'
+            """
+            prev_ar_sales = await conn.fetchrow(prev_ar_estimate_query, tenant_id, prev_start_date, prev_end_date)
+            curr_ar_sales = await conn.fetchrow(prev_ar_estimate_query, tenant_id, start_date, end_date)
+            prev_sales_val = int(prev_ar_sales['sales']) if prev_ar_sales else 0
+            curr_sales_val = int(curr_ar_sales['sales']) if curr_ar_sales else 0
+            # Estimate prev AR based on sales ratio
+            if curr_sales_val > 0 and prev_sales_val > 0:
+                ar_prev_total = int(ar_total * prev_sales_val / curr_sales_val)
+            else:
+                ar_prev_total = 0
+            ar_change_pct = calc_change_pct(ar_total, ar_prev_total)
+
             piutang = PiutangSummary(
-                total=int(ar_row['total']) if ar_row else 0,
+                total=ar_total,
                 customer_count=int(ar_row['customer_count']) if ar_row else 0,
                 jatuh_tempo=int(ar_row['jatuh_tempo']) if ar_row else 0,
                 current=int(ar_row['current_amount']) if ar_row else 0,
@@ -322,7 +464,9 @@ async def get_dashboard_summary(
                 overdue_61_90=int(ar_row['overdue_61_90']) if ar_row else 0,
                 overdue_90_plus=int(ar_row['overdue_90_plus']) if ar_row else 0,
                 oldest_customer=oldest_ar['customer_name'] if oldest_ar else None,
-                oldest_days=int(oldest_ar['days_overdue']) if oldest_ar else None
+                oldest_days=int(oldest_ar['days_overdue']) if oldest_ar else None,
+                prev_total=ar_prev_total,
+                change_pct=ar_change_pct
             )
 
             # ============================
@@ -358,8 +502,28 @@ async def get_dashboard_summary(
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
 
+            # Previous period AP comparison (estimate based on purchase ratio)
+            prev_ap_estimate_query = """
+                SELECT COALESCE(SUM(CASE WHEN jenis_transaksi = 'pembelian' THEN total_nominal ELSE 0 END), 0) as purchases
+                FROM public.transaksi_harian
+                WHERE tenant_id = $1
+                  AND timestamp >= $2 AND timestamp <= $3
+                  AND status = 'approved'
+            """
+            ap_total = int(ap_row['total']) if ap_row else 0
+            prev_ap_purchases = await conn.fetchrow(prev_ap_estimate_query, tenant_id, prev_start_date, prev_end_date)
+            curr_ap_purchases = await conn.fetchrow(prev_ap_estimate_query, tenant_id, start_date, end_date)
+            prev_purchases_val = int(prev_ap_purchases['purchases']) if prev_ap_purchases else 0
+            curr_purchases_val = int(curr_ap_purchases['purchases']) if curr_ap_purchases else 0
+            # Estimate prev AP based on purchases ratio
+            if curr_purchases_val > 0 and prev_purchases_val > 0:
+                ap_prev_total = int(ap_total * prev_purchases_val / curr_purchases_val)
+            else:
+                ap_prev_total = 0
+            ap_change_pct = calc_change_pct(ap_total, ap_prev_total)
+
             hutang = HutangSummary(
-                total=int(ap_row['total']) if ap_row else 0,
+                total=ap_total,
                 supplier_count=int(ap_row['supplier_count']) if ap_row else 0,
                 jatuh_tempo=int(ap_row['jatuh_tempo']) if ap_row else 0,
                 current=int(ap_row['current_amount']) if ap_row else 0,
@@ -368,7 +532,9 @@ async def get_dashboard_summary(
                 overdue_61_90=int(ap_row['overdue_61_90']) if ap_row else 0,
                 overdue_90_plus=int(ap_row['overdue_90_plus']) if ap_row else 0,
                 nearest_supplier=nearest_ap['supplier_name'] if nearest_ap else None,
-                nearest_days=int(nearest_ap['days_until_due']) if nearest_ap else None
+                nearest_days=int(nearest_ap['days_until_due']) if nearest_ap else None,
+                prev_total=ap_prev_total,
+                change_pct=ap_change_pct
             )
 
             # ============================
@@ -422,20 +588,66 @@ async def get_dashboard_summary(
                 else:
                     total_bank += balance
 
+            # Previous period Kas/Bank comparison
+            # Query net cash flow for previous period to estimate prev balance
+            prev_cashflow_query = """
+                SELECT 
+                    COALESCE(SUM(CASE WHEN jenis_transaksi IN ('penjualan', 'penerimaan') THEN total_nominal ELSE 0 END), 0) as inflow,
+                    COALESCE(SUM(CASE WHEN jenis_transaksi IN ('pembelian', 'beban', 'pembayaran') THEN total_nominal ELSE 0 END), 0) as outflow
+                FROM public.transaksi_harian
+                WHERE tenant_id = $1
+                  AND timestamp >= $2 AND timestamp <= $3
+                  AND status = 'approved'
+            """
+            kas_bank_total = total_kas + total_bank
+            # Get current period net flow
+            curr_flow = await conn.fetchrow(prev_cashflow_query, tenant_id, start_date, end_date)
+            curr_net = (int(curr_flow['inflow']) if curr_flow else 0) - (int(curr_flow['outflow']) if curr_flow else 0)
+            # Estimate prev balance = current - net flow of current period
+            kas_bank_prev_total = kas_bank_total - curr_net if kas_bank_total > 0 else 0
+            kas_bank_change_pct = calc_change_pct(kas_bank_total, kas_bank_prev_total)
+
             kas_bank = KasBankSummary(
-                total=total_kas + total_bank,
+                total=kas_bank_total,
                 kas=total_kas,
                 bank=total_bank,
-                accounts=accounts
+                accounts=accounts,
+                prev_total=kas_bank_prev_total,
+                change_pct=kas_bank_change_pct
             )
 
-            logger.info(f"Dashboard summary generated: tenant={tenant_id}, period={period}")
+            # ============================
+            # 5. KPI METRICS (DSO/DPO)
+            # ============================
+            days_in_period = get_days_in_period(period)
+            
+            # DSO = AR / daily_revenue
+            daily_revenue = pendapatan / days_in_period if days_in_period > 0 else 0
+            dso = round(piutang.total / daily_revenue, 1) if daily_revenue > 0 else 0.0
+            dso_status = calculate_dso_status(dso)
+            
+            # DPO = AP / daily_purchases (hpp)
+            daily_purchases = hpp / days_in_period if days_in_period > 0 else 0
+            dpo = round(hutang.total / daily_purchases, 1) if daily_purchases > 0 else 0.0
+            dpo_status = calculate_dpo_status(dpo)
+            
+            kpi = KPIMetrics(
+                dso=dso,
+                dso_benchmark=45,
+                dso_status=dso_status,
+                dpo=dpo,
+                dpo_benchmark=30,
+                dpo_status=dpo_status
+            )
+
+            logger.info(f"Dashboard summary generated: tenant={tenant_id}, period={period}, dso={dso}, dpo={dpo}")
 
             return DashboardSummaryResponse(
                 laba_rugi=laba_rugi,
                 piutang=piutang,
                 hutang=hutang,
                 kas_bank=kas_bank,
+                kpi=kpi,
                 generated_at=datetime.now().isoformat()
             )
 
@@ -1179,3 +1391,166 @@ async def get_reconciliation_status(request: Request):
     except Exception as e:
         logger.error(f"Reconciliation status error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get reconciliation status")
+
+
+
+
+# ========================================
+# Cash Flow Projection Models
+# ========================================
+
+class CashProjectionDay(BaseModel):
+    """Daily cash projection data point"""
+    date: str                    # YYYY-MM-DD
+    label: str                   # Sen, Sel, etc.
+    projected_in: int            # Expected cash in (from AR due dates)
+    projected_out: int           # Expected cash out (from AP due dates)
+    projected_balance: int       # Cumulative balance
+
+
+class CashProjectionResponse(BaseModel):
+    """Cash flow projection response"""
+    current_balance: int         # Todays kas + bank
+    projected_balance_7d: int    # Balance after 7 days
+    total_expected_in: int       # Total AR coming due in 7 days
+    total_expected_out: int      # Total AP coming due in 7 days
+    net_projection: int          # Expected change
+    projections: List[CashProjectionDay]  # Daily breakdown
+    warning: Optional[str] = None  # Kas mungkin tidak cukup pada [date] if negative
+
+
+# ========================================
+# Cash Flow Projection Endpoint
+# ========================================
+
+@router.get("/cash-flow-projection", response_model=CashProjectionResponse)
+async def get_cash_flow_projection(request: Request):
+    """
+    Project cash position for next 7 days.
+    Shows expected inflows (AR due) and outflows (AP due) with cumulative balance.
+    READ-ONLY endpoint.
+    """
+    try:
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        conn = await get_db_connection()
+        try:
+            # 1. Get current kas + bank balance (same as /summary)
+            kas_bank_query = """
+                SELECT
+                    COALESCE(SUM(b.debit_balance - b.credit_balance), 0) as total_balance
+                FROM chart_of_accounts c
+                LEFT JOIN (
+                    SELECT 
+                        jl.account_id,
+                        COALESCE(SUM(jl.debit), 0) as debit_balance,
+                        COALESCE(SUM(jl.credit), 0) as credit_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.status = 'POSTED'
+                    GROUP BY jl.account_id
+                ) b ON b.account_id = c.id
+                WHERE c.tenant_id = $1
+                  AND c.account_code LIKE '1-1%'
+                  AND (c.account_code LIKE '1-101%' OR c.account_code LIKE '1-102%')
+            """
+            current_balance = await conn.fetchval(kas_bank_query, tenant_id) or 0
+            current_balance = int(current_balance)
+
+            # 2. Get expected inflows (AR due in next 7 days)
+            ar_query = """
+                SELECT due_date, SUM(amount - amount_paid) as expected
+                FROM accounts_receivable
+                WHERE tenant_id = $1 
+                  AND status != 'PAID'
+                  AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+                GROUP BY due_date
+                ORDER BY due_date
+            """
+            ar_rows = await conn.fetch(ar_query, tenant_id)
+            ar_by_date = {row["due_date"].strftime("%Y-%m-%d"): int(row["expected"]) for row in ar_rows}
+
+            # 3. Get expected outflows (AP/bills due in next 7 days)
+            ap_query = """
+                SELECT due_date, SUM(amount - amount_paid) as expected
+                FROM bills
+                WHERE tenant_id = $1 
+                  AND status NOT IN ('paid', 'void')
+                  AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+                GROUP BY due_date
+                ORDER BY due_date
+            """
+            ap_rows = await conn.fetch(ap_query, tenant_id)
+            ap_by_date = {row["due_date"].strftime("%Y-%m-%d"): int(row["expected"]) for row in ap_rows}
+
+            # 4. Build daily projections with cumulative balance
+            day_labels = {
+                0: "Sen",  # Monday
+                1: "Sel",  # Tuesday
+                2: "Rab",  # Wednesday
+                3: "Kam",  # Thursday
+                4: "Jum",  # Friday
+                5: "Sab",  # Saturday
+                6: "Min"   # Sunday
+            }
+
+            projections = []
+            running_balance = current_balance
+            total_in = 0
+            total_out = 0
+            warning_date = None
+
+            today = datetime.now().date()
+
+            for i in range(7):
+                proj_date = today + timedelta(days=i)
+                date_str = proj_date.strftime("%Y-%m-%d")
+                day_label = day_labels[proj_date.weekday()]
+
+                projected_in = ar_by_date.get(date_str, 0)
+                projected_out = ap_by_date.get(date_str, 0)
+
+                running_balance = running_balance + projected_in - projected_out
+                total_in += projected_in
+                total_out += projected_out
+
+                # Check for negative balance warning
+                if running_balance < 0 and warning_date is None:
+                    warning_date = date_str
+
+                projections.append(CashProjectionDay(
+                    date=date_str,
+                    label=day_label,
+                    projected_in=projected_in,
+                    projected_out=projected_out,
+                    projected_balance=running_balance
+                ))
+
+            # Build warning message if needed
+            warning = None
+            if warning_date:
+                warning = f"Kas mungkin tidak cukup pada {warning_date}"
+
+            return CashProjectionResponse(
+                current_balance=current_balance,
+                projected_balance_7d=running_balance,
+                total_expected_in=total_in,
+                total_expected_out=total_out,
+                net_projection=total_in - total_out,
+                projections=projections,
+                warning=warning
+            )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cash flow projection error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get cash flow projection")

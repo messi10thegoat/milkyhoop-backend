@@ -59,18 +59,22 @@ class KulakanProductItem(BaseModel):
     ] = None  # May be None if product only exists in transaction history
     name: str
     barcode: Optional[str] = None
+    code: Optional[str] = None  # Alias for barcode (frontend compatibility)
     category: Optional[str] = None
     harga_jual: Optional[int] = None  # Selling price (may be None)
     # Auto-fill fields from last pembelian transaction
     last_unit: Optional[str] = None  # Wholesale unit (karton, dus, slop)
+    unit: Optional[str] = None  # Alias for last_unit (frontend compatibility)
     last_price: Optional[int] = None  # Price per wholesale unit
     hpp_per_unit: Optional[float] = None  # HPP per retail unit
     units_per_pack: Optional[int] = None  # Qty per wholesale unit
     content_unit: Optional[str] = None  # Retail unit (pcs, lembar, bungkus)
+    purchase_price: Optional[int] = None  # Purchase price from product master data
 
 
 class KulakanSearchResponse(BaseModel):
     products: List[KulakanProductItem]
+    items: List[KulakanProductItem]  # Alias for products (frontend compatibility)
 
 
 class ProductSuggestion(BaseModel):
@@ -719,6 +723,7 @@ async def search_products_for_kulakan(
                         p.barcode,
                         p.kategori as category,
                         COALESCE(p.harga_jual, 0)::int as harga_jual,
+                        COALESCE(p.purchase_price, 0)::int as purchase_price,
                         p.content_unit,
                         'products' as source,
                         CASE
@@ -743,6 +748,7 @@ async def search_products_for_kulakan(
                         NULL as barcode,
                         NULL as category,
                         0 as harga_jual,
+                        0 as purchase_price,
                         NULL as content_unit,
                         'transaction' as source,
                         CASE
@@ -762,7 +768,7 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, content_unit, source, score
+                        id, name, barcode, category, harga_jual, purchase_price, content_unit, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
@@ -801,6 +807,7 @@ async def search_products_for_kulakan(
                     barcode=row["barcode"],
                     category=row["category"],
                     harga_jual=row["harga_jual"] if row["harga_jual"] else None,
+                    purchase_price=row["purchase_price"] if row["purchase_price"] else None,
                 )
 
                 if last_tx:
@@ -850,7 +857,12 @@ async def search_products_for_kulakan(
                 f"Kulakan search: q='{q}', tenant={tenant_id}, found={len(products)}"
             )
 
-            return KulakanSearchResponse(products=products)
+            # Populate code and unit aliases for frontend compatibility
+            for p in products:
+                p.code = p.barcode  # Map barcode -> code
+                p.unit = p.last_unit or "pcs"  # Map last_unit -> unit (with default)
+            
+            return KulakanSearchResponse(products=products, items=products)
 
     except HTTPException:
         raise

@@ -475,3 +475,29 @@ class CalculateBillResponse(BaseModel):
 
     success: bool = True
     calculation: BillCalculationResult
+
+
+# =============================================================================
+# ACTIVITY RESPONSE MODELS
+# =============================================================================
+
+
+class BillActivity(BaseModel):
+    """Single activity entry for a bill."""
+
+    id: str
+    type: str  # created, updated, payment, voided, status_changed
+    description: str
+    actor_name: Optional[str] = None
+    timestamp: str
+    field_name: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    amount: Optional[int] = None
+    details: Optional[str] = None
+
+
+class BillActivityResponse(BaseModel):
+    """Response for bill activity endpoint."""
+
+    activities: List[BillActivity]

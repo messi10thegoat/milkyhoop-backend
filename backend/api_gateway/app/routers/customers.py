@@ -19,6 +19,8 @@ from ..schemas.customers import (
     CustomerDetailResponse,
     CustomerAutocompleteResponse,
     CustomerBalanceResponse,
+    CustomerActivity,
+    CustomerActivityResponse,
 )
 from ..config import settings
 
@@ -83,7 +85,7 @@ async def autocomplete_customers(
 
         async with pool.acquire() as conn:
             query = """
-                SELECT id, nama, nomor_member, telepon
+                SELECT id, nama, nomor_member, telepon, company_name, display_name
                 FROM customers
                 WHERE tenant_id = $1
                   AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR telepon ILIKE $2)
@@ -225,6 +227,41 @@ async def list_customers(
 
 
 # =============================================================================
+# =============================================================================
+
+
+@router.get("/next-code")
+async def get_next_customer_code(request: Request):
+    """Get the next available customer code for auto-generation."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT nomor_member FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                ctx["tenant_id"],
+            )
+            import re
+
+            if row and row["nomor_member"]:
+                match = re.match(r"^([A-Z]*)([0-9]+)$", row["nomor_member"])
+                if match:
+                    prefix = match.group(1) or "C"
+                    num = int(match.group(2)) + 1
+                    next_code = f"{prefix}{num:04d}"
+                else:
+                    next_code = "C0001"
+            else:
+                next_code = "C0001"
+            return {"success": True, "next_code": next_code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting next customer code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get next code")
+
+
+
 # GET CUSTOMER DETAIL
 # =============================================================================
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
@@ -352,7 +389,7 @@ async def get_customer_balance(request: Request, customer_id: str):
             # Get AR balance from accounts_receivable table
             balance_query = """
                 SELECT
-                    COALESCE(SUM(balance), 0) as total_balance,
+                    COALESCE(SUM(amount - amount_paid), 0) as total_balance,
                     COUNT(*) FILTER (WHERE status = 'OPEN') as open_count,
                     COUNT(*) FILTER (WHERE status = 'PARTIAL') as partial_count,
                     COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND status IN ('OPEN', 'PARTIAL')) as overdue_count
@@ -495,6 +532,16 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                 ctx["user_id"],                   # $27 created_by
             )
 
+            # Extract user info for activity logging
+            user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
+            user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+
+            # Log activity
+            await conn.execute("""
+                INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
+                VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
+            """, new_id, ctx["tenant_id"], user_id, user_name)
+
             logger.info(f"Customer created: {new_id}, name={body.name}")
 
             return {
@@ -545,6 +592,16 @@ async def update_customer(
                         detail=f"Customer with name '{body.name}' already exists",
                     )
 
+            # Get current values for change tracking
+            current = await conn.fetchrow(
+                """SELECT nama, company_name, telepon, email, credit_limit, payment_terms_days, 
+                        is_active, contact_person, city, province, postal_code, 
+                        tax_id, notes, mobile_phone, website, display_name,
+                        customer_type, is_pkp, nik, currency, alamat
+                   FROM customers WHERE id = $1""",
+                customer_id
+            )
+
             # Build update query dynamically
             update_data = body.model_dump(exclude_unset=True)
             if not update_data:
@@ -594,6 +651,58 @@ async def update_customer(
             """
             await conn.execute(query, *params)
 
+            # Build change details for activity logging
+            field_labels = {
+                "name": "Nama",
+                "nama": "Nama",
+                "company_name": "Perusahaan",
+                "phone": "Telepon",
+                "telepon": "Telepon",
+                "email": "Email",
+                "credit_limit": "Limit kredit",
+                "payment_terms_days": "Termin pembayaran",
+                "is_active": "Status aktif",
+                "contact_person": "Kontak person",
+                "city": "Kota",
+                "province": "Provinsi",
+                "postal_code": "Kode pos",
+                "tax_id": "NPWP",
+                "notes": "Catatan",
+                "mobile_phone": "HP",
+                "website": "Website",
+                "display_name": "Nama tampilan",
+                "customer_type": "Tipe pelanggan",
+                "is_pkp": "PKP",
+                "nik": "NIK",
+                "currency": "Mata uang",
+                "address": "Alamat",
+                "alamat": "Alamat",
+            }
+            
+            change_parts = []
+            for field, new_value in update_data.items():
+                db_field = field_mapping.get(field, field)
+                old_value = current.get(db_field) if current else None
+                
+                # Compare values (handle None cases)
+                if old_value != new_value:
+                    label = field_labels.get(field, field_labels.get(db_field, field))
+                    old_display = old_value if old_value is not None else "-"
+                    new_display = new_value if new_value is not None else "-"
+                    change_parts.append(f"{label}: {old_display} -> {new_display}")
+            
+            # Log activity if there were changes
+            if change_parts:
+                details = "\n".join(change_parts)
+                user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
+                user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+                
+                await conn.execute("""
+                    INSERT INTO customer_activities 
+                    (customer_id, tenant_id, type, description, details, actor_id, actor_name)
+                    VALUES ($1, $2, 'updated', 'Pelanggan diperbarui', $3, $4, $5)
+                """, customer_id, ctx["tenant_id"], details, user_id, user_name)
+
             logger.info(f"Customer updated: {customer_id}")
 
             return {
@@ -607,7 +716,6 @@ async def update_customer(
     except Exception as e:
         logger.error(f"Error updating customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update customer")
-# =============================================================================
 # DELETE CUSTOMER (Soft delete by setting is_active = false)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
@@ -830,40 +938,6 @@ async def get_customer_available_deposits(
 
 # =============================================================================
 # CUSTOMER NEXT CODE (for form auto-generation)
-# =============================================================================
-
-
-@router.get("/next-code")
-async def get_next_customer_code(request: Request):
-    """Get the next available customer code for auto-generation."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT nomor_member FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                ctx["tenant_id"],
-            )
-            import re
-
-            if row and row["nomor_member"]:
-                match = re.match(r"^([A-Z]*)([0-9]+)$", row["nomor_member"])
-                if match:
-                    prefix = match.group(1) or "C"
-                    num = int(match.group(2)) + 1
-                    next_code = f"{prefix}{num:04d}"
-                else:
-                    next_code = "C0001"
-            else:
-                next_code = "C0001"
-            return {"success": True, "next_code": next_code}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting next customer code: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get next code")
-
-
 # =============================================================================
 # CUSTOMER TRANSACTIONS HISTORY
 # =============================================================================
@@ -1111,3 +1185,341 @@ async def merge_customers(request: Request):
     except Exception as e:
         logger.error(f"Error merging: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to merge")
+
+
+# =============================================================================
+# CUSTOMER JOURNAL ENTRIES (Read-only - Law 1: Ledger Supremacy)
+# =============================================================================
+
+
+@router.get("/{customer_id}/journal-entries")
+async def get_customer_journal_entries(
+    request: Request,
+    customer_id: str,
+    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    source_type: Optional[str] = Query(None, description="Filter by source type (INVOICE, RECEIVE_PAYMENT, CUSTOMER_DEPOSIT, CREDIT_NOTE)"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """
+    Get journal entries related to a customer.
+    
+    Data comes from journal_entries table (Law 1: Ledger Supremacy).
+    Read-only endpoint (Law 2: Journal Immutability).
+    Results are deterministic and reproducible (Law 9: Deterministic Reporting).
+    
+    Journal entries are linked via:
+    - sales_invoices.journal_id (source_type = INVOICE)
+    - receive_payments.journal_id (source_type = RECEIVE_PAYMENT)
+    - customer_deposits.journal_id (source_type = CUSTOMER_DEPOSIT)
+    - credit_notes.journal_id (source_type = CREDIT_NOTE)
+    
+    Returns entries sorted by journal_date DESC for deterministic ordering.
+    """
+    from datetime import datetime
+    
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Check if customer exists
+            customer = await conn.fetchrow(
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id,
+                ctx["tenant_id"],
+            )
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+
+            # Build conditions for filtering
+            conditions = ["je.tenant_id = $1", "je.status = 'POSTED'"]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            # Date filters
+            if start_date:
+                try:
+                    parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    conditions.append(f"je.journal_date >= ${param_idx}")
+                    params.append(parsed_start)
+                    param_idx += 1
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+
+            if end_date:
+                try:
+                    parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    conditions.append(f"je.journal_date <= ${param_idx}")
+                    params.append(parsed_end)
+                    param_idx += 1
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+            # Source type filter
+            if source_type:
+                source_type_upper = source_type.upper()
+                conditions.append(f"je.source_type = ${param_idx}")
+                params.append(source_type_upper)
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+            offset = (page - 1) * limit
+            customer_id_param_idx = param_idx
+            limit_param_idx = param_idx + 1
+            offset_param_idx = param_idx + 2
+            
+            params.extend([customer_id, limit, offset])
+
+            # Query journal entries linked to this customer through invoices, payments, deposits, credit notes
+            query = f"""
+                WITH customer_journals AS (
+                    -- Sales Invoices
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoices si ON si.journal_id = je.id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Sales Invoice COGS journals
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Receive Payments
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN receive_payments rp ON rp.journal_id = je.id
+                    WHERE {where_clause}
+                      AND rp.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Customer Deposits
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN customer_deposits cd ON cd.journal_id = je.id
+                    WHERE {where_clause}
+                      AND cd.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    -- Credit Notes
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN credit_notes cn ON cn.journal_id = je.id
+                    WHERE {where_clause}
+                      AND cn.customer_id = ${customer_id_param_idx}
+                )
+                SELECT 
+                    je.id,
+                    je.journal_date,
+                    je.journal_number,
+                    je.description,
+                    je.source_type,
+                    je.total_debit,
+                    je.total_credit,
+                    je.status,
+                    je.created_at
+                FROM journal_entries je
+                INNER JOIN customer_journals cj ON cj.journal_id = je.id
+                ORDER BY je.journal_date DESC, je.created_at DESC
+                LIMIT ${limit_param_idx} OFFSET ${offset_param_idx}
+            """
+
+            rows = await conn.fetch(query, *params)
+
+            # Get journal lines for each entry
+            entries = []
+            for row in rows:
+                # Fetch lines with account names
+                lines_query = """
+                    SELECT 
+                        jl.id,
+                        jl.line_number,
+                        jl.account_id,
+                        coa.name as account_name,
+                        coa.account_code,
+                        jl.debit,
+                        jl.credit,
+                        jl.memo
+                    FROM journal_lines jl
+                    INNER JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number ASC
+                """
+                line_rows = await conn.fetch(lines_query, row["id"])
+                
+                lines = [
+                    {
+                        "id": str(lr["id"]),
+                        "line_number": lr["line_number"],
+                        "account_id": str(lr["account_id"]),
+                        "account_name": lr["account_name"],
+                        "account_code": lr["account_code"],
+                        "debit": float(lr["debit"]) if lr["debit"] else 0,
+                        "credit": float(lr["credit"]) if lr["credit"] else 0,
+                        "memo": lr["memo"],
+                    }
+                    for lr in line_rows
+                ]
+
+                entries.append({
+                    "id": str(row["id"]),
+                    "date": row["journal_date"].isoformat(),
+                    "journal_number": row["journal_number"],
+                    "description": row["description"],
+                    "source_type": row["source_type"],
+                    "total_debit": float(row["total_debit"]) if row["total_debit"] else 0,
+                    "total_credit": float(row["total_credit"]) if row["total_credit"] else 0,
+                    "status": row["status"],
+                    "lines": lines,
+                })
+
+            # Get total count for pagination
+            count_query = f"""
+                WITH customer_journals AS (
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoices si ON si.journal_id = je.id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN receive_payments rp ON rp.journal_id = je.id
+                    WHERE {where_clause}
+                      AND rp.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN customer_deposits cd ON cd.journal_id = je.id
+                    WHERE {where_clause}
+                      AND cd.customer_id = ${customer_id_param_idx}
+                    
+                    UNION
+                    
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN credit_notes cn ON cn.journal_id = je.id
+                    WHERE {where_clause}
+                      AND cn.customer_id = ${customer_id_param_idx}
+                )
+                SELECT COUNT(*) FROM customer_journals
+            """
+            # Only need params up to customer_id for count query
+            count_params = params[:-2]  # Exclude limit and offset
+            total = await conn.fetchval(count_query, *count_params)
+
+            return {
+                "success": True,
+                "data": {
+                    "entries": entries,
+                    "customer_id": customer_id,
+                    "customer_name": customer["nama"],
+                    "total": total,
+                    "page": page,
+                    "limit": limit,
+                    "has_more": offset + limit < total,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting customer journal entries {customer_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
+
+# CUSTOMER ACTIVITY HISTORY (Read-only - Law 12: Audit Trail Immutability)
+# =============================================================================
+
+
+@router.get("/{customer_id}/activity", response_model=CustomerActivityResponse)
+async def get_customer_activity(
+    request: Request,
+    customer_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Get activity log / audit trail for a customer."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    conn = None
+
+    try:
+        conn = await pool.acquire()
+
+        # Verify customer exists
+        customer_exists = await conn.fetchval(
+            "SELECT id FROM customers WHERE id = $1 AND tenant_id = $2",
+            customer_id,
+            ctx["tenant_id"],
+        )
+        if not customer_exists:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        # Get total count
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM customer_activities WHERE customer_id = $1 AND tenant_id = $2",
+            customer_id,
+            ctx["tenant_id"],
+        )
+
+        # Get activities
+        query = """
+            SELECT id, type, description, details, actor_name, timestamp
+            FROM customer_activities
+            WHERE customer_id = $1 AND tenant_id = $2
+            ORDER BY timestamp DESC
+            LIMIT $3 OFFSET $4
+        """
+        rows = await conn.fetch(query, customer_id, ctx["tenant_id"], limit, offset)
+
+        activities = [
+            CustomerActivity(
+                id=str(row["id"]),
+                type=row["type"],
+                description=row["description"],
+                details=row.get("details"),
+                actor_name=row.get("actor_name"),
+                timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
+            )
+            for row in rows
+        ]
+
+        return CustomerActivityResponse(
+            success=True,
+            activities=activities,
+            total=total or 0,
+            has_more=(offset + limit) < (total or 0),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting customer activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await pool.release(conn)

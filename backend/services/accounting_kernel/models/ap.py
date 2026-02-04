@@ -93,13 +93,14 @@ class APPaymentApplication:
     id: UUID
     tenant_id: str
     ap_id: UUID
-    payment_id: UUID
     payment_date: date
     amount_applied: Decimal
+    payment_method: str = "transfer"
+    reference_number: Optional[str] = None
+    notes: Optional[str] = None
 
     # Link to journal
     journal_id: Optional[UUID] = None
-    journal_date: Optional[date] = None
 
     created_at: Optional[datetime] = None
 
@@ -107,9 +108,11 @@ class APPaymentApplication:
         return {
             "id": str(self.id),
             "ap_id": str(self.ap_id),
-            "payment_id": str(self.payment_id),
             "payment_date": self.payment_date.isoformat(),
             "amount_applied": float(self.amount_applied),
+            "payment_method": self.payment_method,
+            "reference_number": self.reference_number,
+            "notes": self.notes,
             "journal_id": str(self.journal_id) if self.journal_id else None,
         }
 

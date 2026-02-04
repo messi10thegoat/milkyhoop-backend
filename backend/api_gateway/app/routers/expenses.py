@@ -668,6 +668,29 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     str(expense_id),
                 )
 
+                # Create bank transaction to update bank balance
+                import uuid as uuid_module
+                bank_tx_id = uuid_module.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date,
+                        transaction_type, amount, running_balance,
+                        reference_type, reference_id, description,
+                        payee_payer, created_by
+                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'expense', $6, $7, $8, $9)
+                    """,
+                    bank_tx_id,
+                    ctx["tenant_id"],
+                    body.paid_through_id,
+                    body.expense_date,
+                    -total_amount,  # Negative = outflow
+                    expense_id,
+                    f"Expense: {expense_number}",
+                    body.vendor_name or "Expense",
+                    ctx["user_id"]
+                )
+
                 # Link attachments via document_attachments
                 if body.attachment_ids:
                     for doc_id in body.attachment_ids[:5]:  # Max 5 attachments

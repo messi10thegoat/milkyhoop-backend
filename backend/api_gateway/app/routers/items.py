@@ -180,9 +180,22 @@ async def list_items(
         query_parts.append("FROM products p")
         query_parts.append(
             """LEFT JOIN LATERAL (
-                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
-                FROM persediaan
-                WHERE product_id = p.id AND tenant_id = p.tenant_id
+                SELECT COALESCE(
+                    (SELECT quantity_balance 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as jumlah,
+                COALESCE(
+                    (SELECT quantity_balance * unit_cost 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as total_nilai
             ) per ON true"""
         )
         query_parts.append(
@@ -356,6 +369,69 @@ async def create_item(request: Request, body: CreateItemRequest):
                     status_code=409, detail="Item with this barcode already exists"
                 )
 
+        # Auto-generate item_code if not provided
+        item_code_to_use = body.item_code
+        sku_to_use = body.sku
+
+        if not item_code_to_use:
+            # Determine prefix based on item_type (Indonesian standard)
+            prefix_map = {
+                "goods": "BRG",
+                "service": "JSA",
+                "non_inventory": "NIN",
+            }
+            prefix = prefix_map.get(body.item_type, "ITM")
+
+            # Get next number (include soft-deleted to avoid constraint violation)
+            # Use regex to match only standard format PREFIX-NNNN (not PREFIX-XXX-NNN variants)
+            row = await conn.fetchrow(
+                """
+                SELECT item_code FROM products
+                WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
+                ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
+                """,
+                tenant_id,
+                prefix,
+            )
+
+            import re as re_module
+            if row and row["item_code"]:
+                match = re_module.search(r"([0-9]+)$", row["item_code"])
+                if match:
+                    num = int(match.group(1)) + 1
+                else:
+                    num = 1
+            else:
+                num = 1
+
+            item_code_to_use = f"{prefix}-{num:04d}"
+
+        # SKU defaults to item_code if not provided
+        if not sku_to_use:
+            sku_to_use = item_code_to_use
+
+        # Check for duplicate SKU (after SKU is finalized)
+        existing_sku = await conn.fetchrow(
+            "SELECT id FROM products WHERE tenant_id = $1 AND sku = $2",
+            tenant_id,
+            sku_to_use,
+        )
+        if existing_sku:
+            raise HTTPException(
+                status_code=409, detail=f"Kode item {sku_to_use} sudah digunakan"
+            )
+
+        # Check for duplicate item_code (after item_code is finalized)
+        existing_item_code = await conn.fetchrow(
+            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2",
+            tenant_id,
+            item_code_to_use,
+        )
+        if existing_item_code:
+            raise HTTPException(
+                status_code=409, detail=f"Kode item {item_code_to_use} sudah digunakan"
+            )
+
         # Start transaction
         async with conn.transaction():
             # Insert item
@@ -417,8 +493,8 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.preferred_vendor_id,
                 body.sales_account_id,
                 body.purchase_account_id,
-                body.item_code,
-                body.sku,
+                item_code_to_use,
+                sku_to_use,
                 body.inventory_account_id,
                 body.cogs_account_id,
                 body.costing_method,
@@ -725,9 +801,21 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                         old_val = old_item.get(db_col) if old_item else None
                         new_val = body_dict_for_log[field]
 
-                        if str(old_val) != str(new_val) and not (
-                            old_val is None and new_val is None
-                        ):
+                        # Normalize values for comparison (handle numeric precision)
+                        def normalize_val(v):
+                            if v is None:
+                                return None
+                            if isinstance(v, (int, float)):
+                                return float(v)
+                            try:
+                                return float(v)
+                            except (ValueError, TypeError):
+                                return str(v)
+                        
+                        old_norm = normalize_val(old_val)
+                        new_norm = normalize_val(new_val)
+                        
+                        if old_norm != new_norm and not (old_norm is None and new_norm is None):
                             if is_price:
                                 old_display = (
                                     f"Rp {int(old_val):,}".replace(",", ".")
@@ -760,7 +848,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                     activity_type = "updated"
                     activity_desc = "Item diperbarui"
 
-                details = ", ".join(change_parts) if change_parts else None
+                details = "\n".join(change_parts) if change_parts else None
                 user_id = request.state.user.get("user_id")
                 user_name = request.state.user.get(
                     "username"
@@ -1133,9 +1221,22 @@ async def get_items_summary(request: Request):
                 ) as out_of_stock_count
             FROM products p
             LEFT JOIN LATERAL (
-                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
-                FROM persediaan
-                WHERE product_id = p.id AND tenant_id = p.tenant_id
+                SELECT COALESCE(
+                    (SELECT quantity_balance 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as jumlah,
+                COALESCE(
+                    (SELECT quantity_balance * unit_cost 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as total_nilai
             ) per ON true
             WHERE p.tenant_id = $1
         """
@@ -1207,9 +1308,22 @@ async def get_items_stats(request: Request):
                 ) as out_of_stock
             FROM products p
             LEFT JOIN LATERAL (
-                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
-                FROM persediaan
-                WHERE product_id = p.id AND tenant_id = p.tenant_id
+                SELECT COALESCE(
+                    (SELECT quantity_balance 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as jumlah,
+                COALESCE(
+                    (SELECT quantity_balance * unit_cost 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as total_nilai
             ) per ON true
             WHERE p.tenant_id = $1
         """
@@ -1369,7 +1483,7 @@ async def autocomplete_items(
 async def get_next_item_code(
     request: Request,
     item_type: str = Query(
-        "product", description="Item type: product, service, inventory"
+        "goods", description="Item type: goods, service, non_inventory"
     ),
 ):
     """Get the next available item code for auto-generation."""
@@ -1377,23 +1491,22 @@ async def get_next_item_code(
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            # Prefix based on item type
+            # Prefix based on item type (Indonesian)
             prefix_map = {
-                "product": "PRD",
-                "service": "SVC",
-                "inventory": "INV",
-                "non_inventory": "NI",
+                "goods": "BRG",        # Barang
+                "service": "JSA",      # Jasa
+                "non_inventory": "NIN",  # Non-Inventory
             }
-            prefix = prefix_map.get(item_type, "ITM")
+            prefix = prefix_map.get(item_type, "BRG")
 
             row = await conn.fetchrow(
                 """
                 SELECT item_code as code FROM products
-                WHERE tenant_id = $1 AND item_code LIKE $2 AND deleted_at IS NULL
+                WHERE tenant_id = $1 AND item_code LIKE $2
                 ORDER BY item_code DESC LIMIT 1
             """,
                 ctx["tenant_id"],
-                f"{prefix}%",
+                f"{prefix}-%",
             )
 
             import re
@@ -1402,11 +1515,11 @@ async def get_next_item_code(
                 match = re.search(r"([0-9]+)$", row["code"])
                 if match:
                     num = int(match.group(1)) + 1
-                    next_code = f"{prefix}{num:05d}"
+                    next_code = f"{prefix}-{num:04d}"
                 else:
-                    next_code = f"{prefix}00001"
+                    next_code = f"{prefix}-0001"
             else:
-                next_code = f"{prefix}00001"
+                next_code = f"{prefix}-0001"
 
             return {"success": True, "next_code": next_code}
     except Exception as e:
@@ -1539,7 +1652,7 @@ async def bulk_import_items(request: Request):
                     existing = None
                     if code:
                         existing = await conn.fetchrow(
-                            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2 AND deleted_at IS NULL",
+                            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2",
                             ctx["tenant_id"],
                             code,
                         )
@@ -1721,6 +1834,115 @@ async def get_item_activity(
 
 
 # =============================================================================
+# =============================================================================
+# STOCK MOVEMENT HISTORY (Tab Riwayat Stok)
+# =============================================================================
+
+
+@router.get("/items/{item_id}/history")
+async def get_item_history(
+    request: Request,
+    item_id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Get stock movement history from inventory ledger for an item."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+    offset = (page - 1) * limit
+
+    try:
+        conn = await get_db_connection()
+
+        # Verify item exists
+        item = await conn.fetchrow(
+            "SELECT id, item_code, nama_produk FROM products WHERE id = $1 AND tenant_id = $2",
+            str(item_id),
+            tenant_id,
+        )
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Get total count
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
+            str(item_id),
+            tenant_id,
+        )
+
+        # Get stock movements from inventory_ledger
+        query = """
+            SELECT
+                id,
+                movement_type,
+                movement_date,
+                source_type,
+                source_id,
+                source_number,
+                quantity_in,
+                quantity_out,
+                quantity_balance,
+                unit_cost,
+                total_cost,
+                average_cost,
+                warehouse_id,
+                batch_id,
+                notes,
+                created_at,
+                created_by
+            FROM inventory_ledger
+            WHERE product_id = $1 AND tenant_id = $2
+            ORDER BY movement_date DESC, created_at DESC
+            LIMIT $3 OFFSET $4
+        """
+        rows = await conn.fetch(query, str(item_id), tenant_id, limit, offset)
+
+        movements = []
+        for row in rows:
+            movements.append({
+                "id": str(row["id"]),
+                "movement_type": row["movement_type"],
+                "movement_date": row["movement_date"].isoformat() if row["movement_date"] else None,
+                "source_type": row["source_type"],
+                "source_id": str(row["source_id"]) if row["source_id"] else None,
+                "source_number": row["source_number"],
+                "quantity_in": float(row["quantity_in"] or 0),
+                "quantity_out": float(row["quantity_out"] or 0),
+                "quantity_balance": float(row["quantity_balance"] or 0),
+                "unit_cost": float(row["unit_cost"] or 0),
+                "total_cost": float(row["total_cost"] or 0),
+                "average_cost": float(row["average_cost"] or 0) if row["average_cost"] else None,
+                "warehouse_id": str(row["warehouse_id"]) if row["warehouse_id"] else None,
+                "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
+                "notes": row["notes"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            })
+
+        return {
+            "success": True,
+            "data": movements,
+            "total": total or 0,
+            "page": page,
+            "limit": limit,
+            "has_more": (offset + limit) < (total or 0),
+            "item": {
+                "id": str(item["id"]),
+                "code": item["item_code"],
+                "name": item["nama_produk"],
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting item history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get item history")
+    finally:
+        if conn:
+            await conn.close()
+
+
+
 # GET ITEM DETAIL
 # =============================================================================
 
@@ -1739,9 +1961,22 @@ async def get_item(request: Request, item_id: UUID):
             SELECT p.*, per.jumlah as current_stock, per.total_nilai as stock_value
             FROM products p
             LEFT JOIN LATERAL (
-                SELECT SUM(jumlah) as jumlah, SUM(total_nilai) as total_nilai
-                FROM persediaan
-                WHERE product_id = p.id AND tenant_id = p.tenant_id
+                SELECT COALESCE(
+                    (SELECT quantity_balance 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as jumlah,
+                COALESCE(
+                    (SELECT quantity_balance * unit_cost 
+                     FROM inventory_ledger 
+                     WHERE product_id = p.id AND tenant_id = p.tenant_id
+                     ORDER BY created_at DESC 
+                     LIMIT 1),
+                    0
+                ) as total_nilai
             ) per ON true
             WHERE p.id = $1 AND p.tenant_id = $2
         """
@@ -2444,3 +2679,276 @@ async def get_item_journal_entries(
     except Exception as e:
         logger.error(f"Error getting journal entries: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
+# =============================================================================
+# SINGLE ITEM STOCK TRANSFER
+# =============================================================================
+
+
+@router.post("/items/{item_id}/stock-transfer")
+async def create_single_item_stock_transfer(request: Request, item_id: str):
+    """
+    Create a quick stock transfer for a single item between warehouses.
+
+    This is an immediate transfer that:
+    1. Creates a stock_transfer record (status='received')
+    2. Creates inventory_ledger entries (triggers update warehouse_stock)
+    3. Records full audit trail with source_type/source_id
+
+    Request body:
+    - from_warehouse_id: UUID - source warehouse
+    - to_warehouse_id: UUID - destination warehouse
+    - quantity: number - quantity to transfer (must be > 0)
+    - notes: string|null - optional notes
+
+    Follows Iron Laws:
+    - Law 3 (Append-Only): All changes via INSERT to inventory_ledger
+    - Law 6 (Source Traceability): source_type='STOCK_TRANSFER', source_id=transfer_id
+    - Law 13 (Concurrency Safety): Uses SERIALIZABLE isolation + FOR UPDATE locks
+    - Law 14 (Idempotency): Transaction ensures atomicity
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        body = await request.json()
+
+        # Validate required fields
+        from_warehouse_id = body.get("from_warehouse_id")
+        to_warehouse_id = body.get("to_warehouse_id")
+        quantity = body.get("quantity")
+        notes = body.get("notes")
+
+        if not from_warehouse_id:
+            raise HTTPException(status_code=400, detail="from_warehouse_id is required")
+        if not to_warehouse_id:
+            raise HTTPException(status_code=400, detail="to_warehouse_id is required")
+        if not quantity or quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity must be greater than 0")
+        if from_warehouse_id == to_warehouse_id:
+            raise HTTPException(status_code=400, detail="Source and destination warehouse must be different")
+
+        async with pool.acquire() as conn:
+            # Use SERIALIZABLE isolation for concurrency safety (Law 13)
+            async with conn.transaction(isolation="serializable"):
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+
+                # 1. Validate item exists and get details
+                item = await conn.fetchrow(
+                    """
+                    SELECT id, kode_produk as item_code, nama_produk as item_name,
+                           satuan_dasar as base_unit, track_inventory,
+                           COALESCE(purchase_price, 0) as unit_cost
+                    FROM products
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    item_id, ctx["tenant_id"]
+                )
+                if not item:
+                    raise HTTPException(status_code=404, detail="Item not found")
+
+                if not item["track_inventory"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot transfer stock for items that don't track inventory"
+                    )
+
+                # 2. Validate warehouses exist
+                from_warehouse = await conn.fetchrow(
+                    "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
+                    UUID(from_warehouse_id), ctx["tenant_id"]
+                )
+                if not from_warehouse:
+                    raise HTTPException(status_code=400, detail="Source warehouse not found")
+
+                to_warehouse = await conn.fetchrow(
+                    "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
+                    UUID(to_warehouse_id), ctx["tenant_id"]
+                )
+                if not to_warehouse:
+                    raise HTTPException(status_code=400, detail="Destination warehouse not found")
+
+                # 3. Check available stock in source warehouse (with lock for concurrency safety)
+                stock_row = await conn.fetchrow(
+                    """
+                    SELECT id, quantity, available_quantity
+                    FROM warehouse_stock
+                    WHERE tenant_id = $1
+                      AND warehouse_id = $2
+                      AND item_id = $3
+                    FOR UPDATE
+                    """,
+                    ctx["tenant_id"], UUID(from_warehouse_id), UUID(item_id)
+                )
+
+                available_stock = float(stock_row["available_quantity"]) if stock_row else 0
+                if available_stock < quantity:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient stock. Available: {available_stock}, Requested: {quantity}"
+                    )
+
+                # 4. Generate transfer number
+                transfer_number = await conn.fetchval(
+                    "SELECT generate_stock_transfer_number($1)",
+                    ctx["tenant_id"]
+                )
+
+                # 5. Create stock_transfer record (immediate transfer = status 'received')
+                transfer_date = await conn.fetchval("SELECT CURRENT_DATE")
+                transfer_row = await conn.fetchrow(
+                    """
+                    INSERT INTO stock_transfers (
+                        tenant_id, transfer_number, transfer_date,
+                        from_warehouse_id, to_warehouse_id,
+                        status, shipped_date, received_date,
+                        notes, created_by, shipped_by, received_by,
+                        total_items, total_quantity, total_value
+                    ) VALUES (
+                        $1, $2, $3, $4, $5,
+                        'received', $3, $3,
+                        $6, $7, $7, $7,
+                        1, $8, $9
+                    )
+                    RETURNING id
+                    """,
+                    ctx["tenant_id"],
+                    transfer_number,
+                    transfer_date,
+                    UUID(from_warehouse_id),
+                    UUID(to_warehouse_id),
+                    notes,
+                    ctx.get("user_id"),
+                    quantity,
+                    int(quantity * item["unit_cost"])
+                )
+                transfer_id = transfer_row["id"]
+
+                # 6. Create stock_transfer_items record
+                await conn.execute(
+                    """
+                    INSERT INTO stock_transfer_items (
+                        stock_transfer_id, item_id, item_code, item_name,
+                        quantity_requested, quantity_shipped, quantity_received,
+                        unit, unit_cost, total_value, line_number, notes
+                    ) VALUES ($1, $2, $3, $4, $5, $5, $5, $6, $7, $8, 1, $9)
+                    """,
+                    transfer_id,
+                    UUID(item_id),
+                    item["item_code"],
+                    item["item_name"],
+                    quantity,
+                    item["base_unit"],
+                    int(item["unit_cost"]),
+                    int(quantity * item["unit_cost"]),
+                    notes
+                )
+
+                # 7. Create inventory_ledger entry for source warehouse (OUT)
+                # Law 6: Source traceability with source_type and source_id
+                await conn.execute(
+                    """
+                    INSERT INTO inventory_ledger (
+                        tenant_id, product_id, product_code, product_name,
+                        movement_type, movement_date,
+                        source_type, source_id, source_number,
+                        quantity_in, quantity_out, quantity_balance,
+                        unit_cost, total_cost, average_cost,
+                        warehouse_id, created_by, notes
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        'TRANSFER_OUT', $5,
+                        'STOCK_TRANSFER', $6, $7,
+                        0, $8, (
+                            SELECT COALESCE(
+                                (SELECT quantity_balance FROM inventory_ledger
+                                 WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $9
+                                 ORDER BY movement_date DESC, created_at DESC LIMIT 1), 0
+                            ) - $8
+                        ),
+                        $10, $11, $10,
+                        $9, $12, $13
+                    )
+                    """,
+                    ctx["tenant_id"],
+                    UUID(item_id),
+                    item["item_code"],
+                    item["item_name"],
+                    transfer_date,
+                    transfer_id,
+                    transfer_number,
+                    quantity,
+                    UUID(from_warehouse_id),
+                    int(item["unit_cost"]),
+                    int(quantity * item["unit_cost"]),
+                    ctx.get("user_id"),
+                    f"Transfer to {to_warehouse['name']}" + (f": {notes}" if notes else "")
+                )
+
+                # 8. Create inventory_ledger entry for destination warehouse (IN)
+                await conn.execute(
+                    """
+                    INSERT INTO inventory_ledger (
+                        tenant_id, product_id, product_code, product_name,
+                        movement_type, movement_date,
+                        source_type, source_id, source_number,
+                        quantity_in, quantity_out, quantity_balance,
+                        unit_cost, total_cost, average_cost,
+                        warehouse_id, created_by, notes
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        'TRANSFER_IN', $5,
+                        'STOCK_TRANSFER', $6, $7,
+                        $8, 0, (
+                            SELECT COALESCE(
+                                (SELECT quantity_balance FROM inventory_ledger
+                                 WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $9
+                                 ORDER BY movement_date DESC, created_at DESC LIMIT 1), 0
+                            ) + $8
+                        ),
+                        $10, $11, $10,
+                        $9, $12, $13
+                    )
+                    """,
+                    ctx["tenant_id"],
+                    UUID(item_id),
+                    item["item_code"],
+                    item["item_name"],
+                    transfer_date,
+                    transfer_id,
+                    transfer_number,
+                    quantity,
+                    UUID(to_warehouse_id),
+                    int(item["unit_cost"]),
+                    int(quantity * item["unit_cost"]),
+                    ctx.get("user_id"),
+                    f"Transfer from {from_warehouse['name']}" + (f": {notes}" if notes else "")
+                )
+
+                # Triggers on inventory_ledger automatically update warehouse_stock
+
+                logger.info(
+                    f"Stock transfer {transfer_number} created: "
+                    f"{quantity} {item['base_unit']} of {item['item_name']} "
+                    f"from {from_warehouse['name']} to {to_warehouse['name']}"
+                )
+
+                return {
+                    "success": True,
+                    "message": f"Transfer berhasil: {quantity} {item['base_unit']} dipindahkan",
+                    "data": {
+                        "transfer_id": str(transfer_id),
+                        "transfer_number": transfer_number,
+                        "item_id": item_id,
+                        "item_name": item["item_name"],
+                        "from_warehouse": from_warehouse["name"],
+                        "to_warehouse": to_warehouse["name"],
+                        "quantity": quantity,
+                        "unit": item["base_unit"],
+                    }
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating stock transfer: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create stock transfer")

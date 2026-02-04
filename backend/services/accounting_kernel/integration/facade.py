@@ -1104,3 +1104,73 @@ class AccountingFacade:
 
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def apply_ap_payment(
+        self,
+        tenant_id: str,
+        ap_id: UUID,
+        payment_amount: Decimal,
+        payment_date: date,
+        payment_method: str,
+        account_id: Optional[UUID] = None,
+        reference_number: Optional[str] = None,
+        notes: Optional[str] = None
+    ) -> Dict:
+        """
+        Apply a payment to an accounts payable record.
+
+        This follows the Iron Laws of Accounting:
+        - Law 3: Append-Only - creates journal entry, no mutations
+        - Law 4: Double-Entry - debits AP, credits Cash/Bank
+        - Law 6: Source Traceability - journal has source_type and source_id
+        - Law 8: No Silent Mutation - always creates journal for payment
+
+        Args:
+            tenant_id: Tenant UUID
+            ap_id: AP record UUID to apply payment to
+            payment_amount: Amount being paid
+            payment_date: Date of payment
+            payment_method: Payment method (cash, bank, transfer, etc.)
+            account_id: Optional account ID for tracking
+            reference_number: Optional payment reference number
+            notes: Optional notes for the payment
+
+        Returns:
+            {success: bool, journal_id: str | None, error: str | None}
+        """
+        await self._ensure_initialized()
+
+        try:
+            # Apply payment via APService - this creates journal entry internally
+            # following Iron Laws (append-only, double-entry, source traceability)
+            payment_application = await self.ap.apply_payment(
+                tenant_id=tenant_id,
+                ap_id=ap_id,
+                payment_date=payment_date,
+                amount=payment_amount,
+                payment_method=payment_method,
+                reference_number=reference_number,
+                notes=notes,
+                create_journal=True  # Ensures journal is created (Law 8)
+            )
+
+            return {
+                "success": True,
+                "journal_id": str(payment_application.journal_id) if payment_application.journal_id else None,
+                "payment_application_id": str(payment_application.id),
+                "error": None
+            }
+
+        except ValueError as ve:
+            # Validation errors (e.g., payment exceeds balance)
+            return {
+                "success": False,
+                "journal_id": None,
+                "error": str(ve)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "journal_id": None,
+                "error": str(e)
+            }

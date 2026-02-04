@@ -64,7 +64,7 @@ class UnitConversionUpdate(BaseModel):
 class CreateItemRequest(BaseModel):
     """Request body for creating a new item."""
     name: str = Field(..., min_length=1, max_length=100, description="Item name")
-    item_type: Literal['goods', 'service'] = Field('goods', description="Type of item")
+    item_type: Literal['goods', 'service', 'non_inventory'] = Field('goods', description="Type of item")
     track_inventory: bool = Field(True, description="Whether to track stock levels (goods only)")
     base_unit: str = Field(..., min_length=1, max_length=50, description="Base unit of measure")
     barcode: Optional[str] = Field(None, max_length=100, description="Product barcode")
@@ -147,7 +147,7 @@ class CreateItemRequest(BaseModel):
 class UpdateItemRequest(BaseModel):
     """Request body for updating an existing item."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    item_type: Optional[Literal['goods', 'service']] = None
+    item_type: Optional[Literal['goods', 'service', 'non_inventory']] = None
     track_inventory: Optional[bool] = None
     base_unit: Optional[str] = Field(None, min_length=1, max_length=50)
     barcode: Optional[str] = Field(None, max_length=100)

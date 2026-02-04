@@ -106,7 +106,7 @@ class PDFService:
 
     def generate_bill_pdf(self, bill: Dict[str, Any]) -> bytes:
         """
-        Generate PDF for a bill.
+        Generate PDF for a bill (purchase invoice).
 
         Args:
             bill: Bill data dict with items, vendor info, and totals.
@@ -139,18 +139,6 @@ class PDFService:
         pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
 
         return pdf_bytes
-
-
-# Singleton instance
-_pdf_service: Optional[PDFService] = None
-
-
-def get_pdf_service() -> PDFService:
-    """Get or create PDF service singleton."""
-    global _pdf_service
-    if _pdf_service is None:
-        _pdf_service = PDFService()
-    return _pdf_service
 
     def generate_sales_invoice_pdf(self, invoice: Dict[str, Any]) -> bytes:
         """
@@ -187,3 +175,15 @@ def get_pdf_service() -> PDFService:
         pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
 
         return pdf_bytes
+
+
+# Singleton instance
+_pdf_service: Optional[PDFService] = None
+
+
+def get_pdf_service() -> PDFService:
+    """Get or create PDF service singleton."""
+    global _pdf_service
+    if _pdf_service is None:
+        _pdf_service = PDFService()
+    return _pdf_service

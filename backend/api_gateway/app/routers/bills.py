@@ -39,6 +39,9 @@ from ..schemas.bills import (
     UpdateBillRequestV2,
     CreateBillResponseV2,
     CalculateBillResponse,
+    # Activity schemas
+    BillActivity,
+    BillActivityResponse,
 )
 
 # Import calculator for preview endpoint
@@ -452,6 +455,96 @@ async def get_bill_detail(request: Request, bill_id: UUID):
     except Exception as e:
         logger.error(f"Error getting bill {bill_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get bill")
+
+# =============================================================================
+# GET BILL JOURNALS
+# =============================================================================
+@router.get("/{bill_id}/journals")
+async def get_bill_journals(request: Request, bill_id: UUID):
+    """
+    Get journal entries linked to a specific bill.
+
+    Returns journals where source_type='BILL' and source_id={bill_id}.
+    This is a READ-ONLY endpoint.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # First verify the bill exists and belongs to this tenant
+            bill = await conn.fetchrow(
+                """
+                SELECT id, invoice_number FROM bills
+                WHERE id = $1 AND tenant_id = $2
+            """,
+                bill_id,
+                ctx["tenant_id"],
+            )
+
+            if not bill:
+                raise HTTPException(status_code=404, detail="Bill not found")
+
+            # Get journals linked to this bill
+            journals_rows = await conn.fetch(
+                """
+                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                       je.status, je.total_debit, je.total_credit, je.created_at
+                FROM journal_entries je
+                WHERE je.tenant_id = $1
+                  AND je.source_type = 'BILL'
+                  AND je.source_id = $2
+                ORDER BY je.created_at DESC
+            """,
+                ctx["tenant_id"],
+                bill_id,
+            )
+
+            journals = []
+            for je_row in journals_rows:
+                # Get lines for each journal
+                lines_rows = await conn.fetch(
+                    """
+                    SELECT jl.id, jl.line_number, jl.debit, jl.credit, jl.memo,
+                           coa.account_code, coa.name as account_name
+                    FROM journal_lines jl
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                """,
+                    je_row["id"],
+                )
+
+                lines = [
+                    {
+                        "account_name": line["account_name"],
+                        "account_code": line["account_code"],
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
+                    }
+                    for line in lines_rows
+                ]
+
+                journals.append({
+                    "id": str(je_row["id"]),
+                    "entry_number": je_row["journal_number"],
+                    "posting_date": je_row["journal_date"].isoformat() if je_row["journal_date"] else None,
+                    "description": je_row["description"],
+                    "status": je_row["status"].lower() if je_row["status"] else "draft",
+                    "total_debit": float(je_row["total_debit"] or 0),
+                    "total_credit": float(je_row["total_credit"] or 0),
+                    "lines": lines,
+                })
+
+            return {"journals": journals}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting journals for bill {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get bill journals")
 
 
 # =============================================================================
@@ -1037,3 +1130,163 @@ async def calculate_bill_totals(request: Request, body: CreateBillRequestV2):
     except Exception as e:
         logger.error(f"Error calculating bill: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to calculate")
+
+
+
+# =============================================================================
+# ACTIVITY ENDPOINT
+# =============================================================================
+
+
+@router.get("/{bill_id}/activity", response_model=BillActivityResponse)
+async def get_bill_activity(request: Request, bill_id: UUID):
+    """
+    Get activity log / audit trail for a bill.
+
+    Derives activities from:
+    - Bill creation (created_at)
+    - Bill payments (from bill_payments table)
+    - Status changes (voided_at)
+    - Updates (updated_at differs from created_at)
+
+    This is a READ-ONLY endpoint.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        async with pool.acquire() as conn:
+            # Verify bill exists and get bill data
+            bill = await conn.fetchrow(
+                """
+                SELECT 
+                    b.id, b.invoice_number, b.created_at, b.updated_at, 
+                    b.voided_at, b.voided_reason, b.created_by,
+                    b.status_v2, b.posted_at, b.posted_by, b.amount,
+                    u.name as creator_name, u.fullname as creator_fullname
+                FROM bills b
+                LEFT JOIN "User" u ON b.created_by::text = u.id
+                WHERE b.id = $1 AND b.tenant_id = $2
+                """,
+                bill_id,
+                ctx["tenant_id"],
+            )
+            
+            if not bill:
+                raise HTTPException(status_code=404, detail="Bill not found")
+            
+            activities = []
+            
+            # 1. Bill created activity
+            creator_name = bill["creator_fullname"] or bill["creator_name"] or "System"
+            activities.append(
+                BillActivity(
+                    id=f"{bill_id}-created",
+                    type="created",
+                    description="Faktur dibuat",
+                    actor_name=creator_name,
+                    timestamp=bill["created_at"].isoformat() if bill["created_at"] else None,
+                    amount=bill["amount"],
+                    details=f"Invoice #{bill['invoice_number']}"
+                )
+            )
+            
+            # 2. Bill posted activity (if status_v2 is posted and posted_at exists)
+            if bill["posted_at"] and bill["posted_at"] != bill["created_at"]:
+                poster = await conn.fetchrow(
+                    """SELECT name, fullname FROM "User" WHERE id = $1""",
+                    str(bill["posted_by"]) if bill["posted_by"] else None
+                )
+                poster_name = "System"
+                if poster:
+                    poster_name = poster["fullname"] or poster["name"] or "System"
+                
+                activities.append(
+                    BillActivity(
+                        id=f"{bill_id}-posted",
+                        type="status_changed",
+                        description="Faktur diposting",
+                        actor_name=poster_name,
+                        timestamp=bill["posted_at"].isoformat() if bill["posted_at"] else None,
+                        old_value="draft",
+                        new_value="posted"
+                    )
+                )
+            
+            # 3. Payment activities
+            payments = await conn.fetch(
+                """
+                SELECT 
+                    bp.id, bp.amount, bp.payment_date, bp.payment_method,
+                    bp.reference, bp.notes, bp.created_at, bp.created_by,
+                    u.name as payer_name, u.fullname as payer_fullname
+                FROM bill_payments bp
+                LEFT JOIN "User" u ON bp.created_by::text = u.id
+                WHERE bp.bill_id = $1
+                ORDER BY bp.created_at ASC
+                """,
+                bill_id
+            )
+            
+            for payment in payments:
+                payer_name = payment["payer_fullname"] or payment["payer_name"] or "System"
+                method_display = {
+                    "cash": "tunai",
+                    "transfer": "transfer",
+                    "check": "cek/giro",
+                    "other": "lainnya"
+                }.get(payment["payment_method"], payment["payment_method"])
+                
+                activities.append(
+                    BillActivity(
+                        id=str(payment["id"]),
+                        type="payment",
+                        description=f"Pembayaran {method_display}",
+                        actor_name=payer_name,
+                        timestamp=payment["created_at"].isoformat() if payment["created_at"] else None,
+                        amount=payment["amount"],
+                        details=payment["reference"] or payment["notes"]
+                    )
+                )
+            
+            # 4. Voided activity
+            if bill["voided_at"]:
+                activities.append(
+                    BillActivity(
+                        id=f"{bill_id}-voided",
+                        type="voided",
+                        description="Faktur dibatalkan",
+                        actor_name="System",  # void doesn't track who voided
+                        timestamp=bill["voided_at"].isoformat(),
+                        details=bill["voided_reason"]
+                    )
+                )
+            
+            # 5. Updated activity (if updated_at is significantly different from created_at)
+            if bill["updated_at"] and bill["created_at"]:
+                time_diff = (bill["updated_at"] - bill["created_at"]).total_seconds()
+                # Only show update if more than 1 minute after creation
+                if time_diff > 60:
+                    activities.append(
+                        BillActivity(
+                            id=f"{bill_id}-updated",
+                            type="updated",
+                            description="Faktur diperbarui",
+                            actor_name="System",
+                            timestamp=bill["updated_at"].isoformat()
+                        )
+                    )
+            
+            # Sort by timestamp descending (most recent first)
+            activities.sort(
+                key=lambda x: x.timestamp if x.timestamp else "",
+                reverse=True
+            )
+            
+            return BillActivityResponse(activities=activities)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting bill activity for {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get bill activity")

@@ -270,7 +270,7 @@ class APService:
                         tenant_id=tenant_id,
                         journal_date=payment_date,
                         description=f"Payment to supplier: {ap_row['bill_number']} - {ap_row['supplier_name']}",
-                        source_type=SourceType.PAYMENT_BILL.value,
+                        source_type=SourceType.PAYMENT_BILL,
                         source_id=application_id,
                         lines=[
                             JournalLineInput(
@@ -291,7 +291,7 @@ class APService:
                     journal_response = await self.journal_service.create_journal(
                         journal_request
                     )
-                    journal_id = journal_response.id
+                    journal_id = journal_response.journal_id
 
         return APPaymentApplication(
             id=app_row['id'],

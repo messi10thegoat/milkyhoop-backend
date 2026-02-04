@@ -16,9 +16,9 @@
         <div class="meta-section">
             <div class="vendor-info">
                 <div class="label">Kepada</div>
-                <div class="vendor-name">{{ invoice.customer_name if invoice.vendor else (invoice.customer_name or '-') }}</div>
-                {% if invoice.vendor and invoice. %}
-                <div class="vendor-address">{{ invoice. }}</div>
+                <div class="vendor-name">{{ invoice.customer.name if invoice.customer else (invoice.customer_name or '-') }}</div>
+                {% if invoice.customer and invoice.customer.address %}
+                <div class="vendor-address">{{ invoice.customer.address }}</div>
                 {% endif %}
             </div>
 
@@ -59,7 +59,7 @@
                 </tr>
             </thead>
             <tbody>
-                {% for item in bill["items"] %}
+                {% for item in invoice["items"] %}
                 <tr>
                     <td class="col-no">{{ loop.index }}</td>
                     <td class="col-item">
@@ -117,7 +117,7 @@
                 {% endif %}
                 <tr class="grand-total">
                     <td class="label">Total</td>
-                    <td class="amount">Rp {{ (invoice.amount or invoice.grand_total) | currency }}</td>
+                    <td class="amount">Rp {{ (invoice.total_amount or invoice.amount or invoice.grand_total) | currency }}</td>
                 </tr>
                 {% if invoice.amount_paid and invoice.amount_paid > 0 %}
                 <tr>
@@ -126,7 +126,7 @@
                 </tr>
                 <tr class="balance-due">
                     <td class="label">Sisa</td>
-                    <td class="amount">Rp {{ invoice.(total_amount - amount_paid) | currency }}</td>
+                    <td class="amount">Rp {{ invoice.amount_due | currency }}</td>
                 </tr>
                 {% endif %}
             </table>

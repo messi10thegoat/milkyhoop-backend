@@ -272,7 +272,7 @@ class ARService:
                         tenant_id=tenant_id,
                         journal_date=payment_date,
                         description=f"Payment received: {ar_row['invoice_number']} - {ar_row['customer_name']}",
-                        source_type=SourceType.PAYMENT_RECEIVED.value,
+                        source_type=SourceType.PAYMENT_RECEIVED,
                         source_id=application_id,
                         lines=[
                             JournalLineInput(
@@ -293,7 +293,7 @@ class ARService:
                     journal_response = await self.journal_service.create_journal(
                         journal_request
                     )
-                    journal_id = journal_response.id
+                    journal_id = journal_response.journal_id
 
         return ARPaymentApplication(
             id=app_row['id'],

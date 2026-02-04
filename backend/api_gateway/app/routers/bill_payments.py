@@ -58,6 +58,18 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
+
+
+def validate_uuid(value: str, field_name: str = "id") -> UUID:
+    """Validate UUID format and return UUID object."""
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name} format. Expected UUID."
+        )
+
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     period = await conn.fetchrow(
         """SELECT id, period_name, status FROM fiscal_periods
@@ -495,6 +507,8 @@ async def get_bill_payments_summary(request: Request):
 @router.get("/{payment_id}", response_model=BillPaymentDetailResponse)
 async def get_bill_payment(request: Request, payment_id: str):
     try:
+        # Validate UUID format (returns 400 for invalid format)
+        validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
         pool = await get_pool()
 
@@ -1240,3 +1254,376 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
     except Exception as e:
         logger.error(f"Error getting open bills: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get open bills")
+
+# =============================================================================
+# TABNAV ENDPOINTS
+# =============================================================================
+
+@router.get("/{payment_id}/activities")
+async def get_payment_activities(
+    request: Request,
+    payment_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    Tab: Activities - Get audit trail/activity log for a payment.
+    """
+    try:
+        validate_uuid(payment_id, "payment_id")
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            
+            # Verify payment exists
+            payment = await conn.fetchrow(
+                "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
+                payment_id, ctx["tenant_id"]
+            )
+            if not payment:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            
+            offset = (page - 1) * limit
+            
+            # Get activities from audit_logs table
+            activities = await conn.fetch(
+                """
+                SELECT id, action, description, created_at, user_id,
+                       (SELECT email FROM users WHERE id = audit_logs.user_id) as user_email
+                FROM audit_logs
+                WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid
+                ORDER BY created_at DESC
+                LIMIT $3 OFFSET $4
+                """,
+                ctx["tenant_id"], payment_id, limit, offset
+            )
+            
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid",
+                ctx["tenant_id"], payment_id
+            )
+            
+            # If no audit logs, return payment lifecycle events
+            if not activities:
+                activities = await conn.fetch(
+                    """
+                    SELECT 
+                        gen_random_uuid() as id,
+                        CASE 
+                            WHEN status = 'voided' THEN 'voided'
+                            WHEN status = 'posted' THEN 'posted'
+                            ELSE 'created'
+                        END as action,
+                        CASE 
+                            WHEN status = 'voided' THEN 'Pembayaran dibatalkan: ' || COALESCE(void_reason, '')
+                            WHEN status = 'posted' THEN 'Pembayaran diposting'
+                            ELSE 'Pembayaran dibuat'
+                        END as description,
+                        COALESCE(
+                            CASE WHEN status = 'voided' THEN voided_at
+                                 WHEN status = 'posted' THEN posted_at
+                                 ELSE created_at END,
+                            created_at
+                        ) as created_at,
+                        COALESCE(
+                            CASE WHEN status = 'voided' THEN voided_by
+                                 WHEN status = 'posted' THEN posted_by
+                                 ELSE created_by END,
+                            created_by
+                        ) as user_id,
+                        '' as user_email
+                    FROM bill_payments_v2
+                    WHERE id = $1::uuid
+                    """,
+                    payment_id
+                )
+                total = len(activities)
+            
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": str(a["id"]) if a["id"] else None,
+                        "action": a["action"],
+                        "description": a["description"],
+                        "created_at": a["created_at"].isoformat() if a["created_at"] else None,
+                        "user_id": str(a["user_id"]) if a["user_id"] else None,
+                        "user_email": a["user_email"] or ""
+                    }
+                    for a in activities
+                ],
+                "total": total or 0,
+                "page": page,
+                "limit": limit,
+                "has_more": offset + limit < (total or 0)
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting payment activities: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get activities")
+
+
+@router.get("/{payment_id}/journal-entries")
+async def get_payment_journal_entries(request: Request, payment_id: str):
+    """
+    Tab: Journal Entries - Get journal entries related to this payment.
+    """
+    try:
+        validate_uuid(payment_id, "payment_id")
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            
+            # Get payment with journal IDs
+            payment = await conn.fetchrow(
+                """
+                SELECT id, payment_number, journal_id, journal_number, 
+                       void_journal_id, status
+                FROM bill_payments_v2 
+                WHERE id = $1::uuid AND tenant_id = $2
+                """,
+                payment_id, ctx["tenant_id"]
+            )
+            
+            if not payment:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            
+            journal_ids = []
+            if payment["journal_id"]:
+                journal_ids.append(payment["journal_id"])
+            if payment["void_journal_id"]:
+                journal_ids.append(payment["void_journal_id"])
+            
+            if not journal_ids:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True
+                    }
+                }
+            
+            # Get journal entries
+            journals = await conn.fetch(
+                """
+                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                       je.source_type, je.status, je.total_debit, je.total_credit
+                FROM journal_entries je
+                WHERE je.id = ANY($1::uuid[])
+                ORDER BY je.journal_date, je.created_at
+                """,
+                journal_ids
+            )
+            
+            journal_data = []
+            total_debit = 0
+            total_credit = 0
+            
+            for journal in journals:
+                # Get journal lines
+                lines = await conn.fetch(
+                    """
+                    SELECT jl.id, jl.line_number, jl.account_id, jl.debit, jl.credit, jl.memo,
+                           coa.account_code, coa.name as account_name
+                    FROM journal_lines jl
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                    """,
+                    journal["id"]
+                )
+                
+                line_data = [
+                    {
+                        "id": str(line["id"]),
+                        "line_number": line["line_number"],
+                        "account_id": str(line["account_id"]),
+                        "account_code": line["account_code"],
+                        "account_name": line["account_name"],
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
+                        "memo": line["memo"] or ""
+                    }
+                    for line in lines
+                ]
+                
+                journal_debit = float(journal["total_debit"] or 0)
+                journal_credit = float(journal["total_credit"] or 0)
+                total_debit += journal_debit
+                total_credit += journal_credit
+                
+                journal_data.append({
+                    "id": str(journal["id"]),
+                    "journal_number": journal["journal_number"],
+                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
+                    "description": journal["description"],
+                    "source_type": journal["source_type"],
+                    "status": journal["status"],
+                    "total_debit": journal_debit,
+                    "total_credit": journal_credit,
+                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                    "lines": line_data
+                })
+            
+            return {
+                "success": True,
+                "data": journal_data,
+                "total": len(journal_data),
+                "summary": {
+                    "total_debit": total_debit,
+                    "total_credit": total_credit,
+                    "is_balanced": abs(total_debit - total_credit) < 0.01
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting payment journal entries: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
+@router.get("/{payment_id}/transactions")
+async def get_payment_transactions(
+    request: Request,
+    payment_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    Tab: Transactions - Get bills allocated to this payment.
+    """
+    try:
+        validate_uuid(payment_id, "payment_id")
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            
+            # Verify payment exists
+            payment = await conn.fetchrow(
+                "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
+                payment_id, ctx["tenant_id"]
+            )
+            if not payment:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            
+            offset = (page - 1) * limit
+            
+            # Get bill allocations
+            allocations = await conn.fetch(
+                """
+                SELECT bpa.id, bpa.bill_id, bpa.remaining_before, bpa.amount_applied, 
+                       bpa.remaining_after, bpa.created_at,
+                       b.invoice_number as bill_number, b.issue_date as bill_date,
+                       b.amount as bill_amount, b.status as bill_status
+                FROM bill_payment_allocations bpa
+                JOIN bills b ON b.id = bpa.bill_id
+                WHERE bpa.payment_id = $1::uuid
+                ORDER BY bpa.created_at
+                LIMIT $2 OFFSET $3
+                """,
+                payment_id, limit, offset
+            )
+            
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM bill_payment_allocations WHERE payment_id = $1::uuid",
+                payment_id
+            )
+            
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": str(a["id"]),
+                        "bill_id": str(a["bill_id"]),
+                        "bill_number": a["bill_number"] or "",
+                        "bill_date": a["bill_date"].isoformat() if a["bill_date"] else None,
+                        "bill_amount": a["bill_amount"] or 0,
+                        "bill_status": a["bill_status"] or "draft",
+                        "remaining_before": a["remaining_before"] or 0,
+                        "amount_applied": a["amount_applied"] or 0,
+                        "remaining_after": a["remaining_after"] or 0,
+                        "created_at": a["created_at"].isoformat() if a["created_at"] else None
+                    }
+                    for a in allocations
+                ],
+                "total": total or 0,
+                "page": page,
+                "limit": limit,
+                "has_more": offset + limit < (total or 0)
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting payment transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get transactions")
+
+
+@router.get("/{payment_id}/documents")
+async def get_payment_documents(request: Request, payment_id: str):
+    """
+    Tab: Documents - Get attached documents for this payment.
+    """
+    try:
+        validate_uuid(payment_id, "payment_id")
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            
+            # Verify payment exists
+            payment = await conn.fetchrow(
+                "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
+                payment_id, ctx["tenant_id"]
+            )
+            if not payment:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            
+            # Get documents from documents table
+            documents = await conn.fetch(
+                """
+                SELECT id, file_name, file_type, file_size, file_url, 
+                       description, created_at, created_by
+                FROM documents
+                WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid
+                ORDER BY created_at DESC
+                """,
+                ctx["tenant_id"], payment_id
+            )
+            
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": str(d["id"]),
+                        "file_name": d["file_name"],
+                        "file_type": d["file_type"],
+                        "file_size": d["file_size"],
+                        "file_url": d["file_url"],
+                        "description": d["description"],
+                        "created_at": d["created_at"].isoformat() if d["created_at"] else None,
+                        "created_by": str(d["created_by"]) if d["created_by"] else None
+                    }
+                    for d in documents
+                ],
+                "total": len(documents)
+            }
+    except HTTPException:
+        raise
+    except asyncpg.exceptions.UndefinedTableError:
+        # Documents table doesn't exist yet, return empty
+        return {"success": True, "data": [], "total": 0}
+    except Exception as e:
+        logger.error(f"Error getting payment documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get documents")
+
