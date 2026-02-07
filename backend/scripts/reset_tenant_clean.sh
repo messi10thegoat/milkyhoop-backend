@@ -32,7 +32,7 @@ fi
 echo ""
 echo "Starting reset..."
 
-docker exec milkyhoop-dev-postgres-1 psql -U postgres -d milkydb <<EOF
+docker exec -i milkyhoop-dev-postgres-1 psql -U postgres -d milkydb <<EOF
 -- Disable FK constraints
 SET session_replication_role = 'replica';
 
