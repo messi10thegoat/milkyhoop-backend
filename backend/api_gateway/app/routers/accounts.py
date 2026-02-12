@@ -229,7 +229,7 @@ async def list_accounts(
     search: Optional[str] = Query(None, description="Search code or name"),
     type: Optional[str] = Query(None, description="Filter by account type"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    sort_by: Literal["code", "name", "type", "created_at"] = Query(
+    sort_by: Literal["code", "name", "type", "created_at", "updated_at"] = Query(
         "code", description="Sort field"
     ),
     sort_order: Literal["asc", "desc"] = Query("asc", description="Sort order"),
@@ -272,6 +272,7 @@ async def list_accounts(
                 "name": "name",
                 "type": "account_type",
                 "created_at": "created_at",
+                "updated_at": "updated_at",
             }
             sort_field = valid_sorts.get(sort_by, "account_code")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -459,6 +460,121 @@ async def get_account_balance(
     except Exception as e:
         logger.error(f"Error getting account balance {account_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get account balance")
+
+
+# =============================================================================
+# GET ACCOUNT JOURNAL ENTRIES
+# =============================================================================
+@router.get("/{account_id}/journal-entries")
+async def get_account_journal_entries(
+    request: Request,
+    account_id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Get journal entries that have lines affecting this account."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        offset = (page - 1) * limit
+
+        async with pool.acquire() as conn:
+            # Verify account exists
+            account = await conn.fetchrow(
+                "SELECT id, account_code, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                account_id,
+                ctx["tenant_id"],
+            )
+            if not account:
+                raise HTTPException(status_code=404, detail="Account not found")
+
+            # Get distinct journal entries that have lines for this account
+            entries = await conn.fetch(
+                """
+                SELECT DISTINCT ON (je.journal_date, je.created_at, je.id)
+                    je.id,
+                    je.journal_number,
+                    je.journal_date,
+                    je.description,
+                    je.source_type,
+                    je.created_at
+                FROM journal_entries je
+                INNER JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE je.tenant_id = $1
+                  AND jl.account_id = $2
+                  AND je.status = 'POSTED'
+                ORDER BY je.journal_date DESC, je.created_at DESC, je.id
+                LIMIT $3 OFFSET $4
+                """,
+                ctx["tenant_id"],
+                account_id,
+                limit,
+                offset,
+            )
+
+            # Total count
+            total = await conn.fetchval(
+                """
+                SELECT COUNT(DISTINCT je.id)
+                FROM journal_entries je
+                INNER JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE je.tenant_id = $1
+                  AND jl.account_id = $2
+                  AND je.status = 'POSTED'
+                """,
+                ctx["tenant_id"],
+                account_id,
+            )
+
+            # Build response with lines for each entry
+            result_entries = []
+            for entry in entries:
+                lines = await conn.fetch(
+                    """
+                    SELECT
+                        jl.line_number,
+                        a.account_code,
+                        a.name as account_name,
+                        jl.debit,
+                        jl.credit
+                    FROM journal_lines jl
+                    INNER JOIN chart_of_accounts a ON a.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                    """,
+                    entry["id"],
+                )
+
+                result_entries.append({
+                    "id": str(entry["id"]),
+                    "date": entry["journal_date"].isoformat(),
+                    "reference": entry["journal_number"],
+                    "description": entry["description"],
+                    "source_type": entry["source_type"],
+                    "lines": [
+                        {
+                            "account_code": line["account_code"],
+                            "account_name": f"{line['account_code']} - {line['account_name']}",
+                            "debit": float(line["debit"]),
+                            "credit": float(line["credit"]),
+                        }
+                        for line in lines
+                    ],
+                })
+
+            return {
+                "success": True,
+                "data": {
+                    "entries": result_entries,
+                    "total": total or 0,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting account journal entries {account_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get account journal entries")
 
 
 # =============================================================================
