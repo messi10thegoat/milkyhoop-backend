@@ -47,8 +47,8 @@ router = APIRouter()
 _pool: Optional[asyncpg.Pool] = None
 
 # Account codes
-INVENTORY_ACCOUNT = "1-10400"           # Persediaan Barang Dagang
-ADJUSTMENT_EXPENSE_ACCOUNT = "5-10200"  # Penyesuaian Persediaan
+INVENTORY_ACCOUNT = "1-10600"           # Persediaan Barang Dagang
+ADJUSTMENT_EXPENSE_ACCOUNT = "5-50100"  # Penyesuaian Persediaan
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -854,6 +854,98 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                             VALUES ($1, $2, $3)
                         """, ctx["tenant_id"], item["product_id"], float(adj_qty))
 
+                    # --- BUG #2 FIX: INSERT inventory_ledger entry ---
+                    # Check if product is goods + track_inventory
+                    product_row = await conn.fetchrow("""
+                        SELECT id, nama_produk, item_code, track_inventory, item_type
+                        FROM products WHERE id = $1 AND tenant_id = $2
+                    """, item["product_id"], ctx["tenant_id"])
+
+                    if product_row and product_row["item_type"] == "goods" and product_row.get("track_inventory", True):
+                        quantity = Decimal(str(item["quantity_adjustment"]))
+                        unit_cost = Decimal(str(item["unit_cost"]))
+
+                        # Determine quantity_in / quantity_out
+                        if quantity >= 0:
+                            qty_in = abs(quantity)
+                            qty_out = Decimal("0")
+                        else:
+                            qty_in = Decimal("0")
+                            qty_out = abs(quantity)
+
+                        total_cost = unit_cost * abs(quantity)
+
+                        # Get current running balance from inventory_ledger
+                        balance_row = await conn.fetchrow("""
+                            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                        """, ctx["tenant_id"], item["product_id"])
+                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        new_balance = current_balance + quantity
+
+                        # Calculate weighted average cost
+                        avg_cost_row = await conn.fetchrow("""
+                            SELECT
+                                COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                        """, ctx["tenant_id"], item["product_id"])
+
+                        if quantity > 0 and avg_cost_row and avg_cost_row["total_qty"] > 0:
+                            # Incoming: recalculate weighted average
+                            old_value = Decimal(str(avg_cost_row["total_value"]))
+                            old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                            new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                        elif avg_cost_row and avg_cost_row["total_qty"] > 0:
+                            # Outgoing: average cost stays the same
+                            old_value = Decimal(str(avg_cost_row["total_value"]))
+                            old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                            new_avg_cost = old_value / old_qty
+                        else:
+                            new_avg_cost = unit_cost
+
+                        # INSERT into inventory_ledger
+                        await conn.execute("""
+                            INSERT INTO inventory_ledger (
+                                tenant_id, product_id, product_code, product_name,
+                                movement_type, movement_date, source_type, source_id, source_number,
+                                quantity_in, quantity_out, quantity_balance,
+                                unit_cost, total_cost, average_cost,
+                                storage_location_id, journal_id, created_by, notes
+                            ) VALUES (
+                                $1, $2, $3, $4,
+                                'STOCK_ADJUSTMENT', $5, 'STOCK_ADJUSTMENT', $6, $7,
+                                $8, $9, $10,
+                                $11, $12, $13,
+                                $14, $15, $16, $17
+                            )
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                            item["product_code"],
+                            item["product_name"],
+                            sa["adjustment_date"],
+                            adjustment_id,
+                            sa["adjustment_number"],
+                            float(qty_in),
+                            float(qty_out),
+                            float(new_balance),
+                            float(unit_cost),
+                            float(total_cost),
+                            float(new_avg_cost),
+                            sa["storage_location_id"],
+                            journal_id,
+                            ctx["user_id"],
+                            f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}"
+                        )
+
+                        logger.info(
+                            f"Inventory ledger entry created for product {item['product_id']}: "
+                            f"qty_in={qty_in}, qty_out={qty_out}, balance={new_balance}"
+                        )
+
                 # Update stock adjustment status
                 await conn.execute("""
                     UPDATE stock_adjustments
@@ -983,6 +1075,96 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         SET jumlah = jumlah + $3, updated_at = NOW()
                         WHERE tenant_id = $1 AND product_id = $2
                     """, ctx["tenant_id"], item["product_id"], reversal_qty)
+
+                    # --- BUG #3 FIX: Reverse inventory_ledger entries ---
+                    product_row = await conn.fetchrow("""
+                        SELECT id, nama_produk, item_code, track_inventory, item_type
+                        FROM products WHERE id = $1 AND tenant_id = $2
+                    """, item["product_id"], ctx["tenant_id"])
+
+                    if product_row and product_row["item_type"] == "goods" and product_row.get("track_inventory", True):
+                        orig_qty = Decimal(str(item["quantity_adjustment"]))
+                        unit_cost = Decimal(str(item["unit_cost"]))
+
+                        # Reverse: if original was positive (increase), now quantity_out
+                        # if original was negative (decrease), now quantity_in
+                        if orig_qty >= 0:
+                            qty_in = Decimal("0")
+                            qty_out = abs(orig_qty)
+                        else:
+                            qty_in = abs(orig_qty)
+                            qty_out = Decimal("0")
+
+                        total_cost = unit_cost * abs(orig_qty)
+
+                        # Get current running balance
+                        balance_row = await conn.fetchrow("""
+                            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                        """, ctx["tenant_id"], item["product_id"])
+                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        # Reverse: subtract original qty
+                        new_balance = current_balance - orig_qty
+
+                        # Recalculate weighted average cost
+                        avg_cost_row = await conn.fetchrow("""
+                            SELECT
+                                COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                            FROM inventory_ledger
+                            WHERE tenant_id = $1 AND product_id = $2
+                        """, ctx["tenant_id"], item["product_id"])
+
+                        if avg_cost_row and avg_cost_row["total_qty"] > 0:
+                            old_value = Decimal(str(avg_cost_row["total_value"]))
+                            old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                            # After this reversal entry, recalculate
+                            if qty_in > 0:
+                                new_avg_cost = (old_value + total_cost) / (old_qty + qty_in)
+                            else:
+                                new_avg_cost = old_value / old_qty
+                        else:
+                            new_avg_cost = unit_cost
+
+                        # INSERT reversal into inventory_ledger
+                        await conn.execute("""
+                            INSERT INTO inventory_ledger (
+                                tenant_id, product_id, product_code, product_name,
+                                movement_type, movement_date, source_type, source_id, source_number,
+                                quantity_in, quantity_out, quantity_balance,
+                                unit_cost, total_cost, average_cost,
+                                storage_location_id, journal_id, created_by, notes
+                            ) VALUES (
+                                $1, $2, $3, $4,
+                                'STOCK_ADJUSTMENT', CURRENT_DATE, 'STOCK_ADJUSTMENT', $5, $6,
+                                $7, $8, $9,
+                                $10, $11, $12,
+                                $13, $14, $15, $16
+                            )
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                            item["product_code"],
+                            item["product_name"],
+                            adjustment_id,
+                            sa["adjustment_number"],
+                            float(qty_in),
+                            float(qty_out),
+                            float(new_balance),
+                            float(unit_cost),
+                            float(total_cost),
+                            float(new_avg_cost),
+                            sa["storage_location_id"],
+                            reversal_journal_id,
+                            ctx["user_id"],
+                            f"Void Stock Adjustment {sa['adjustment_number']} - Reversal"
+                        )
+
+                        logger.info(
+                            f"Inventory ledger reversal for product {item['product_id']}: "
+                            f"qty_in={qty_in}, qty_out={qty_out}, balance={new_balance}"
+                        )
 
                 # Update status
                 await conn.execute("""
