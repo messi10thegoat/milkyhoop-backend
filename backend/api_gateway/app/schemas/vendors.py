@@ -234,6 +234,9 @@ class VendorDetail(BaseModel):
     is_pkp: Optional[bool] = None
     currency: Optional[str] = None
 
+    # Transaction check
+    has_transactions: Optional[bool] = None
+
     is_active: bool
     created_at: str
     updated_at: str
@@ -364,6 +367,8 @@ class VendorActivity(BaseModel):
     actor_name: Optional[str] = None
     timestamp: str
     details: Optional[str] = None
+    document_number: Optional[str] = None
+    total: Optional[float] = None
     field_name: Optional[str] = None
     old_value: Optional[str] = None
     new_value: Optional[str] = None

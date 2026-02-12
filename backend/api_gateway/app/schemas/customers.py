@@ -226,6 +226,7 @@ class CustomerDetail(BaseModel):
     
     # Metadata
     default_currency_id: Optional[str] = None
+    has_transactions: Optional[bool] = None
     is_active: bool = True
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -321,6 +322,11 @@ class CustomerActivity(BaseModel):
     actor_name: Optional[str] = None
     timestamp: str
     details: Optional[str] = None
+    document_number: Optional[str] = None
+    total: Optional[float] = None
+    field_name: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
 
 
 class CustomerActivityResponse(BaseModel):

@@ -1657,18 +1657,59 @@ async def get_vendor_activity(
         if not vendor_exists:
             raise HTTPException(status_code=404, detail="Vendor not found")
 
-        # Get total count
-        total = await conn.fetchval(
-            "SELECT COUNT(*) FROM vendor_activities WHERE vendor_id = $1 AND tenant_id = $2",
-            vendor_id,
-            ctx["tenant_id"],
-        )
+        # Get total count (including transaction events)
+        count_query = """
+            SELECT (
+                SELECT COUNT(*) FROM vendor_activities
+                WHERE vendor_id = $1 AND tenant_id = $2
+            ) + (
+                SELECT COUNT(*) FROM bills
+                WHERE vendor_id = $1 AND tenant_id = $2
+                  AND status_v2 NOT IN ('draft', 'void')
+            ) + (
+                SELECT COUNT(*) FROM bill_payments_v2
+                WHERE vendor_id = $1 AND tenant_id = $2
+                  AND status NOT IN ('draft', 'void')
+            )
+        """
+        total = await conn.fetchval(count_query, vendor_id, ctx["tenant_id"])
 
-        # Get activities
+        # Get activities (UNION with transaction events)
         query = """
-            SELECT id, type, description, details, actor_name, timestamp, field_name, old_value, new_value
+            SELECT id::text, type, description, details, actor_name, timestamp,
+                   NULL as document_number, NULL::numeric as total,
+                   field_name, old_value, new_value
             FROM vendor_activities
             WHERE vendor_id = $1 AND tenant_id = $2
+
+            UNION ALL
+
+            SELECT b.id::text, 'bill' as type,
+                   'Faktur pembelian ' || b.invoice_number as description,
+                   'Total: ' || COALESCE(b.grand_total, b.amount)::text as details,
+                   NULL as actor_name,
+                   b.created_at as timestamp,
+                   b.invoice_number as document_number,
+                   COALESCE(b.grand_total, b.amount)::numeric as total,
+                   NULL as field_name, NULL as old_value, NULL as new_value
+            FROM bills b
+            WHERE b.vendor_id = $1 AND b.tenant_id = $2
+              AND b.status_v2 NOT IN ('draft', 'void')
+
+            UNION ALL
+
+            SELECT bp.id::text, 'payment' as type,
+                   'Pembayaran ' || bp.payment_number as description,
+                   'Total: ' || bp.total_amount::text as details,
+                   NULL as actor_name,
+                   bp.created_at as timestamp,
+                   bp.payment_number as document_number,
+                   bp.total_amount::numeric as total,
+                   NULL as field_name, NULL as old_value, NULL as new_value
+            FROM bill_payments_v2 bp
+            WHERE bp.vendor_id = $1 AND bp.tenant_id = $2
+              AND bp.status NOT IN ('draft', 'void')
+
             ORDER BY timestamp DESC
             LIMIT $3 OFFSET $4
         """
@@ -1682,6 +1723,8 @@ async def get_vendor_activity(
                 details=row.get("details"),
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
+                document_number=row.get("document_number"),
+                total=float(row["total"]) if row.get("total") is not None else None,
                 field_name=row.get("field_name"),
                 old_value=row.get("old_value"),
                 new_value=row.get("new_value"),

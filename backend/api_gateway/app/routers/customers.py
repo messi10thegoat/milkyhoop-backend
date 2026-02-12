@@ -1527,18 +1527,59 @@ async def get_customer_activity(
         if not customer_exists:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Get total count
-        total = await conn.fetchval(
-            "SELECT COUNT(*) FROM customer_activities WHERE customer_id = $1 AND tenant_id = $2",
-            customer_id,
-            ctx["tenant_id"],
-        )
+        # Get total count (including transaction events)
+        count_query = """
+            SELECT (
+                SELECT COUNT(*) FROM customer_activities
+                WHERE customer_id = $1 AND tenant_id = $2
+            ) + (
+                SELECT COUNT(*) FROM sales_invoices
+                WHERE customer_id = $1 AND tenant_id = $2
+                  AND status NOT IN ('draft', 'void')
+            ) + (
+                SELECT COUNT(*) FROM receive_payments
+                WHERE customer_id = $1 AND tenant_id = $2
+                  AND status NOT IN ('draft', 'void')
+            )
+        """
+        total = await conn.fetchval(count_query, customer_id, ctx["tenant_id"])
 
-        # Get activities
+        # Get activities (UNION with transaction events)
         query = """
-            SELECT id, type, description, details, actor_name, timestamp
+            SELECT id::text, type, description, details, actor_name, timestamp,
+                   NULL as document_number, NULL::numeric as total,
+                   field_name, old_value, new_value
             FROM customer_activities
             WHERE customer_id = $1 AND tenant_id = $2
+
+            UNION ALL
+
+            SELECT si.id::text, 'sale' as type,
+                   'Faktur penjualan ' || si.invoice_number as description,
+                   'Total: ' || si.total_amount::text as details,
+                   NULL as actor_name,
+                   si.created_at as timestamp,
+                   si.invoice_number as document_number,
+                   si.total_amount as total,
+                   NULL as field_name, NULL as old_value, NULL as new_value
+            FROM sales_invoices si
+            WHERE si.customer_id = $1 AND si.tenant_id = $2
+              AND si.status NOT IN ('draft', 'void')
+
+            UNION ALL
+
+            SELECT rp.id::text, 'payment' as type,
+                   'Pembayaran ' || rp.payment_number as description,
+                   'Total: ' || rp.total_amount::text as details,
+                   NULL as actor_name,
+                   rp.created_at as timestamp,
+                   rp.payment_number as document_number,
+                   rp.total_amount as total,
+                   NULL as field_name, NULL as old_value, NULL as new_value
+            FROM receive_payments rp
+            WHERE rp.customer_id = $1 AND rp.tenant_id = $2
+              AND rp.status NOT IN ('draft', 'void')
+
             ORDER BY timestamp DESC
             LIMIT $3 OFFSET $4
         """
@@ -1552,6 +1593,11 @@ async def get_customer_activity(
                 details=row.get("details"),
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
+                document_number=row.get("document_number"),
+                total=float(row["total"]) if row.get("total") is not None else None,
+                field_name=row.get("field_name"),
+                old_value=row.get("old_value"),
+                new_value=row.get("new_value"),
             )
             for row in rows
         ]
