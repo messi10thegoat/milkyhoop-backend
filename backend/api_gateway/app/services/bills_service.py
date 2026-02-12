@@ -591,6 +591,7 @@ class BillsService:
                     ap_result = await self.accounting.create_payable(
                         tenant_id=tenant_id,
                         supplier_name=vendor_name,
+                        supplier_id=vendor_id,
                         bill_number=invoice_number,
                         bill_date=issue_date,
                         due_date=due_date,
@@ -1891,14 +1892,19 @@ class BillsService:
                     )
 
                     # Convert exp_date string to date if provided
+                    # Accepts both YYYY-MM and YYYY-MM-DD formats
                     exp_date = None
                     if item.get("exp_date"):
                         try:
-                            exp_date = date.fromisoformat(f"{item['exp_date']}-01")
+                            exp_val = item["exp_date"]
+                            if len(exp_val) == 7:  # YYYY-MM
+                                exp_date = date.fromisoformat(f"{exp_val}-01")
+                            else:  # YYYY-MM-DD
+                                exp_date = date.fromisoformat(exp_val)
                         except ValueError:
                             return {
                                 "success": False,
-                                "message": f"Item {idx}: format exp_date harus YYYY-MM (contoh: 2025-12)",
+                                "message": f"Item {idx}: format exp_date harus YYYY-MM atau YYYY-MM-DD (contoh: 2025-12 atau 2025-12-31)",
                                 "data": None,
                             }
 
@@ -1938,6 +1944,7 @@ class BillsService:
                         ap_result = await self.accounting.create_payable(
                             tenant_id=tenant_id,
                             supplier_name=vendor_name,
+                            supplier_id=vendor_id,
                             bill_number=invoice_number,
                             bill_date=issue_date,
                             due_date=due_date,
@@ -2159,6 +2166,7 @@ class BillsService:
                     ap_result = await self.accounting.create_payable(
                         tenant_id=tenant_id,
                         supplier_name=bill["vendor_name"],
+                        supplier_id=bill["vendor_id"],
                         bill_number=bill["invoice_number"],
                         bill_date=bill["issue_date"],
                         due_date=bill["due_date"],
@@ -2401,9 +2409,14 @@ class BillsService:
                             qty, price, discount_pct
                         )
 
+                        # Accepts both YYYY-MM and YYYY-MM-DD formats
                         exp_date = None
                         if item.get("exp_date"):
-                            exp_date = date.fromisoformat(f"{item['exp_date']}-01")
+                            exp_val = item["exp_date"]
+                            if len(exp_val) == 7:  # YYYY-MM
+                                exp_date = date.fromisoformat(f"{exp_val}-01")
+                            else:  # YYYY-MM-DD
+                                exp_date = date.fromisoformat(exp_val)
 
                         await conn.execute(
                             """

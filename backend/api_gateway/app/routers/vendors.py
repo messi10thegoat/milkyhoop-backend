@@ -229,7 +229,7 @@ async def list_vendors(
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
-    is_active: bool = Query(True, description="Filter by active status"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status (None=all, True=active, False=inactive)"),
     has_balance: Optional[bool] = Query(None, description="Filter vendors with ap_balance > 0"),
     is_pkp: Optional[bool] = Query(None, description="Filter PKP vendors"),
     has_overdue: Optional[bool] = Query(None, description="Filter vendors with overdue invoices"),
@@ -395,6 +395,21 @@ async def get_vendor(request: Request, vendor_id: UUID):
             if not row:
                 raise HTTPException(status_code=404, detail="Vendor not found")
 
+            # Check if vendor has any transactions
+            tx_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM bills WHERE vendor_id = $1 AND tenant_id = $2
+                    UNION ALL
+                    SELECT 1 FROM purchase_orders WHERE vendor_id = $1 AND tenant_id = $2
+                    UNION ALL
+                    SELECT 1 FROM expenses WHERE vendor_id = $1 AND tenant_id = $2
+                    UNION ALL
+                    SELECT 1 FROM bill_payments_v2 WHERE vendor_id = $1 AND tenant_id = $2
+                    LIMIT 1
+                ) t
+            """, vendor_id, ctx["tenant_id"])
+            has_transactions = tx_count > 0
+
             return {
                 "success": True,
                 "data": {
@@ -440,6 +455,8 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
+                    # Transaction check
+                    "has_transactions": has_transactions,
                 },
             }
 
@@ -494,10 +511,10 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
                         ELSE 0 END
                     ), 0) as total_balance,
                     COUNT(*) FILTER (
-                        WHERE status_v2 = posted AND COALESCE(amount_paid, 0) = 0
+                        WHERE status_v2 = 'posted' AND COALESCE(amount_paid, 0) = 0
                     ) as unpaid_count,
                     COUNT(*) FILTER (
-                        WHERE status_v2 = posted
+                        WHERE status_v2 = 'posted'
                         AND COALESCE(amount_paid, 0) > 0
                         AND COALESCE(amount_paid, 0) < COALESCE(grand_total, amount)
                     ) as partial_count,
@@ -515,7 +532,7 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
                     COALESCE(SUM(COALESCE(grand_total, amount)), 0) as total_billed,
                     COALESCE(SUM(COALESCE(amount_paid, 0)), 0) as total_paid
                 FROM bills
-                WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 != void
+                WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 != 'void'
             """
             balance = await conn.fetchrow(balance_query, ctx["tenant_id"], vendor_id)
 
@@ -915,15 +932,15 @@ async def toggle_vendor_status(
 
 
 # =============================================================================
-# DELETE VENDOR (Soft delete by setting is_active = false)
+# DELETE VENDOR (Hard delete - removes the row)
 # =============================================================================
 @router.delete("/{vendor_id}", response_model=VendorResponse)
 async def delete_vendor(request: Request, vendor_id: UUID):
     """
-    Soft delete a vendor by setting is_active to false.
+    Hard delete a vendor by removing the row from the database.
 
-    **Note:** This is a soft delete. The vendor record is preserved but
-    won't appear in autocomplete or active vendor lists.
+    **Note:** The frontend ensures this is only available for vendors
+    without transactions (has_transactions = false), so hard delete is safe.
     """
     try:
         ctx = get_user_context(request)
@@ -939,18 +956,17 @@ async def delete_vendor(request: Request, vendor_id: UUID):
             if not existing:
                 raise HTTPException(status_code=404, detail="Vendor not found")
 
-            # Soft delete
+            # Hard delete - remove the row entirely
             await conn.execute(
                 """
-                UPDATE vendors
-                SET is_active = false, updated_at = NOW()
+                DELETE FROM vendors
                 WHERE id = $1 AND tenant_id = $2
             """,
                 vendor_id,
                 ctx["tenant_id"],
             )
 
-            logger.info(f"Vendor soft deleted: {vendor_id}, name={existing['name']}")
+            logger.info(f"Vendor hard deleted: {vendor_id}, name={existing['name']}")
 
             return {
                 "success": True,

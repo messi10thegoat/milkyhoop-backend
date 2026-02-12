@@ -88,6 +88,7 @@ async def autocomplete_customers(
                 SELECT id, nama, nomor_member, telepon, company_name, display_name
                 FROM customers
                 WHERE tenant_id = $1
+                  AND is_active = true
                   AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR telepon ILIKE $2)
                 ORDER BY nama ASC
                 LIMIT $3
@@ -125,7 +126,7 @@ async def list_customers(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     tipe: Optional[str] = Query(None, description="Filter by customer type"),
-    is_active: bool = Query(True, description="Filter by active status"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status (null = all)"),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
         "created_at", description="Sort field"
     ),
@@ -160,10 +161,11 @@ async def list_customers(
                 params.append(tipe)
                 param_idx += 1
 
-            # Filter by is_active (defaults to True, showing only active customers)
-            conditions.append(f"is_active = ${param_idx}")
-            params.append(is_active)
-            param_idx += 1
+            # Filter by is_active (None = show all)
+            if is_active is not None:
+                conditions.append(f"is_active = ${param_idx}")
+                params.append(is_active)
+                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -290,6 +292,34 @@ async def get_customer(request: Request, customer_id: str):
             if not row:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
+            # Check if customer has any transactions
+            has_tx = await conn.fetchval("""
+                SELECT EXISTS(
+                    SELECT 1 FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
+                    UNION ALL
+                    SELECT 1 FROM receive_payments WHERE tenant_id = $1 AND customer_id = $2
+                )
+            """, ctx["tenant_id"], customer_id)
+
+            # Live query for transaction stats (fallback over stale cached columns)
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_transaksi,
+                    COALESCE(SUM(total_amount), 0) as total_nilai,
+                    MAX(invoice_date) as last_transaction_at
+                FROM sales_invoices
+                WHERE customer_id = $1 AND tenant_id = $2
+                  AND status NOT IN ('draft', 'void')
+            """, customer_id, ctx["tenant_id"])
+
+            # Live AR balance
+            ar_balance = await conn.fetchrow("""
+                SELECT COALESCE(SUM(amount - amount_paid), 0) as saldo
+                FROM accounts_receivable
+                WHERE customer_id = $1 AND tenant_id = $2
+                  AND status IN ('OPEN', 'PARTIAL')
+            """, customer_id, ctx["tenant_id"])
+
             return {
                 "success": True,
                 "data": {
@@ -332,17 +362,18 @@ async def get_customer(request: Request, customer_id: str):
                     else None,
                     "opening_balance_notes": row["opening_balance_notes"],
                     
-                    # Statistics
+                    # Statistics (live query values, fallback to cached)
                     "points": row["points"],
                     "points_per_50k": row["points_per_50k"],
-                    "total_transactions": row["total_transaksi"],
-                    "total_value": row["total_nilai"],
-                    "outstanding_balance": row["saldo_hutang"],
-                    "last_transaction_at": row["last_transaction_at"].isoformat()
-                    if row["last_transaction_at"]
-                    else None,
+                    "total_transactions": int(stats["total_transaksi"]) if stats else (row["total_transaksi"] or 0),
+                    "total_value": float(stats["total_nilai"]) if stats else float(row["total_nilai"] or 0),
+                    "outstanding_balance": float(ar_balance["saldo"]) if ar_balance else float(row["saldo_hutang"] or 0),
+                    "last_transaction_at": stats["last_transaction_at"].isoformat()
+                    if stats and stats["last_transaction_at"]
+                    else (row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None),
                     
                     # Metadata
+                    "has_transactions": bool(has_tx),
                     "default_currency_id": str(row["default_currency_id"])
                     if row["default_currency_id"]
                     else None,
@@ -442,7 +473,7 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
         async with pool.acquire() as conn:
             # Check for duplicate name
             existing = await conn.fetchval(
-                "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2",
+                "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND is_active = true",
                 ctx["tenant_id"],
                 body.name,
             )
@@ -455,7 +486,7 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
             # Check for duplicate code if provided
             if body.code:
                 existing_code = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND nomor_member = $2",
+                    "SELECT id FROM customers WHERE tenant_id = $1 AND nomor_member = $2 AND is_active = true",
                     ctx["tenant_id"],
                     body.code,
                 )
@@ -581,7 +612,7 @@ async def update_customer(
             # Check for duplicate name if name is being changed
             if body.name and body.name != existing["nama"]:
                 duplicate = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND id != $3",
+                    "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND id != $3 AND is_active = true",
                     ctx["tenant_id"],
                     body.name,
                     customer_id,
@@ -716,15 +747,15 @@ async def update_customer(
     except Exception as e:
         logger.error(f"Error updating customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update customer")
-# DELETE CUSTOMER (Soft delete by setting is_active = false)
+# DELETE CUSTOMER (Hard delete - only for customers without transactions)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
 async def delete_customer(request: Request, customer_id: str):
     """
-    Soft delete a customer by setting is_active to false.
+    Delete a customer permanently. Only allowed for customers without outstanding balance.
 
-    **Note:** This is a soft delete. The customer record is preserved but
-    won't appear in autocomplete or active customer lists.
+    **Note:** The frontend ensures delete is only available for customers
+    without transactions. The backend also checks for outstanding AR balance.
     """
     try:
         ctx = get_user_context(request)
@@ -759,11 +790,10 @@ async def delete_customer(request: Request, customer_id: str):
                     detail=f"Cannot delete customer with outstanding balance of Rp {balance:,}",
                 )
 
-            # Soft delete
+            # Hard delete - safe because frontend only allows for customers without transactions
             await conn.execute(
                 """
-                UPDATE customers
-                SET is_active = false, updated_at = NOW()
+                DELETE FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """,
                 customer_id,
@@ -771,7 +801,7 @@ async def delete_customer(request: Request, customer_id: str):
             )
 
             logger.info(
-                f"Customer soft deleted: {customer_id}, name={existing['nama']}"
+                f"Customer permanently deleted: {customer_id}, name={existing['nama']}"
             )
 
             return {
@@ -1317,6 +1347,15 @@ async def get_customer_journal_entries(
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
                       AND cn.customer_id = ${customer_id_param_idx}
+                    UNION
+                    
+                    -- Inline Payments (sales_invoice_payments)
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoice_payments sip ON sip.journal_id = je.id
+                    INNER JOIN sales_invoices si ON si.id = sip.invoice_id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
                 )
                 SELECT 
                     je.id,
@@ -1423,6 +1462,15 @@ async def get_customer_journal_entries(
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
                       AND cn.customer_id = ${customer_id_param_idx}
+                    UNION
+                    
+                    -- Inline Payments (sales_invoice_payments)
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    INNER JOIN sales_invoice_payments sip ON sip.journal_id = je.id
+                    INNER JOIN sales_invoices si ON si.id = sip.invoice_id
+                    WHERE {where_clause}
+                      AND si.customer_id = ${customer_id_param_idx}
                 )
                 SELECT COUNT(*) FROM customer_journals
             """
