@@ -143,7 +143,8 @@ async def list_customers(
 
         async with pool.acquire() as conn:
             # Build query conditions
-            conditions = ["tenant_id = $1"]
+            # Exclude soft-deleted customers by default (Iron Law 12)
+            conditions = ["tenant_id = $1", "deleted_at IS NULL"]
             params = [ctx["tenant_id"]]
             param_idx = 2
 
@@ -330,13 +331,16 @@ async def get_customer(request: Request, customer_id: str):
                   AND status NOT IN ('draft', 'void')
             """, customer_id, ctx["tenant_id"])
 
-            # Live AR balance
+            # Pure Ledger: AR balance from journal (Law 16)
             ar_balance = await conn.fetchrow("""
-                SELECT COALESCE(SUM(amount - amount_paid), 0) as saldo
-                FROM accounts_receivable
-                WHERE customer_id = $1 AND tenant_id = $2
-                  AND status IN ('OPEN', 'PARTIAL')
-            """, customer_id, ctx["tenant_id"])
+                SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as saldo
+                FROM accounts_receivable ar
+                JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
+                  AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+            """, ctx["tenant_id"], customer_id)
 
             return {
                 "success": True,
@@ -435,17 +439,27 @@ async def get_customer_balance(request: Request, customer_id: str):
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
-            # Get AR balance from accounts_receivable table
+            # Pure Ledger: AR balance from journal (Law 16)
             balance_query = """
+                WITH ar_journal AS (
+                    SELECT ar.id, ar.due_date, ar.status,
+                        COALESCE(SUM(jl.debit - jl.credit), 0) as remaining
+                    FROM accounts_receivable ar
+                    JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
+                      AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+                      AND ar.status IN ('OPEN', 'PARTIAL')
+                    GROUP BY ar.id, ar.due_date, ar.status
+                    HAVING COALESCE(SUM(jl.debit - jl.credit), 0) > 0
+                )
                 SELECT
-                    COALESCE(SUM(amount - amount_paid), 0) as total_balance,
+                    COALESCE(SUM(remaining), 0) as total_balance,
                     COUNT(*) FILTER (WHERE status = 'OPEN') as open_count,
                     COUNT(*) FILTER (WHERE status = 'PARTIAL') as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND status IN ('OPEN', 'PARTIAL')) as overdue_count
-                FROM accounts_receivable
-                WHERE tenant_id = $1
-                  AND customer_id = $2
-                  AND status IN ('OPEN', 'PARTIAL')
+                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE) as overdue_count
+                FROM ar_journal
             """
             balance = await conn.fetchrow(balance_query, ctx["tenant_id"], customer_id)
 
@@ -765,15 +779,14 @@ async def update_customer(
     except Exception as e:
         logger.error(f"Error updating customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update customer")
-# DELETE CUSTOMER (Hard delete - only for customers without transactions)
+# DELETE CUSTOMER (Soft delete - block if customer has transaction history)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
 async def delete_customer(request: Request, customer_id: str):
     """
-    Delete a customer permanently. Only allowed for customers without outstanding balance.
-
-    **Note:** The frontend ensures delete is only available for customers
-    without transactions. The backend also checks for outstanding AR balance.
+    Soft-delete a customer. Only allowed for customers without any transaction history.
+    Customers with invoices, payments, or journal entries cannot be deleted.
+    Iron Law 12: Audit trail immutability.
     """
     try:
         ctx = get_user_context(request)
@@ -789,42 +802,85 @@ async def delete_customer(request: Request, customer_id: str):
             if not existing:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
-            # Check for outstanding AR balance
-            balance = await conn.fetchval(
+            # Check for ANY transaction history (invoices)
+            has_invoices = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(amount - amount_paid), 0)
-                FROM accounts_receivable
-                WHERE tenant_id = $1
-                  AND customer_id::text = $2
-                  AND status IN ('OPEN', 'PARTIAL')
-            """,
-                ctx["tenant_id"],
+                SELECT EXISTS(
+                    SELECT 1 FROM sales_invoices
+                    WHERE customer_id = $1 AND tenant_id = $2
+                    LIMIT 1
+                )
+                """,
                 str(customer_id),
+                ctx["tenant_id"],
             )
 
-            if balance and balance > 0:
+            if has_invoices:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot delete customer with outstanding balance of Rp {balance:,}",
+                    detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
                 )
 
-            # Hard delete - safe because frontend only allows for customers without transactions
+            # Check for receive_payments
+            has_payments = await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM receive_payments
+                    WHERE customer_id = $1 AND tenant_id = $2
+                    LIMIT 1
+                )
+                """,
+                str(customer_id),
+                ctx["tenant_id"],
+            )
+
+            if has_payments:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
+                )
+
+            # Check for any AR records (even settled ones = proof of past transactions)
+            has_ar = await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM accounts_receivable
+                    WHERE customer_id::text = $1 AND tenant_id = $2
+                    LIMIT 1
+                )
+                """,
+                str(customer_id),
+                ctx["tenant_id"],
+            )
+
+            if has_ar:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
+                )
+
+            # Soft delete - mark as inactive with audit trail
             await conn.execute(
                 """
-                DELETE FROM customers
+                UPDATE customers
+                SET is_active = false,
+                    deleted_at = NOW(),
+                    deleted_by = $3,
+                    updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """,
+                """,
                 customer_id,
                 ctx["tenant_id"],
+                ctx.get("user_id", "system"),
             )
 
             logger.info(
-                f"Customer permanently deleted: {customer_id}, name={existing['nama']}"
+                f"Customer soft-deleted: {customer_id}, name={existing['nama']}, by={ctx.get('user_id', 'unknown')}"
             )
 
             return {
                 "success": True,
-                "message": "Customer deleted successfully",
+                "message": "Customer deactivated successfully",
                 "data": {"id": str(customer_id), "name": existing["nama"]},
             }
 
@@ -856,26 +912,56 @@ async def get_customer_open_invoices(
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
-            # Get invoices with remaining balance
+            # Pure Ledger: Get invoices with journal-based remaining (Law 16)
             rows = await conn.fetch(
                 """
                 SELECT
-                    id, invoice_number, invoice_date, due_date,
-                    total_amount, amount_paid,
-                    total_amount - COALESCE(amount_paid, 0) as remaining_amount,
-                    CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
-                    GREATEST(0, CURRENT_DATE - due_date) as overdue_days
-                FROM sales_invoices
-                WHERE tenant_id = $1
-                  AND customer_id = $2
-                  AND status IN ('posted', 'partial', 'overdue')
-                  AND total_amount > COALESCE(amount_paid, 0)
-                ORDER BY due_date ASC, invoice_date ASC
+                    si.id, si.invoice_number, si.invoice_date, si.due_date,
+                    si.total_amount,
+                    COALESCE((
+                        SELECT SUM(jl.debit)
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = si.id AND je.source_type = 'INVOICE'
+                          AND je.tenant_id = $1 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'
+                    ), 0) - COALESCE((
+                        SELECT SUM(rpa.amount_applied)
+                        FROM receive_payment_allocations rpa
+                        JOIN receive_payments rp ON rp.id = rpa.payment_id
+                        WHERE rpa.invoice_id = si.id AND rpa.tenant_id = $1
+                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
+                    ), 0) - COALESCE((
+                        SELECT SUM(jl.credit)
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = si.id AND je.source_type = 'INVOICE_REVERSAL'
+                          AND je.tenant_id = $1 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'
+                    ), 0) - COALESCE((
+                        SELECT SUM(sip_jl.credit)
+                        FROM sales_invoice_payments sip
+                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                        WHERE sip.invoice_id = si.id AND sip_je.status = 'POSTED'
+                          AND sip_coa.account_code LIKE '1-104%%'
+                    ), 0) as remaining_amount,
+                    CASE WHEN si.due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
+                    GREATEST(0, CURRENT_DATE - si.due_date) as overdue_days
+                FROM sales_invoices si
+                WHERE si.tenant_id = $1
+                  AND si.customer_id = $2
+                  AND si.status IN ('posted', 'partial', 'overdue')
+                ORDER BY si.due_date ASC, si.invoice_date ASC
             """,
                 ctx["tenant_id"],
                 customer_id,
             )
 
+            # Filter to only invoices with positive remaining
             invoices = [
                 {
                     "id": str(row["id"]),
@@ -883,12 +969,13 @@ async def get_customer_open_invoices(
                     "invoice_date": row["invoice_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
                     "total_amount": row["total_amount"],
-                    "paid_amount": row["amount_paid"] or 0,
-                    "remaining_amount": row["remaining_amount"],
+                    "paid_amount": int(row["total_amount"] - row["remaining_amount"]),
+                    "remaining_amount": int(row["remaining_amount"]),
                     "is_overdue": row["is_overdue"],
                     "overdue_days": row["overdue_days"],
                 }
                 for row in rows
+                if row["remaining_amount"] > 0
             ]
 
             total_outstanding = sum(inv["remaining_amount"] for inv in invoices)

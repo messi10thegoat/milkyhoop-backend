@@ -34,10 +34,17 @@ router = APIRouter()
 # ============================================
 # POS INVENTORY & JOURNAL HELPER
 # ============================================
+# WARNING (Law 16): This helper reads from legacy POS tables (transaksi_harian, item_transaksi).
+# These tables are written by the orchestrator and read here for post-processing only.
+# TODO: Migrate orchestrator to write to sales_invoices/sales_invoice_items directly,
+# then update this helper to read from the proper tables.
 async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str, user_id: str):
     """
     After POS sale success, create inventory ledger entries and journal entries.
     Called after tenant_orchestrator confirms the sale.
+
+    NOTE: Reads from transaksi_harian/item_transaksi (legacy POS tables).
+    This is a known Law 16 violation pending orchestrator migration.
     """
     try:
         conn = await get_db_connection()

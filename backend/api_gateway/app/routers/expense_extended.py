@@ -1116,24 +1116,30 @@ async def get_insight(
                 ctx["tenant_id"],
             )
 
-            # Outstanding AR
+            # Pure Ledger: AR outstanding from journal (Law 16)
             ar_outstanding = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
-                FROM sales_invoices
-                WHERE tenant_id = $1
-                  AND status IN ('posted', 'partial', 'overdue')
+                SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '1-104%%'
             """,
                 ctx["tenant_id"],
             )
 
-            # Outstanding AP
+            # Pure Ledger: AP outstanding from journal (Law 16)
             ap_outstanding = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
-                FROM bills
-                WHERE tenant_id = $1
-                  AND status IN ('posted', 'partial', 'overdue')
+                SELECT COALESCE(SUM(jl.credit - jl.debit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '2-104%%'
             """,
                 ctx["tenant_id"],
             )

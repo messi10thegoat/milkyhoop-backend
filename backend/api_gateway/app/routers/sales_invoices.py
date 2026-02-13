@@ -346,12 +346,38 @@ async def list_invoices(
                 f"SELECT COUNT(*) FROM sales_invoices WHERE {where_clause}", *params
             )
 
-            # Get items
+            # Pure Ledger: derive amount_paid from journal (Law 16)
             query = f"""
-                SELECT id, invoice_number, customer_id, customer_name,
-                       invoice_date, due_date, total_amount, amount_paid,
-                       status, operational_status, accounting_status, created_at
-                FROM sales_invoices
+                SELECT si.id, si.invoice_number, si.customer_id, si.customer_name,
+                       si.invoice_date, si.due_date, si.total_amount,
+                       si.total_amount - (
+                           COALESCE((SELECT SUM(jl.debit) FROM journal_lines jl
+                               JOIN journal_entries je ON je.id = jl.journal_id
+                               JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                               WHERE je.source_id = si.id AND je.source_type = 'INVOICE'
+                                 AND je.tenant_id = si.tenant_id AND je.status = 'POSTED'
+                                 AND coa.account_code LIKE '1-104%%'), 0)
+                           - COALESCE((SELECT SUM(rpa.amount_applied)
+                               FROM receive_payment_allocations rpa
+                               JOIN receive_payments rp ON rp.id = rpa.payment_id
+                               WHERE rpa.invoice_id = si.id AND rpa.tenant_id = si.tenant_id
+                                 AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+                           - COALESCE((SELECT SUM(jl.credit) FROM journal_lines jl
+                               JOIN journal_entries je ON je.id = jl.journal_id
+                               JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                               WHERE je.source_id = si.id AND je.source_type = 'INVOICE_REVERSAL'
+                                 AND je.tenant_id = si.tenant_id AND je.status = 'POSTED'
+                                 AND coa.account_code LIKE '1-104%%'), 0)
+                           - COALESCE((SELECT SUM(sip_jl.credit)
+                               FROM sales_invoice_payments sip
+                               JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                               JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                               JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                               WHERE sip.invoice_id = si.id AND sip_je.status = 'POSTED'
+                                 AND sip_coa.account_code LIKE '1-104%%'), 0)
+                       ) as journal_outstanding,
+                       si.status, si.operational_status, si.accounting_status, si.created_at
+                FROM sales_invoices si
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -370,7 +396,7 @@ async def list_invoices(
                     "invoice_date": row["invoice_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
                     "total_amount": row["total_amount"],
-                    "amount_paid": row["amount_paid"],
+                    "amount_paid": int(row["total_amount"] - row["journal_outstanding"]) if row["journal_outstanding"] is not None else 0,
                     "status": row["status"],
                     "operational_status": row.get("operational_status") or "DRAFT",
                     "accounting_status": row.get("accounting_status") or "UNPOSTED",
@@ -432,6 +458,36 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 invoice_id,
             )
 
+            # Pure Ledger: derive amount_paid from journal (Law 16)
+            journal_outstanding = await conn.fetchval("""
+                SELECT
+                    COALESCE((SELECT SUM(jl.debit) FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = $1 AND je.source_type = 'INVOICE'
+                          AND je.tenant_id = $2 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'), 0)
+                    - COALESCE((SELECT SUM(rpa.amount_applied)
+                        FROM receive_payment_allocations rpa
+                        JOIN receive_payments rp ON rp.id = rpa.payment_id
+                        WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+                    - COALESCE((SELECT SUM(jl.credit) FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = $1 AND je.source_type = 'INVOICE_REVERSAL'
+                          AND je.tenant_id = $2 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'), 0)
+                    - COALESCE((SELECT SUM(sip_jl.credit)
+                        FROM sales_invoice_payments sip
+                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                        WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
+                          AND sip_coa.account_code LIKE '1-104%%'), 0)
+            """, invoice_id, ctx["tenant_id"])
+            journal_amount_paid = int(invoice["total_amount"] - (journal_outstanding or 0))
+
             return {
                 "success": True,
                 "data": {
@@ -452,7 +508,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_rate": float(invoice["tax_rate"] or 0),
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
-                    "amount_paid": invoice["amount_paid"],
+                    "amount_paid": journal_amount_paid,
                     "status": invoice["status"],
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",
@@ -562,7 +618,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     invoice = await conn.fetchrow(
         """
         SELECT id, invoice_number, customer_id, customer_name, total_amount,
-               invoice_date, due_date
+               tax_amount, subtotal, invoice_date, due_date
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
         invoice_id,
@@ -638,33 +694,64 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
         ctx["tenant_id"],
     )
+    vat_output_account = await conn.fetchrow(
+        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '2-10600'",
+        ctx["tenant_id"],
+    )
+
+    # Compute subtotal (revenue without tax)
+    tax_amount = invoice["tax_amount"] or 0
+    subtotal_amount = total_amount - tax_amount
+    line_number = 1
 
     # Insert journal lines
+    # Line 1: Debit AR = total_amount (inclusive of tax)
     if ar_account:
         await conn.execute(
             """
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, 1, $3, $4, 0, $5)
+            VALUES ($1, $2, $3, $4, $5, 0, $6)
             """,
             uuid.uuid4(),
             journal_id,
+            line_number,
             ar_account["id"],
             total_amount,
             f"Piutang - {invoice_number}",
         )
+        line_number += 1
 
+    # Line 2: Credit Sales Revenue = subtotal (WITHOUT tax)
     if sales_account:
         await conn.execute(
             """
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, 2, $3, 0, $4, $5)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
             """,
             uuid.uuid4(),
             journal_id,
+            line_number,
             sales_account["id"],
-            total_amount,
+            subtotal_amount,
             f"Penjualan - {invoice_number}",
         )
+        line_number += 1
+
+    # Line 3: Credit VAT Output = tax_amount (PPN Keluaran)
+    if tax_amount > 0 and vat_output_account:
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            """,
+            uuid.uuid4(),
+            journal_id,
+            line_number,
+            vat_output_account["id"],
+            tax_amount,
+            f"PPN Keluaran - {invoice_number}",
+        )
+        line_number += 1
 
     # =============================================================
     # COGS CALCULATION AND INVENTORY LEDGER (matching post_invoice logic)
@@ -1676,34 +1763,63 @@ async def record_payment(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check invoice exists and is posted
-            invoice = await conn.fetchrow(
-                """
-                SELECT id, status, total_amount, amount_paid, ar_id
-                FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
-
-            if invoice["status"] not in ("posted", "partial", "overdue"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invoice must be posted before recording payment",
-                )
-
-            remaining = invoice["total_amount"] - invoice["amount_paid"]
-            if body.amount > remaining:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}",
-                )
-
             async with conn.transaction():
+                # Check invoice exists and is posted (FOR UPDATE = row-level lock)
+                invoice = await conn.fetchrow(
+                    """
+                    SELECT id, status, total_amount, amount_paid, ar_id
+                    FROM sales_invoices
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+
+                if not invoice:
+                    raise HTTPException(status_code=404, detail="Invoice not found")
+
+                if invoice["status"] not in ("posted", "partial", "overdue"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invoice must be posted before recording payment",
+                    )
+
+                # Pure Ledger: derive remaining from journal (Law 16)
+                journal_remaining = await conn.fetchval("""
+                    SELECT
+                        COALESCE((SELECT SUM(jl.debit) FROM journal_lines jl
+                            JOIN journal_entries je ON je.id = jl.journal_id
+                            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                            WHERE je.source_id = $1 AND je.source_type = 'INVOICE'
+                              AND je.tenant_id = $2 AND je.status = 'POSTED'
+                              AND coa.account_code LIKE '1-104%%'), 0)
+                        - COALESCE((SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                              AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+                        - COALESCE((SELECT SUM(jl.credit) FROM journal_lines jl
+                            JOIN journal_entries je ON je.id = jl.journal_id
+                            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                            WHERE je.source_id = $1 AND je.source_type = 'INVOICE_REVERSAL'
+                              AND je.tenant_id = $2 AND je.status = 'POSTED'
+                              AND coa.account_code LIKE '1-104%%'), 0)
+                        - COALESCE((SELECT SUM(sip_jl.credit)
+                            FROM sales_invoice_payments sip
+                            JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                            JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                            JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                            WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
+                              AND sip_coa.account_code LIKE '1-104%%'), 0)
+                """, invoice_id, ctx["tenant_id"])
+                remaining = int(journal_remaining or 0)
+                if body.amount > remaining:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}",
+                    )
+
                 # Insert payment
                 account_uuid = UUID(body.account_id)
                 # Use bank_account_id if provided, otherwise check if account_id is a bank account
@@ -1950,7 +2066,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
             invoice = await conn.fetchrow(
                 """
                 SELECT id, invoice_number, customer_name, total_amount, invoice_date,
-                       status, amount_paid, ar_id, journal_id, cogs_journal_id, total_cogs
+                       status, ar_id, journal_id, cogs_journal_id, total_cogs
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -1964,7 +2080,23 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
             if invoice["status"] == "void":
                 raise HTTPException(status_code=400, detail="Invoice is already voided")
 
-            if invoice["amount_paid"] > 0:
+            # Pure Ledger: check if invoice has journal-based payments (Law 16)
+            journal_paid = await conn.fetchval("""
+                SELECT
+                    COALESCE((SELECT SUM(rpa.amount_applied)
+                        FROM receive_payment_allocations rpa
+                        JOIN receive_payments rp ON rp.id = rpa.payment_id
+                        WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+                    + COALESCE((SELECT SUM(sip_jl.credit)
+                        FROM sales_invoice_payments sip
+                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                        WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
+                          AND sip_coa.account_code LIKE '1-104%%'), 0)
+            """, invoice_id, ctx["tenant_id"])
+            if (journal_paid or 0) > 0:
                 raise HTTPException(
                     status_code=400,
                     detail="Cannot void invoice with payments. Refund first.",
@@ -2489,6 +2621,36 @@ async def get_invoice_pdf(
                 invoice_id,
             )
 
+            # Pure Ledger: derive amount_paid from journal (Law 16)
+            pdf_journal_outstanding = await conn.fetchval("""
+                SELECT
+                    COALESCE((SELECT SUM(jl.debit) FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = $1 AND je.source_type = 'INVOICE'
+                          AND je.tenant_id = $2 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'), 0)
+                    - COALESCE((SELECT SUM(rpa.amount_applied)
+                        FROM receive_payment_allocations rpa
+                        JOIN receive_payments rp ON rp.id = rpa.payment_id
+                        WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+                    - COALESCE((SELECT SUM(jl.credit) FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.source_id = $1 AND je.source_type = 'INVOICE_REVERSAL'
+                          AND je.tenant_id = $2 AND je.status = 'POSTED'
+                          AND coa.account_code LIKE '1-104%%'), 0)
+                    - COALESCE((SELECT SUM(sip_jl.credit)
+                        FROM sales_invoice_payments sip
+                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                        WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
+                          AND sip_coa.account_code LIKE '1-104%%'), 0)
+            """, invoice_id, ctx["tenant_id"])
+            pdf_amount_paid = int(invoice["total_amount"] - (pdf_journal_outstanding or 0))
+
             # Convert to dict for template
             invoice_data = {
                 "id": str(invoice["id"]),
@@ -2511,7 +2673,7 @@ async def get_invoice_pdf(
                 "tax_rate": float(invoice["tax_rate"] or 0),
                 "tax_amount": invoice["tax_amount"],
                 "total_amount": invoice["total_amount"],
-                "amount_paid": invoice["amount_paid"],
+                "amount_paid": pdf_amount_paid,
                 "status": invoice["status"],
                 "items": [
                     {
