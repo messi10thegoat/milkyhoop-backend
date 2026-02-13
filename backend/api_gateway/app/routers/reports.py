@@ -2016,24 +2016,62 @@ async def get_timing_differences(
                 "SELECT set_config('app.tenant_id', $1, false)", tenant_id
             )
 
-            # Get unpaid invoices
+            # Get unpaid invoices (journal-based per Law 16)
             unpaid_invoices = await conn.fetch(
                 """
+                WITH ar_outstanding AS (
+                    SELECT
+                        si.id,
+                        si.invoice_number,
+                        c.name as customer_name,
+                        si.invoice_date,
+                        si.due_date,
+                        si.total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as invoice_debit,
+                        COALESCE((
+                            SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = si.id
+                              AND rpa.tenant_id = $1
+                              AND rp.status = 'posted'
+                              AND rp.journal_id IS NOT NULL
+                        ), 0) as payment_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE_REVERSAL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as reversal_credit
+                    FROM sales_invoices si
+                    LEFT JOIN customers c ON c.id = si.customer_id
+                    WHERE si.tenant_id = $1
+                      AND si.status IN ('sent', 'partial', 'overdue')
+                      AND si.invoice_date <= $2
+                )
                 SELECT
-                    si.id,
-                    si.invoice_number,
-                    c.name as customer_name,
-                    si.invoice_date,
-                    si.due_date,
-                    si.total_amount,
-                    si.amount_paid as paid_amount,
-                    (si.total_amount - si.amount_paid) as balance_due
-                FROM sales_invoices si
-                LEFT JOIN customers c ON c.id = si.customer_id
-                WHERE si.tenant_id = $1
-                AND si.status IN ('sent', 'partial', 'overdue')
-                AND si.invoice_date <= $2
-                ORDER BY si.invoice_date
+                    id, invoice_number, customer_name, invoice_date, due_date,
+                    total_amount,
+                    (payment_credit + reversal_credit) as paid_amount,
+                    (invoice_debit - payment_credit - reversal_credit) as balance_due
+                FROM ar_outstanding
+                WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                ORDER BY invoice_date
             """,
                 tenant_id,
                 as_of_date,
@@ -2058,24 +2096,62 @@ async def get_timing_differences(
                 int(r["balance_due"] or 0) for r in unpaid_invoices
             )
 
-            # Get unpaid bills
+            # Get unpaid bills (journal-based per Law 16)
             unpaid_bills = await conn.fetch(
                 """
+                WITH ap_outstanding AS (
+                    SELECT
+                        b.id,
+                        b.bill_number,
+                        v.name as vendor_name,
+                        b.issue_date,
+                        b.due_date,
+                        b.grand_total as total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'BILL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as bill_credit,
+                        COALESCE((
+                            SELECT SUM(bpa.amount_applied)
+                            FROM bill_payment_allocations bpa
+                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            WHERE bpa.bill_id = b.id
+                              AND bp.tenant_id = $1
+                              AND bp.status = 'posted'
+                              AND bp.journal_id IS NOT NULL
+                        ), 0) as payment_debit,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'ADJUSTMENT'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as adjustment_debit
+                    FROM bills b
+                    LEFT JOIN vendors v ON v.id = b.vendor_id
+                    WHERE b.tenant_id = $1
+                      AND b.status IN ('approved', 'partial', 'overdue')
+                      AND b.issue_date <= $2
+                )
                 SELECT
-                    b.id,
-                    b.bill_number,
-                    v.name as vendor_name,
-                    b.issue_date,
-                    b.due_date,
-                    b.grand_total as total_amount,
-                    b.amount_paid as paid_amount,
-                    (b.grand_total - b.amount_paid) as balance_due
-                FROM bills b
-                LEFT JOIN vendors v ON v.id = b.vendor_id
-                WHERE b.tenant_id = $1
-                AND b.status IN ('approved', 'partial', 'overdue')
-                AND b.issue_date <= $2
-                ORDER BY b.issue_date
+                    id, bill_number, vendor_name, issue_date, due_date,
+                    total_amount,
+                    (payment_debit + adjustment_debit) as paid_amount,
+                    (bill_credit - payment_debit - adjustment_debit) as balance_due
+                FROM ap_outstanding
+                WHERE (bill_credit - payment_debit - adjustment_debit) > 0
+                ORDER BY issue_date
             """,
                 tenant_id,
                 as_of_date,
@@ -3141,13 +3217,17 @@ async def get_balance_sheet(
                 ctx["tenant_id"],
             )
 
+            # AR from journal (Law 16): SUM(debit) - SUM(credit) on AR accounts
             accounts_receivable = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0)
-                FROM sales_invoices
-                WHERE tenant_id = $1
-                  AND invoice_date <= $2
-                  AND status IN ('posted', 'partial', 'overdue')
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND je.entry_date <= $2
+                  AND coa.account_code LIKE '1-104%%'
             """,
                 ctx["tenant_id"],
                 as_of,
@@ -3172,13 +3252,17 @@ async def get_balance_sheet(
             total_assets = cash_bank + accounts_receivable + inventory
 
             # Liabilities
+            # AP from journal (Law 16): SUM(credit) - SUM(debit) on AP accounts
             accounts_payable = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0)
-                FROM bills
-                WHERE tenant_id = $1
-                  AND issue_date <= $2
-                  AND status IN ('posted', 'partial', 'overdue')
+                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND je.entry_date <= $2
+                  AND coa.account_code LIKE '2-101%%'
             """,
                 ctx["tenant_id"],
                 as_of,
@@ -3236,32 +3320,74 @@ async def get_aging_receivable(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Journal-based AR aging (Law 16)
             rows = await conn.fetch(
                 """
+                WITH ar_invoice_outstanding AS (
+                    SELECT
+                        si.id as invoice_id,
+                        si.customer_id,
+                        si.invoice_number,
+                        si.invoice_date,
+                        si.due_date,
+                        si.total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as invoice_debit,
+                        COALESCE((
+                            SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = si.id
+                              AND rpa.tenant_id = $1
+                              AND rp.status = 'posted'
+                              AND rp.journal_id IS NOT NULL
+                        ), 0) as payment_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE_REVERSAL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as reversal_credit
+                    FROM sales_invoices si
+                    WHERE si.tenant_id = $1
+                      AND si.status IN ('posted', 'partial', 'overdue')
+                )
                 SELECT
                     c.id as customer_id,
                     c.nama as customer_name,
-                    si.id as invoice_id,
-                    si.invoice_number,
-                    si.invoice_date,
-                    si.due_date,
-                    si.total_amount,
-                    COALESCE(si.amount_paid, 0) as amount_paid,
-                    si.total_amount - COALESCE(si.amount_paid, 0) as balance,
-                    GREATEST(0, CURRENT_DATE - si.due_date) as days_overdue,
+                    aro.invoice_id,
+                    aro.invoice_number,
+                    aro.invoice_date,
+                    aro.due_date,
+                    aro.total_amount,
+                    (aro.payment_credit + aro.reversal_credit) as amount_paid,
+                    (aro.invoice_debit - aro.payment_credit - aro.reversal_credit) as balance,
+                    GREATEST(0, CURRENT_DATE - aro.due_date) as days_overdue,
                     CASE
-                        WHEN CURRENT_DATE <= si.due_date THEN 'current'
-                        WHEN CURRENT_DATE - si.due_date <= 30 THEN '1-30'
-                        WHEN CURRENT_DATE - si.due_date <= 60 THEN '31-60'
-                        WHEN CURRENT_DATE - si.due_date <= 90 THEN '61-90'
+                        WHEN CURRENT_DATE <= aro.due_date THEN 'current'
+                        WHEN CURRENT_DATE - aro.due_date <= 30 THEN '1-30'
+                        WHEN CURRENT_DATE - aro.due_date <= 60 THEN '31-60'
+                        WHEN CURRENT_DATE - aro.due_date <= 90 THEN '61-90'
                         ELSE '90+'
                     END as aging_bucket
-                FROM sales_invoices si
-                JOIN customers c ON c.id = si.customer_id
-                WHERE si.tenant_id = $1
-                  AND si.status IN ('posted', 'partial', 'overdue')
-                  AND si.total_amount > COALESCE(si.amount_paid, 0)
-                ORDER BY si.due_date ASC
+                FROM ar_invoice_outstanding aro
+                JOIN customers c ON c.id = aro.customer_id
+                WHERE (aro.invoice_debit - aro.payment_credit - aro.reversal_credit) > 0
+                ORDER BY aro.due_date ASC
             """,
                 ctx["tenant_id"],
             )
@@ -3328,18 +3454,60 @@ async def get_customer_aging_invoices(request: Request, customer_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Journal-based per-invoice outstanding (Law 16)
             rows = await conn.fetch(
                 """
+                WITH ar_invoice_outstanding AS (
+                    SELECT
+                        si.id,
+                        si.invoice_number,
+                        si.invoice_date,
+                        si.due_date,
+                        si.total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as invoice_debit,
+                        COALESCE((
+                            SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = si.id
+                              AND rpa.tenant_id = $1
+                              AND rp.status = 'posted'
+                              AND rp.journal_id IS NOT NULL
+                        ), 0) as payment_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE_REVERSAL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as reversal_credit
+                    FROM sales_invoices si
+                    WHERE si.tenant_id = $1
+                      AND si.customer_id = $2
+                      AND si.status IN ('posted', 'partial', 'overdue')
+                )
                 SELECT
                     id, invoice_number, invoice_date, due_date,
-                    total_amount, COALESCE(amount_paid, 0) as amount_paid,
-                    total_amount - COALESCE(amount_paid, 0) as balance,
+                    total_amount,
+                    (payment_credit + reversal_credit) as amount_paid,
+                    (invoice_debit - payment_credit - reversal_credit) as balance,
                     GREATEST(0, CURRENT_DATE - due_date) as days_overdue
-                FROM sales_invoices
-                WHERE tenant_id = $1
-                  AND customer_id = $2
-                  AND status IN ('posted', 'partial', 'overdue')
-                  AND total_amount > COALESCE(amount_paid, 0)
+                FROM ar_invoice_outstanding
+                WHERE (invoice_debit - payment_credit - reversal_credit) > 0
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
@@ -3381,32 +3549,74 @@ async def get_aging_payable(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Journal-based AP aging (Law 16)
             rows = await conn.fetch(
                 """
+                WITH ap_bill_outstanding AS (
+                    SELECT
+                        b.id as bill_id,
+                        b.vendor_id,
+                        b.invoice_number as bill_number,
+                        b.issue_date as bill_date,
+                        b.due_date,
+                        b.grand_total as total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'BILL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as bill_credit,
+                        COALESCE((
+                            SELECT SUM(bpa.amount_applied)
+                            FROM bill_payment_allocations bpa
+                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            WHERE bpa.bill_id = b.id
+                              AND bp.tenant_id = $1
+                              AND bp.status = 'posted'
+                              AND bp.journal_id IS NOT NULL
+                        ), 0) as payment_debit,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'ADJUSTMENT'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as adjustment_debit
+                    FROM bills b
+                    WHERE b.tenant_id = $1
+                      AND b.status_v2 IN ('posted', 'partial')
+                )
                 SELECT
                     v.id as vendor_id,
                     v.name as vendor_name,
-                    b.id as bill_id,
-                    b.invoice_number as bill_number,
-                    b.issue_date as bill_date,
-                    b.due_date,
-                    b.grand_total as total_amount,
-                    COALESCE(b.amount_paid, 0) as amount_paid,
-                    b.grand_total - COALESCE(b.amount_paid, 0) as balance,
-                    GREATEST(0, CURRENT_DATE - b.due_date) as days_overdue,
+                    apo.bill_id,
+                    apo.bill_number,
+                    apo.bill_date,
+                    apo.due_date,
+                    apo.total_amount,
+                    (apo.payment_debit + apo.adjustment_debit) as amount_paid,
+                    (apo.bill_credit - apo.payment_debit - apo.adjustment_debit) as balance,
+                    GREATEST(0, CURRENT_DATE - apo.due_date) as days_overdue,
                     CASE
-                        WHEN CURRENT_DATE <= b.due_date THEN 'current'
-                        WHEN CURRENT_DATE - b.due_date <= 30 THEN '1-30'
-                        WHEN CURRENT_DATE - b.due_date <= 60 THEN '31-60'
-                        WHEN CURRENT_DATE - b.due_date <= 90 THEN '61-90'
+                        WHEN CURRENT_DATE <= apo.due_date THEN 'current'
+                        WHEN CURRENT_DATE - apo.due_date <= 30 THEN '1-30'
+                        WHEN CURRENT_DATE - apo.due_date <= 60 THEN '31-60'
+                        WHEN CURRENT_DATE - apo.due_date <= 90 THEN '61-90'
                         ELSE '90+'
                     END as aging_bucket
-                FROM bills b
-                JOIN vendors v ON v.id = b.vendor_id
-                WHERE b.tenant_id = $1
-                  AND b.status_v2 IN ('posted', 'partial')
-                  AND b.grand_total > COALESCE(b.amount_paid, 0)
-                ORDER BY b.due_date ASC
+                FROM ap_bill_outstanding apo
+                JOIN vendors v ON v.id = apo.vendor_id
+                WHERE (apo.bill_credit - apo.payment_debit - apo.adjustment_debit) > 0
+                ORDER BY apo.due_date ASC
             """,
                 ctx["tenant_id"],
             )
@@ -3473,18 +3683,60 @@ async def get_vendor_aging_bills(request: Request, vendor_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Journal-based per-bill outstanding (Law 16)
             rows = await conn.fetch(
                 """
+                WITH ap_bill_outstanding AS (
+                    SELECT
+                        b.id,
+                        b.invoice_number as bill_number,
+                        b.issue_date as bill_date,
+                        b.due_date,
+                        b.grand_total as total_amount,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'BILL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as bill_credit,
+                        COALESCE((
+                            SELECT SUM(bpa.amount_applied)
+                            FROM bill_payment_allocations bpa
+                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            WHERE bpa.bill_id = b.id
+                              AND bp.tenant_id = $1
+                              AND bp.status = 'posted'
+                              AND bp.journal_id IS NOT NULL
+                        ), 0) as payment_debit,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = b.id
+                              AND je2.source_type = 'ADJUSTMENT'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '2-101%%'
+                        ), 0) as adjustment_debit
+                    FROM bills b
+                    WHERE b.tenant_id = $1
+                      AND b.vendor_id::text = $2
+                      AND b.status_v2 IN ('posted', 'partial')
+                )
                 SELECT
-                    id, invoice_number as bill_number, issue_date as bill_date, due_date,
-                    grand_total as total_amount, COALESCE(amount_paid, 0) as amount_paid,
-                    grand_total - COALESCE(amount_paid, 0) as balance,
+                    id, bill_number, bill_date, due_date,
+                    total_amount,
+                    (payment_debit + adjustment_debit) as amount_paid,
+                    (bill_credit - payment_debit - adjustment_debit) as balance,
                     GREATEST(0, CURRENT_DATE - due_date) as days_overdue
-                FROM bills
-                WHERE tenant_id = $1
-                  AND vendor_id::text = $2
-                  AND status_v2 IN ('posted', 'partial')
-                  AND grand_total > COALESCE(amount_paid, 0)
+                FROM ap_bill_outstanding
+                WHERE (bill_credit - payment_debit - adjustment_debit) > 0
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
