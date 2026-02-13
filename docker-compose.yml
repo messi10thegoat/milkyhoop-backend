@@ -1,41 +1,36 @@
-# ==============================================
-# DOCKER SECURITY HARDENING
-# Industry-standard container security
-# ==============================================
-x-security-defaults: &security-defaults
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  ulimits:
+x-security-defaults:
+  security_opt: &id001
+  - no-new-privileges:true
+  cap_drop: &id002
+  - ALL
+  ulimits: &id003
     nofile:
       soft: 65536
       hard: 65536
     nproc:
       soft: 4096
       hard: 4096
-
 services:
-  # Core Infrastructure
   postgres:
     image: postgres:14
     restart: always
-    # Note: postgres needs capabilities for file ownership, using minimal security
     security_opt:
-      - no-new-privileges:true
+    - no-new-privileges:true
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       POSTGRES_DB: ${DB_NAME:-milkydb}
     ports:
-      - "127.0.0.1:5433:5432"  # Bind to localhost only
+    - 127.0.0.1:5433:5432
     networks:
-      - internal
+    - internal
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./logs/postgres:/var/log/postgresql
+    - postgres_data:/var/lib/postgresql/data
+    - ./logs/postgres:/var/log/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      test:
+      - CMD-SHELL
+      - pg_isready -U ${DB_USER:-postgres}
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,25 +43,31 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   redis:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: redis:latest
     command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     restart: always
-    <<: *security-defaults
     ports:
-      - "127.0.0.1:6380:6379"  # Bind to localhost only
+    - 127.0.0.1:6380:6379
     networks:
-      - internal
+    - internal
     volumes:
-      - redis_data:/data
-      - ./logs/redis:/var/log/redis
+    - redis_data:/data
+    - ./logs/redis:/var/log/redis
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test:
+      - CMD
+      - redis-cli
+      - -a
+      - ${REDIS_PASSWORD}
+      - ping
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,21 +80,22 @@ services:
           cpus: '0.25'
           memory: 256M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   zookeeper:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: confluentinc/cp-zookeeper:7.3.2
-    <<: *security-defaults
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - "127.0.0.1:7181:2181"  # Bind to localhost only
+    - 127.0.0.1:7181:2181
     networks:
-      - internal
+    - internal
     restart: always
     deploy:
       resources:
@@ -104,28 +106,34 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
+    profiles:
+    - disabled
   kafka:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: confluentinc/cp-kafka:7.3.2
-    <<: *security-defaults
-    depends_on:
-      - zookeeper
     ports:
-      - "127.0.0.1:7092:9092"  # Bind to localhost only
+    - 127.0.0.1:7092:9092
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     networks:
-      - internal
+    - internal
     restart: always
     healthcheck:
-      test: ["CMD", "kafka-topics", "--list", "--bootstrap-server", "localhost:9092"]
+      test:
+      - CMD
+      - kafka-topics
+      - --list
+      - --bootstrap-server
+      - localhost:9092
       interval: 30s
       timeout: 10s
       retries: 5
@@ -138,54 +146,60 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-  # 8-Service Core Production Stack
+        max-size: 10m
+        max-file: '3'
+    profiles:
+    - disabled
   api_gateway:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     build:
       context: .
       dockerfile: backend/api_gateway/Dockerfile
-    container_name: milkyhoop-dev-api_gateway  # Explicit name for nginx proxy resolution
-    <<: *security-defaults
+    container_name: milkyhoop-dev-api_gateway
     ports:
-      - "8001:8000"  # Public API - keep accessible
+    - 8001:8000
     networks:
-      - internal
+    - internal
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - CHATBOT_GRPC_HOST=chatbot_service
-      - RAG_GRPC_HOST=ragcrud_service
-      - RAGCRUD_GRPC_HOST=ragcrud_service
-      - RAGLLM_GRPC_HOST=ragllm_service
-      - INTENT_PARSER_GRPC_HOST=intent_parser
-      - FLOW_EXECUTOR_HOST=http://flow-executor:8088
-      - ACTION_PLANNER_GRPC_HOST=action_planner
-      - ACTION_PLANNER_GRPC_PORT=5090
-      - ACTION_VALIDATOR_GRPC_HOST=action_validator
-      - ACTION_VALIDATOR_GRPC_PORT=5091
-      - ACTION_EXECUTOR_GRPC_HOST=action_executor
-      - ACTION_EXECUTOR_GRPC_PORT=5092
-      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - CHATBOT_GRPC_HOST=chatbot_service
+    - RAG_GRPC_HOST=ragcrud_service
+    - RAGCRUD_GRPC_HOST=ragcrud_service
+    - RAGLLM_GRPC_HOST=ragllm_service
+    - INTENT_PARSER_GRPC_HOST=intent_parser
+    - FLOW_EXECUTOR_HOST=http://flow-executor:8088
+    - ACTION_PLANNER_GRPC_HOST=action_planner
+    - ACTION_PLANNER_GRPC_PORT=5090
+    - ACTION_VALIDATOR_GRPC_HOST=action_validator
+    - ACTION_VALIDATOR_GRPC_PORT=5091
+    - ACTION_EXECUTOR_GRPC_HOST=action_executor
+    - ACTION_EXECUTOR_GRPC_PORT=5092
+    - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway:ro  # Read-only mount
-      - ./backend/services/accounting_kernel:/app/backend/services/accounting_kernel:ro  # For AccountingFacade
-      - ./logs/api_gateway:/var/log
+    - ./backend/api_gateway:/app/backend/api_gateway:ro
+    - ./backend/services/accounting_kernel:/app/backend/services/accounting_kernel:ro
+    - ./logs/api_gateway:/var/log
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8000/healthz
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - chatbot_service
-      - ragcrud_service
+    - postgres
+    - chatbot_service
+    - ragcrud_service
     deploy:
       resources:
         limits:
@@ -195,443 +209,467 @@ services:
           cpus: '0.5'
           memory: 256M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   chatbot_service:
     build:
       context: .
       dockerfile: backend/services/chatbot_service/Dockerfile
     ports:
-      - "7003:5002"
+    - 7003:5002
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5002
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - GRPC_PORT=5002
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/api_gateway:/app/backend/api_gateway
-      - ./logs/chatbot_service:/var/log
+    - ./backend/api_gateway:/app/backend/api_gateway
+    - ./logs/chatbot_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5002"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5002
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   intent_parser:
     build:
       context: .
       dockerfile: backend/services/intent_parser/Dockerfile
     ports:
-      - "7009:5009"
+    - 7009:5009
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5009
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - GRPC_PORT=5009
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/intent_parser:/var/log
-      - ./backend/services/intent_parser/app:/app/backend/services/intent_parser/app
+    - ./logs/intent_parser:/var/log
+    - ./backend/services/intent_parser/app:/app/backend/services/intent_parser/app
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5009"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5009
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   tenant_parser:
     build:
       context: .
       dockerfile: backend/services/tenant_parser/Dockerfile
     ports:
-      - "7012:5012"
+    - 7012:5012
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5012
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - RAGCRUD_GRPC_HOST=ragcrud_service
-      - RAGCRUD_GRPC_PORT=5001
-      - RAGINDEX_GRPC_HOST=ragindex_service
-      - RAGINDEX_GRPC_PORT=5006
-      - RAGLLM_GRPC_HOST=ragllm_service
-      - RAGLLM_GRPC_PORT=5000
+    - GRPC_PORT=5012
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - RAGCRUD_GRPC_HOST=ragcrud_service
+    - RAGCRUD_GRPC_PORT=5001
+    - RAGINDEX_GRPC_HOST=ragindex_service
+    - RAGINDEX_GRPC_PORT=5006
+    - RAGLLM_GRPC_HOST=ragllm_service
+    - RAGLLM_GRPC_PORT=5000
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/tenant_parser/app:/app/backend/services/tenant_parser/app
-      - ./backend/services/tenant_parser/libs:/app/backend/services/tenant_parser/libs
-      - ./logs/tenant_parser:/var/log
+    - ./backend/services/tenant_parser/app:/app/backend/services/tenant_parser/app
+    - ./backend/services/tenant_parser/libs:/app/backend/services/tenant_parser/libs
+    - ./logs/tenant_parser:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5012"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5012
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   flow-executor:
     build:
       context: .
       dockerfile: ./backend/services/flow-executor/Dockerfile
     ports:
-      - "7088:8088"
+    - 7088:8088
     networks:
-      - internal
+    - internal
     environment:
-      - LOG_LEVEL=debug
-      - RAGLLM_GRPC_HOST=ragllm_service
-      - RAGLLM_GRPC_PORT=5000
-      - RAGCRUD_GRPC_HOST=ragcrud_service
-      - RAGCRUD_GRPC_PORT=5001
-      - KAFKA_BROKER=kafka:9092
+    - LOG_LEVEL=debug
+    - RAGLLM_GRPC_HOST=ragllm_service
+    - RAGLLM_GRPC_PORT=5000
+    - RAGCRUD_GRPC_HOST=ragcrud_service
+    - RAGCRUD_GRPC_PORT=5001
+    - KAFKA_BROKER=kafka:9092
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/flow-executor:/var/log
-      - ./flows:/flows
+    - ./logs/flow-executor:/var/log
+    - ./flows:/flows
     restart: always
     depends_on:
-      - kafka
-      - ragcrud_service
-      - ragllm_service
+    - ragcrud_service
+    - ragllm_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   ragcrud_service:
     build:
       context: .
       dockerfile: backend/services/ragcrud_service/Dockerfile
     ports:
-      - "7001:5001"
+    - 7001:5001
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5001
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
-      - PRISMA_QUERY_ENGINE_BINARY=/app/prisma-query-engine-debian-openssl-3.0.x
+    - GRPC_PORT=5001
+    - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+    - PRISMA_QUERY_ENGINE_BINARY=/app/prisma-query-engine-debian-openssl-3.0.x
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/ragcrud_service:/var/log
-      - ./backend/services/ragcrud_service:/app/backend/services/ragcrud_service
+    - ./logs/ragcrud_service:/var/log
+    - ./backend/services/ragcrud_service:/app/backend/services/ragcrud_service
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5001"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5001
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   ragindex_service:
     build:
       context: .
       dockerfile: backend/services/ragindex_service/Dockerfile
     ports:
-      - "7006:5006"
+    - 7006:5006
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5006
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=5006
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/ragindex_service:/var/log
+    - ./logs/ragindex_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5006"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5006
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   ragllm_service:
     build:
       context: .
       dockerfile: backend/services/ragllm_service/Dockerfile
     ports:
-      - "7011:5000"
+    - 7011:5000
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5000
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=5000
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/ragllm_service:/var/log
+    - ./logs/ragllm_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5000"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5000
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   notification_service:
     build:
       context: ./backend/services/notification-service
     ports:
-      - "7005:5005"
-      - "7082:8080"
+    - 7005:5005
+    - 7082:8080
     networks:
-      - internal
+    - internal
     env_file:
-      - backend/services/notification-service/.env
+    - backend/services/notification-service/.env
     volumes:
-      - ./logs/notification_service:/var/log
+    - ./logs/notification_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5005"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5005
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
-    depends_on:
-      - kafka
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   memory_service:
     build:
       context: .
       dockerfile: backend/services/memory_service/Dockerfile
     ports:
-      - "7000:5000"
+    - 7000:5000
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5000
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
+    - GRPC_PORT=5000
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/memory_service:/var/log
+    - ./logs/memory_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5000"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5000
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   conversation_service:
     build:
       context: .
       dockerfile: backend/services/conversation_service/Dockerfile
     container_name: milkyhoop-dev-conversation_service-1
     ports:
-      - "7002:5002"
+    - 7002:5002
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5002
-      - SERVICE_NAME=ConversationService
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
+    - GRPC_PORT=5002
+    - SERVICE_NAME=ConversationService
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/conversation_service:/app/backend/services/conversation_service
-      - ./protos:/app/protos
-      - ./logs/conversation_service:/var/log
+    - ./backend/services/conversation_service:/app/backend/services/conversation_service
+    - ./protos:/app/protos
+    - ./logs/conversation_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5002"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5002
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   context_service:
     build:
       context: .
       dockerfile: backend/services/context_service/Dockerfile
     ports:
-      - "7007:5007"
+    - 7007:5007
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5007
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
+    - GRPC_PORT=5007
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/context_service:/var/log
+    - ./logs/context_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5007"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5007
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   cust_context:
     build:
       context: .
       dockerfile: backend/services/cust_context/Dockerfile
     ports:
-      - "7080:8080"  # HTTP metrics server
-      - "7008:5008"
+    - 7080:8080
+    - 7008:5008
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5008
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
-      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+    - GRPC_PORT=5008
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
+    - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/cust_context:/var/log
+    - ./logs/cust_context:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5008"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5008
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   cust_orchestrator:
     build:
       context: .
       dockerfile: backend/services/cust_orchestrator/Dockerfile
     ports:
-      - "7081:8080"  # HTTP metrics server
-      - "7013:5013"
+    - 7081:8080
+    - 7013:5013
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5013
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
-      - CONTEXT_SERVICE_HOST=cust_context
-      - CONTEXT_SERVICE_PORT=5008
+    - GRPC_PORT=5013
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
+    - CONTEXT_SERVICE_HOST=cust_context
+    - CONTEXT_SERVICE_PORT=5008
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/cust_orchestrator:/var/log
+    - ./logs/cust_orchestrator:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5013"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5013
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
-      - cust_context
+    - postgres
+    - redis
+    - cust_context
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   auth_service:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     build:
       context: .
       dockerfile: backend/services/auth_service/Dockerfile
-    <<: *security-defaults
     ports:
-      - "127.0.0.1:8014:8013"  # Bind to localhost only - internal service
+    - 127.0.0.1:8014:8013
     networks:
-      - internal
+    - internal
     environment:
-      - SERVICE_PORT=8013
-      - HTTP_PORT=8000
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
-      - REDIS_URL=redis://redis:6379
+    - SERVICE_PORT=8013
+    - HTTP_PORT=8000
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+    - REDIS_URL=redis://redis:6379
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/auth_service:/var/log
+    - ./logs/auth_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:8013"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:8013
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     deploy:
       resources:
         limits:
@@ -641,152 +679,161 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-
+        max-size: 10m
+        max-file: '3'
   setup_orchestrator:
     build:
       context: .
       dockerfile: backend/services/setup_orchestrator/Dockerfile
     ports:
-      - "7014:5014"  # gRPC port
+    - 7014:5014
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5014
-      - SERVICE_NAME=SetupOrchestrator
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - REDIS_URL=redis://redis:6379
-      - INTENT_PARSER_GRPC_HOST=intent_parser
-      - INTENT_PARSER_GRPC_PORT=5009
-      - BUSINESS_EXTRACTOR_GRPC_HOST=business_extractor
-      - BUSINESS_EXTRACTOR_GRPC_PORT=5015
-      - CONVERSATION_MANAGER_GRPC_HOST=conversation_manager
-      - CONVERSATION_MANAGER_GRPC_PORT=5016
-      - RAGCRUD_GRPC_HOST=ragcrud_service
-      - RAGCRUD_GRPC_PORT=5001
+    - GRPC_PORT=5014
+    - SERVICE_NAME=SetupOrchestrator
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - REDIS_URL=redis://redis:6379
+    - INTENT_PARSER_GRPC_HOST=intent_parser
+    - INTENT_PARSER_GRPC_PORT=5009
+    - BUSINESS_EXTRACTOR_GRPC_HOST=business_extractor
+    - BUSINESS_EXTRACTOR_GRPC_PORT=5015
+    - CONVERSATION_MANAGER_GRPC_HOST=conversation_manager
+    - CONVERSATION_MANAGER_GRPC_PORT=5016
+    - RAGCRUD_GRPC_HOST=ragcrud_service
+    - RAGCRUD_GRPC_PORT=5001
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/setup_orchestrator:/app/backend/services/setup_orchestrator
-      - ./logs/setup_orchestrator:/var/log
+    - ./backend/services/setup_orchestrator:/app/backend/services/setup_orchestrator
+    - ./logs/setup_orchestrator:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5014"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5014
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
-      - intent_parser
-      - conversation_manager
-      - business_extractor
-      - ragcrud_service
+    - postgres
+    - redis
+    - intent_parser
+    - conversation_manager
+    - business_extractor
+    - ragcrud_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   conversation_manager:
     build:
       context: .
       dockerfile: backend/services/conversation_manager/Dockerfile
     ports:
-      - "7016:5016"  # gRPC port
+    - 7016:5016
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5016
-      - SERVICE_NAME=ConversationManager
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - REDIS_URL=redis://redis:6379
+    - GRPC_PORT=5016
+    - SERVICE_NAME=ConversationManager
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - REDIS_URL=redis://redis:6379
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/conversation_manager:/app/backend/services/conversation_manager
-      - ./logs/conversation_manager:/var/log
+    - ./backend/services/conversation_manager:/app/backend/services/conversation_manager
+    - ./logs/conversation_manager:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5016"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5016
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
+    - postgres
+    - redis
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   business_extractor:
     build:
       context: .
       dockerfile: backend/services/business_extractor/Dockerfile
     ports:
-      - "7015:5015"  # gRPC port
+    - 7015:5015
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5015
-      - SERVICE_NAME=BusinessExtractor
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=5015
+    - SERVICE_NAME=BusinessExtractor
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/business_extractor:/app/backend/services/business_extractor
-      - ./logs/business_extractor:/var/log
+    - ./backend/services/business_extractor:/app/backend/services/business_extractor
+    - ./logs/business_extractor:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5015"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5015
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   transaction_service:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     build:
       context: .
       dockerfile: backend/services/transaction_service/Dockerfile
     container_name: milkyhoop-dev-transaction_service-1
-    <<: *security-defaults
     ports:
-      - "127.0.0.1:7020:7020"  # Bind to localhost only - financial data
+    - 127.0.0.1:7020:7020
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=7020
-      - SERVICE_NAME=TransactionService
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=7020
+    - SERVICE_NAME=TransactionService
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/transaction_service:/app/backend/services/transaction_service:ro
-      - ./database/schemas:/app/database/schemas:ro
-      - ./protos:/app/protos:ro
-      - ./logs/transaction_service:/var/log
+    - ./backend/services/transaction_service:/app/backend/services/transaction_service:ro
+    - ./database/schemas:/app/database/schemas:ro
+    - ./protos:/app/protos:ro
+    - ./logs/transaction_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:7020"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:7020
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     deploy:
       resources:
         limits:
@@ -796,114 +843,119 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-
+        max-size: 10m
+        max-file: '3'
   reporting_service:
     build:
       context: .
       dockerfile: backend/services/reporting_service/Dockerfile
     container_name: milkyhoop-dev-reporting_service-1
     ports:
-      - "7030:7030"
+    - 7030:7030
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=7030
-      - SERVICE_NAME=ReportingService
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=7030
+    - SERVICE_NAME=ReportingService
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/reporting_service:/app/backend/services/reporting_service
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
-      - ./logs/reporting_service:/var/log
+    - ./backend/services/reporting_service:/app/backend/services/reporting_service
+    - ./database/schemas:/app/database/schemas
+    - ./protos:/app/protos
+    - ./logs/reporting_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:7030"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:7030
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - transaction_service
+    - postgres
+    - transaction_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-
+        max-size: 10m
+        max-file: '3'
   inventory_service:
     build:
       context: .
       dockerfile: backend/services/inventory_service/Dockerfile
     container_name: milkyhoop-dev-inventory_service-1
     ports:
-      - "7040:7040"
+    - 7040:7040
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=7040
-      - SERVICE_NAME=InventoryService
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=7040
+    - SERVICE_NAME=InventoryService
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/inventory_service:/app/backend/services/inventory_service
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
-      - ./logs/inventory_service:/var/log
+    - ./backend/services/inventory_service:/app/backend/services/inventory_service
+    - ./database/schemas:/app/database/schemas
+    - ./protos:/app/protos
+    - ./logs/inventory_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:7040"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:7040
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - transaction_service
+    - postgres
+    - transaction_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-
+        max-size: 10m
+        max-file: '3'
   accounting_service:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     build:
       context: .
       dockerfile: backend/services/accounting_service/Dockerfile
     container_name: milkyhoop-dev-accounting_service-1
-    <<: *security-defaults
     ports:
-      - "127.0.0.1:7050:7050"  # Bind to localhost only - financial data
+    - 127.0.0.1:7050:7050
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=7050
-      - SERVICE_NAME=AccountingService
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - GRPC_PORT=7050
+    - SERVICE_NAME=AccountingService
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/accounting_service:/app/backend/services/accounting_service:ro
-      - ./database/schemas:/app/database/schemas:ro
-      - ./protos:/app/protos:ro
-      - ./logs/accounting_service:/var/log
+    - ./backend/services/accounting_service:/app/backend/services/accounting_service:ro
+    - ./database/schemas:/app/database/schemas:ro
+    - ./protos:/app/protos:ro
+    - ./logs/accounting_service:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:7050"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:7050
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - transaction_service
+    - postgres
+    - transaction_service
     deploy:
       resources:
         limits:
@@ -913,180 +965,192 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   tenant_orchestrator:
     build:
       context: .
       dockerfile: backend/services/tenant_orchestrator/Dockerfile
     container_name: milkyhoop-dev-tenant_orchestrator-1
     ports:
-      - "7017:5017"
+    - 7017:5017
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5017
-      - SERVICE_NAME=TenantOrchestrator
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - BUSINESS_PARSER_GRPC_HOST=business_parser
-      - BUSINESS_PARSER_GRPC_PORT=5018
-      - RULE_ENGINE_GRPC_HOST=rule_engine
-      - RULE_ENGINE_GRPC_PORT=5070
-      - TRANSACTION_GRPC_HOST=transaction_service
-      - TRANSACTION_GRPC_PORT=7020
-      - REPORTING_GRPC_HOST=reporting_service
-      - REPORTING_GRPC_PORT=7030
-      - INVENTORY_GRPC_HOST=inventory_service
-      - INVENTORY_GRPC_PORT=7040
-      - ACCOUNTING_GRPC_HOST=accounting_service
-      - ACCOUNTING_GRPC_PORT=7050
+    - GRPC_PORT=5017
+    - SERVICE_NAME=TenantOrchestrator
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - BUSINESS_PARSER_GRPC_HOST=business_parser
+    - BUSINESS_PARSER_GRPC_PORT=5018
+    - RULE_ENGINE_GRPC_HOST=rule_engine
+    - RULE_ENGINE_GRPC_PORT=5070
+    - TRANSACTION_GRPC_HOST=transaction_service
+    - TRANSACTION_GRPC_PORT=7020
+    - REPORTING_GRPC_HOST=reporting_service
+    - REPORTING_GRPC_PORT=7030
+    - INVENTORY_GRPC_HOST=inventory_service
+    - INVENTORY_GRPC_PORT=7040
+    - ACCOUNTING_GRPC_HOST=accounting_service
+    - ACCOUNTING_GRPC_PORT=7050
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/tenant_orchestrator:/app/backend/services/tenant_orchestrator
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
-      - ./logs/tenant_orchestrator:/var/log
+    - ./backend/services/tenant_orchestrator:/app/backend/services/tenant_orchestrator
+    - ./database/schemas:/app/database/schemas
+    - ./protos:/app/protos
+    - ./logs/tenant_orchestrator:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5017"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5017
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
-      - redis
-      - business_parser
-      - rule_engine
-      - transaction_service
-      - reporting_service
-      - inventory_service
-      - accounting_service
+    - postgres
+    - redis
+    - business_parser
+    - rule_engine
+    - transaction_service
+    - reporting_service
+    - inventory_service
+    - accounting_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-
+        max-size: 10m
+        max-file: '3'
   business_parser:
     build:
       context: .
       dockerfile: backend/services/business_parser/Dockerfile
     container_name: milkyhoop-dev-business_parser-1
     ports:
-      - "7018:5018"
+    - 7018:5018
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5018
-      - SERVICE_NAME=BusinessParser
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - GRPC_PORT=5018
+    - SERVICE_NAME=BusinessParser
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/business_parser:/app/backend/services/business_parser
-      - ./protos:/app/protos
-      - ./logs/business_parser:/var/log
+    - ./backend/services/business_parser:/app/backend/services/business_parser
+    - ./protos:/app/protos
+    - ./logs/business_parser:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5018"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5018
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   rule_engine:
     build:
       context: .
       dockerfile: backend/services/rule_engine/Dockerfile
     container_name: milkyhoop-dev-rule_engine-1
     ports:
-      - "7070:5070"
+    - 7070:5070
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5070
-      - SERVICE_NAME=RuleEngine
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - CACHE_TTL_SECONDS=300
-      - LOG_LEVEL=INFO
+    - GRPC_PORT=5070
+    - SERVICE_NAME=RuleEngine
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - CACHE_TTL_SECONDS=300
+    - LOG_LEVEL=INFO
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/rule_engine:/app/backend/services/rule_engine
-      - ./database/schemas:/app/database/schemas
-      - ./protos:/app/protos
-      - ./logs/rule_engine:/var/log
+    - ./backend/services/rule_engine:/app/backend/services/rule_engine
+    - ./database/schemas:/app/database/schemas
+    - ./protos:/app/protos
+    - ./logs/rule_engine:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5070"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5070
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     depends_on:
-      - postgres
+    - postgres
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   outbox_worker:
     build:
       context: .
       dockerfile: backend/services/outbox_worker/Dockerfile
     container_name: milkyhoop-dev-outbox_worker-1
     ports:
-      - "7060:5060"
+    - 7060:5060
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5060
-      - SERVICE_NAME=OutboxWorker
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
-      - POLL_INTERVAL=2
+    - GRPC_PORT=5060
+    - SERVICE_NAME=OutboxWorker
+    - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-milkydb}
+    - POLL_INTERVAL=2
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./backend/services/outbox_worker:/app/backend/services/outbox_worker
-      - ./protos:/app/protos
-      - ./logs/outbox_worker:/var/log
+    - ./backend/services/outbox_worker:/app/backend/services/outbox_worker
+    - ./protos:/app/protos
+    - ./logs/outbox_worker:/var/log
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5060"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5060
       interval: 30s
       timeout: 3s
       retries: 3
-    restart: "no"
+    restart: 'no'
     depends_on:
-      - postgres
-      - inventory_service
-      - accounting_service
+    - postgres
+    - inventory_service
+    - accounting_service
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
+    profiles:
+    - disabled
   barcode_service:
     build:
       context: ./backend/services/barcode_service
     container_name: milkyhoop-dev-barcode_service-1
     ports:
-      - "8085:8080"
+    - 8085:8080
     networks:
-      - internal
+    - internal
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
       interval: 30s
       timeout: 3s
       retries: 3
@@ -1100,24 +1164,22 @@ services:
           cpus: '0.5'
           memory: 256M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   frontend:
     build:
       context: ./frontend
     container_name: milkyhoop-dev-frontend-1
-    # Note: nginx needs some caps, so using minimal security instead
     security_opt:
-      - no-new-privileges:true
+    - no-new-privileges:true
     ports:
-      - "3001:80"  # Public frontend - keep accessible
+    - 3001:80
     depends_on:
-      - api_gateway
+    - api_gateway
     networks:
-      - internal
+    - internal
     restart: always
     deploy:
       resources:
@@ -1128,26 +1190,23 @@ services:
           cpus: '0.1'
           memory: 64M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ==============================================
-  # LOG AGGREGATION STACK (Loki + Promtail)
-  # Industry-standard centralized logging
-  # ==============================================
+        max-size: 10m
+        max-file: '3'
   loki:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: grafana/loki:2.9.0
-    <<: *security-defaults
     command: -config.file=/etc/loki/loki-config.yaml
     ports:
-      - "127.0.0.1:3100:3100"  # Bind to localhost only
+    - 127.0.0.1:3100:3100
     volumes:
-      - ./config/loki-config.yaml:/etc/loki/loki-config.yaml:ro
-      - loki_data:/loki
+    - ./config/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+    - loki_data:/loki
     networks:
-      - internal
+    - internal
     restart: always
     deploy:
       resources:
@@ -1158,23 +1217,24 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
+    profiles:
+    - disabled
   promtail:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: grafana/promtail:2.9.0
-    <<: *security-defaults
     command: -config.file=/etc/promtail/promtail-config.yaml
     volumes:
-      - ./config/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./logs:/var/log/milkyhoop:ro
+    - ./config/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - ./logs:/var/log/milkyhoop:ro
     networks:
-      - internal
-    depends_on:
-      - loki
+    - internal
     restart: always
     deploy:
       resources:
@@ -1185,31 +1245,29 @@ services:
           cpus: '0.1'
           memory: 64M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ==============================================
-  # MONITORING DASHBOARD (Grafana)
-  # ==============================================
+        max-size: 10m
+        max-file: '3'
+    profiles:
+    - disabled
   grafana:
+    security_opt: *id001
+    cap_drop: *id002
+    ulimits: *id003
     image: grafana/grafana:10.2.0
-    <<: *security-defaults
     ports:
-      - "127.0.0.1:3000:3000"  # Bind to localhost only
+    - 127.0.0.1:3000:3000
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-milkyhoop2025}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:3000
+    - GF_SECURITY_ADMIN_USER=admin
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-milkyhoop2025}
+    - GF_USERS_ALLOW_SIGN_UP=false
+    - GF_SERVER_ROOT_URL=http://localhost:3000
     volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    - grafana_data:/var/lib/grafana
+    - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
-      - internal
-    depends_on:
-      - loki
+    - internal
     restart: always
     deploy:
       resources:
@@ -1220,61 +1278,65 @@ services:
           cpus: '0.25'
           memory: 128M
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   action_planner:
     build:
       context: .
       dockerfile: backend/services/action_planner/Dockerfile
     ports:
-      - "7090:5090"
+    - 7090:5090
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5090
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - GRPC_PORT=5090
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/action_planner:/var/log
-      - ./backend/services/action_planner/app:/app/backend/services/action_planner/app
+    - ./logs/action_planner:/var/log
+    - ./backend/services/action_planner/app:/app/backend/services/action_planner/app
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5090"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5090
       interval: 30s
       timeout: 3s
       retries: 3
     restart: always
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   action_validator:
     build:
       context: .
       dockerfile: backend/services/action_validator/Dockerfile
     ports:
-      - "7091:5091"
+    - 7091:5091
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5091
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=Proyek771977
-      - DB_NAME=milkydb
+    - GRPC_PORT=5091
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=postgres
+    - DB_PASSWORD=Proyek771977
+    - DB_NAME=milkydb
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/action_validator:/var/log
-      - ./backend/services/action_validator/app:/app/backend/services/action_validator/app
+    - ./logs/action_validator:/var/log
+    - ./backend/services/action_validator/app:/app/backend/services/action_validator/app
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5091"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5091
       interval: 30s
       timeout: 3s
       retries: 3
@@ -1283,34 +1345,36 @@ services:
       postgres:
         condition: service_healthy
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
   action_executor:
     build:
       context: .
       dockerfile: backend/services/action_executor/Dockerfile
     ports:
-      - "7095:5092"
+    - 7095:5092
     networks:
-      - internal
+    - internal
     environment:
-      - GRPC_PORT=5092
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=Proyek771977
-      - DB_NAME=milkydb
-      - API_GATEWAY_URL=http://api_gateway:8000
+    - GRPC_PORT=5092
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=postgres
+    - DB_PASSWORD=Proyek771977
+    - DB_NAME=milkydb
+    - API_GATEWAY_URL=http://api_gateway:8000
     env_file:
-      - .env
+    - .env
     volumes:
-      - ./logs/action_executor:/var/log
-      - ./backend/services/action_executor/app:/app/backend/services/action_executor/app
+    - ./logs/action_executor:/var/log
+    - ./backend/services/action_executor/app:/app/backend/services/action_executor/app
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:5092"]
+      test:
+      - CMD
+      - grpc_health_probe
+      - -addr=localhost:5092
       interval: 30s
       timeout: 3s
       retries: 3
@@ -1319,17 +1383,15 @@ services:
       postgres:
         condition: service_healthy
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
+        max-size: 10m
+        max-file: '3'
 volumes:
-  postgres_data:
-  redis_data:
-  loki_data:
-  grafana_data:
-
+  postgres_data: null
+  redis_data: null
+  loki_data: null
+  grafana_data: null
 networks:
   internal:
     external: true
