@@ -99,6 +99,7 @@ from .routers import tables
 from .routers import expenses
 from .routers import kasbank
 from .routers import expense_extended
+from .routers import payroll
 
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
@@ -576,6 +577,8 @@ app.include_router(user.router, prefix="/api", tags=["user"])
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
 app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
+# Payroll router (Penggajian)
+app.include_router(payroll.router, prefix="", tags=["payroll"])
 
 
 # Agentic Chat Action Mode router (Sprint 1 - Conversational Accounting)
