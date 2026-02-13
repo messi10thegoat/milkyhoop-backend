@@ -384,12 +384,15 @@ class BillsService:
             """
             items = await conn.fetch(items_query, bill_id)
 
-            # Get payments
+            # Get payments (from bill_payments_v2 via allocations)
             payments_query = """
-                SELECT *
-                FROM bill_payments
-                WHERE bill_id = $1
-                ORDER BY payment_date DESC
+                SELECT bp.id, bp.payment_number, bp.total_amount, bp.payment_date,
+                       bp.payment_method, bp.reference_number, bp.notes, bp.status,
+                       bp.created_at, bpa.amount_applied
+                FROM bill_payments_v2 bp
+                INNER JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                WHERE bpa.bill_id = $1
+                ORDER BY bp.payment_date DESC
             """
             payments = await conn.fetch(payments_query, bill_id)
 
@@ -465,11 +468,14 @@ class BillsService:
                 "payments": [
                     {
                         "id": str(payment["id"]),
-                        "amount": self._money_str(payment["amount"]),
+                        "payment_number": payment["payment_number"] or "",
+                        "amount": self._money_str(payment["amount_applied"]),
+                        "total_amount": self._money_str(payment["total_amount"]),
                         "payment_date": payment["payment_date"].isoformat(),
                         "payment_method": payment["payment_method"],
-                        "reference": payment["reference"],
+                        "reference": payment["reference_number"],
                         "notes": payment["notes"],
+                        "status": payment["status"],
                         "created_at": payment["created_at"].isoformat(),
                     }
                     for payment in payments
