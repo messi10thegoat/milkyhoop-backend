@@ -1,13 +1,15 @@
 """
 Dashboard Router - Aggregated KPIs for Dashboard Summary Cards
 Combines data from: P&L, AR aging, AP aging, and Kas/Bank balances
+
+Pure Ledger: All financial data queries journal_entries + journal_lines
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # Import centralized config
 from ..config import settings
@@ -248,65 +250,48 @@ def get_days_in_period(period: str) -> int:
         return now.day  # Days elapsed in current month
 
 
-def get_period_dates(period: str) -> tuple:
+def get_period_date_range(period: str) -> tuple:
     """
-    Get date range for period.
+    Get date range for period as date objects (for journal_date comparison).
     period: '7d' | '30d' | 'month'
-    Returns: (start_epoch_ms, end_epoch_ms, period_label)
-
-    Note: transaksi_harian.timestamp is BIGINT (epoch milliseconds)
+    Returns: (start_date, end_date, period_label)
     """
     now = datetime.now()
+    today = now.date()
 
     if period == '7d':
-        start_date = now - timedelta(days=7)
+        start_date = today - timedelta(days=7)
         period_label = "7 Hari"
     elif period == '30d':
-        start_date = now - timedelta(days=30)
+        start_date = today - timedelta(days=30)
         period_label = "30 Hari"
     else:  # month
-        start_date = datetime(now.year, now.month, 1)
+        start_date = date(today.year, today.month, 1)
         period_label = "Bulan Ini"
 
-    # Convert to epoch milliseconds for BIGINT comparison
-    start_epoch = int(start_date.timestamp() * 1000)
-    end_epoch = int(now.timestamp() * 1000)
-
-    return start_epoch, end_epoch, period_label
+    return start_date, today, period_label
 
 
-def get_prev_period_dates(period: str) -> tuple:
+def get_prev_period_date_range(period: str) -> tuple:
     """
     Get date range for PREVIOUS period (for comparison).
-    - If current period is "30d" (last 30 days), previous is 30-60 days ago
-    - If current period is "7d", previous is 7-14 days ago
-    - If current period is "month", previous is last month
-    
-    Returns: (start_epoch_ms, end_epoch_ms)
+    Returns: (start_date, end_date) as date objects
     """
     now = datetime.now()
+    today = now.date()
 
     if period == '7d':
-        # Previous 7 days: 7-14 days ago
-        start_date = now - timedelta(days=14)
-        end_date = now - timedelta(days=7)
+        start_date = today - timedelta(days=14)
+        end_date = today - timedelta(days=7)
     elif period == '30d':
-        # Previous 30 days: 30-60 days ago
-        start_date = now - timedelta(days=60)
-        end_date = now - timedelta(days=30)
+        start_date = today - timedelta(days=60)
+        end_date = today - timedelta(days=30)
     else:  # month
-        # Previous month
-        first_of_current_month = datetime(now.year, now.month, 1)
-        # Last day of previous month
+        first_of_current_month = date(today.year, today.month, 1)
         end_date = first_of_current_month - timedelta(days=1)
-        # First day of previous month
-        start_date = datetime(end_date.year, end_date.month, 1)
+        start_date = date(end_date.year, end_date.month, 1)
 
-    # Convert to epoch milliseconds for BIGINT comparison
-    start_epoch = int(start_date.timestamp() * 1000)
-    end_epoch = int(end_date.timestamp() * 1000)
-
-    return start_epoch, end_epoch
+    return start_date, end_date
 
 
 def calc_change_pct(current: int, prev: int) -> float:
@@ -344,40 +329,40 @@ async def get_dashboard_summary(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        start_date, end_date, period_label = get_period_dates(period)
-        prev_start_date, prev_end_date = get_prev_period_dates(period)
+        start_date, end_date, period_label = get_period_date_range(period)
+        prev_start_date, prev_end_date = get_prev_period_date_range(period)
 
         conn = await get_db_connection()
         try:
             # ============================
             # 1. LABA RUGI (P&L Summary)
+            # Pure Ledger: queries journal_entries + journal_lines
             # ============================
             pl_query = """
                 SELECT
-                    COALESCE(SUM(CASE WHEN jenis_transaksi = 'penjualan' THEN total_nominal ELSE 0 END), 0) as pendapatan,
-                    COALESCE(SUM(CASE WHEN jenis_transaksi = 'pembelian' THEN total_nominal ELSE 0 END), 0) as hpp,
-                    COALESCE(SUM(CASE WHEN jenis_transaksi = 'beban' THEN total_nominal ELSE 0 END), 0) as beban
-                FROM public.transaksi_harian
-                WHERE tenant_id = $1
-                  AND timestamp >= $2
-                  AND timestamp <= $3
-                  AND status = 'approved'
+                    COALESCE(SUM(CASE WHEN coa.account_code LIKE '4-%%' THEN jl.credit - jl.debit ELSE 0 END), 0) as pendapatan,
+                    COALESCE(SUM(CASE WHEN coa.account_code LIKE '5-1%%' THEN jl.debit - jl.credit ELSE 0 END), 0) as hpp,
+                    COALESCE(SUM(CASE WHEN (coa.account_code LIKE '5-%%' OR coa.account_code LIKE '6-%%') THEN jl.debit - jl.credit ELSE 0 END), 0) as total_expenses
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND je.journal_date BETWEEN $2 AND $3
+                  AND (coa.account_code LIKE '4-%%' OR coa.account_code LIKE '5-%%' OR coa.account_code LIKE '6-%%')
             """
             pl_row = await conn.fetchrow(pl_query, tenant_id, start_date, end_date)
 
             pendapatan = int(pl_row['pendapatan']) if pl_row else 0
             hpp = int(pl_row['hpp']) if pl_row else 0
-            beban = int(pl_row['beban']) if pl_row else 0
-            pengeluaran = hpp + beban
+            pengeluaran = int(pl_row['total_expenses']) if pl_row else 0
             profit = pendapatan - pengeluaran
             margin_persen = round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0
 
-            # Previous period P&L
+            # Previous period P&L (same journal-based query)
             prev_pl_row = await conn.fetchrow(pl_query, tenant_id, prev_start_date, prev_end_date)
             prev_pendapatan = int(prev_pl_row['pendapatan']) if prev_pl_row else 0
-            prev_hpp = int(prev_pl_row['hpp']) if prev_pl_row else 0
-            prev_beban = int(prev_pl_row['beban']) if prev_pl_row else 0
-            prev_profit = prev_pendapatan - (prev_hpp + prev_beban)
+            prev_pengeluaran = int(prev_pl_row['total_expenses']) if prev_pl_row else 0
+            prev_profit = prev_pendapatan - prev_pengeluaran
             profit_change_pct = calc_change_pct(profit, prev_profit)
 
             laba_rugi = LabaRugiSummary(
@@ -392,77 +377,61 @@ async def get_dashboard_summary(
             )
 
             # ============================
-            # 2. PIUTANG (AR Aging)
+            # 2. PIUTANG (AR) - from ledger
+            # Pure Ledger: queries journal_entries + journal_lines
             # ============================
-            # Get customers with positive saldo_hutang (they owe us)
-            ar_query = """
-                SELECT
-                    COUNT(*) as customer_count,
-                    COALESCE(SUM(saldo_hutang), 0) as total,
-                    COUNT(CASE WHEN last_transaction_at < NOW() - INTERVAL '30 days' THEN 1 END) as jatuh_tempo,
-                    COALESCE(SUM(CASE WHEN last_transaction_at >= NOW() - INTERVAL '30 days' THEN saldo_hutang ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '30 days' AND last_transaction_at >= NOW() - INTERVAL '60 days' THEN saldo_hutang ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '60 days' AND last_transaction_at >= NOW() - INTERVAL '90 days' THEN saldo_hutang ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '90 days' AND last_transaction_at >= NOW() - INTERVAL '120 days' THEN saldo_hutang ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '120 days' THEN saldo_hutang ELSE 0 END), 0) as overdue_90_plus
-                FROM customers
-                WHERE tenant_id = $1
-                  AND tipe = 'pelanggan'
-                  AND saldo_hutang > 0
+            ar_total_query = """
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '1-104%%'
             """
-            ar_row = await conn.fetchrow(ar_query, tenant_id)
+            ar_total_row = await conn.fetchrow(ar_total_query, tenant_id)
+            ar_total = int(ar_total_row['total_piutang']) if ar_total_row else 0
 
-            # Query oldest overdue AR invoice
+            ar_aging_query = """
+                SELECT COUNT(DISTINCT customer_name) as customer_count,
+                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
+                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN (amount - amount_paid) ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_90_plus
+                FROM accounts_receivable WHERE tenant_id = $1 AND status != 'PAID'
+            """
+            ar_aging = await conn.fetchrow(ar_aging_query, tenant_id)
+
             oldest_ar_query = """
                 SELECT customer_name, CURRENT_DATE - due_date as days_overdue
                 FROM accounts_receivable
-                WHERE tenant_id = $1
-                  AND due_date < CURRENT_DATE
-                  AND status != 'PAID'
-                ORDER BY due_date ASC
-                LIMIT 1
+                WHERE tenant_id = $1 AND due_date < CURRENT_DATE AND status != 'PAID'
+                ORDER BY due_date ASC LIMIT 1
             """
             oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
 
-            # Previous period AR comparison (simplified: sum of AR transactions in prev period)
+            # Previous period AR balance - Pure Ledger
             prev_ar_query = """
-                SELECT COALESCE(SUM(saldo_hutang), 0) as total
-                FROM customers
-                WHERE tenant_id = $1
-                  AND tipe = 'pelanggan'
-                  AND saldo_hutang > 0
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND je.journal_date <= $2 AND coa.account_code LIKE '1-104%%'
             """
-            # Note: AR balance is point-in-time, so prev_total represents same metric
-            # For true comparison, we'd need historical snapshots
-            ar_total = int(ar_row['total']) if ar_row else 0
-            # Estimate prev by looking at transaction volume change
-            prev_ar_estimate_query = """
-                SELECT COALESCE(SUM(CASE WHEN jenis_transaksi = 'penjualan' THEN total_nominal ELSE 0 END), 0) as sales
-                FROM public.transaksi_harian
-                WHERE tenant_id = $1
-                  AND timestamp >= $2 AND timestamp <= $3
-                  AND status = 'approved'
-            """
-            prev_ar_sales = await conn.fetchrow(prev_ar_estimate_query, tenant_id, prev_start_date, prev_end_date)
-            curr_ar_sales = await conn.fetchrow(prev_ar_estimate_query, tenant_id, start_date, end_date)
-            prev_sales_val = int(prev_ar_sales['sales']) if prev_ar_sales else 0
-            curr_sales_val = int(curr_ar_sales['sales']) if curr_ar_sales else 0
-            # Estimate prev AR based on sales ratio
-            if curr_sales_val > 0 and prev_sales_val > 0:
-                ar_prev_total = int(ar_total * prev_sales_val / curr_sales_val)
-            else:
-                ar_prev_total = 0
+            prev_ar_row = await conn.fetchrow(prev_ar_query, tenant_id, prev_end_date)
+            ar_prev_total = int(prev_ar_row['total_piutang']) if prev_ar_row else 0
             ar_change_pct = calc_change_pct(ar_total, ar_prev_total)
 
             piutang = PiutangSummary(
                 total=ar_total,
-                customer_count=int(ar_row['customer_count']) if ar_row else 0,
-                jatuh_tempo=int(ar_row['jatuh_tempo']) if ar_row else 0,
-                current=int(ar_row['current_amount']) if ar_row else 0,
-                overdue_1_30=int(ar_row['overdue_1_30']) if ar_row else 0,
-                overdue_31_60=int(ar_row['overdue_31_60']) if ar_row else 0,
-                overdue_61_90=int(ar_row['overdue_61_90']) if ar_row else 0,
-                overdue_90_plus=int(ar_row['overdue_90_plus']) if ar_row else 0,
+                customer_count=int(ar_aging['customer_count']) if ar_aging else 0,
+                jatuh_tempo=int(ar_aging['jatuh_tempo']) if ar_aging else 0,
+                current=int(ar_aging['current_amount']) if ar_aging else 0,
+                overdue_1_30=int(ar_aging['overdue_1_30']) if ar_aging else 0,
+                overdue_31_60=int(ar_aging['overdue_31_60']) if ar_aging else 0,
+                overdue_61_90=int(ar_aging['overdue_61_90']) if ar_aging else 0,
+                overdue_90_plus=int(ar_aging['overdue_90_plus']) if ar_aging else 0,
                 oldest_customer=oldest_ar['customer_name'] if oldest_ar else None,
                 oldest_days=int(oldest_ar['days_overdue']) if oldest_ar else None,
                 prev_total=ar_prev_total,
@@ -470,67 +439,60 @@ async def get_dashboard_summary(
             )
 
             # ============================
-            # 3. HUTANG (AP Aging)
+            # 3. HUTANG (AP) - from ledger
+            # Pure Ledger: queries journal_entries + journal_lines
             # ============================
-            # Get suppliers with negative saldo_hutang (we owe them)
-            ap_query = """
-                SELECT
-                    COUNT(*) as supplier_count,
-                    COALESCE(SUM(ABS(saldo_hutang)), 0) as total,
-                    COUNT(CASE WHEN last_transaction_at < NOW() - INTERVAL '30 days' THEN 1 END) as jatuh_tempo,
-                    COALESCE(SUM(CASE WHEN last_transaction_at >= NOW() - INTERVAL '30 days' THEN ABS(saldo_hutang) ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '30 days' AND last_transaction_at >= NOW() - INTERVAL '60 days' THEN ABS(saldo_hutang) ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '60 days' AND last_transaction_at >= NOW() - INTERVAL '90 days' THEN ABS(saldo_hutang) ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '90 days' AND last_transaction_at >= NOW() - INTERVAL '120 days' THEN ABS(saldo_hutang) ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN last_transaction_at < NOW() - INTERVAL '120 days' THEN ABS(saldo_hutang) ELSE 0 END), 0) as overdue_90_plus
-                FROM customers
-                WHERE tenant_id = $1
-                  AND tipe = 'supplier'
-                  AND saldo_hutang < 0
+            ap_total_query = """
+                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '2-101%%'
             """
-            ap_row = await conn.fetchrow(ap_query, tenant_id)
+            ap_total_row = await conn.fetchrow(ap_total_query, tenant_id)
+            ap_total = int(ap_total_row['total_hutang']) if ap_total_row else 0
 
-            # Query nearest AP bill (due soonest or already overdue)
-            # Updated to use consolidated bills table
+            ap_aging_query = """
+                SELECT COUNT(DISTINCT vendor_name) as supplier_count,
+                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
+                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN (amount - amount_paid) ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_90_plus
+                FROM bills WHERE tenant_id = $1 AND status NOT IN ('paid', 'void')
+            """
+            ap_aging = await conn.fetchrow(ap_aging_query, tenant_id)
+
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - CURRENT_DATE as days_until_due
-                FROM bills
-                WHERE tenant_id = $1
-                  AND status NOT IN ('paid', 'void')
-                ORDER BY due_date ASC
-                LIMIT 1
+                FROM bills WHERE tenant_id = $1 AND status NOT IN ('paid', 'void')
+                ORDER BY due_date ASC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
 
-            # Previous period AP comparison (estimate based on purchase ratio)
-            prev_ap_estimate_query = """
-                SELECT COALESCE(SUM(CASE WHEN jenis_transaksi = 'pembelian' THEN total_nominal ELSE 0 END), 0) as purchases
-                FROM public.transaksi_harian
-                WHERE tenant_id = $1
-                  AND timestamp >= $2 AND timestamp <= $3
-                  AND status = 'approved'
+            # Previous period AP balance - Pure Ledger
+            prev_ap_query = """
+                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND je.journal_date <= $2 AND coa.account_code LIKE '2-101%%'
             """
-            ap_total = int(ap_row['total']) if ap_row else 0
-            prev_ap_purchases = await conn.fetchrow(prev_ap_estimate_query, tenant_id, prev_start_date, prev_end_date)
-            curr_ap_purchases = await conn.fetchrow(prev_ap_estimate_query, tenant_id, start_date, end_date)
-            prev_purchases_val = int(prev_ap_purchases['purchases']) if prev_ap_purchases else 0
-            curr_purchases_val = int(curr_ap_purchases['purchases']) if curr_ap_purchases else 0
-            # Estimate prev AP based on purchases ratio
-            if curr_purchases_val > 0 and prev_purchases_val > 0:
-                ap_prev_total = int(ap_total * prev_purchases_val / curr_purchases_val)
-            else:
-                ap_prev_total = 0
+            prev_ap_row = await conn.fetchrow(prev_ap_query, tenant_id, prev_end_date)
+            ap_prev_total = int(prev_ap_row['total_hutang']) if prev_ap_row else 0
             ap_change_pct = calc_change_pct(ap_total, ap_prev_total)
 
             hutang = HutangSummary(
                 total=ap_total,
-                supplier_count=int(ap_row['supplier_count']) if ap_row else 0,
-                jatuh_tempo=int(ap_row['jatuh_tempo']) if ap_row else 0,
-                current=int(ap_row['current_amount']) if ap_row else 0,
-                overdue_1_30=int(ap_row['overdue_1_30']) if ap_row else 0,
-                overdue_31_60=int(ap_row['overdue_31_60']) if ap_row else 0,
-                overdue_61_90=int(ap_row['overdue_61_90']) if ap_row else 0,
-                overdue_90_plus=int(ap_row['overdue_90_plus']) if ap_row else 0,
+                supplier_count=int(ap_aging['supplier_count']) if ap_aging else 0,
+                jatuh_tempo=int(ap_aging['jatuh_tempo']) if ap_aging else 0,
+                current=int(ap_aging['current_amount']) if ap_aging else 0,
+                overdue_1_30=int(ap_aging['overdue_1_30']) if ap_aging else 0,
+                overdue_31_60=int(ap_aging['overdue_31_60']) if ap_aging else 0,
+                overdue_61_90=int(ap_aging['overdue_61_90']) if ap_aging else 0,
+                overdue_90_plus=int(ap_aging['overdue_90_plus']) if ap_aging else 0,
                 nearest_supplier=nearest_ap['supplier_name'] if nearest_ap else None,
                 nearest_days=int(nearest_ap['days_until_due']) if nearest_ap else None,
                 prev_total=ap_prev_total,
@@ -589,22 +551,20 @@ async def get_dashboard_summary(
                     total_bank += balance
 
             # Previous period Kas/Bank comparison
-            # Query net cash flow for previous period to estimate prev balance
-            prev_cashflow_query = """
-                SELECT 
-                    COALESCE(SUM(CASE WHEN jenis_transaksi IN ('penjualan', 'penerimaan') THEN total_nominal ELSE 0 END), 0) as inflow,
-                    COALESCE(SUM(CASE WHEN jenis_transaksi IN ('pembelian', 'beban', 'pembayaran') THEN total_nominal ELSE 0 END), 0) as outflow
-                FROM public.transaksi_harian
-                WHERE tenant_id = $1
-                  AND timestamp >= $2 AND timestamp <= $3
-                  AND status = 'approved'
+            # Pure Ledger: compute balance as of prev_end_date
+            prev_kas_bank_query = """
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_balance
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND je.journal_date <= $2
+                  AND coa.account_code LIKE '1-1%%'
+                  AND (coa.account_code LIKE '1-101%%' OR coa.account_code LIKE '1-102%%')
             """
             kas_bank_total = total_kas + total_bank
-            # Get current period net flow
-            curr_flow = await conn.fetchrow(prev_cashflow_query, tenant_id, start_date, end_date)
-            curr_net = (int(curr_flow['inflow']) if curr_flow else 0) - (int(curr_flow['outflow']) if curr_flow else 0)
-            # Estimate prev balance = current - net flow of current period
-            kas_bank_prev_total = kas_bank_total - curr_net if kas_bank_total > 0 else 0
+            prev_kb_row = await conn.fetchrow(prev_kas_bank_query, tenant_id, prev_end_date)
+            kas_bank_prev_total = int(prev_kb_row['total_balance']) if prev_kb_row else 0
             kas_bank_change_pct = calc_change_pct(kas_bank_total, kas_bank_prev_total)
 
             kas_bank = KasBankSummary(
@@ -683,61 +643,41 @@ async def get_piutang_detail(
 
         conn = await get_db_connection()
         try:
-            # Aging buckets based on last_transaction_at
-            query = """
-                SELECT
-                    COUNT(*) as customer_count,
-                    COALESCE(SUM(saldo_hutang), 0) as total,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at >= NOW() - INTERVAL '30 days' THEN saldo_hutang
-                        ELSE 0
-                    END), 0) as current,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '30 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '60 days'
-                        THEN saldo_hutang ELSE 0
-                    END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '60 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '90 days'
-                        THEN saldo_hutang ELSE 0
-                    END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '90 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '120 days'
-                        THEN saldo_hutang ELSE 0
-                    END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '120 days'
-                        THEN saldo_hutang ELSE 0
-                    END), 0) as overdue_90_plus,
-                    COUNT(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '30 days'
-                        THEN 1
-                    END) as jatuh_tempo_count
-                FROM customers
-                WHERE tenant_id = $1
-                  AND tipe = 'pelanggan'
-                  AND saldo_hutang > 0
-            """
+            # Pure Ledger: total piutang from journal_entries + journal_lines
+            total_row = await conn.fetchrow("""
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '1-104%%'
+            """, tenant_id)
+            total_piutang = int(total_row['total_piutang']) if total_row else 0
 
+            overdue_filter = ""
             if filter == "overdue":
-                query = query.replace(
-                    "AND saldo_hutang > 0",
-                    "AND saldo_hutang > 0 AND last_transaction_at < NOW() - INTERVAL '30 days'"
-                )
+                overdue_filter = "AND due_date < CURRENT_DATE"
 
-            row = await conn.fetchrow(query, tenant_id)
+            aging = await conn.fetchrow(f"""
+                SELECT COUNT(DISTINCT customer_name) as customer_count,
+                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN (amount - amount_paid) ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_90_plus,
+                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo_count
+                FROM accounts_receivable WHERE tenant_id = $1 AND status != 'PAID' {overdue_filter}
+            """, tenant_id)
 
             return PiutangSummary(
-                total=int(row['total']) if row else 0,
-                customer_count=int(row['customer_count']) if row else 0,
-                jatuh_tempo=int(row['jatuh_tempo_count']) if row else 0,
-                current=int(row['current']) if row else 0,
-                overdue_1_30=int(row['overdue_1_30']) if row else 0,
-                overdue_31_60=int(row['overdue_31_60']) if row else 0,
-                overdue_61_90=int(row['overdue_61_90']) if row else 0,
-                overdue_90_plus=int(row['overdue_90_plus']) if row else 0
+                total=total_piutang,
+                customer_count=int(aging['customer_count']) if aging else 0,
+                jatuh_tempo=int(aging['jatuh_tempo_count']) if aging else 0,
+                current=int(aging['current_amount']) if aging else 0,
+                overdue_1_30=int(aging['overdue_1_30']) if aging else 0,
+                overdue_31_60=int(aging['overdue_31_60']) if aging else 0,
+                overdue_61_90=int(aging['overdue_61_90']) if aging else 0,
+                overdue_90_plus=int(aging['overdue_90_plus']) if aging else 0
             )
 
         finally:
@@ -768,60 +708,41 @@ async def get_hutang_detail(
 
         conn = await get_db_connection()
         try:
-            query = """
-                SELECT
-                    COUNT(*) as supplier_count,
-                    COALESCE(SUM(ABS(saldo_hutang)), 0) as total,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at >= NOW() - INTERVAL '30 days' THEN ABS(saldo_hutang)
-                        ELSE 0
-                    END), 0) as current,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '30 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '60 days'
-                        THEN ABS(saldo_hutang) ELSE 0
-                    END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '60 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '90 days'
-                        THEN ABS(saldo_hutang) ELSE 0
-                    END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '90 days'
-                             AND last_transaction_at >= NOW() - INTERVAL '120 days'
-                        THEN ABS(saldo_hutang) ELSE 0
-                    END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '120 days'
-                        THEN ABS(saldo_hutang) ELSE 0
-                    END), 0) as overdue_90_plus,
-                    COUNT(CASE
-                        WHEN last_transaction_at < NOW() - INTERVAL '30 days'
-                        THEN 1
-                    END) as jatuh_tempo_count
-                FROM customers
-                WHERE tenant_id = $1
-                  AND tipe = 'supplier'
-                  AND saldo_hutang < 0
-            """
+            # Pure Ledger: total hutang from journal_entries + journal_lines
+            total_row = await conn.fetchrow("""
+                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND coa.account_code LIKE '2-101%%'
+            """, tenant_id)
+            total_hutang = int(total_row['total_hutang']) if total_row else 0
 
+            overdue_filter = ""
             if filter == "overdue":
-                query = query.replace(
-                    "AND saldo_hutang < 0",
-                    "AND saldo_hutang < 0 AND last_transaction_at < NOW() - INTERVAL '30 days'"
-                )
+                overdue_filter = "AND due_date < CURRENT_DATE"
 
-            row = await conn.fetchrow(query, tenant_id)
+            aging = await conn.fetchrow(f"""
+                SELECT COUNT(DISTINCT vendor_name) as supplier_count,
+                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN (amount - amount_paid) ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN (amount - amount_paid) ELSE 0 END), 0) as overdue_90_plus,
+                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo_count
+                FROM bills WHERE tenant_id = $1 AND status NOT IN ('paid', 'void') {overdue_filter}
+            """, tenant_id)
 
             return HutangSummary(
-                total=int(row['total']) if row else 0,
-                supplier_count=int(row['supplier_count']) if row else 0,
-                jatuh_tempo=int(row['jatuh_tempo_count']) if row else 0,
-                current=int(row['current']) if row else 0,
-                overdue_1_30=int(row['overdue_1_30']) if row else 0,
-                overdue_31_60=int(row['overdue_31_60']) if row else 0,
-                overdue_61_90=int(row['overdue_61_90']) if row else 0,
-                overdue_90_plus=int(row['overdue_90_plus']) if row else 0
+                total=total_hutang,
+                supplier_count=int(aging['supplier_count']) if aging else 0,
+                jatuh_tempo=int(aging['jatuh_tempo_count']) if aging else 0,
+                current=int(aging['current_amount']) if aging else 0,
+                overdue_1_30=int(aging['overdue_1_30']) if aging else 0,
+                overdue_31_60=int(aging['overdue_31_60']) if aging else 0,
+                overdue_61_90=int(aging['overdue_61_90']) if aging else 0,
+                overdue_90_plus=int(aging['overdue_90_plus']) if aging else 0
             )
 
         finally:
@@ -1321,11 +1242,10 @@ async def get_reconciliation_status(request: Request):
                 SELECT COALESCE(SUM(jl.credit - jl.debit), 0) as balance
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.journal_date = jl.journal_date
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1
                   AND je.status = 'POSTED'
-                  AND coa.code = '2-10100'
+                  AND coa.account_code = '2-10100'
             """
             gl_balance = await conn.fetchval(gl_query, tenant_id)
 
