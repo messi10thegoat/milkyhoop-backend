@@ -56,7 +56,7 @@ class AccountingConfig:
     BANK_ACCOUNT: str = "1-10200"
     AR_ACCOUNT: str = "1-10400"
     INVENTORY_ACCOUNT: str = "1-10600"
-    VAT_INPUT_ACCOUNT: str = "1-10500"
+    VAT_INPUT_ACCOUNT: str = "1-10800"
 
     AP_ACCOUNT: str = "2-10100"
     VAT_OUTPUT_ACCOUNT: str = "2-10400"

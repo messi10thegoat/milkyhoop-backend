@@ -948,7 +948,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         )
 
                     # Check quantity
-                    remaining = float(po_item["quantity"]) - float(po_item["quantity_received"] or 0)
+                    remaining = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_received"] or 0)
                     if recv_item.quantity_received > remaining:
                         raise HTTPException(
                             status_code=400,
@@ -956,7 +956,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         )
 
                     # Update quantity_received
-                    new_qty_received = float(po_item["quantity_received"] or 0) + recv_item.quantity_received
+                    new_qty_received = Decimal(po_item["quantity_received"] or 0) + recv_item.quantity_received
 
                     await conn.execute("""
                         UPDATE purchase_order_items
@@ -986,7 +986,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 """, po_id)
 
                 all_received = all(
-                    float(item["quantity_received"] or 0) >= float(item["quantity"])
+                    Decimal(item["quantity_received"] or 0) >= Decimal(item["quantity"])
                     for item in all_items
                 )
 
@@ -1073,7 +1073,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                                 detail=f"PO item {bill_item.po_item_id} not found"
                             )
 
-                        unbilled = float(po_item["quantity"]) - float(po_item["quantity_billed"] or 0)
+                        unbilled = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_billed"] or 0)
                         qty_to_bill = bill_item.quantity_to_bill or unbilled
 
                         if qty_to_bill > unbilled:
@@ -1097,7 +1097,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     items_to_bill = [
                         {
                             "po_item": item,
-                            "quantity": float(item["quantity"]) - float(item["quantity_billed"] or 0)
+                            "quantity": Decimal(item["quantity"]) - Decimal(item["quantity_billed"] or 0)
                         }
                         for item in po_items
                     ]
@@ -1131,15 +1131,15 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 
                     # Apply discount
                     if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(item_subtotal * float(po_item["discount_percent"]) / 100)
+                        discount = int(item_subtotal * Decimal(po_item["discount_percent"]) / 100)
                     else:
-                        discount = int((po_item["discount_amount"] or 0) * qty / float(po_item["quantity"]))
+                        discount = int((po_item["discount_amount"] or 0) * qty / Decimal(po_item["quantity"]))
 
                     after_discount = item_subtotal - discount
 
                     # Apply tax
                     if po_item["tax_rate"] and po_item["tax_rate"] > 0:
-                        tax = int(after_discount * float(po_item["tax_rate"]) / 100)
+                        tax = int(after_discount * Decimal(po_item["tax_rate"]) / 100)
                     else:
                         tax = 0
 
@@ -1180,14 +1180,14 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     item_subtotal = int(qty * unit_price)
 
                     if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(item_subtotal * float(po_item["discount_percent"]) / 100)
+                        discount = int(item_subtotal * Decimal(po_item["discount_percent"]) / 100)
                     else:
-                        discount = int((po_item["discount_amount"] or 0) * qty / float(po_item["quantity"]))
+                        discount = int((po_item["discount_amount"] or 0) * qty / Decimal(po_item["quantity"]))
 
                     after_discount = item_subtotal - discount
 
                     if po_item["tax_rate"] and po_item["tax_rate"] > 0:
-                        tax = int(after_discount * float(po_item["tax_rate"]) / 100)
+                        tax = int(after_discount * Decimal(po_item["tax_rate"]) / 100)
                     else:
                         tax = 0
 
@@ -1221,7 +1221,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     )
 
                     # Update PO item quantity_billed
-                    new_qty_billed = float(po_item["quantity_billed"] or 0) + qty
+                    new_qty_billed = Decimal(po_item["quantity_billed"] or 0) + qty
                     await conn.execute("""
                         UPDATE purchase_order_items
                         SET quantity_billed = $2
@@ -1244,7 +1244,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                 """, po_id)
 
                 all_billed = all(
-                    float(item["quantity_billed"] or 0) >= float(item["quantity"])
+                    Decimal(item["quantity_billed"] or 0) >= Decimal(item["quantity"])
                     for item in all_items
                 )
 

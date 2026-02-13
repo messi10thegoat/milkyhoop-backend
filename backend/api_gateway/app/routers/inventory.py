@@ -1,26 +1,19 @@
 """
 Inventory Router - Product Management & Stock Operations
 Source: Products table + inventory_ledger (stock movements)
-Port: Uses gRPC inventory_service:7040
+All operations use direct DB queries to inventory_ledger (Pure Ledger).
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncpg
-import grpc
-
-# Import gRPC stubs
-from backend.api_gateway.libs.milkyhoop_protos import inventory_service_pb2, inventory_service_pb2_grpc
 
 # Import centralized config
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# gRPC channel configuration
-INVENTORY_SERVICE_HOST = "inventory_service:7040"
 
 
 # Database connection helper - uses centralized config
@@ -29,11 +22,6 @@ async def get_db_connection():
     db_config = settings.get_db_config()
     return await asyncpg.connect(**db_config)
 
-
-def get_inventory_stub():
-    """Get gRPC stub for inventory service"""
-    channel = grpc.insecure_channel(INVENTORY_SERVICE_HOST)
-    return inventory_service_pb2_grpc.InventoryServiceStub(channel)
 
 
 # ========================================
@@ -541,7 +529,7 @@ async def adjust_stock(
 ):
     """
     Adjust stock level for a product.
-    Uses gRPC inventory_service.AdjustStock for proper audit trail.
+    Writes directly to inventory_ledger with source_type='STOCK_ADJUSTMENT'.
     """
     try:
         if not hasattr(request.state, 'user') or not request.state.user:
@@ -560,52 +548,107 @@ async def adjust_stock(
                 detail=f"Alasan tidak valid. Pilih salah satu: {', '.join(valid_reasons)}"
             )
 
-        # Get product name for gRPC call (inventory_service uses produk_id as name)
         conn = await get_db_connection()
         try:
+            # Get product info and current stock from inventory_ledger
             product_query = """
-                SELECT nama_produk FROM public.products
-                WHERE id = $1 AND tenant_id = $2
+                SELECT
+                    p.nama_produk,
+                    p.satuan,
+                    COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as current_stock,
+                    COALESCE(
+                        (SELECT il2.average_cost FROM inventory_ledger il2
+                         WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
+                           AND il2.average_cost IS NOT NULL
+                         ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1),
+                        0
+                    ) as avg_cost
+                FROM public.products p
+                LEFT JOIN inventory_ledger il
+                    ON il.product_id = p.id AND il.tenant_id = p.tenant_id
+                WHERE p.id = $1 AND p.tenant_id = $2
+                GROUP BY p.id, p.nama_produk, p.satuan
             """
             product = await conn.fetchrow(product_query, product_id, tenant_id)
             if not product:
                 raise HTTPException(status_code=404, detail="Produk tidak ditemukan")
 
             product_name = product['nama_produk']
-        finally:
-            await conn.close()
+            current_stock = float(product['current_stock'])
+            avg_cost = float(product['avg_cost'])
+            adjustment_amount = body.new_quantity - current_stock
 
-        # Call gRPC inventory_service
-        stub = get_inventory_stub()
-        grpc_request = inventory_service_pb2.AdjustStockRequest(
-            tenant_id=tenant_id,
-            produk_id=product_name,  # inventory_service uses product name
-            lokasi_gudang="utama",
-            new_quantity=body.new_quantity,
-            reason=body.reason,
-            keterangan=body.notes or "",
-            created_by=user_id
-        )
+            if adjustment_amount == 0:
+                return StockAdjustmentResponse(
+                    success=True,
+                    message="Stok tidak berubah",
+                    stok_sebelum=current_stock,
+                    stok_setelah=current_stock,
+                    adjustment_amount=0
+                )
 
-        try:
-            response = stub.AdjustStock(grpc_request, timeout=10)
+            # Determine movement direction
+            if adjustment_amount > 0:
+                quantity_in = adjustment_amount
+                quantity_out = 0
+                movement_type = "IN"
+            else:
+                quantity_in = 0
+                quantity_out = abs(adjustment_amount)
+                movement_type = "OUT"
 
-            if not response.success:
-                raise HTTPException(status_code=400, detail=response.message)
+            # Build source_ref with reason + optional notes
+            source_ref = f"STOCK_ADJ:{body.reason}"
+            if body.notes:
+                source_ref += f" - {body.notes}"
 
-            logger.info(f"Stock adjusted: product={product_id}, reason={body.reason}, before={response.stok_sebelum}, after={response.stok_setelah}")
+            unit_cost = avg_cost
+            total_cost = abs(adjustment_amount) * unit_cost
+
+            # INSERT into inventory_ledger (follows same pattern as add_product opening balance)
+            insert_query = """
+                INSERT INTO inventory_ledger (
+                    tenant_id, product_id, product_name, movement_type, movement_date,
+                    source_type, source_number,
+                    quantity_in, quantity_out, quantity_balance,
+                    unit_cost, total_cost, average_cost, notes
+                ) VALUES (
+                    $1, $2::uuid, $3, $4, CURRENT_DATE,
+                    'STOCK_ADJUSTMENT', $5,
+                    $6, $7, $8,
+                    $9, $10, $9, $11
+                )
+            """
+            await conn.execute(
+                insert_query,
+                tenant_id,
+                product_id,
+                product_name,
+                movement_type,
+                source_ref,
+                quantity_in,
+                quantity_out,
+                body.new_quantity,
+                unit_cost,
+                total_cost,
+                body.notes or f"Stock adjustment: {body.reason}"
+            )
+
+            logger.info(
+                f"Stock adjusted: product={product_id}, reason={body.reason}, "
+                f"before={current_stock}, after={body.new_quantity}, delta={adjustment_amount}"
+            )
 
             return StockAdjustmentResponse(
                 success=True,
-                message=response.message,
-                stok_sebelum=response.stok_sebelum,
-                stok_setelah=response.stok_setelah,
-                adjustment_amount=response.adjustment_amount
+                message=f"Stok {product_name} berhasil disesuaikan ({body.reason})",
+                stok_sebelum=current_stock,
+                stok_setelah=body.new_quantity,
+                adjustment_amount=adjustment_amount
             )
 
-        except grpc.RpcError as e:
-            logger.error(f"gRPC error: {e.code()}: {e.details()}")
-            raise HTTPException(status_code=500, detail=f"Inventory service error: {e.details()}")
+        finally:
+            await conn.close()
 
     except HTTPException:
         raise
@@ -621,7 +664,9 @@ async def get_low_stock_alerts(
 ):
     """
     Get all products with low stock (below minimum threshold).
-    Uses gRPC inventory_service.GetLowStockAlerts.
+    Queries inventory_ledger directly for current stock.
+    Uses persediaan.minimum_stock as primary threshold, falls back to
+    products.reorder_level if persediaan row doesn't exist.
     """
     try:
         if not hasattr(request.state, 'user') or not request.state.user:
@@ -631,50 +676,74 @@ async def get_low_stock_alerts(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        stub = get_inventory_stub()
-        grpc_request = inventory_service_pb2.GetLowStockAlertsRequest(
-            tenant_id=tenant_id,
-            limit=limit
-        )
-
+        conn = await get_db_connection()
         try:
-            response = stub.GetLowStockAlerts(grpc_request, timeout=10)
+            query = """
+                SELECT
+                    p.id::text,
+                    p.nama_produk,
+                    p.satuan,
+                    COALESCE(stock.current_stock, 0) as current_stock,
+                    COALESCE(
+                        per.minimum_stock,
+                        NULLIF(p.reorder_level, 0)::double precision,
+                        0
+                    ) as minimum_stock,
+                    COALESCE(
+                        per.minimum_stock,
+                        NULLIF(p.reorder_level, 0)::double precision,
+                        0
+                    ) - COALESCE(stock.current_stock, 0) as shortfall,
+                    EXTRACT(DAY FROM (CURRENT_DATE - stock.last_movement))::int as days_since_movement
+                FROM public.products p
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as current_stock,
+                        MAX(il.movement_date) as last_movement
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) stock ON true
+                LEFT JOIN persediaan per
+                    ON per.product_id = p.id AND per.tenant_id = p.tenant_id
+                WHERE p.tenant_id = $1
+                    AND COALESCE(p.track_inventory, true) = true
+                    AND COALESCE(stock.current_stock, 0) < COALESCE(
+                        per.minimum_stock,
+                        NULLIF(p.reorder_level, 0)::double precision,
+                        0
+                    )
+                    AND COALESCE(
+                        per.minimum_stock,
+                        NULLIF(p.reorder_level, 0)::double precision,
+                        0
+                    ) > 0
+                ORDER BY shortfall DESC
+                LIMIT $2
+            """
+            rows = await conn.fetch(query, tenant_id, limit)
 
-            # Map gRPC response to REST response with product IDs
-            # Need to lookup product IDs by name
-            conn = await get_db_connection()
-            try:
-                alerts = []
-                for alert in response.alerts:
-                    # Lookup product ID
-                    product_query = """
-                        SELECT id FROM public.products
-                        WHERE tenant_id = $1 AND nama_produk = $2
-                        LIMIT 1
-                    """
-                    product = await conn.fetchrow(product_query, tenant_id, alert.produk_id)
-                    product_id = str(product['id']) if product else alert.produk_id
+            alerts = [
+                LowStockAlertItem(
+                    id=row['id'],
+                    nama_produk=row['nama_produk'],
+                    satuan=row['satuan'] or 'pcs',
+                    current_stock=float(row['current_stock']),
+                    minimum_stock=float(row['minimum_stock']),
+                    shortfall=float(row['shortfall']),
+                    days_since_movement=row['days_since_movement'] if row['days_since_movement'] and row['days_since_movement'] > 0 else None
+                )
+                for row in rows
+            ]
 
-                    alerts.append(LowStockAlertItem(
-                        id=product_id,
-                        nama_produk=alert.produk_id,
-                        satuan=alert.satuan,
-                        current_stock=alert.current_stock,
-                        minimum_stock=alert.minimum_stock,
-                        shortfall=alert.shortfall,
-                        days_since_movement=alert.days_since_movement if alert.days_since_movement > 0 else None
-                    ))
-            finally:
-                await conn.close()
+            logger.info(f"Low stock alerts: tenant={tenant_id}, count={len(alerts)}")
 
             return LowStockAlertsResponse(
                 alerts=alerts,
-                total_count=response.total_count
+                total_count=len(alerts)
             )
 
-        except grpc.RpcError as e:
-            logger.error(f"gRPC error: {e.code()}: {e.details()}")
-            raise HTTPException(status_code=500, detail=f"Inventory service error: {e.details()}")
+        finally:
+            await conn.close()
 
     except HTTPException:
         raise

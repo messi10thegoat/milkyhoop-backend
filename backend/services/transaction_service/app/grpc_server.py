@@ -31,7 +31,6 @@ from handlers import TransactionHandler, AnalyticsHandler, HealthHandler
 
 # Import external service clients
 from services.accounting_client import process_transaction_accounting
-from app import inventory_service_pb2_grpc as inv_pb_grpc
 
 # Logging configuration
 logging.basicConfig(
@@ -40,23 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(settings.SERVICE_NAME)
 
-# ==========================================
-# INVENTORY SERVICE CLIENT (GLOBAL)
-# ==========================================
-inventory_channel = None
-inventory_stub = None
 
-def get_inventory_client():
-    """Get or create inventory service gRPC client"""
-    global inventory_channel, inventory_stub
-    
-    if inventory_stub is None:
-        from app.config import settings
-        inventory_channel = grpc.aio.insecure_channel(settings.INVENTORY_SERVICE_URL)
-        inventory_stub = inv_pb_grpc.InventoryServiceStub(inventory_channel)
-        logger.info(f"🔗 Inventory client connected: {settings.INVENTORY_SERVICE_URL}")
-    
-    return inventory_stub
 
 
 # ==========================================
@@ -78,7 +61,6 @@ class TransactionServiceServicer(pb_grpc.TransactionServiceServicer):
             request=request,
             context=context,
             pb=pb,
-            get_inventory_client_func=get_inventory_client,
             process_accounting_func=process_transaction_accounting
         )
     
@@ -222,11 +204,7 @@ async def serve() -> None:
             await disconnect_prisma()
             logger.info("✅ Prisma disconnected")
         
-        if inventory_channel:
-            logger.info("🧹 Closing inventory service channel...")
-            await inventory_channel.close()
-            logger.info("✅ Inventory channel closed")
-        
+
         logger.info("✅ Server shutdown complete")
 
 

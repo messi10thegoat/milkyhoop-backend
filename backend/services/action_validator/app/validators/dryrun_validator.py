@@ -17,6 +17,9 @@ ACTION_TYPE_CREATE_EXPENSE = 12
 ACTION_TYPE_RECEIVE_PAYMENT = 20
 ACTION_TYPE_MAKE_PAYMENT = 21
 ACTION_TYPE_POST_GENERAL_JOURNAL = 30
+ACTION_TYPE_CREATE_CREDIT_NOTE = 40
+ACTION_TYPE_BANK_TRANSFER = 22
+ACTION_TYPE_CREATE_PURCHASE_ORDER = 14
 
 # Master data action types - no journal entries generated
 ACTION_TYPE_CREATE_CUSTOMER = 0
@@ -28,13 +31,14 @@ MASTER_DATA_ACTIONS = {
     ACTION_TYPE_UPDATE_CUSTOMER,
     ACTION_TYPE_CREATE_VENDOR,
     ACTION_TYPE_CREATE_PRODUCT,
+    ACTION_TYPE_CREATE_PURCHASE_ORDER,  # PO does not generate journal entries
 }
 
 # Default account codes for Indonesian accounting
 ACCOUNTS = {
     "persediaan_beban": ("5-1100", "Beban Pokok / Persediaan"),
     "hutang_usaha": ("2-1100", "Hutang Usaha"),
-    "ppn_masukan": ("1-1700", "PPN Masukan"),
+    "ppn_masukan": ("1-10800", "PPN Masukan"),
     "piutang_usaha": ("1-1300", "Piutang Usaha"),
     "pendapatan": ("4-1100", "Pendapatan Penjualan"),
     "ppn_keluaran": ("2-1700", "PPN Keluaran"),
@@ -95,6 +99,10 @@ class DryRunValidator(BaseValidator):
             entries = self._make_payment_entries(payload)
         elif ctx.action_type == ACTION_TYPE_POST_GENERAL_JOURNAL:
             entries = self._general_journal_entries(payload)
+        elif ctx.action_type == ACTION_TYPE_CREATE_CREDIT_NOTE:
+            entries = self._credit_note_entries(payload)
+        elif ctx.action_type == ACTION_TYPE_BANK_TRANSFER:
+            entries = self._bank_transfer_entries(payload)
         else:
             # For non-journal action types, skip dry run
             ctx.add_warning(
@@ -129,6 +137,33 @@ class DryRunValidator(BaseValidator):
         }
 
         logger.debug(f"DRY_RUN: {len(entries)} entries, debit={total_debit:.2f}, credit={total_credit:.2f}, balanced={balanced}")
+
+    def _bank_transfer_entries(self, payload: dict) -> List[Dict]:
+        """
+        BANK_TRANSFER journal:
+          DR Bank Tujuan (destination)    amount
+          CR Bank Asal (source)           amount
+        """
+        amount = _safe_float(payload.get("amount"))
+        from_bank = payload.get("from_bank_name") or payload.get("from_bank_id") or "Bank Asal"
+        to_bank = payload.get("to_bank_name") or payload.get("to_bank_id") or "Bank Tujuan"
+
+        return [
+            {
+                "account_code": str(to_bank),
+                "account_name": f"Bank Tujuan ({to_bank})",
+                "debit": amount,
+                "credit": 0.0,
+                "description": "Transfer masuk",
+            },
+            {
+                "account_code": str(from_bank),
+                "account_name": f"Bank Asal ({from_bank})",
+                "debit": 0.0,
+                "credit": amount,
+                "description": "Transfer keluar",
+            },
+        ]
 
     def _purchase_invoice_entries(self, payload: dict) -> List[Dict]:
         """
@@ -327,4 +362,55 @@ class DryRunValidator(BaseValidator):
                 "credit": _safe_float(entry.get("credit")),
                 "description": str(entry.get("description") or entry.get("memo", "")),
             })
+        return entries
+
+    def _credit_note_entries(self, payload: dict) -> List[Dict]:
+        """
+        CREATE_CREDIT_NOTE journal (reverses sales invoice):
+          DR 4-1100 (Pendapatan)           dpp
+          DR 2-1700 (PPN Keluaran)         ppn (if applicable)
+          CR 1-1300 (Piutang Usaha)        total
+        """
+        items = payload.get("items") or payload.get("line_items") or []
+        amount = _safe_float(payload.get("amount") or payload.get("total") or payload.get("grand_total"))
+        tax_amount = _safe_float(payload.get("tax_amount") or payload.get("ppn"))
+
+        if items:
+            subtotal, tax_from_items, grand_total = _calculate_items_total(items)
+            if amount == 0:
+                amount = grand_total
+            if tax_amount == 0:
+                tax_amount = tax_from_items
+
+        dpp = amount - tax_amount if tax_amount > 0 else amount
+        entries = []
+
+        # Debit: Pendapatan (reverse the sale)
+        entries.append({
+            "account_code": ACCOUNTS["pendapatan"][0],
+            "account_name": ACCOUNTS["pendapatan"][1],
+            "debit": dpp,
+            "credit": 0.0,
+            "description": "Retur penjualan / nota kredit",
+        })
+
+        # Debit: PPN Keluaran (if tax, reverse it)
+        if tax_amount > 0:
+            entries.append({
+                "account_code": ACCOUNTS["ppn_keluaran"][0],
+                "account_name": ACCOUNTS["ppn_keluaran"][1],
+                "debit": tax_amount,
+                "credit": 0.0,
+                "description": "PPN Keluaran (retur)",
+            })
+
+        # Credit: Piutang Usaha
+        entries.append({
+            "account_code": ACCOUNTS["piutang_usaha"][0],
+            "account_name": ACCOUNTS["piutang_usaha"][1],
+            "debit": 0.0,
+            "credit": amount if tax_amount > 0 else dpp,
+            "description": "Pengurangan piutang (nota kredit)",
+        })
+
         return entries

@@ -26,6 +26,9 @@ ACTION_TYPE_POST_GENERAL_JOURNAL = 30
 ACTION_TYPE_REVERSE_JOURNAL = 31
 ACTION_TYPE_CLOSE_PERIOD = 32
 ACTION_TYPE_REOPEN_PERIOD = 33
+ACTION_TYPE_CREATE_CREDIT_NOTE = 40
+ACTION_TYPE_CREATE_PURCHASE_ORDER = 14
+ACTION_TYPE_BANK_TRANSFER = 22
 
 # Master data action types (for guard checks)
 MASTER_DATA_ACTIONS = {
@@ -39,17 +42,20 @@ MASTER_DATA_ACTIONS = {
 REQUIRED_FIELDS: Dict[int, List[str]] = {
     ACTION_TYPE_CREATE_SALES_INVOICE: ["customer_id", "items"],
     ACTION_TYPE_CREATE_PURCHASE_INVOICE: ["vendor_id", "items"],
-    ACTION_TYPE_CREATE_EXPENSE: ["amount", "account_code"],
+    ACTION_TYPE_CREATE_EXPENSE: ["amount"],
     ACTION_TYPE_RECEIVE_PAYMENT: ["amount", "customer_id"],
     ACTION_TYPE_MAKE_PAYMENT: ["amount", "vendor_id"],
     ACTION_TYPE_POST_GENERAL_JOURNAL: ["entries"],
     ACTION_TYPE_REVERSE_JOURNAL: ["journal_id"],
     ACTION_TYPE_CLOSE_PERIOD: ["period_id"],
     ACTION_TYPE_REOPEN_PERIOD: ["period_id"],
+    ACTION_TYPE_CREATE_CREDIT_NOTE: ["customer_id", "items"],
     ACTION_TYPE_CREATE_CUSTOMER: ["customer_name"],
     ACTION_TYPE_UPDATE_CUSTOMER: ["customer_id"],
     ACTION_TYPE_CREATE_VENDOR: ["vendor_name"],
     ACTION_TYPE_CREATE_PRODUCT: ["product_name"],
+    ACTION_TYPE_BANK_TRANSFER: ["from_bank_id", "to_bank_id", "amount"],
+    ACTION_TYPE_CREATE_PURCHASE_ORDER: ["vendor_name", "items"],
 }
 
 # Fields that should contain positive amounts
@@ -75,6 +81,15 @@ class InvariantValidator(BaseValidator):
             # Fallback: accept "name" for master data if specific field missing
             if value is None and field_name in ("vendor_name", "customer_name", "product_name"):
                 value = payload.get("name")
+            # Fallback: accept "total_amount" for "amount" (RECEIVE_PAYMENT uses total_amount)
+            if value is None and field_name == "amount":
+                value = payload.get("total_amount")
+            # Fallback: accept "customer_name" for "customer_id" (NLU text parsing)
+            if value is None and field_name == "customer_id":
+                value = payload.get("customer_name")
+            # Fallback: accept "vendor_name" for "vendor_id" (NLU text parsing)
+            if value is None and field_name == "vendor_id":
+                value = payload.get("vendor_name")
             if value is None or (isinstance(value, str) and not value.strip()):
                 ctx.add_error(
                     layer="INVARIANTS",

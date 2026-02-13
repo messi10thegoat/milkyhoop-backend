@@ -168,7 +168,6 @@ class TransactionHandler:
         request,
         context: grpc.aio.ServicerContext,
         pb,
-        get_inventory_client_func,
         process_accounting_func
     ):
         """

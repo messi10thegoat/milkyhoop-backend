@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal, Dict, Any
 from uuid import UUID
 from datetime import date
-from decimal import Decimal
 import logging
 import asyncpg
 
@@ -216,8 +215,8 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
             subtotal = body.amount or 0
 
         # Calculate tax and PPh
-        tax_amount = int(Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100"))
-        pph_amount = int(Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100"))
+        tax_amount = int(subtotal * float(body.tax_rate or 0) / 100)
+        pph_amount = int(subtotal * float(body.pph_rate or 0) / 100)
         total_amount = subtotal + tax_amount - pph_amount
 
         return {
@@ -529,9 +528,6 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                # Law 5: Check accounting period is open
-                await check_period_is_open(conn, ctx["tenant_id"], body.expense_date)
-
                 # Generate expense number
                 expense_number = await conn.fetchval(
                     "SELECT generate_expense_number($1)", ctx["tenant_id"]
@@ -549,8 +545,8 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                         status_code=400, detail="Expense amount must be greater than 0"
                     )
 
-                tax_amount = int(Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100"))
-                pph_amount = int(Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100"))
+                tax_amount = int(subtotal * float(body.tax_rate or 0) / 100)
+                pph_amount = int(subtotal * float(body.pph_rate or 0) / 100)
                 total_amount = subtotal + tax_amount - pph_amount
 
                 # Get paid_through account info
@@ -609,10 +605,10 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     subtotal,
                     str(body.tax_id) if body.tax_id else None,
                     body.tax_name,
-                    Decimal(str(body.tax_rate or 0)),
+                    float(body.tax_rate or 0),
                     tax_amount,
                     body.pph_type,
-                    Decimal(str(body.pph_rate or 0)),
+                    float(body.pph_rate or 0),
                     pph_amount,
                     total_amount,
                     body.is_itemized,
@@ -848,7 +844,7 @@ async def create_expense_journal(
         ppn_masukan_id = await conn.fetchval(
             """
             SELECT id FROM chart_of_accounts
-            WHERE tenant_id = $1 AND account_code = '1-10800'
+            WHERE tenant_id = $1 AND account_code = '1-10700'
         """,
             tenant_id,
         )
@@ -868,8 +864,7 @@ async def create_expense_journal(
             )
             line_number += 1
 
-    # CREDIT: Kas/Bank (Law 4: total_amount = subtotal + tax - pph)
-    cash_credit = subtotal + tax_amount - pph_amount
+    # CREDIT: Kas/Bank
     await conn.execute(
         """
         INSERT INTO journal_lines (
@@ -879,7 +874,7 @@ async def create_expense_journal(
         str(journal_id),
         line_number,
         str(paid_through_coa_id),
-        cash_credit,
+        subtotal + tax_amount,
         "Payment",
     )
     line_number += 1
@@ -1097,10 +1092,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                         status_code=400, detail="Expense already voided"
                     )
 
-                # Law 5: Check accounting period is open
-                await check_period_is_open(conn, ctx["tenant_id"], expense["expense_date"])
-
-                # Void original journal + create reversal (Law 2)
+                # Void original journal
                 if expense["journal_id"]:
                     await conn.execute(
                         """
@@ -1110,51 +1102,6 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                     """,
                         expense["journal_id"],
                     )
-
-                    # Create reversal journal entry
-                    import uuid as uuid_mod
-                    original_lines = await conn.fetch(
-                        """
-                        SELECT account_id, debit, credit, memo
-                        FROM journal_lines WHERE journal_id = $1
-                        ORDER BY line_number
-                        """,
-                        expense["journal_id"],
-                    )
-
-                    if original_lines:
-                        reversal_total = sum(r["debit"] or 0 for r in original_lines)
-                        reversal_journal_id = await conn.fetchval(
-                            """
-                            INSERT INTO journal_entries (
-                                tenant_id, journal_number, journal_date, description,
-                                source_type, source_id, status,
-                                total_debit, total_credit
-                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'expense_reversal', $4, 'POSTED', $5, $6)
-                            RETURNING id
-                            """,
-                            ctx["tenant_id"],
-                            "REV-" + expense["expense_number"],
-                            "Reversal: " + expense["expense_number"] + " - " + body.reason,
-                            str(expense_id),
-                            reversal_total,
-                            reversal_total,
-                        )
-
-                        for line_idx, line in enumerate(original_lines, 1):
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (
-                                    journal_id, line_number, account_id, debit, credit, memo
-                                ) VALUES ($1, $2, $3, $4, $5, $6)
-                                """,
-                                str(reversal_journal_id),
-                                line_idx,
-                                line["account_id"],
-                                line["credit"] or 0,   # swap: original credit -> debit
-                                line["debit"] or 0,     # swap: original debit -> credit
-                                ("Reversal: " + (line["memo"] or "")),
-                            )
 
                 # Update expense status
                 await conn.execute(
@@ -1499,15 +1446,15 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": str(line["debit"] or 0),
-                        "credit": str(line["credit"] or 0),
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
                         "memo": line["memo"] or ""
                     }
                     for line in lines
                 ]
 
-                journal_debit = float(journal["total_debit"] or 0)  # display-only
-                journal_credit = float(journal["total_credit"] or 0)  # display-only
+                journal_debit = float(journal["total_debit"] or 0)
+                journal_credit = float(journal["total_credit"] or 0)
                 total_debit += journal_debit
                 total_credit += journal_credit
 

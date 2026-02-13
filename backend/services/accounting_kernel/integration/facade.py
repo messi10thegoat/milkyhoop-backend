@@ -939,7 +939,8 @@ class AccountingFacade:
         source_id: Optional[UUID] = None,
         supplier_id: Optional[UUID] = None,
         description: Optional[str] = None,
-        currency: str = "IDR"
+        currency: str = "IDR",
+        tax_amount: Optional[Decimal] = None
     ) -> Dict:
         """
         Create an accounts payable record and corresponding journal entry.
@@ -994,7 +995,8 @@ class AccountingFacade:
                 bill_id=source_id or ap.id,
                 total_amount=amount,
                 supplier_name=supplier_name,
-                description=f"AP Invoice {bill_number}"
+                description=f"AP Invoice {bill_number}",
+                tax_amount=tax_amount
             )
 
             # Check if journal creation succeeded

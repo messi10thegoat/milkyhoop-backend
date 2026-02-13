@@ -614,6 +614,17 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
 
 async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     """Internal function to post a transfer. Returns journal info."""
+    # Lock source bank account row to prevent TOCTOU race condition
+    from_bank_id = await conn.fetchval("""
+        SELECT from_bank_id FROM bank_transfers
+        WHERE id = $1 AND tenant_id = $2
+    """, transfer_id, ctx["tenant_id"])
+    if from_bank_id:
+        await conn.fetchrow(
+            "SELECT id FROM bank_accounts WHERE id = $1 FOR UPDATE",
+            from_bank_id
+        )
+
     # Get transfer with bank info
     bt = await conn.fetchrow("""
         SELECT bt.*,
@@ -668,7 +679,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         f"Transfer {bt['transfer_number']} - {bt['from_name']} ke {bt['to_name']}",
         transfer_id,
         str(trace_id),
-        float(bt["total_amount"]),
+        int(bt["total_amount"]),
         ctx["user_id"]
     )
 
@@ -684,7 +695,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         journal_id,
         line_number,
         bt["to_coa_id"],
-        float(bt["amount"]),
+        int(bt["amount"]),
         f"Transfer masuk dari {bt['from_name']}"
     )
     line_number += 1
@@ -700,7 +711,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
             journal_id,
             line_number,
             fee_account_id,
-            float(bt["fee_amount"]),
+            int(bt["fee_amount"]),
             f"Biaya transfer - {bt['transfer_number']}"
         )
         line_number += 1
@@ -715,7 +726,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         journal_id,
         line_number,
         bt["from_coa_id"],
-        float(bt["total_amount"]),
+        int(bt["total_amount"]),
         f"Transfer keluar ke {bt['to_name']}"
     )
 
@@ -904,7 +915,7 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     f"Void Transfer {bt['transfer_number']} - {body.reason}",
                     transfer_id,
                     bt["journal_id"],
-                    float(bt["total_amount"]),
+                    int(bt["total_amount"]),
                     ctx["user_id"]
                 )
 

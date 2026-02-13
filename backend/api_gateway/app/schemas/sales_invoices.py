@@ -105,6 +105,7 @@ class CreateInvoiceRequest(BaseModel):
 
     # Tax
     tax_rate: float = Field(0, ge=0, le=100)
+    auto_post: bool = False
 
     @field_validator('customer_name')
     @classmethod

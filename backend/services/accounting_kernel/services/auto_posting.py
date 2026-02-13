@@ -310,30 +310,50 @@ class AutoPostingService:
         supplier_name: str,
         total_amount: Decimal,
         expense_account: Optional[str] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        tax_amount: Optional[Decimal] = None
     ) -> AutoPostResult:
         """
         Post a bill (create AP and recognize expense/inventory).
 
-        Debit: Expense or Inventory
-        Credit: Accounts Payable
+        When tax_amount > 0:
+            Debit: Expense or Inventory   (subtotal = total - tax)
+            Debit: PPN Masukan            (tax_amount)
+            Credit: Accounts Payable      (total_amount)
+        Otherwise:
+            Debit: Expense or Inventory   (total_amount)
+            Credit: Accounts Payable      (total_amount)
         """
         debit_account = expense_account or self.account_config.INVENTORY_ACCOUNT
+        tax = tax_amount or Decimal("0")
+        subtotal = total_amount - tax  # Expense/Inventory = total minus tax
 
+        # Debit: Inventory/Expense = subtotal (without tax)
         lines = [
             JournalLineInput(
                 account_code=debit_account,
-                debit=total_amount,
+                debit=subtotal,
                 credit=Decimal("0"),
                 memo=f"Pembelian dari {supplier_name}"
             ),
-            JournalLineInput(
-                account_code=self.account_config.AP_ACCOUNT,
-                debit=Decimal("0"),
-                credit=total_amount,
-                memo=f"Hutang ke {supplier_name}"
-            )
         ]
+
+        # Debit: PPN Masukan (only when tax > 0)
+        if tax > Decimal("0"):
+            lines.append(JournalLineInput(
+                account_code=self.account_config.VAT_INPUT_ACCOUNT,
+                debit=tax,
+                credit=Decimal("0"),
+                memo="PPN Masukan",
+            ))
+
+        # Credit: AP = total (subtotal + tax)
+        lines.append(JournalLineInput(
+            account_code=self.account_config.AP_ACCOUNT,
+            debit=Decimal("0"),
+            credit=total_amount,
+            memo=f"Hutang ke {supplier_name}"
+        ))
 
         request = CreateJournalRequest(
             tenant_id=tenant_id,

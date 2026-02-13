@@ -34,6 +34,11 @@ from ..services.action_planner_client import get_action_planner_client
 from ..services.action_validator_client import get_action_validator_client
 from ..services.action_executor_client import get_action_executor_client
 
+# RAG-LLM Insight Engine
+from ..services.insight.ragllm import InsightOrchestrator
+_ragllm = InsightOrchestrator()
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -46,7 +51,10 @@ def get_user_context(request: Request) -> dict:
     user_id = user.get("user_id")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
-    return {"tenant_id": tenant_id, "user_id": user_id or ""}
+    # Extract auth token for ragllm API calls
+    auth_header = request.headers.get("authorization", "")
+    auth_token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
+    return {"tenant_id": tenant_id, "user_id": user_id or "", "auth_token": auth_token}
 
 
 def make_response(
@@ -129,36 +137,27 @@ async def send_message(request: Request, body: ChatMessageRequest):
 # Handlers for each intent type
 # =============================================================================
 async def _handle_read_intent(text: str, ctx: dict, planner) -> ChatMessageResponse:
-    """Handle READ intent - master data queries and report queries."""
-    text_lower = text.lower()
-    is_master_data = any(kw in text_lower for kw in [
-        "master data", "vendor", "supplier", "produk", "barang", "item",
-        "sudah ada", "terdaftar", "ada gak", "ada nggak", "ada tidak",
-        "cek data", "cek stok", "stok",
-    ])
+    """Handle READ intent — RAG-LLM answers from real API data."""
+    auth_token = ctx.get("auth_token", "")
+    tenant_id = ctx.get("tenant_id", "")
 
-    if is_master_data:
-        entities = await planner.extract_entities(text)
-        ctx_parts = []
-        for vname in entities.get("vendors", []):
-            ctx_parts.append(f"Vendor '{vname}' — dicari di master data.")
-        for pname in entities.get("products", []):
-            ctx_parts.append(f"Produk '{pname}' — dicari di master data.")
-
-        if not ctx_parts:
-            ctx_parts.append("Tidak bisa mendeteksi nama vendor/produk spesifik.")
-
-        response = await planner.generate_response(
-            text,
-            context=f"User bertanya soal master data. Hasil: {' | '.join(ctx_parts)}. Jawab natural."
+    try:
+        result = await _ragllm.answer(
+            question=text,
+            auth_token=auth_token,
+            tenant_id=tenant_id,
         )
-        return make_response(MessageType.TEXT, text=response or "Saya sudah cek master data.")
+        answer = result.get("answer", "")
+        if answer and not result.get("error"):
+            logger.info(f"ragllm OK: tools={result.get('tools_used')}, iters={result.get('iterations')}")
+            return make_response(MessageType.TEXT, text=answer)
+        logger.warning(f"ragllm fallback: error={result.get('error')}")
+    except Exception as e:
+        logger.warning(f"ragllm exception: {e}")
 
-    response = await planner.generate_response(
-        text,
-        context="User bertanya soal data/laporan. Fitur laporan via chat belum tersedia, bisa diakses lewat menu Laporan."
-    )
-    return make_response(MessageType.TEXT, text=response or "Fitur laporan via chat sedang dikembangkan.")
+    # Fallback to planner LLM
+    response = await planner.generate_response(text)
+    return make_response(MessageType.TEXT, text=response or "Maaf, saya tidak bisa menjawab saat ini.")
 
 
 async def _handle_action_intent(text: str, action_type: str, ctx: dict, planner) -> ChatMessageResponse:
@@ -207,12 +206,171 @@ async def _handle_action_intent(text: str, action_type: str, ctx: dict, planner)
             )
             return make_response(MessageType.TEXT, text=response or "Oke, mau catat faktur pembelian. Dari vendor mana dan item apa?")
 
+    # --- Document: CREATE_SALES_INVOICE ---
+    elif action_type == "CREATE_SALES_INVOICE":
+        parsed = await planner.parse_document_text(text, "CREATE_SALES_INVOICE")
+        if not parsed:
+            parsed = {"customer_name": None, "items": []}
+
+        has_items = parsed.get("items") and len(parsed["items"]) > 0
+        # parse_document_text returns counterparty_name for both vendor/customer
+        customer_name = parsed.get("counterparty_name") or parsed.get("customer_name")
+        has_customer = customer_name is not None
+
+        if customer_name:
+            parsed["customer_name"] = customer_name
+
+        if has_items and has_customer:
+            return await _validate_and_prepare(
+                action_type="CREATE_SALES_INVOICE",
+                category="DOCUMENT",
+                payload=parsed,
+                ctx=ctx,
+                planner=planner,
+                original_text=text,
+            )
+        else:
+            ctx_parts = []
+            if has_customer:
+                ctx_parts.append(f"Customer: {customer_name}")
+            if has_items:
+                ctx_parts.append(f"Items: {len(parsed['items'])} item")
+            if not has_customer:
+                ctx_parts.append("Customer belum disebutkan")
+            if not has_items:
+                ctx_parts.append("Item belum disebutkan")
+
+            response = await planner.generate_response(
+                text,
+                context=f"User mau buat faktur penjualan. Data yang ada: {', '.join(ctx_parts)}. Tanya natural yang masih kurang."
+            )
+            return make_response(MessageType.TEXT, text=response or "Oke, mau buat faktur penjualan. Untuk customer siapa dan item apa?")
+
+    # --- Document: CREATE_CREDIT_NOTE ---
+    elif action_type == "CREATE_CREDIT_NOTE":
+        parsed = await planner.parse_document_text(text, "CREATE_CREDIT_NOTE")
+        if not parsed:
+            parsed = {"customer_name": None, "items": []}
+
+        has_items = parsed.get("items") and len(parsed["items"]) > 0
+        customer_name = parsed.get("counterparty_name") or parsed.get("customer_name")
+        has_customer = customer_name is not None
+
+        if customer_name:
+            parsed["customer_name"] = customer_name
+        if "reason" not in parsed:
+            parsed["reason"] = "return"
+
+        if has_items and has_customer:
+            return await _validate_and_prepare(
+                action_type="CREATE_CREDIT_NOTE",
+                category="DOCUMENT",
+                payload=parsed,
+                ctx=ctx,
+                planner=planner,
+                original_text=text,
+            )
+        else:
+            ctx_parts = []
+            if has_customer:
+                ctx_parts.append(f"Customer: {customer_name}")
+            if has_items:
+                ctx_parts.append(f"Items: {len(parsed['items'])} item")
+            if not has_customer:
+                ctx_parts.append("Customer belum disebutkan")
+            if not has_items:
+                ctx_parts.append("Item retur belum disebutkan")
+
+            response = await planner.generate_response(
+                text,
+                context=f"User mau buat nota kredit/retur. Data yang ada: {', '.join(ctx_parts)}. Tanya natural yang masih kurang."
+            )
+            return make_response(MessageType.TEXT, text=response or "Oke, mau catat retur. Untuk customer siapa dan item apa yang diretur?")
+
+    # --- Transaction: RECEIVE_PAYMENT ---
+    elif action_type == "RECEIVE_PAYMENT":
+        # For NLU text messages, guide user to provide structured data
+        response = await planner.generate_response(
+            text,
+            context=(
+                "User mau terima pembayaran. Untuk catat via chat, user perlu menyebutkan: "
+                "1) Dari customer siapa, 2) Berapa nominal, 3) Untuk invoice mana (opsional, auto-detect jika 1 invoice open). "
+                "Bisa juga pakai form Terima Pembayaran di menu. Tanya data yang masih kurang."
+            )
+        )
+        return make_response(MessageType.TEXT, text=response or "Mau terima pembayaran dari siapa, berapa nominal, dan untuk invoice mana?")
+
+    elif action_type == "MAKE_PAYMENT":
+        # For NLU text, guide user to provide structured data
+        response = await planner.generate_response(
+            text,
+            context=(
+                "User mau bayar vendor/tagihan. Untuk catat via chat, user perlu menyebutkan: "
+                "1) Vendor siapa, 2) Berapa nominal, 3) Dari rekening mana (BCA, Mandiri, kas, dll). "
+                "Opsional: nomor tagihan. Tanya data yang masih kurang."
+            )
+        )
+        return make_response(MessageType.TEXT, text=response or "Mau bayar ke vendor siapa, berapa nominal, dan dari rekening mana?")
+
+    elif action_type == "CREATE_EXPENSE":
+        # For NLU text, guide user to provide structured data
+        response = await planner.generate_response(
+            text,
+            context=(
+                "User mau catat biaya/pengeluaran. Untuk catat via chat, user perlu menyebutkan: "
+                "1) Biaya untuk apa (deskripsi), 2) Berapa nominal, 3) Dibayar dari rekening mana. "
+                "Opsional: vendor, termasuk PPN atau tidak. Tanya data yang masih kurang."
+            )
+        )
+        return make_response(MessageType.TEXT, text=response or "Mau catat biaya apa, berapa nominal, dan dibayar dari mana?")
+
+    elif action_type == "BANK_TRANSFER":
+        # For NLU text, guide user to provide structured data
+        response = await planner.generate_response(
+            text,
+            context=(
+                "User mau transfer antar rekening bank. Untuk catat via chat, user perlu menyebutkan: "
+                "1) Transfer dari rekening mana, 2) Ke rekening mana, 3) Berapa nominal. "
+                "Tanya data yang masih kurang."
+            )
+        )
+        return make_response(MessageType.TEXT, text=response or "Mau transfer dari rekening mana, ke mana, dan berapa nominalnya?")
+
+    elif action_type == "CREATE_PURCHASE_ORDER":
+        # Parse document text for PO details
+        parsed = await planner.parse_document_text(text, "CREATE_PURCHASE_ORDER")
+        if not parsed:
+            parsed = {"vendor_name": None, "items": []}
+        has_items = parsed.get("items") and len(parsed["items"]) > 0
+        has_vendor = parsed.get("vendor_name") is not None
+        if has_items and has_vendor:
+            return await _validate_and_prepare(
+                action_type="CREATE_PURCHASE_ORDER",
+                category="DOCUMENT",
+                payload=parsed,
+                ctx=ctx,
+                planner=planner,
+                original_text=text,
+            )
+        else:
+            missing = []
+            if not has_vendor:
+                missing.append("nama vendor")
+            if not has_items:
+                missing.append("daftar barang (nama, qty, harga)")
+            response = await planner.generate_response(
+                text,
+                context=f"User mau buat PO tapi data kurang: {', '.join(missing)}. Minta kelengkapan data."
+            )
+            return make_response(MessageType.TEXT, text=response or f"Data PO belum lengkap, butuh: {', '.join(missing)}")
+
     else:
         response = await planner.generate_response(
             text,
             context=f"User mau aksi '{action_type}' yang belum tersedia. Acknowledge, jelaskan segera hadir."
         )
         return make_response(MessageType.TEXT, text=response or f"Fitur {action_type} segera hadir.")
+
 
 
 async def _validate_and_prepare(
@@ -285,16 +443,16 @@ async def _validate_and_prepare(
     if not journal_preview and preview:
         journal_preview = preview.get("journal_entries", [])
 
-    # Calculate totals from payload
+    # Calculate totals from items
     items_preview = []
     grand_total = 0
     for item in payload.get("items", []):
-        qty = float(item.get("qty", 0))
-        price = float(item.get("price", 0))
+        qty = float(item.get("qty", item.get("quantity", 0)))
+        price = float(item.get("price", item.get("unit_price", 0)))
         subtotal = qty * price
         grand_total += subtotal
         items_preview.append({
-            "name": item.get("name", item.get("product_name", "")),
+            "name": item.get("name", item.get("description", item.get("product_name", ""))),
             "qty": qty,
             "unit": item.get("unit", "pcs"),
             "price": price,
@@ -302,26 +460,125 @@ async def _validate_and_prepare(
             "subtotal": subtotal,
         })
 
-    vendor_name = payload.get("vendor_name", "vendor")
-
     # Warnings from validation
     warnings = [e["message"] for e in validation.get("errors", []) if not e.get("blocking")]
 
+    # Action-type-specific preview metadata
+    if action_type == "CREATE_PURCHASE_INVOICE":
+        counterparty = payload.get("vendor_name", "vendor")
+        title = "Faktur Pembelian"
+        text_msg = f"Faktur pembelian Rp{grand_total:,.0f} dari {counterparty} siap dibuat."
+        summary = {
+            "title": title,
+            "vendor": counterparty,
+            "invoice_number": payload.get("invoice_number"),
+            "date": payload.get("bill_date"),
+            "due_date": payload.get("due_date"),
+        }
+    elif action_type == "CREATE_SALES_INVOICE":
+        counterparty = payload.get("customer_name", "customer")
+        title = "Faktur Penjualan"
+        text_msg = f"Faktur penjualan Rp{grand_total:,.0f} ke {counterparty} siap dibuat."
+        summary = {
+            "title": title,
+            "customer": counterparty,
+            "invoice_number": payload.get("invoice_number"),
+            "date": payload.get("invoice_date"),
+            "due_date": payload.get("due_date"),
+        }
+    elif action_type == "CREATE_CREDIT_NOTE":
+        counterparty = payload.get("customer_name", "customer")
+        title = "Nota Kredit"
+        text_msg = f"Nota kredit Rp{grand_total:,.0f} untuk {counterparty} siap dibuat."
+        summary = {
+            "title": title,
+            "customer": counterparty,
+            "reason": payload.get("reason", "return"),
+            "date": payload.get("credit_note_date"),
+            "original_invoice": payload.get("original_invoice_id"),
+        }
+    elif action_type == "RECEIVE_PAYMENT":
+        counterparty = payload.get("customer_name", "customer")
+        amount = float(payload.get("total_amount", payload.get("amount", 0)))
+        title = "Terima Pembayaran"
+        text_msg = f"Penerimaan Rp{amount:,.0f} dari {counterparty} siap dicatat."
+        grand_total = amount
+        summary = {
+            "title": title,
+            "customer": counterparty,
+            "payment_date": payload.get("payment_date"),
+            "payment_method": payload.get("payment_method"),
+            "bank_account": payload.get("bank_account_name"),
+        }
+        items_preview = []  # Payments don't have items in preview
+    elif action_type == "MAKE_PAYMENT":
+        counterparty = payload.get("vendor_name", "vendor")
+        amount = float(payload.get("total_amount", payload.get("amount", 0)))
+        title = "Pembayaran Vendor"
+        text_msg = f"Pembayaran Rp{amount:,.0f} ke {counterparty} siap dilakukan."
+        grand_total = amount
+        summary = {
+            "title": title,
+            "vendor": counterparty,
+            "payment_date": payload.get("payment_date") or payload.get("date"),
+            "bank_account": payload.get("bank_account_name"),
+            "bill_number": payload.get("bill_number"),
+        }
+        items_preview = []
+    elif action_type == "CREATE_EXPENSE":
+        description = payload.get("description") or payload.get("notes", "Pengeluaran")
+        amount = float(payload.get("amount", 0))
+        title = "Pengeluaran"
+        text_msg = f"Pengeluaran Rp{amount:,.0f} ({description}) siap dicatat."
+        grand_total = amount
+        summary = {
+            "title": title,
+            "description": description,
+            "expense_date": payload.get("expense_date") or payload.get("date"),
+            "account": payload.get("account_name"),
+            "paid_through": payload.get("bank_account_name"),
+        }
+        items_preview = []
+    elif action_type == "BANK_TRANSFER":
+        source = payload.get("from_bank_name", payload.get("source_account_name", "rekening asal"))
+        dest = payload.get("to_bank_name", payload.get("destination_account_name", "rekening tujuan"))
+        amount = float(payload.get("amount", 0))
+        title = "Transfer Bank"
+        text_msg = f"Transfer Rp{amount:,.0f} dari {source} ke {dest} siap dilakukan."
+        grand_total = amount
+        summary = {
+            "title": title,
+            "source_bank": source,
+            "destination_bank": dest,
+            "transfer_date": payload.get("transfer_date") or payload.get("date"),
+        }
+        items_preview = []
+    elif action_type == "CREATE_PURCHASE_ORDER":
+        counterparty = payload.get("vendor_name", "vendor")
+        title = "Pesanan Pembelian"
+        text_msg = f"PO Rp{grand_total:,.0f} ke {counterparty} siap dibuat."
+        summary = {
+            "title": title,
+            "vendor": counterparty,
+            "po_date": payload.get("po_date") or payload.get("date"),
+            "expected_date": payload.get("expected_delivery_date"),
+        }
+    else:
+        counterparty = "unknown"
+        title = action_type
+        text_msg = f"Aksi {action_type} Rp{grand_total:,.0f} siap dieksekusi."
+        summary = {"title": title}
+
+
     return make_response(
         MessageType.ACTION_PREVIEW,
-        text=f"Faktur pembelian Rp{grand_total:,.0f} dari {vendor_name} siap dibuat.",
+        text=text_msg,
         data={
             "pending_action_id": prepare_result["pending_action_id"],
             "action_type": action_type,
             "expires_at": prepare_result.get("expires_at", ""),
             "confirmation_token": prepare_result.get("confirmation_token", ""),
-            "summary": {
-                "title": "Faktur Pembelian",
-                "vendor": vendor_name,
-                "invoice_number": payload.get("invoice_number"),
-                "date": payload.get("bill_date"),
-                "due_date": payload.get("due_date"),
-            },
+            "summary": summary,
             "items": items_preview,
             "calculation": {
                 "subtotal": grand_total,
@@ -592,28 +849,25 @@ async def _handle_master_data_action(
 
 
 async def _handle_unclear_intent(text: str, ctx: dict, planner) -> ChatMessageResponse:
-    """Handle UNCLEAR intent - try entity extraction, then conversational response."""
-    text_lower = text.lower()
-    has_entity = any(kw in text_lower for kw in [
-        "vendor", "supplier", "produk", "barang", "item", "stok",
-        "sudah ada", "terdaftar", "ada gak", "ada nggak",
-    ])
+    """Handle UNCLEAR intent — try ragllm first, fallback to planner."""
+    auth_token = ctx.get("auth_token", "")
+    tenant_id = ctx.get("tenant_id", "")
 
-    if has_entity:
-        entities = await planner.extract_entities(text)
-        has_results = entities.get("vendors") or entities.get("products")
-        if has_results:
-            ctx_parts = []
-            for v in entities.get("vendors", []):
-                ctx_parts.append(f"Vendor '{v}' dicari.")
-            for p in entities.get("products", []):
-                ctx_parts.append(f"Produk '{p}' dicari.")
-            response = await planner.generate_response(
-                text,
-                context=f"Hasil cek: {' | '.join(ctx_parts)}. Jawab natural."
-            )
-            return make_response(MessageType.TEXT, text=response or "Ini yang saya temukan.")
+    # Try ragllm — it might be a data question the intent classifier missed
+    try:
+        result = await _ragllm.answer(
+            question=text,
+            auth_token=auth_token,
+            tenant_id=tenant_id,
+        )
+        answer = result.get("answer", "")
+        if answer and not result.get("error"):
+            logger.info(f"ragllm (unclear) OK: tools={result.get('tools_used')}")
+            return make_response(MessageType.TEXT, text=answer)
+    except Exception as e:
+        logger.warning(f"ragllm (unclear) exception: {e}")
 
+    # Fallback to planner conversational response
     response = await planner.generate_response(text)
     return make_response(
         MessageType.TEXT,
@@ -779,8 +1033,28 @@ async def send_structured_message(request: Request, body: dict):
     if action_type in MASTER_DATA_ACTIONS:
         # Master data: validate → prepare → auto-execute (no confirmation needed)
         return await _handle_master_data_structured(action_type, raw_data, ctx)
-    elif action_type == "CREATE_PURCHASE_INVOICE":
+    elif action_type in ("CREATE_PURCHASE_INVOICE", "CREATE_SALES_INVOICE", "CREATE_CREDIT_NOTE", "CREATE_PURCHASE_ORDER"):
         # Document: validate → prepare → preview (needs user confirmation)
+        return await _validate_and_prepare(
+            action_type=action_type,
+            category="DOCUMENT",
+            payload=raw_data,
+            ctx=ctx,
+            planner=planner,
+            original_text="",
+        )
+    elif action_type in ("RECEIVE_PAYMENT", "MAKE_PAYMENT", "BANK_TRANSFER"):
+        # Payment/Transaction: validate → prepare → preview (needs user confirmation)
+        return await _validate_and_prepare(
+            action_type=action_type,
+            category="PAYMENT",
+            payload=raw_data,
+            ctx=ctx,
+            planner=planner,
+            original_text="",
+        )
+    elif action_type == "CREATE_EXPENSE":
+        # Expense: validate → prepare → preview (needs user confirmation)
         return await _validate_and_prepare(
             action_type=action_type,
             category="DOCUMENT",

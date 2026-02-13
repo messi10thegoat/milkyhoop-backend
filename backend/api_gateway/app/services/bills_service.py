@@ -966,38 +966,39 @@ class BillsService:
             {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
-            # Get bill
-            bill = await conn.fetchrow(
-                """
-                SELECT id, amount, amount_paid, status, ap_id, vendor_name
-                FROM bills
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bill_id,
-                tenant_id,
-            )
-
-            if not bill:
-                return {"success": False, "message": "Bill not found", "data": None}
-
-            if bill["status"] == "void":
-                return {
-                    "success": False,
-                    "message": "Cannot pay voided bill",
-                    "data": None,
-                }
-
-            amount_due = bill["amount"] - bill["amount_paid"]
-            payment_amount = int(request["amount"])
-
-            if payment_amount > amount_due:
-                return {
-                    "success": False,
-                    "message": f"Payment amount ({payment_amount}) exceeds amount due ({amount_due})",
-                    "data": None,
-                }
-
             async with conn.transaction():
+                # Get bill with row lock to prevent concurrent payment race
+                bill = await conn.fetchrow(
+                    """
+                    SELECT id, amount, amount_paid, status, ap_id, vendor_name
+                    FROM bills
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    bill_id,
+                    tenant_id,
+                )
+
+                if not bill:
+                    return {"success": False, "message": "Bill not found", "data": None}
+
+                if bill["status"] == "void":
+                    return {
+                        "success": False,
+                        "message": "Cannot pay voided bill",
+                        "data": None,
+                    }
+
+                amount_due = bill["amount"] - bill["amount_paid"]
+                payment_amount = int(request["amount"])
+
+                if payment_amount > amount_due:
+                    return {
+                        "success": False,
+                        "message": f"Payment amount ({payment_amount}) exceeds amount due ({amount_due})",
+                        "data": None,
+                    }
+
                 payment_date = request.get("payment_date") or date.today()
 
                 # Resolve account - bank_account_id takes precedence
@@ -2145,7 +2146,7 @@ class BillsService:
             bill = await conn.fetchrow(
                 """
                 SELECT id, status_v2, invoice_number, vendor_name, vendor_id,
-                       issue_date, due_date, grand_total
+                       issue_date, due_date, grand_total, tax_amount
                 FROM bills
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -2169,6 +2170,7 @@ class BillsService:
                 journal_id = None
 
                 if self.accounting:
+                    bill_tax = Decimal(str(bill["tax_amount"] or 0))
                     ap_result = await self.accounting.create_payable(
                         tenant_id=tenant_id,
                         supplier_name=bill["vendor_name"],
@@ -2179,6 +2181,7 @@ class BillsService:
                         amount=Decimal(bill["grand_total"]),
                         source_type="BILL",
                         source_id=bill_id,
+                        tax_amount=bill_tax,
                     )
 
                     if not ap_result.get("success"):

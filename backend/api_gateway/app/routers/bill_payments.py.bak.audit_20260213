@@ -232,11 +232,9 @@ async def create_bill_payment_journal(
         journal_number = f"JRN-{payment_number}"
 
     # Calculate total debit (must equal total credit for balanced journal)
-    # Law 4: header total = total_amount + discount + bank_fee
-    # Debit side: AP(allocated) + BankFee(bank_fee) + VendorDeposit(unapplied)
-    # Credit side: Bank(total+bank_fee) + Discount(discount)
-    # Both equal total_amount + discount + bank_fee (since unapplied = total + discount - allocated)
-    total_debit = float(total_amount + discount_amount + bank_fee_amount)
+    total_debit = float(allocated_amount + bank_fee_amount)
+    if unapplied_amount > 0:
+        total_debit += float(unapplied_amount)
 
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
@@ -743,16 +741,14 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                 payment_number = await generate_payment_number(conn, ctx["tenant_id"])
                 allocated_amount = sum(a.amount_applied for a in payload.allocations)
-                # Law 4 fix: unapplied = total_amount + discount - allocated
-                # Mirrors receive_payments formula for balanced journal
                 unapplied_amount = (
-                    payload.total_amount + payload.discount_amount - allocated_amount
+                    payload.total_amount - allocated_amount - payload.discount_amount
                 )
 
-                if allocated_amount > payload.total_amount + payload.discount_amount:
+                if allocated_amount + payload.discount_amount > payload.total_amount:
                     raise HTTPException(
                         status_code=400,
-                        detail="Allocations exceed payment amount plus discount",
+                        detail="Allocations plus discount exceeds payment",
                     )
 
                 status = "draft" if payload.save_as_draft else "posted"
@@ -976,11 +972,6 @@ async def post_bill_payment(request: Request, payment_id: str):
                 )
 
                 for alloc in allocations:
-                    # Law 13: Lock bill row before update to prevent concurrent modification
-                    await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 FOR UPDATE",
-                        alloc["bill_id"],
-                    )
                     await conn.execute(
                         """
                         UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
@@ -1096,7 +1087,6 @@ async def void_bill_payment(
                 allocated_amount = payment["allocated_amount"] or 0
                 discount_amount = payment["discount_amount"] or 0
                 bank_fee_amount = payment["bank_fee_amount"] or 0
-                unapplied_amount = payment["unapplied_amount"] or 0
                 total_amount = payment["total_amount"] or 0
                 bank_coa_id = payment["bank_coa_id"]
 
@@ -1113,11 +1103,7 @@ async def void_bill_payment(
                 # Reversing entry is OPPOSITE of original payment journal:
                 # Original: Dr AP, Dr BankFee, Cr Bank, Cr Discount
                 # Reversal: Cr AP, Cr BankFee, Dr Bank, Dr Discount
-                # Law 4: void header = total + discount + bank_fee
-                # Same total as original journal (reversal mirrors the original)
-                # Debit side: Bank(total+bank_fee) + Discount(discount) 
-                # Credit side: AP(allocated) + BankFee(bank_fee) + VendorDeposit(unapplied)
-                journal_total = float(total_amount + discount_amount + bank_fee_amount)
+                journal_total = float(total_amount + bank_fee_amount)
 
                 # Create reversing journal entry header
                 await conn.execute(
@@ -1203,27 +1189,6 @@ async def void_bill_payment(
                         "Reversal - Bank Fee",
                     )
 
-                # Cr. Vendor Deposit (reverses the original debit for unapplied/overpayment)
-                if unapplied_amount > 0:
-                    vendor_deposit_account_id = await conn.fetchval(
-                        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%') LIMIT 1",
-                        ctx["tenant_id"],
-                    )
-                    if vendor_deposit_account_id:
-                        line_number += 1
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                            VALUES ($1, $2, $3, $4, 0, $5, $6)
-                            """,
-                            uuid_module.uuid4(),
-                            void_journal_id,
-                            line_number,
-                            vendor_deposit_account_id,
-                            float(unapplied_amount),
-                            f"Reversal - Vendor Deposit {payment['vendor_name']}",
-                        )
-
                 # Reverse bill allocations (reduce paid_amount on bills)
                 allocations = await conn.fetch(
                     "SELECT bill_id, amount_applied FROM bill_payment_allocations WHERE payment_id = $1::uuid",
@@ -1231,11 +1196,6 @@ async def void_bill_payment(
                 )
 
                 for alloc in allocations:
-                    # Law 13: Lock bill row before update to prevent concurrent modification
-                    await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 FOR UPDATE",
-                        alloc["bill_id"],
-                    )
                     await conn.execute(
                         """
                         UPDATE bills SET amount_paid = GREATEST(0, COALESCE(amount_paid, 0) - $1),

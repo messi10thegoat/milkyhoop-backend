@@ -536,7 +536,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                 """,
                     ctx["tenant_id"],
                     cn_number,
-                    UUID(body.customer_id) if body.customer_id else None,
+                    str(body.customer_id) if body.customer_id else None,
                     body.customer_name,
                     UUID(body.original_invoice_id) if body.original_invoice_id else None,
                     original_invoice_number,

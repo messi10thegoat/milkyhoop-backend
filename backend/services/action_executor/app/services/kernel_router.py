@@ -26,7 +26,7 @@ ACTION_ROUTES: Dict[str, Dict[str, str]] = {
     },
     "CREATE_SALES_INVOICE": {
         "method": "POST",
-        "path": "/api/invoices",
+        "path": "/api/sales-invoices",
     },
     "CREATE_EXPENSE": {
         "method": "POST",
@@ -46,11 +46,11 @@ ACTION_ROUTES: Dict[str, Dict[str, str]] = {
     },
     "RECEIVE_PAYMENT": {
         "method": "POST",
-        "path": "/api/payments/received",
+        "path": "/api/receive-payments",
     },
     "MAKE_PAYMENT": {
         "method": "POST",
-        "path": "/api/payments/made",
+        "path": "/api/bill-payments",
     },
     "POST_GENERAL_JOURNAL": {
         "method": "POST",
@@ -59,6 +59,18 @@ ACTION_ROUTES: Dict[str, Dict[str, str]] = {
     "REVERSE_JOURNAL": {
         "method": "POST",
         "path": "/api/journals/{journal_id}/reverse",
+    },
+    "CREATE_CREDIT_NOTE": {
+        "method": "POST",
+        "path": "/api/credit-notes",
+    },
+    "BANK_TRANSFER": {
+        "method": "POST",
+        "path": "/api/bank-transfers",
+    },
+    "CREATE_PURCHASE_ORDER": {
+        "method": "POST",
+        "path": "/api/purchase-orders",
     },
 }
 
@@ -110,6 +122,122 @@ class KernelRouter:
                 payload["sales_price"] = payload.pop("sell_price")
             if "category" in payload:
                 payload["kategori"] = payload.pop("category")
+
+        elif action_type == "CREATE_SALES_INVOICE":
+            # Frontend uses "name" but API uses "description" for items
+            items = payload.get("items") or payload.get("line_items") or []
+            mapped_items = []
+            for item in items:
+                mapped_item = dict(item)
+                # Map "name" to "description" if needed
+                if "name" in mapped_item and "description" not in mapped_item:
+                    mapped_item["description"] = mapped_item.pop("name")
+                # Map "qty" to "quantity" if needed
+                if "qty" in mapped_item and "quantity" not in mapped_item:
+                    mapped_item["quantity"] = mapped_item.pop("qty")
+                # Map "price" to "unit_price" if needed
+                if "price" in mapped_item and "unit_price" not in mapped_item:
+                    mapped_item["unit_price"] = mapped_item.pop("price")
+                mapped_items.append(mapped_item)
+            payload["items"] = mapped_items
+
+        elif action_type == "RECEIVE_PAYMENT":
+            # Map "amount" to "total_amount" if needed
+            if "amount" in payload and "total_amount" not in payload:
+                payload["total_amount"] = payload.pop("amount")
+            # Ensure allocations exist
+            if "allocations" not in payload and "invoice_id" in payload:
+                # Auto-create single allocation
+                alloc_amount = payload.get("total_amount") or payload.get("amount", 0)
+                payload["allocations"] = [{"invoice_id": payload["invoice_id"], "amount_applied": alloc_amount}]
+
+        elif action_type == "CREATE_CREDIT_NOTE":
+            # Map items similar to sales invoice
+            items = payload.get("items") or payload.get("line_items") or []
+            mapped_items = []
+            for item in items:
+                mapped_item = dict(item)
+                if "name" in mapped_item and "description" not in mapped_item:
+                    mapped_item["description"] = mapped_item.pop("name")
+                if "qty" in mapped_item and "quantity" not in mapped_item:
+                    mapped_item["quantity"] = mapped_item.pop("qty")
+                if "price" in mapped_item and "unit_price" not in mapped_item:
+                    mapped_item["unit_price"] = mapped_item.pop("price")
+                mapped_items.append(mapped_item)
+            payload["items"] = mapped_items
+            # Map "reason_text" to "reason" if needed
+            if "reason_text" in payload and "reason" not in payload:
+                payload["reason"] = payload.pop("reason_text")
+            # Default reason if not provided
+            if "reason" not in payload:
+                payload["reason"] = "return"
+
+        elif action_type == "MAKE_PAYMENT":
+            # Map to bill-payments API schema
+            mapped = {
+                "vendor_id": payload.get("vendor_id"),
+                "bank_account_id": payload.get("bank_account_id"),
+                "total_amount": payload.get("amount") or payload.get("total_amount"),
+                "payment_date": payload.get("date") or payload.get("payment_date"),
+                "payment_method": payload.get("payment_method", "bank_transfer"),
+                "reference_number": payload.get("reference", ""),
+                "notes": payload.get("notes", ""),
+                "save_as_draft": False,
+            }
+            # Add allocations if bill_id provided
+            bill_id = payload.get("bill_id")
+            if bill_id:
+                amount = mapped["total_amount"] or 0
+                mapped["allocations"] = [{"bill_id": bill_id, "amount_applied": amount}]
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "CREATE_EXPENSE":
+            # Map to expenses API schema
+            mapped = {
+                "expense_date": payload.get("date") or payload.get("expense_date"),
+                "paid_through_id": payload.get("paid_through_id") or payload.get("bank_account_id"),
+                "account_id": payload.get("account_id") or payload.get("expense_account_id"),
+                "amount": payload.get("amount"),
+                "vendor_id": payload.get("vendor_id"),
+                "vendor_name": payload.get("vendor_name"),
+                "tax_rate": payload.get("tax_rate", 0),
+                "reference": payload.get("reference", ""),
+                "notes": payload.get("notes") or payload.get("description", ""),
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "BANK_TRANSFER":
+            # Map to bank-transfers API schema
+            mapped = {
+                "from_bank_id": payload.get("from_bank_id") or payload.get("source_account_id"),
+                "to_bank_id": payload.get("to_bank_id") or payload.get("destination_account_id"),
+                "amount": payload.get("amount"),
+                "transfer_date": payload.get("date") or payload.get("transfer_date"),
+                "ref_no": payload.get("reference", ""),
+                "notes": payload.get("notes") or payload.get("description", ""),
+                "auto_post": True,
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "CREATE_PURCHASE_ORDER":
+            # Map to purchase-orders API schema
+            items = []
+            for item in payload.get("items", []):
+                items.append({
+                    "description": item.get("description") or item.get("name") or item.get("product_name", ""),
+                    "quantity": item.get("quantity") or item.get("qty", 1),
+                    "unit": item.get("unit"),
+                    "unit_price": item.get("unit_price") or item.get("price", 0),
+                })
+            mapped = {
+                "vendor_id": payload.get("vendor_id"),
+                "vendor_name": payload.get("vendor_name"),
+                "po_date": payload.get("date") or payload.get("po_date"),
+                "expected_date": payload.get("expected_delivery_date") or payload.get("expected_date"),
+                "items": items,
+                "notes": payload.get("notes", ""),
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
 
         # Remove None values and empty strings
         return {k: v for k, v in payload.items() if v is not None and v != ""}
@@ -226,11 +354,14 @@ class KernelRouter:
             or data.get("bill_id")
             or data.get("invoice_id")
             or data.get("payment_id")
+            or data.get("credit_note_id")
             or data.get("journal_id")
             or data.get("customer_id")
             or data.get("vendor_id")
             or data.get("product_id")
             or data.get("item_id")
+            or data.get("transfer_id")
+            or data.get("po_id")
             or ""
         )
 
@@ -239,7 +370,10 @@ class KernelRouter:
             or data.get("bill_number")
             or data.get("invoice_number")
             or data.get("payment_number")
+            or data.get("credit_note_number")
             or data.get("journal_number")
+            or data.get("transfer_number")
+            or data.get("po_number")
             or ""
         )
 
@@ -252,9 +386,12 @@ class KernelRouter:
             "CREATE_VENDOR": "vendor",
             "CREATE_PRODUCT": "item",
             "RECEIVE_PAYMENT": "payment_received",
-            "MAKE_PAYMENT": "payment_made",
+            "MAKE_PAYMENT": "bill_payment",
             "POST_GENERAL_JOURNAL": "journal",
             "REVERSE_JOURNAL": "journal",
+            "CREATE_CREDIT_NOTE": "credit_note",
+            "BANK_TRANSFER": "bank_transfer",
+            "CREATE_PURCHASE_ORDER": "purchase_order",
         }
 
         journal_entry_id = str(data.get("journal_entry_id") or data.get("journal_id") or "")

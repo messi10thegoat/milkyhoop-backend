@@ -62,6 +62,11 @@ ACTION_KEYWORDS: Dict[str, List[str]] = {
         "terima pembayaran", "pelunasan", "terima bayar",
         "pembayaran masuk", "terima transfer",
     ],
+    "CREATE_CREDIT_NOTE": [
+        "nota kredit", "credit note", "retur penjualan", "retur jual",
+        "buat nota kredit", "catat retur", "retur pelanggan",
+        "kembalikan", "pengembalian barang", "retur barang",
+    ],
     "UPDATE_VENDOR": [
         "ubah vendor", "update vendor", "ganti vendor",
         "edit vendor", "perbaiki vendor",
@@ -73,6 +78,22 @@ ACTION_KEYWORDS: Dict[str, List[str]] = {
     "UPDATE_PRODUCT": [
         "ubah produk", "update produk", "ganti harga",
         "edit produk", "edit barang", "ubah barang", "update barang",
+    ],
+    "CREATE_EXPENSE": [
+        "catat biaya", "catat pengeluaran", "tambah biaya", "tambah pengeluaran",
+        "expense", "bayar listrik", "bayar sewa", "bayar gaji",
+        "biaya operasional", "biaya internet", "keluar biaya",
+        "pengeluaran", "biaya transportasi", "biaya kantor",
+    ],
+    "BANK_TRANSFER": [
+        "transfer bank", "transfer dari", "transfer ke",
+        "pindah dana", "pindahkan saldo", "transfer antar rekening",
+        "pindah uang", "kirim dana",
+    ],
+    "CREATE_PURCHASE_ORDER": [
+        "pesanan pembelian", "purchase order", "buat po", "buat PO",
+        "pesan barang", "order ke vendor", "order barang",
+        "po baru", "pesanan baru",
     ],
 }
 
@@ -395,7 +416,7 @@ class PlanGenerator:
 
         # For ACTION intents, parse the text into structured data
         if intent_type == "ACTION" and action_type in VALID_ACTION_TYPES:
-            if action_type in ("CREATE_PURCHASE_INVOICE", "CREATE_SALES_INVOICE"):
+            if action_type in ("CREATE_PURCHASE_INVOICE", "CREATE_SALES_INVOICE", "CREATE_CREDIT_NOTE"):
                 parsed = await self.parse_document_text(text, action_type)
                 plan["draft_payload"] = parsed
                 plan["missing_fields"] = parsed.get("missing_fields", [])

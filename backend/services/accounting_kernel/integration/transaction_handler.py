@@ -303,6 +303,7 @@ class TransactionEventHandler:
         )
 
         # Post journal entry
+        tax_amount = Decimal(str(payload.get('tax_amount', 0))) if payload.get('tax_amount') else None
         result = await self._auto_posting.post_bill(
             tenant_id=tenant_id,
             bill_date=bill_date,
@@ -310,7 +311,8 @@ class TransactionEventHandler:
             supplier_name=supplier_name,
             total_amount=total_amount,
             expense_account=expense_account,
-            description=payload.get('description')
+            description=payload.get('description'),
+            tax_amount=tax_amount
         )
 
         return {

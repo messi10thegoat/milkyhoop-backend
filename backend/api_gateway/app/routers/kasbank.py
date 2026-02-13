@@ -91,7 +91,7 @@ async def list_kasbank_accounts(request: Request):
                     FROM journal_lines jl
                     JOIN journal_entries je ON jl.journal_id = je.id
                     WHERE je.tenant_id = ba.tenant_id
-                      AND je.status = POSTED
+                      AND je.status = 'POSTED'
                       AND jl.account_id = ba.coa_id
                 ) jb ON true
                 WHERE ba.tenant_id = $1 AND ba.is_active = true
@@ -161,7 +161,7 @@ async def get_account_transactions(
                         SELECT SUM(jl.debit - jl.credit)
                         FROM journal_lines jl
                         JOIN journal_entries je ON jl.journal_id = je.id
-                        WHERE je.tenant_id = $2 AND je.status = POSTED AND jl.account_id = ba.coa_id
+                        WHERE je.tenant_id = $2 AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
                     ), 0) as balance
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
@@ -195,33 +195,33 @@ async def get_account_transactions(
             rows = await conn.fetch(
                 f"""
                 SELECT * FROM (
-                    SELECT id::text, receive_payment as type, payment_number as reference,
-                        payment_date as date, total_amount as amount, debit as entry_type,
-                        COALESCE(notes, Payment Received) as description, posted as status
+                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
+                        payment_date as date, total_amount as amount, 'debit' as entry_type,
+                        COALESCE(notes, 'Payment Received') as description, 'posted' as status
                     FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = posted
+                    WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id::text, expense as type, expense_number as reference,
-                        expense_date as date, total_amount as amount, credit as entry_type,
-                        COALESCE(notes, Expense) as description, status
+                    SELECT id::text, 'expense' as type, expense_number as reference,
+                        expense_date as date, total_amount as amount, 'credit' as entry_type,
+                        COALESCE(notes, 'Expense') as description, status
                     FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = posted
+                    WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id::text, transfer_out as type, transfer_number as reference,
-                        transfer_date as date, amount, credit as entry_type,
-                        COALESCE(notes, Transfer Out) as description, status
+                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
+                        transfer_date as date, amount, 'credit' as entry_type,
+                        COALESCE(notes, 'Transfer Out') as description, status
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = posted
+                    WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id::text, transfer_in as type, transfer_number as reference,
-                        transfer_date as date, amount, debit as entry_type,
-                        COALESCE(notes, Transfer In) as description, status
+                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
+                        transfer_date as date, amount, 'debit' as entry_type,
+                        COALESCE(notes, 'Transfer In') as description, status
                     FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = posted
+                    WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT bp.id::text, bill_payment as type, bp.reference as reference,
-                        bp.payment_date as date, bp.amount, credit as entry_type,
-                        COALESCE(bp.notes, Bill Payment) as description, posted as status
+                    SELECT bp.id::text, 'bill_payment' as type, bp.reference as reference,
+                        bp.payment_date as date, bp.amount, 'credit' as entry_type,
+                        COALESCE(bp.notes, 'Bill Payment') as description, 'posted' as status
                     FROM bill_payments bp
                     WHERE bp.tenant_id = $1 AND bp.bank_account_id::text = $2
                 ) t
@@ -236,13 +236,13 @@ async def get_account_transactions(
             count = await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM (
-                    SELECT id FROM receive_payments WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = posted
+                    SELECT id FROM receive_payments WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id FROM expenses WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = posted
+                    SELECT id FROM expenses WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = posted
+                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
                     UNION ALL
-                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = posted
+                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
                     UNION ALL
                     SELECT id FROM bill_payments WHERE tenant_id = $1 AND bank_account_id::text = $2
                 ) t
@@ -292,7 +292,7 @@ async def get_account_summary(
                         SELECT SUM(jl.debit - jl.credit)
                         FROM journal_lines jl
                         JOIN journal_entries je ON jl.journal_id = je.id
-                        WHERE je.tenant_id = $2 AND je.status = POSTED AND jl.account_id = ba.coa_id
+                        WHERE je.tenant_id = $2 AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
                     ), 0) as balance
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
@@ -309,11 +309,11 @@ async def get_account_summary(
                 SELECT COALESCE(SUM(amount), 0) FROM (
                     SELECT total_amount as amount FROM receive_payments
                     WHERE tenant_id = $1 AND bank_account_id::text = $2
-                      AND payment_date >= CURRENT_DATE - INTERVAL {period_filter} AND status = posted
+                      AND payment_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
                     UNION ALL
                     SELECT amount FROM bank_transfers
                     WHERE tenant_id = $1 AND to_bank_id::text = $2
-                      AND transfer_date >= CURRENT_DATE - INTERVAL {period_filter} AND status = posted
+                      AND transfer_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
                 ) t
                 """,
                 ctx["tenant_id"], account_id,
@@ -324,11 +324,11 @@ async def get_account_summary(
                 SELECT COALESCE(SUM(amount), 0) FROM (
                     SELECT total_amount as amount FROM expenses
                     WHERE tenant_id = $1 AND paid_through_id::text = $2
-                      AND expense_date >= CURRENT_DATE - INTERVAL {period_filter} AND status = posted
+                      AND expense_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
                     UNION ALL
                     SELECT amount FROM bank_transfers
                     WHERE tenant_id = $1 AND from_bank_id::text = $2
-                      AND transfer_date >= CURRENT_DATE - INTERVAL {period_filter} AND status = posted
+                      AND transfer_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
                 ) t
                 """,
                 ctx["tenant_id"], account_id,
@@ -360,15 +360,15 @@ async def get_kasbank_stats(request: Request):
             totals = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN ba.account_type = cash THEN jb.balance ELSE 0 END), 0) as cash_total,
-                    COALESCE(SUM(CASE WHEN ba.account_type = bank THEN jb.balance ELSE 0 END), 0) as bank_total,
+                    COALESCE(SUM(CASE WHEN ba.account_type = 'cash' THEN jb.balance ELSE 0 END), 0) as cash_total,
+                    COALESCE(SUM(CASE WHEN ba.account_type = 'bank' THEN jb.balance ELSE 0 END), 0) as bank_total,
                     COUNT(*) as account_count
                 FROM bank_accounts ba
                 LEFT JOIN LATERAL (
                     SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as balance
                     FROM journal_lines jl
                     JOIN journal_entries je ON jl.journal_id = je.id
-                    WHERE je.tenant_id = ba.tenant_id AND je.status = POSTED AND jl.account_id = ba.coa_id
+                    WHERE je.tenant_id = ba.tenant_id AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
                 ) jb ON true
                 WHERE ba.tenant_id = $1 AND ba.is_active = true
                 """,
@@ -376,11 +376,11 @@ async def get_kasbank_stats(request: Request):
             )
 
             today_in = await conn.fetchval(
-                "SELECT COALESCE(SUM(total_amount), 0) FROM receive_payments WHERE tenant_id = $1 AND payment_date = CURRENT_DATE AND status = posted",
+                "SELECT COALESCE(SUM(total_amount), 0) FROM receive_payments WHERE tenant_id = $1 AND payment_date = CURRENT_DATE AND status = 'posted'",
                 ctx["tenant_id"],
             )
             today_out = await conn.fetchval(
-                "SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE tenant_id = $1 AND expense_date = CURRENT_DATE AND status = posted",
+                "SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE tenant_id = $1 AND expense_date = CURRENT_DATE AND status = 'posted'",
                 ctx["tenant_id"],
             )
 
