@@ -779,7 +779,7 @@ async def get_product_stock_card(request: Request, product_id: str):
                 raise HTTPException(status_code=404, detail="Product not found")
 
             product = ProductStockItem(
-                id=product_row['id'],
+                id=str(product_row['id']),
                 nama_produk=product_row['nama_produk'],
                 satuan=product_row['satuan'],
                 kategori=product_row['kategori'],
@@ -795,22 +795,25 @@ async def get_product_stock_card(request: Request, product_id: str):
             )
             nama_produk = product_row['nama_produk']
 
-            # 2. Get suppliers from purchase transactions
+            # 2. Get suppliers from bills (Pure Ledger)
             suppliers_query = """
                 SELECT
-                    th.nama_pihak as nama_supplier,
+                    b.vendor_name as nama_supplier,
                     COUNT(*) as total_purchases
-                FROM public.transaksi_harian th
-                JOIN public.item_transaksi it ON th.id = it.transaksi_id
-                WHERE th.tenant_id = $1
-                    AND LOWER(it.nama_produk) = LOWER($2)
-                    AND th.jenis_transaksi = 'pembelian'
-                    AND th.nama_pihak IS NOT NULL
-                    AND th.nama_pihak != ''
-                GROUP BY th.nama_pihak
+                FROM bill_items bi
+                JOIN bills b ON b.id = bi.bill_id
+                WHERE b.tenant_id = $1
+                    AND (
+                        bi.product_id = $2::uuid
+                        OR LOWER(bi.product_name) = LOWER($3)
+                    )
+                    AND b.status != 'void'
+                    AND b.vendor_name IS NOT NULL
+                    AND b.vendor_name != ''
+                GROUP BY b.vendor_name
                 ORDER BY total_purchases DESC
             """
-            supplier_rows = await conn.fetch(suppliers_query, tenant_id, nama_produk)
+            supplier_rows = await conn.fetch(suppliers_query, tenant_id, product_id, nama_produk)
             suppliers = [
                 SupplierItem(
                     nama_supplier=row['nama_supplier'],
@@ -819,32 +822,40 @@ async def get_product_stock_card(request: Request, product_id: str):
                 for row in supplier_rows
             ]
 
-            # 3. Get transaction history (last 10)
+            # 3. Get transaction history from inventory_ledger (Pure Ledger)
             history_query = """
                 SELECT
-                    th.id,
-                    TO_CHAR(th.created_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD') as tanggal,
-                    th.jenis_transaksi,
-                    it.jumlah,
-                    it.satuan,
-                    it.harga_satuan,
-                    it.subtotal,
-                    th.nama_pihak
-                FROM public.transaksi_harian th
-                JOIN public.item_transaksi it ON th.id = it.transaksi_id
-                WHERE th.tenant_id = $1
-                    AND LOWER(it.nama_produk) = LOWER($2)
-                ORDER BY th.created_at DESC
+                    il.id::text,
+                    TO_CHAR(il.movement_date, 'YYYY-MM-DD') as tanggal,
+                    CASE
+                        WHEN il.source_type = 'BILL' THEN 'pembelian'
+                        WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN 'penjualan'
+                        WHEN il.source_type = 'OPENING_BALANCE' THEN 'saldo_awal'
+                        WHEN il.source_type = 'SALES_INVOICE_VOID' THEN 'void_penjualan'
+                        ELSE LOWER(il.source_type)
+                    END as jenis_transaksi,
+                    COALESCE(il.quantity_in, 0) + COALESCE(il.quantity_out, 0) as jumlah,
+                    il.unit_cost as harga_satuan,
+                    il.total_cost as subtotal,
+                    CASE
+                        WHEN il.source_type = 'BILL' THEN (SELECT b.vendor_name FROM bills b WHERE b.id = il.source_id LIMIT 1)
+                        WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN (SELECT s.customer_name FROM sales_invoices s WHERE s.id = il.source_id LIMIT 1)
+                        ELSE NULL
+                    END as nama_pihak
+                FROM inventory_ledger il
+                WHERE il.tenant_id = $1
+                    AND il.product_id = $2::uuid
+                ORDER BY il.movement_date DESC, il.created_at DESC
                 LIMIT 10
             """
-            history_rows = await conn.fetch(history_query, tenant_id, nama_produk)
+            history_rows = await conn.fetch(history_query, tenant_id, product_id)
             transaction_history = [
                 TransactionHistoryItem(
                     id=row['id'],
                     tanggal=row['tanggal'],
                     jenis_transaksi=row['jenis_transaksi'],
                     jumlah=float(row['jumlah']),
-                    satuan=row['satuan'] or product_row['satuan'],
+                    satuan=product_row['satuan'],
                     harga_satuan=float(row['harga_satuan']),
                     subtotal=float(row['subtotal']),
                     nama_pihak=row['nama_pihak']
@@ -852,19 +863,19 @@ async def get_product_stock_card(request: Request, product_id: str):
                 for row in history_rows
             ]
 
-            # 4. Get insight aggregates
+            # 4. Get insight aggregates from inventory_ledger (Pure Ledger)
             insight_query = """
                 SELECT
-                    COALESCE(SUM(CASE WHEN th.jenis_transaksi = 'pembelian' THEN it.jumlah ELSE 0 END), 0) as total_masuk,
-                    COALESCE(SUM(CASE WHEN th.jenis_transaksi = 'penjualan' THEN it.jumlah ELSE 0 END), 0) as total_keluar,
-                    AVG(CASE WHEN th.jenis_transaksi = 'penjualan' THEN it.jumlah END) as rata_rata_penjualan,
-                    COUNT(CASE WHEN th.jenis_transaksi = 'penjualan' THEN 1 END) as jumlah_transaksi_penjualan
-                FROM public.transaksi_harian th
-                JOIN public.item_transaksi it ON th.id = it.transaksi_id
-                WHERE th.tenant_id = $1
-                    AND LOWER(it.nama_produk) = LOWER($2)
+                    COALESCE(SUM(il.quantity_in), 0) as total_masuk,
+                    COALESCE(SUM(il.quantity_out), 0) as total_keluar,
+                    AVG(CASE WHEN il.quantity_out > 0 THEN il.quantity_out END) as rata_rata_penjualan,
+                    COUNT(CASE WHEN il.quantity_out > 0 THEN 1 END) as jumlah_transaksi_penjualan
+                FROM inventory_ledger il
+                WHERE il.tenant_id = $1
+                    AND il.product_id = $2::uuid
             """
-            insight_row = await conn.fetchrow(insight_query, tenant_id, nama_produk)
+
+            insight_row = await conn.fetchrow(insight_query, tenant_id, product_id)
             insight = StockInsight(
                 total_masuk=float(insight_row['total_masuk']),
                 total_keluar=float(insight_row['total_keluar']),

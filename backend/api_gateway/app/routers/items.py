@@ -2226,34 +2226,38 @@ async def get_item_transactions(
         if not item_exists:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        # Query transaction history from item_transaksi + transaksi_harian
+        # Query transaction history from inventory_ledger (Pure Ledger)
         tx_query = """
             SELECT
-                it.id::text,
-                to_char(to_timestamp(th.timestamp / 1000), 'YYYY-MM-DD') as date,
-                th.jenis_transaksi as transaction_type,
-                th.id as document_number,
+                il.id::text,
+                to_char(il.movement_date, 'YYYY-MM-DD') as date,
                 CASE
-                    WHEN th.jenis_transaksi IN ('pembelian', 'purchase', 'stock_in', 'adjustment_in', 'penerimaan_barang')
-                    THEN ABS(COALESCE(it.jumlah, 0))
-                    ELSE -ABS(COALESCE(it.jumlah, 0))
+                    WHEN il.source_type = 'BILL' THEN 'pembelian'
+                    WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN 'penjualan'
+                    WHEN il.source_type = 'OPENING_BALANCE' THEN 'saldo_awal'
+                    WHEN il.source_type = 'SALES_INVOICE_VOID' THEN 'void_penjualan'
+                    WHEN il.source_type = 'STOCK_ADJUSTMENT' THEN 'penyesuaian'
+                    ELSE LOWER(il.source_type)
+                END as transaction_type,
+                COALESCE(il.source_number, il.source_id::text) as document_number,
+                CASE
+                    WHEN il.quantity_in > 0 THEN il.quantity_in::float
+                    ELSE -il.quantity_out::float
                 END as qty_change,
-                it.harga_satuan as unit_price,
-                it.subtotal as total,
-                it.keterangan as notes
-            FROM item_transaksi it
-            JOIN transaksi_harian th ON th.id = it.transaksi_id
-            WHERE it.produk_id = $1 AND th.tenant_id = $2
-            ORDER BY th.timestamp DESC, th.created_at DESC
+                il.unit_cost::float as unit_price,
+                il.total_cost::float as total,
+                il.notes
+            FROM inventory_ledger il
+            WHERE il.product_id = $1::uuid AND il.tenant_id = $2
+            ORDER BY il.movement_date DESC, il.created_at DESC
             LIMIT $3 OFFSET $4
         """
         rows = await conn.fetch(tx_query, str(item_id), tenant_id, limit, offset)
 
         # Get total count
         count = await conn.fetchval(
-            """SELECT COUNT(*) FROM item_transaksi it
-               JOIN transaksi_harian th ON th.id = it.transaksi_id
-               WHERE it.produk_id = $1 AND th.tenant_id = $2""",
+            """SELECT COUNT(*) FROM inventory_ledger il
+               WHERE il.product_id = $1::uuid AND il.tenant_id = $2""",
             str(item_id),
             tenant_id,
         )

@@ -1,6 +1,6 @@
 """
 Products Router - Autocomplete & Search
-Source: ItemTransaksi (products that were actually transacted)
+Source: Products table + bill_items/sales_invoice_items (Pure Ledger)
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
@@ -179,19 +179,23 @@ async def get_product_by_barcode(request: Request, barcode: str):
 
             product_name = row["name"]
 
-            # Also fetch last transaction data for auto-fill (Bug #5: include satuan from history)
+            # Fetch last purchase data from bill_items + bills (Pure Ledger)
             last_tx_query = """
                 SELECT
-                    it.satuan as last_unit,
-                    it.harga_satuan as last_price,
-                    it.harga_jual,
-                    it.hpp_per_unit
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                WHERE th.tenant_id = $1
-                  AND it.nama_produk = $2
-                  AND th.jenis_transaksi = 'pembelian'
-                ORDER BY th.created_at DESC
+                    bi.unit as last_unit,
+                    bi.unit_price as last_price,
+                    p_inner.harga_jual,
+                    CASE WHEN COALESCE(bi.quantity, 0) > 0
+                         THEN bi.subtotal::float / bi.quantity
+                         ELSE NULL
+                    END as hpp_per_unit
+                FROM bill_items bi
+                JOIN bills b ON b.id = bi.bill_id
+                LEFT JOIN products p_inner ON p_inner.id = bi.product_id
+                WHERE b.tenant_id = $1
+                  AND bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 LIMIT 1)
+                  AND b.status != 'void'
+                ORDER BY b.issue_date DESC, b.created_at DESC
                 LIMIT 1
             """
             last_tx = await conn.fetchrow(last_tx_query, tenant_id, product_name)
@@ -230,17 +234,17 @@ async def get_product_by_barcode(request: Request, barcode: str):
             # Get content_unit from products table first (primary source)
             content_unit = row.get("content_unit")
 
-            # Fallback: Get content_unit from last penjualan transaction if not in products table
+            # Fallback: Get content_unit from last sales invoice (Pure Ledger)
             if not content_unit:
                 content_tx = await conn.fetchrow(
                     """
-                    SELECT it.satuan
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
-                      AND LOWER(it.nama_produk) = LOWER($2)
-                      AND th.jenis_transaksi = 'penjualan'
-                    ORDER BY th.created_at DESC
+                    SELECT si.unit as satuan
+                    FROM sales_invoice_items si
+                    JOIN sales_invoices s ON s.id = si.invoice_id
+                    WHERE s.tenant_id = $1
+                      AND si.item_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
+                      AND s.status != 'void'
+                    ORDER BY s.invoice_date DESC, s.created_at DESC
                     LIMIT 1
                     """,
                     tenant_id,
@@ -332,19 +336,26 @@ async def get_last_purchase(
         conn = await get_db_connection()
 
         try:
-            # Query last purchase transaction for this product
+            # Query last purchase from bill_items + bills (Pure Ledger)
             purchase_query = """
                 SELECT
-                    it.satuan as last_unit,
-                    it.harga_satuan as last_price,
-                    it.harga_jual,
-                    it.hpp_per_unit
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                WHERE th.tenant_id = $1
-                  AND LOWER(it.nama_produk) = LOWER($2)
-                  AND th.jenis_transaksi = 'pembelian'
-                ORDER BY th.created_at DESC
+                    bi.unit as last_unit,
+                    bi.unit_price as last_price,
+                    p.harga_jual,
+                    CASE WHEN COALESCE(bi.quantity, 0) > 0
+                         THEN bi.subtotal::float / bi.quantity
+                         ELSE NULL
+                    END as hpp_per_unit
+                FROM bill_items bi
+                JOIN bills b ON b.id = bi.bill_id
+                LEFT JOIN products p ON p.id = bi.product_id
+                WHERE b.tenant_id = $1
+                  AND (
+                    bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
+                    OR LOWER(bi.product_name) = LOWER($2)
+                  )
+                  AND b.status != 'void'
+                ORDER BY b.issue_date DESC, b.created_at DESC
                 LIMIT 1
             """
 
@@ -368,19 +379,19 @@ async def get_last_purchase(
             last_unit = row["last_unit"] or ""
             is_wholesale = last_unit.lower() in WHOLESALE_UNITS
 
-            # Query for retail unit from sales transactions (penjualan)
+            # Query for retail unit from sales invoices (Pure Ledger)
             # Sales are typically done in retail units (pcs, bungkus, etc.)
             content_unit = None
             if is_wholesale:
                 retail_query = """
-                    SELECT DISTINCT it.satuan
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
-                      AND LOWER(it.nama_produk) = LOWER($2)
-                      AND th.jenis_transaksi = 'penjualan'
-                      AND LOWER(it.satuan) NOT IN ('karton', 'dus', 'box', 'slop', 'bal', 'koli', 'pack', 'lusin', 'rim', 'gross', 'sak')
-                    ORDER BY it.satuan
+                    SELECT DISTINCT si.unit as satuan
+                    FROM sales_invoice_items si
+                    JOIN sales_invoices s ON s.id = si.invoice_id
+                    WHERE s.tenant_id = $1
+                      AND si.item_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
+                      AND s.status != 'void'
+                      AND LOWER(si.unit) NOT IN ('karton', 'dus', 'box', 'slop', 'bal', 'koli', 'pack', 'lusin', 'rim', 'gross', 'sak')
+                    ORDER BY si.unit
                     LIMIT 1
                 """
                 retail_row = await conn.fetchrow(retail_query, tenant_id, product_name)
@@ -420,7 +431,7 @@ async def get_last_purchase(
 async def get_all_products(request: Request, limit: int = Query(1000, ge=1, le=2000)):
     """
     Fetch ALL products for client-side filtering (instant autocomplete).
-    Returns products from item_transaksi ordered by usage frequency.
+    Returns products ordered by usage frequency (Pure Ledger).
 
     This endpoint is designed for prefetching - frontend loads all products
     once on mount, then filters locally with Fuse.js for instant results.
@@ -438,18 +449,30 @@ async def get_all_products(request: Request, limit: int = Query(1000, ge=1, le=2
         conn = await get_db_connection()
 
         try:
-            # Query ALL products from item_transaksi with usage count
+            # Query ALL products with usage count (Pure Ledger)
             query = """
                 SELECT
-                    it.nama_produk as name,
-                    it.satuan as unit,
-                    MAX(it.harga_satuan) as last_price,
-                    COUNT(*) as usage_count
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                WHERE th.tenant_id = $1
-                GROUP BY it.nama_produk, it.satuan
-                ORDER BY usage_count DESC, it.nama_produk ASC
+                    p.nama_produk as name,
+                    p.satuan as unit,
+                    COALESCE(p.purchase_price, p.harga_jual, 0)::bigint as last_price,
+                    COALESCE(usage.cnt, 0) as usage_count
+                FROM products p
+                LEFT JOIN (
+                    SELECT product_id, COUNT(*) as cnt
+                    FROM (
+                        SELECT bi.product_id FROM bill_items bi
+                        JOIN bills b ON b.id = bi.bill_id
+                        WHERE b.tenant_id = $1 AND b.status != 'void' AND bi.product_id IS NOT NULL
+                        UNION ALL
+                        SELECT si.item_id FROM sales_invoice_items si
+                        JOIN sales_invoices s ON s.id = si.invoice_id
+                        WHERE s.tenant_id = $1 AND s.status != 'void' AND si.item_id IS NOT NULL
+                    ) sub
+                    GROUP BY product_id
+                ) usage ON usage.product_id = p.id
+                WHERE p.tenant_id = $1
+                  AND p.status = 'active'
+                ORDER BY usage_count DESC, p.nama_produk ASC
                 LIMIT $2
             """
 
@@ -487,7 +510,7 @@ async def search_products(
     """
     Search products by name (autocomplete)
 
-    Source: ItemTransaksi (products that were actually transacted)
+    Source: Products table (Pure Ledger)
     Returns products ordered by usage frequency
     """
     try:
@@ -503,41 +526,39 @@ async def search_products(
         conn = await get_db_connection()
 
         try:
-            # Query products from item_transaksi with usage count
-            # Include harga_jual and computed units_per_pack for auto-fill
-            # Uses window function to get the latest transaction's data
+            # Query products with usage count (Pure Ledger)
             query = """
-                WITH ranked AS (
+                WITH product_matches AS (
                     SELECT
-                        it.nama_produk as name,
-                        it.satuan as unit,
-                        it.harga_satuan as price,
-                        it.harga_jual,
-                        it.hpp_per_unit,
-                        th.created_at,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY it.nama_produk, it.satuan
-                            ORDER BY th.created_at DESC
-                        ) as rn
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
-                      AND LOWER(it.nama_produk) LIKE LOWER($2)
+                        p.id,
+                        p.nama_produk as name,
+                        p.satuan as unit,
+                        COALESCE(p.purchase_price, p.harga_jual, 0)::bigint as last_price,
+                        p.harga_jual,
+                        NULL::float as hpp_per_unit
+                    FROM products p
+                    WHERE p.tenant_id = $1
+                      AND LOWER(p.nama_produk) LIKE LOWER($2)
+                      AND p.status = 'active'
                 )
                 SELECT
-                    r.name,
-                    r.unit,
-                    r.price as last_price,
-                    r.harga_jual,
-                    r.hpp_per_unit,
-                    (SELECT COUNT(*) FROM public.item_transaksi it2
-                     JOIN public.transaksi_harian th2 ON it2.transaksi_id = th2.id
-                     WHERE th2.tenant_id = $1
-                       AND it2.nama_produk = r.name
-                       AND it2.satuan = r.unit) as usage_count
-                FROM ranked r
-                WHERE r.rn = 1
-                ORDER BY usage_count DESC, r.name ASC
+                    pm.name,
+                    pm.unit,
+                    pm.last_price,
+                    pm.harga_jual,
+                    pm.hpp_per_unit,
+                    COALESCE(
+                        (SELECT COUNT(*) FROM bill_items bi
+                         JOIN bills b ON b.id = bi.bill_id
+                         WHERE b.tenant_id = $1 AND bi.product_id = pm.id AND b.status != 'void')
+                        +
+                        (SELECT COUNT(*) FROM sales_invoice_items si
+                         JOIN sales_invoices s ON s.id = si.invoice_id
+                         WHERE s.tenant_id = $1 AND si.item_id = pm.id AND s.status != 'void'),
+                        0
+                    ) as usage_count
+                FROM product_matches pm
+                ORDER BY usage_count DESC, pm.name ASC
                 LIMIT $3
             """
 
@@ -741,10 +762,10 @@ async def search_products_for_kulakan(
 
                     UNION ALL
 
-                    -- Source 2: item_transaksi (products not in inventory but previously transacted)
+                    -- Source 2: bill_items (products previously purchased) (Pure Ledger)
                     SELECT DISTINCT
-                        NULL as id,
-                        it.nama_produk as name,
+                        bi.product_id::text as id,
+                        bi.product_name as name,
                         NULL as barcode,
                         NULL as category,
                         0 as harga_jual,
@@ -752,17 +773,20 @@ async def search_products_for_kulakan(
                         NULL as content_unit,
                         'transaction' as source,
                         CASE
-                            WHEN LOWER(it.nama_produk) = LOWER($2) THEN 100
-                            WHEN LOWER(it.nama_produk) LIKE LOWER($2) || '%' THEN 80
-                            WHEN LOWER(it.nama_produk) LIKE '%' || LOWER($2) || '%' THEN 40
-                            ELSE similarity(LOWER(it.nama_produk), LOWER($2)) * 30
+                            WHEN LOWER(bi.product_name) = LOWER($2) THEN 100
+                            WHEN LOWER(bi.product_name) LIKE LOWER($2) || '%' THEN 80
+                            WHEN LOWER(bi.product_name) LIKE '%' || LOWER($2) || '%' THEN 40
+                            ELSE similarity(LOWER(bi.product_name), LOWER($2)) * 30
                         END as score
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
+                    FROM bill_items bi
+                    JOIN bills b ON b.id = bi.bill_id
+                    WHERE b.tenant_id = $1
+                      AND bi.product_name IS NOT NULL
+                      AND bi.product_name != ''
+                      AND b.status != 'void'
                       AND (
-                          it.nama_produk ILIKE '%' || $2 || '%'
-                          OR similarity(LOWER(it.nama_produk), LOWER($2)) > 0.1
+                          bi.product_name ILIKE '%' || $2 || '%'
+                          OR similarity(LOWER(bi.product_name), LOWER($2)) > 0.1
                       )
                 ),
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
@@ -783,17 +807,25 @@ async def search_products_for_kulakan(
             # For each result, fetch last pembelian transaction for autofill
             products = []
             for row in rows:
-                # Get last pembelian transaction for this product (autofill data)
+                # Get last purchase from bill_items + bills (Pure Ledger)
                 last_tx = await conn.fetchrow(
                     """
-                    SELECT it.satuan as last_unit, it.harga_satuan as last_price,
-                           it.hpp_per_unit, it.harga_jual
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
-                      AND LOWER(it.nama_produk) = LOWER($2)
-                      AND th.jenis_transaksi = 'pembelian'
-                    ORDER BY th.created_at DESC
+                    SELECT bi.unit as last_unit, bi.unit_price as last_price,
+                           CASE WHEN COALESCE(bi.quantity, 0) > 0
+                                THEN bi.subtotal::float / bi.quantity
+                                ELSE NULL
+                           END as hpp_per_unit,
+                           p_inner.harga_jual
+                    FROM bill_items bi
+                    JOIN bills b ON b.id = bi.bill_id
+                    LEFT JOIN products p_inner ON p_inner.id = bi.product_id
+                    WHERE b.tenant_id = $1
+                      AND (
+                        bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
+                        OR LOWER(bi.product_name) = LOWER($2)
+                      )
+                      AND b.status != 'void'
+                    ORDER BY b.issue_date DESC, b.created_at DESC
                     LIMIT 1
                     """,
                     tenant_id,
@@ -832,17 +864,17 @@ async def search_products_for_kulakan(
                 # Get content_unit from products table first (primary source)
                 product.content_unit = row.get("content_unit")
 
-                # Fallback: Get content_unit from last penjualan if not in products table
+                # Fallback: Get content_unit from last sales invoice (Pure Ledger)
                 if not product.content_unit:
                     content_tx = await conn.fetchrow(
                         """
-                        SELECT it.satuan
-                        FROM public.item_transaksi it
-                        JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                        WHERE th.tenant_id = $1
-                          AND LOWER(it.nama_produk) = LOWER($2)
-                          AND th.jenis_transaksi = 'penjualan'
-                        ORDER BY th.created_at DESC
+                        SELECT si.unit as satuan
+                        FROM sales_invoice_items si
+                        JOIN sales_invoices s ON s.id = si.invoice_id
+                        WHERE s.tenant_id = $1
+                          AND si.item_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
+                          AND s.status != 'void'
+                        ORDER BY s.invoice_date DESC, s.created_at DESC
                         LIMIT 1
                         """,
                         tenant_id,
@@ -905,21 +937,21 @@ async def get_recent_sales_products(
         conn = await get_db_connection()
 
         try:
-            # Query recent sales from item_transaksi
+            # Query recent sales from sales_invoice_items (Pure Ledger)
             query = """
                 SELECT DISTINCT ON (p.id)
                     p.id,
                     p.nama_produk as name,
                     p.barcode,
-                    COALESCE(p.harga_jual, it.harga_satuan, 0) as price
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                JOIN public.products p ON it.product_id = p.id
-                WHERE th.tenant_id = $1
-                  AND th.jenis_transaksi = 'penjualan'
+                    COALESCE(p.harga_jual, si.unit_price, 0) as price
+                FROM sales_invoice_items si
+                JOIN sales_invoices s ON s.id = si.invoice_id
+                JOIN products p ON si.item_id = p.id
+                WHERE s.tenant_id = $1
+                  AND s.status != 'void'
                   AND p.harga_jual IS NOT NULL
                   AND p.harga_jual > 0
-                ORDER BY p.id, th.created_at DESC
+                ORDER BY p.id, s.invoice_date DESC, s.created_at DESC
                 LIMIT $2
             """
 
