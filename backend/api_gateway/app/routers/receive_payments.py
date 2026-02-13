@@ -57,7 +57,7 @@ router = APIRouter()
 _pool: Optional[asyncpg.Pool] = None
 
 # Account codes
-CUSTOMER_DEPOSIT_ACCOUNT = "2-10400"  # Uang Muka Pelanggan (Liability)
+CUSTOMER_DEPOSIT_ACCOUNT = "2-10500"  # Uang Muka Pelanggan (Liability)
 AR_ACCOUNT = "1-10400"  # Piutang Usaha (A/R)
 
 
@@ -106,6 +106,53 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
             status_code=403,
             detail=f"Cannot post to {period_status} period ({period_name})",
         )
+
+
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
+    """
+    Compute invoice remaining balance from journal entries (Law 16).
+
+    remaining = AR debit from invoice posting - sum of posted payment allocations
+
+    Cross-verifies allocations against journal_entries status to ensure
+    only payments with POSTED journals are counted.
+    """
+    result = await conn.fetchval(
+        """
+        WITH invoice_ar_debit AS (
+            -- AR debit from invoice posting journal (the authoritative invoice total)
+            SELECT COALESCE(SUM(jl.debit), 0) as total
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.journal_id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE je.tenant_id = $1
+                AND je.source_type = 'INVOICE'
+                AND je.source_id = $2
+                AND je.status = 'POSTED'
+                AND coa.account_code = '1-10400'
+        ),
+        payment_applied AS (
+            -- Sum of allocations from receive_payments with POSTED journals
+            SELECT COALESCE(SUM(rpa.amount_applied), 0) as total
+            FROM receive_payment_allocations rpa
+            JOIN receive_payments rp ON rp.id = rpa.payment_id
+            WHERE rp.tenant_id = $1
+                AND rpa.invoice_id = $2
+                AND rp.status = 'posted'
+                AND rp.journal_id IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM journal_entries je
+                    WHERE je.id = rp.journal_id AND je.status = 'POSTED'
+                )
+        )
+        SELECT GREATEST(0,
+            (SELECT total FROM invoice_ar_debit) - (SELECT total FROM payment_applied)
+        )
+        """,
+        tenant_id,
+        invoice_id,
+    )
+    return int(result or 0)
 
 
 # =============================================================================
@@ -542,7 +589,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 for alloc in body.allocations:
                     invoice = await conn.fetchrow(
                         """
-                        SELECT id, invoice_number, total_amount, amount_paid, status, customer_id
+                        SELECT id, invoice_number, total_amount, status, customer_id
                         FROM sales_invoices
                         WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                     """,
@@ -562,8 +609,9 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                             detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
                         )
 
-                    invoice_remaining = invoice["total_amount"] - (
-                        invoice["amount_paid"] or 0
+                    # Law 16: compute remaining from journal, not amount_paid
+                    invoice_remaining = await get_invoice_remaining_from_journal(
+                        conn, ctx["tenant_id"], invoice["id"]
                     )
                     if alloc.amount_applied > invoice_remaining:
                         raise HTTPException(
@@ -764,7 +812,7 @@ async def update_receive_payment(
                     for alloc in body.allocations:
                         invoice = await conn.fetchrow(
                             """
-                            SELECT id, invoice_number, total_amount, amount_paid, customer_id
+                            SELECT id, invoice_number, total_amount, customer_id
                             FROM sales_invoices
                             WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                         """,
@@ -784,8 +832,9 @@ async def update_receive_payment(
                                 detail="Invoice belongs to different customer",
                             )
 
-                        invoice_remaining = invoice["total_amount"] - (
-                            invoice["amount_paid"] or 0
+                        # Law 16: compute remaining from journal, not amount_paid
+                        invoice_remaining = await get_invoice_remaining_from_journal(
+                            conn, ctx["tenant_id"], invoice["id"]
                         )
                         if alloc.amount_applied > invoice_remaining:
                             raise HTTPException(
@@ -986,7 +1035,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
 
     if not deposit_account_id or not ar_account_id:
         raise HTTPException(
-            status_code=500, detail="Required accounts not found (2-10400, 1-10300)"
+            status_code=500, detail="Required accounts not found (2-10500, 1-10300)"
         )
 
     # Create journal entry
@@ -1158,17 +1207,23 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     )
 
     for alloc in allocations:
-        new_amount_paid = await conn.fetchval(
-            """
-            SELECT amount_paid + $2 FROM sales_invoices WHERE id = $1
-        """,
-            alloc["invoice_id"],
-            alloc["amount_applied"],
-        )
-
+        # Law 16: compute new amount_paid from journal-based remaining
         invoice_total = await conn.fetchval(
             "SELECT total_amount FROM sales_invoices WHERE id = $1", alloc["invoice_id"]
         )
+        # After this payment posts, the remaining will decrease by amount_applied.
+        # But journal is already created above, so remaining_from_journal already
+        # reflects THIS payment's allocation. We read it after journal creation.
+        # However, the allocation record was created before posting, so the
+        # journal-based helper won't count this payment yet (it's still draft
+        # at this point in the code). We need to manually account for this.
+        current_remaining = await get_invoice_remaining_from_journal(
+            conn, ctx["tenant_id"], alloc["invoice_id"]
+        )
+        # current_remaining doesn't include this payment yet (still draft),
+        # so subtract the allocation amount
+        new_remaining = current_remaining - alloc["amount_applied"]
+        new_amount_paid = invoice_total - max(0, new_remaining)
 
         new_status = "paid" if new_amount_paid >= invoice_total else "partial"
 
@@ -1440,17 +1495,23 @@ async def void_receive_payment(
                 )
 
                 for alloc in allocations:
-                    # Get current invoice state
-                    invoice = await conn.fetchrow(
-                        "SELECT amount_paid, total_amount FROM sales_invoices WHERE id = $1",
+                    # Law 16: compute new amount_paid from journal-based remaining
+                    # At this point the reversal journal is already created and the
+                    # original journal is marked VOID, so get_invoice_remaining_from_journal
+                    # will no longer count this payment's allocation (the EXISTS check
+                    # on je.status='POSTED' fails because the journal is now VOID).
+                    # journal_remaining is therefore correct for the post-void state.
+                    invoice_total = await conn.fetchval(
+                        "SELECT total_amount FROM sales_invoices WHERE id = $1",
                         alloc["invoice_id"],
                     )
-
-                    new_amount_paid = (invoice["amount_paid"] or 0) - alloc[
-                        "amount_applied"
-                    ]
-                    if new_amount_paid < 0:
-                        new_amount_paid = 0
+                    journal_remaining = await get_invoice_remaining_from_journal(
+                        conn, ctx["tenant_id"], alloc["invoice_id"]
+                    )
+                    # The helper checks rp.status='posted' AND je.status='POSTED'.
+                    # The original journal is now VOID, so this payment's allocation
+                    # is already excluded. journal_remaining is correct post-void.
+                    new_amount_paid = max(0, invoice_total - journal_remaining)
 
                     new_status = "posted" if new_amount_paid == 0 else "partial"
 
