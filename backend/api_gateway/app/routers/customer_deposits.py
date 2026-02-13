@@ -100,6 +100,48 @@ def get_user_context(request: Request) -> dict:
     }
 
 
+
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> float:
+    """Compute invoice remaining from journal lines on AR account (Law 16).
+
+    For sales invoices:
+    - Invoice posting: DEBIT AR (1-10400) -> increases receivable
+    - Payment received: CREDIT AR -> decreases receivable
+    - Credit note applied: CREDIT AR -> decreases receivable
+    - Customer deposit applied: CREDIT AR -> decreases receivable
+
+    Outstanding = SUM(debit) - SUM(credit) on AR for this invoice's journal chain
+    """
+    result = await conn.fetchval("""
+        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.status = 'POSTED'
+            AND coa.account_code = '1-10400'
+            AND je.tenant_id = $1
+            AND (
+                -- Original invoice journal
+                (je.source_type = 'INVOICE' AND je.source_id = $2)
+                -- Payment journals linked via allocations
+                OR (je.source_type IN ('RECEIVE_PAYMENT', 'PAYMENT_RECEIVED') AND EXISTS (
+                    SELECT 1 FROM receive_payment_allocations rpa
+                    WHERE rpa.invoice_id = $2 AND rpa.payment_id = je.source_id
+                ))
+                -- Credit note journals linked via allocations
+                OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
+                    SELECT 1 FROM credit_note_applications cna
+                    WHERE cna.invoice_id = $2 AND cna.credit_note_id = je.source_id
+                ))
+                -- Customer deposit application journals linked via allocations
+                OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
+                    SELECT 1 FROM customer_deposit_applications cda
+                    WHERE cda.invoice_id = $2 AND cda.deposit_id = je.source_id
+                ))
+            )
+    """, tenant_id, invoice_id)
+    return float(result or 0)
+
 # =============================================================================
 # LIST CUSTOMER DEPOSITS
 # =============================================================================
@@ -880,7 +922,7 @@ async def apply_customer_deposit(request: Request, deposit_id: UUID, body: Apply
                     # Validate invoice
                     invoice = await conn.fetchrow("""
                         SELECT id, customer_id, customer_name, invoice_number,
-                               grand_total, amount_paid, status
+                               grand_total, status
                         FROM sales_invoices
                         WHERE id = $1 AND tenant_id = $2
                     """, UUID(app.invoice_id), ctx["tenant_id"])
@@ -891,8 +933,10 @@ async def apply_customer_deposit(request: Request, deposit_id: UUID, body: Apply
                             detail=f"Invoice {app.invoice_id} not found"
                         )
 
-                    # Check invoice has balance
-                    invoice_remaining = invoice["grand_total"] - (invoice["amount_paid"] or 0)
+                    # Check invoice has balance (Law 16: journal-based)
+                    invoice_remaining = await get_invoice_remaining_from_journal(
+                        conn, ctx["tenant_id"], UUID(app.invoice_id)
+                    )
                     if app.amount > invoice_remaining:
                         raise HTTPException(
                             status_code=400,
@@ -983,8 +1027,8 @@ async def apply_customer_deposit(request: Request, deposit_id: UUID, body: Apply
                         ctx["user_id"]
                     )
 
-                    # Update invoice
-                    new_amount_paid = (invoice["amount_paid"] or 0) + app.amount
+                    # Update invoice (derive amount_paid from journal-based remaining)
+                    new_amount_paid = invoice["grand_total"] - int(invoice_remaining) + app.amount
                     new_status = "paid" if new_amount_paid >= invoice["grand_total"] else invoice["status"]
 
                     await conn.execute("""
