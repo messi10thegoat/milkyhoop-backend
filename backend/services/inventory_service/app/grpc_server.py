@@ -126,8 +126,15 @@ async def get_or_create_stock_record(
         # New system: search by product_id (UUID FK) - cast text to UUID
         existing = await prisma.query_raw(
             """
-            SELECT * FROM persediaan
-            WHERE tenant_id = $1 AND product_id = $2::uuid AND lokasi_gudang = $3
+            SELECT p.*,
+                   COALESCE(il.computed_jumlah, 0) as jumlah
+            FROM persediaan p
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as computed_jumlah
+                FROM inventory_ledger
+                WHERE product_id = p.product_id
+            ) il ON true
+            WHERE p.tenant_id = $1 AND p.product_id = $2::uuid AND p.lokasi_gudang = $3
             LIMIT 1
             """,
             tenant_id, product_uuid, normalized_lokasi
@@ -136,8 +143,15 @@ async def get_or_create_stock_record(
         # Legacy system: search by produk_id (product name)
         existing = await prisma.query_raw(
             """
-            SELECT * FROM persediaan
-            WHERE tenant_id = $1 AND produk_id = $2 AND lokasi_gudang = $3
+            SELECT p.*,
+                   COALESCE(il.computed_jumlah, 0) as jumlah
+            FROM persediaan p
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as computed_jumlah
+                FROM inventory_ledger
+                WHERE product_id = p.product_id
+            ) il ON true
+            WHERE p.tenant_id = $1 AND p.produk_id = $2 AND p.lokasi_gudang = $3
             LIMIT 1
             """,
             tenant_id, produk_id, normalized_lokasi

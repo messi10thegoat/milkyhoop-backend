@@ -92,29 +92,36 @@ async def get_low_sell_products(
         end_ts_ms = end_ts * 1000
         
         # SQL query to get products with low turnover (sales vs stock)
+        # NOTE: item_transaksi/transaksi_harian are legacy POS tables - architectural dependency, do not change
+        # Stock levels migrated from persediaan -> inventory_ledger
         query = """
         SELECT 
-            p.produk_id as product_name,
-            p.jumlah as current_stock,
-            p.satuan as unit,
+            pr.nama_produk as product_name,
+            COALESCE(il.jumlah, 0) as current_stock,
+            pr.satuan as unit,
             COALESCE(SUM(ip.jumlah), 0) as quantity_sold,
             COALESCE(SUM(ip.subtotal), 0) as revenue,
             CASE 
-                WHEN p.jumlah > 0 THEN (COALESCE(SUM(ip.jumlah), 0) / p.jumlah) * 100
+                WHEN COALESCE(il.jumlah, 0) > 0 THEN (COALESCE(SUM(ip.jumlah), 0) / il.jumlah) * 100
                 ELSE 0
             END as turnover_percentage
-        FROM persediaan p
-        LEFT JOIN item_transaksi ip ON ip.nama_produk = p.produk_id
+        FROM products pr
+        LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as jumlah
+            FROM inventory_ledger
+            WHERE product_id = pr.id
+        ) il ON true
+        LEFT JOIN item_transaksi ip ON ip.nama_produk = pr.nama_produk
         LEFT JOIN transaksi_harian th ON th.id = ip.transaksi_id 
-            AND th.tenant_id = p.tenant_id
+            AND th.tenant_id = pr.tenant_id
             AND th.jenis_transaksi = 'penjualan'
             AND th.timestamp >= $2
             AND th.timestamp <= $3
             AND th.status != 'deleted'
-        WHERE p.tenant_id = $1
-        GROUP BY p.produk_id, p.jumlah, p.satuan
+        WHERE pr.tenant_id = $1
+        GROUP BY pr.nama_produk, il.jumlah, pr.satuan
         HAVING CASE 
-            WHEN p.jumlah > 0 THEN (COALESCE(SUM(ip.jumlah), 0) / p.jumlah) * 100
+            WHEN COALESCE(il.jumlah, 0) > 0 THEN (COALESCE(SUM(ip.jumlah), 0) / il.jumlah) * 100
             ELSE 0
         END < $4
         ORDER BY turnover_percentage ASC

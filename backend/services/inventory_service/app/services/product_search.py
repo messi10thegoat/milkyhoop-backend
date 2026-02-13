@@ -20,7 +20,7 @@ async def search_products_fuzzy(
     Search products by name using fuzzy matching (Levenshtein distance)
 
     Sprint 2.1: Refactored to use Products table (master data)
-    Joins with Persediaan to get current stock levels
+    Joins with inventory_ledger to get current stock levels (migrated from persediaan)
 
     Args:
         tenant_id: Tenant identifier for multi-tenant isolation
@@ -54,12 +54,15 @@ async def search_products_fuzzy(
                 p.id as produk_id,
                 p.nama_produk,
                 p.satuan,
-                COALESCE(SUM(pers.jumlah), 0) as current_stock,
-                COALESCE(pers.lokasi_gudang, 'Gudang Utama') as lokasi_gudang
+                COALESCE(il.jumlah, 0) as current_stock,
+                'Gudang Utama' as lokasi_gudang
             FROM products p
-            LEFT JOIN persediaan pers ON pers.product_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as jumlah
+                FROM inventory_ledger
+                WHERE product_id = p.id
+            ) il ON true
             WHERE p.tenant_id = $1
-            GROUP BY p.id, p.nama_produk, p.satuan, pers.lokasi_gudang
             """,
             tenant_id
         )
