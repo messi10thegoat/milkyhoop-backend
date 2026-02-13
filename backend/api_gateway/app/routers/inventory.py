@@ -1,6 +1,6 @@
 """
 Inventory Router - Product Management & Stock Operations
-Source: Products table + Persediaan (stock ledger)
+Source: Products table + inventory_ledger (stock movements)
 Port: Uses gRPC inventory_service:7040
 """
 from fastapi import APIRouter, HTTPException, Request, Query
@@ -234,7 +234,17 @@ async def list_products(
             count_query = f"""
                 SELECT COUNT(DISTINCT p.id)
                 FROM public.products p
-                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                        COALESCE((SELECT il2.average_cost FROM inventory_ledger il2
+                            WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
+                              AND il2.average_cost IS NOT NULL
+                            ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1), 0) as nilai_per_unit,
+                        0::double precision as minimum_stock
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) s ON true
                 WHERE {where_sql}
             """
             total = await conn.fetchval(count_query, *params)
@@ -253,10 +263,20 @@ async def list_products(
                     s.nilai_per_unit,
                     COALESCE(s.jumlah * s.nilai_per_unit, 0) as total_nilai,
                     s.minimum_stock,
-                    CASE WHEN s.jumlah < COALESCE(s.minimum_stock, 0) THEN true ELSE false END as is_low_stock,
-                    s.lokasi_gudang
+                    CASE WHEN COALESCE(s.jumlah, 0) < COALESCE(s.minimum_stock, 0) THEN true ELSE false END as is_low_stock,
+                    NULL::text as lokasi_gudang
                 FROM public.products p
-                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                        COALESCE((SELECT il2.average_cost FROM inventory_ledger il2
+                            WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
+                              AND il2.average_cost IS NOT NULL
+                            ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1), 0) as nilai_per_unit,
+                        0::double precision as minimum_stock
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) s ON true
                 WHERE {where_sql}
                 ORDER BY p.nama_produk ASC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -333,11 +353,23 @@ async def get_product_detail(
                     s.nilai_per_unit,
                     COALESCE(s.jumlah * s.nilai_per_unit, 0) as total_nilai,
                     s.minimum_stock,
-                    CASE WHEN s.jumlah < COALESCE(s.minimum_stock, 0) THEN true ELSE false END as is_low_stock,
-                    s.lokasi_gudang,
+                    CASE WHEN COALESCE(s.jumlah, 0) < COALESCE(s.minimum_stock, 0) THEN true ELSE false END as is_low_stock,
+                    NULL::text as lokasi_gudang,
                     s.last_movement_at
                 FROM public.products p
-                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                        COALESCE((SELECT il2.average_cost FROM inventory_ledger il2
+                            WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
+                              AND il2.average_cost IS NOT NULL
+                            ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1), 0) as nilai_per_unit,
+                        0::double precision as minimum_stock,
+                        (SELECT MAX(il3.movement_date)::timestamp FROM inventory_ledger il3
+                            WHERE il3.product_id = p.id AND il3.tenant_id = p.tenant_id) as last_movement_at
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) s ON true
                 WHERE p.id = $1 AND p.tenant_id = $2
                 LIMIT 1
             """
@@ -394,7 +426,7 @@ async def add_product(
 ):
     """
     Add a new product to inventory.
-    Creates entry in Products table and optionally initializes stock in Persediaan.
+    Creates entry in Products table and optionally initializes stock via inventory_ledger.
     """
     try:
         if not hasattr(request.state, 'user') or not request.state.user:
@@ -460,20 +492,26 @@ async def add_product(
 
             product_id = str(row['id'])
 
-            # If initial stock provided, create Persediaan entry
+            # If initial stock provided, create inventory_ledger opening balance entry
             if body.stok_awal and body.stok_awal > 0:
-                persediaan_query = """
-                    INSERT INTO public.persediaan (
-                        tenant_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, minimum_stock, last_movement_at
-                    ) VALUES ($1, $2, 'utama', $3, $4, $5, NOW())
+                opening_balance_query = """
+                    INSERT INTO inventory_ledger (
+                        tenant_id, product_id, product_name, movement_type, movement_date,
+                        source_type, quantity_in, quantity_out, quantity_balance,
+                        unit_cost, total_cost, average_cost, notes
+                    ) VALUES (
+                        $1, $2::uuid, $3, 'IN', CURRENT_DATE,
+                        'OPENING_BALANCE', $4, 0, $4,
+                        $5, $4 * $5, $5, 'Initial stock from product creation'
+                    )
                 """
                 await conn.execute(
-                    persediaan_query,
+                    opening_balance_query,
                     tenant_id,
                     product_id,
+                    body.nama_produk.strip(),
                     body.stok_awal,
-                    body.nilai_per_unit or 0,
-                    body.minimum_stock or 0
+                    body.nilai_per_unit or 0
                 )
 
             logger.info(f"Product created: id={product_id}, name={body.nama_produk}, tenant={tenant_id}")
@@ -711,7 +749,13 @@ async def get_inventory_summary(request: Request):
                     COUNT(CASE WHEN COALESCE(s.jumlah, 0) > 0 AND COALESCE(s.jumlah, 0) <= COALESCE(s.minimum_stock, 0) THEN 1 END) as menipis_count,
                     COUNT(CASE WHEN COALESCE(s.jumlah, 0) <= 0 THEN 1 END) as habis_count
                 FROM public.products p
-                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                        0::double precision as minimum_stock
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) s ON true
                 WHERE p.tenant_id = $1 AND COALESCE(p.track_inventory, true) = true
             """
             row = await conn.fetchrow(query, tenant_id)
@@ -763,14 +807,24 @@ async def get_product_stock_card(request: Request, product_id: str):
                     s.minimum_stock,
                     (COALESCE(s.jumlah, 0) * COALESCE(s.nilai_per_unit, 0)) as total_nilai,
                     COALESCE(s.jumlah, 0) <= COALESCE(s.minimum_stock, 0) AND COALESCE(s.jumlah, 0) > 0 as is_low_stock,
-                    s.lokasi_gudang,
+                    NULL::text as lokasi_gudang,
                     p.updated_at,
                     -- V007 unit conversion fields
                     p.base_unit,
                     p.wholesale_unit,
                     p.units_per_wholesale
                 FROM public.products p
-                LEFT JOIN public.persediaan s ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                        COALESCE((SELECT il2.average_cost FROM inventory_ledger il2
+                            WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
+                              AND il2.average_cost IS NOT NULL
+                            ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1), 0) as nilai_per_unit,
+                        0::double precision as minimum_stock
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
+                ) s ON true
                 WHERE p.id = $1 AND p.tenant_id = $2
             """
             product_row = await conn.fetchrow(product_query, product_id, tenant_id)

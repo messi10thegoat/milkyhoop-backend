@@ -1767,7 +1767,7 @@ async def record_payment(
                 # Check invoice exists and is posted (FOR UPDATE = row-level lock)
                 invoice = await conn.fetchrow(
                     """
-                    SELECT id, status, total_amount, amount_paid, ar_id
+                    SELECT id, status, total_amount, ar_id
                     FROM sales_invoices
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
