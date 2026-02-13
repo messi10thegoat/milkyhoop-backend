@@ -67,7 +67,7 @@ def validate_uuid(value: str, field_name: str = "id") -> UUID:
     except (ValueError, AttributeError):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid {field_name} format. Expected UUID."
+            detail=f"{field_name} harus berupa UUID yang valid"
         )
 
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
@@ -713,11 +713,20 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         conn, ctx["tenant_id"], payload.payment_date
                     )
 
+                # Validate optional UUID fields before INSERT
+                for _field_name, _field_val in [
+                    ("discount_account_id", payload.discount_account_id),
+                    ("bank_fee_account_id", payload.bank_fee_account_id),
+                    ("source_deposit_id", payload.source_deposit_id),
+                ]:
+                    if _field_val:
+                        validate_uuid(_field_val, _field_name)
+
                 # Auto-lookup vendor_name if not provided
                 if not payload.vendor_name:
                     vendor = await conn.fetchrow(
                         "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                        UUID(payload.vendor_id),
+                        validate_uuid(payload.vendor_id, "vendor_id"),
                         ctx["tenant_id"],
                     )
                     if not vendor:
@@ -730,7 +739,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 if not payload.bank_account_name:
                     bank = await conn.fetchrow(
                         "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(payload.bank_account_id),
+                        validate_uuid(payload.bank_account_id, "bank_account_id"),
                         ctx["tenant_id"],
                     )
                     if not bank:
