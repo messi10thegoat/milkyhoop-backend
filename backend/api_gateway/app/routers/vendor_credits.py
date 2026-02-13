@@ -88,6 +88,48 @@ def get_user_context(request: Request) -> dict:
     }
 
 
+async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
+    """
+    Compute bill remaining balance from journal lines on AP account (Law 16).
+
+    For a bill:
+    - BILL posting creates a CREDIT on AP (2-10100) -> increases liability
+    - BILL_PAYMENT / PAYMENT_BILL creates a DEBIT on AP -> reduces liability
+    - VENDOR_CREDIT application creates a DEBIT on AP -> reduces liability
+    - BILL_PAYMENT_VOID creates a CREDIT on AP -> re-increases liability
+
+    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
+    """
+    bill_id_str = str(bill_id)
+    result = await conn.fetchval("""
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.tenant_id = $1
+          AND je.status = 'POSTED'
+          AND coa.account_code = '2-10100'
+          AND (
+              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
+              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
+                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
+                  WHERE vca.bill_id = $2::uuid
+              ))
+          )
+    """, tenant_id, bill_id_str)
+    return int(result or 0)
+
+
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
     quantity = Decimal(str(item.get('quantity', 0)))
@@ -1002,7 +1044,7 @@ async def apply_vendor_credit(request: Request, vendor_credit_id: UUID, body: Ap
                 for app in body.applications:
                     # Validate bill
                     bill = await conn.fetchrow("""
-                        SELECT id, vendor_id, amount, grand_total, amount_paid, status_v2 as status
+                        SELECT id, vendor_id, amount, grand_total, status_v2 as status
                         FROM bills
                         WHERE id = $1 AND tenant_id = $2
                     """, UUID(app.bill_id), ctx["tenant_id"])
@@ -1020,9 +1062,11 @@ async def apply_vendor_credit(request: Request, vendor_credit_id: UUID, body: Ap
                             detail=f"Bill {app.bill_id} belongs to different vendor"
                         )
 
-                    # Check bill has balance
+                    # Law 16: compute bill remaining from journal, not amount_paid
                     bill_total = bill["grand_total"] or bill["amount"]
-                    bill_remaining = bill_total - (bill["amount_paid"] or 0)
+                    bill_remaining = await get_bill_remaining_from_journal(
+                        conn, ctx["tenant_id"], app.bill_id
+                    )
                     if app.amount > bill_remaining:
                         raise HTTPException(
                             status_code=400,
@@ -1060,8 +1104,9 @@ async def apply_vendor_credit(request: Request, vendor_credit_id: UUID, body: Ap
                         ctx["user_id"]
                     )
 
-                    # Update bill
-                    new_amount_paid = (bill["amount_paid"] or 0) + app.amount
+                    # Update bill (cache write: derive amount_paid from journal remaining)
+                    journal_paid = bill_total - bill_remaining  # current paid from journal
+                    new_amount_paid = journal_paid + app.amount
                     new_status = "paid" if new_amount_paid >= bill_total else "posted"
 
                     await conn.execute("""

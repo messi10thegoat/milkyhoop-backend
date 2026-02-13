@@ -85,6 +85,52 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         )
 
 
+async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
+    """
+    Compute bill remaining balance from journal lines on AP account (Law 16).
+
+    For a bill:
+    - BILL posting creates a CREDIT on AP (2-10100) → increases liability
+    - BILL_PAYMENT / PAYMENT_BILL creates a DEBIT on AP → reduces liability
+    - VENDOR_CREDIT application creates a DEBIT on AP → reduces liability
+    - BILL_PAYMENT_VOID creates a CREDIT on AP → re-increases liability
+
+    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
+    """
+    bill_id_str = str(bill_id)
+    result = await conn.fetchval("""
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.tenant_id = $1
+          AND je.status = 'POSTED'
+          AND coa.account_code = '2-10100'
+          AND (
+              -- Bill posting journal (source_id = bill_id)
+              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
+              -- Bill payment journals (linked via bill_payment_allocations)
+              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              -- Bill payment void journals
+              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              -- Vendor credit application journals (linked via vendor_credit_applications)
+              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
+                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
+                  WHERE vca.bill_id = $2::uuid
+              ))
+          )
+    """, tenant_id, bill_id_str)
+    return int(result or 0)
+
+
 async def generate_payment_number(conn, tenant_id: str) -> str:
     from datetime import datetime
 
@@ -759,7 +805,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                 for alloc in payload.allocations:
                     bill = await conn.fetchrow(
-                        "SELECT amount as total_amount, COALESCE(amount_paid, 0) as amount_paid FROM bills WHERE id = $1::uuid FOR UPDATE",
+                        "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid FOR UPDATE",
                         alloc.bill_id,
                     )
                     if not bill:
@@ -767,7 +813,10 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             status_code=400, detail=f"Bill {alloc.bill_id} not found"
                         )
 
-                    remaining_before = bill["total_amount"] - bill["amount_paid"]
+                    # Law 16: compute remaining from journal, not amount_paid
+                    remaining_before = await get_bill_remaining_from_journal(
+                        conn, ctx["tenant_id"], alloc.bill_id
+                    )
                     if alloc.amount_applied > remaining_before:
                         raise HTTPException(
                             status_code=400, detail="Amount exceeds remaining"
@@ -1206,21 +1255,49 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+            # Law 16: compute paid/remaining from journal lines on AP account
             bills = await conn.fetch(
                 """
-                SELECT id, invoice_number, issue_date as bill_date, due_date, amount as total_amount,
-                    COALESCE(amount_paid, 0) as paid_amount,
-                    amount - COALESCE(amount_paid, 0) as remaining_amount,
-                    due_date < CURRENT_DATE as is_overdue,
-                    GREATEST(0, CURRENT_DATE - due_date) as overdue_days
-                FROM bills
-                WHERE tenant_id = $1 AND vendor_id = $2::uuid
-                  AND status IN ('posted', 'partial', 'overdue')
-                  AND amount > COALESCE(amount_paid, 0)
-                ORDER BY due_date ASC, bill_date ASC""",
+                SELECT b.id, b.invoice_number, b.issue_date as bill_date, b.due_date,
+                    b.amount as total_amount,
+                    b.due_date < CURRENT_DATE as is_overdue,
+                    GREATEST(0, CURRENT_DATE - b.due_date) as overdue_days,
+                    COALESCE((
+                        SELECT SUM(jl.credit) - SUM(jl.debit)
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.tenant_id = $1
+                          AND je.status = 'POSTED'
+                          AND coa.account_code = '2-10100'
+                          AND (
+                              (je.source_type = 'BILL' AND je.source_id = b.id)
+                              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
+                                  SELECT bp.id FROM bill_payments_v2 bp
+                                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                                  WHERE bpa.bill_id = b.id AND bp.tenant_id = $1
+                              ))
+                              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
+                                  SELECT bp.id FROM bill_payments_v2 bp
+                                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                                  WHERE bpa.bill_id = b.id AND bp.tenant_id = $1
+                              ))
+                              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
+                                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
+                                  WHERE vca.bill_id = b.id
+                              ))
+                          )
+                    ), 0) as journal_remaining
+                FROM bills b
+                WHERE b.tenant_id = $1 AND b.vendor_id = $2::uuid
+                  AND b.status IN ('posted', 'partial', 'overdue')
+                ORDER BY b.due_date ASC, b.issue_date ASC""",
                 ctx["tenant_id"],
                 vendor_id,
             )
+
+            # Filter to only bills with remaining > 0
+            bills = [r for r in bills if (r["journal_remaining"] or 0) > 0]
 
             bill_list = [
                 OpenBillItem(
@@ -1229,8 +1306,8 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                     bill_date=r["bill_date"].isoformat() if r["bill_date"] else "",
                     due_date=r["due_date"].isoformat() if r["due_date"] else "",
                     total_amount=r["total_amount"] or 0,
-                    paid_amount=r["paid_amount"] or 0,
-                    remaining_amount=r["remaining_amount"] or 0,
+                    paid_amount=(r["total_amount"] or 0) - int(r["journal_remaining"] or 0),
+                    remaining_amount=int(r["journal_remaining"] or 0),
                     is_overdue=r["is_overdue"] or False,
                     overdue_days=r["overdue_days"] or 0,
                 )
