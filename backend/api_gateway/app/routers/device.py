@@ -61,10 +61,13 @@ async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[d
     Enhanced product lookup by barcode for Remote Scanner with last transaction data.
     Uses tenant_id from scan session for isolation.
 
+    Migrated 2026-02-13: Now reads from bills/bill_items and sales_invoices/sales_invoice_items
+    instead of transaksi_harian/item_transaksi (legacy POS tables).
+
     Returns dict with:
     - Basic product info (name, unit, category, price, barcode)
-    - Last pembelian transaction (last_unit, last_price, hpp_per_unit, units_per_pack)
-    - Content unit from last penjualan (content_unit)
+    - Last purchase data (last_unit, last_price, hpp_per_unit, units_per_pack)
+    - Content unit from last sale (content_unit)
     """
     try:
         conn = await _get_db_connection()
@@ -90,72 +93,68 @@ async def _lookup_product_by_barcode(tenant_id: str, barcode: str) -> Optional[d
                 return None
 
             result = dict(row)
-            product_name = result["name"]
+            product_id = result["id"]
 
-            # 2. Get last PEMBELIAN (purchase) transaction for this product
-            last_tx = await conn.fetchrow(
+            # 2. Get last PURCHASE (bill) data for this product
+            last_purchase = await conn.fetchrow(
                 """
                 SELECT
-                    it.satuan as last_unit,
-                    it.harga_satuan as last_price,
-                    it.hpp_per_unit,
-                    it.kuantitas as last_qty
-                FROM public.item_transaksi it
-                JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                WHERE th.tenant_id = $1
-                  AND LOWER(it.nama_produk) = LOWER($2)
-                  AND th.jenis_transaksi = 'pembelian'
-                ORDER BY th.created_at DESC
+                    bi.unit as last_unit,
+                    bi.unit_price as last_price,
+                    bi.quantity as last_qty
+                FROM bill_items bi
+                JOIN bills b ON bi.bill_id = b.id
+                WHERE b.tenant_id = $1
+                  AND bi.product_id = $2
+                  AND b.status != void
+                ORDER BY b.bill_date DESC, b.created_at DESC
                 LIMIT 1
                 """,
                 tenant_id,
-                product_name,
+                product_id,
             )
 
-            if last_tx:
-                result["last_unit"] = last_tx["last_unit"]  # karton, dus, slop
-                result["last_price"] = last_tx["last_price"]
-                result["hpp_per_unit"] = last_tx["hpp_per_unit"]
+            if last_purchase:
+                result["last_unit"] = last_purchase["last_unit"]
+                result["last_price"] = last_purchase["last_price"]
 
-                # Compute units_per_pack (qty per wholesale unit)
-                if (
-                    last_tx["last_price"]
-                    and last_tx["hpp_per_unit"]
-                    and last_tx["hpp_per_unit"] > 0
-                ):
-                    result["units_per_pack"] = int(
-                        last_tx["last_price"] / last_tx["hpp_per_unit"]
-                    )
+                # hpp_per_unit: for wholesale, compute per-retail-unit cost
+                # If unit_price is for a pack, divide by qty to get per-unit
+                if last_purchase["last_price"] and result.get("price") and result["price"] > 0:
+                    # units_per_pack = wholesale_price / retail_price
+                    result["units_per_pack"] = int(last_purchase["last_price"] / result["price"]) if result["price"] > 0 else None
+                    result["hpp_per_unit"] = result["price"]  # retail price as proxy
 
                 logger.info(
-                    f"📸 Last pembelian: unit={last_tx['last_unit']}, "
-                    f"price={last_tx['last_price']}, hpp={last_tx['hpp_per_unit']}"
+                    f"Last purchase: unit={last_purchase[last_unit]}, "
+                    f"price={last_purchase[last_price]}"
                 )
 
-            # 3. Get content_unit from last PENJUALAN (retail sales) if last purchase was wholesale
+            # 3. Get content_unit from last SALE if last purchase was wholesale
             last_unit_lower = (result.get("last_unit") or "").lower()
             if last_unit_lower in WHOLESALE_UNITS:
-                retail_tx = await conn.fetchrow(
+                retail_sale = await conn.fetchrow(
                     """
-                    SELECT it.satuan as content_unit
-                    FROM public.item_transaksi it
-                    JOIN public.transaksi_harian th ON it.transaksi_id = th.id
-                    WHERE th.tenant_id = $1
-                      AND LOWER(it.nama_produk) = LOWER($2)
-                      AND th.jenis_transaksi = 'penjualan'
-                      AND LOWER(it.satuan) NOT IN ('karton','dus','box','slop','bal','koli','pack','lusin','rim','gross','sak')
-                    ORDER BY th.created_at DESC
+                    SELECT sii.unit as content_unit
+                    FROM sales_invoice_items sii
+                    JOIN sales_invoices si ON sii.invoice_id = si.id
+                    WHERE si.tenant_id = $1
+                      AND sii.item_id = $2
+                      AND si.status != void
+                      AND LOWER(sii.unit) NOT IN (
+                          karton,dus,box,slop,bal,koli,
+                          pack,lusin,rim,gross,sak
+                      )
+                    ORDER BY si.invoice_date DESC, si.created_at DESC
                     LIMIT 1
                     """,
                     tenant_id,
-                    product_name,
+                    product_id,
                 )
 
-                if retail_tx:
-                    result["content_unit"] = retail_tx["content_unit"]
-                    logger.info(
-                        f"📸 Content unit from penjualan: {retail_tx['content_unit']}"
-                    )
+                if retail_sale:
+                    result["content_unit"] = retail_sale["content_unit"]
+                    logger.info(f"Content unit from sale: {retail_sale[content_unit]}")
 
             return result
         finally:
