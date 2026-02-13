@@ -84,7 +84,11 @@ def get_user_context(request: Request) -> dict:
 
 
 async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[dict]:
-    """Get product info with current stock and weighted average cost."""
+    """Get product info with current stock and weighted average cost.
+
+    Law 16: Stock is derived from inventory_ledger (SUM(quantity_in) - SUM(quantity_out)),
+    NOT from the legacy 'persediaan' table.
+    """
     # Try products table first
     product = await conn.fetchrow("""
         SELECT p.id, p.nama_produk as name, p.satuan as unit, p.barcode as code,
@@ -96,9 +100,10 @@ async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[d
     if not product:
         return None
 
-    # Get current stock from persediaan
+    # Get current stock from inventory_ledger (Law 16 compliant)
     current_stock = await conn.fetchval("""
-        SELECT COALESCE(jumlah, 0) FROM persediaan
+        SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0)
+        FROM inventory_ledger
         WHERE product_id = $1 AND tenant_id = $2
     """, product_id, tenant_id) or 0
 
@@ -831,30 +836,12 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         f"Pengurangan Persediaan - {sa['adjustment_number']}"
                     )
 
-                # Update inventory for each item
+                # Update inventory_ledger for each item (Law 16 compliant)
+                # NOTE: persediaan table writes removed - inventory_ledger is source of truth
                 for item in items:
                     adj_qty = Decimal(str(item["quantity_adjustment"]))
 
-                    # Update persediaan table
-                    await conn.execute("""
-                        UPDATE persediaan
-                        SET jumlah = jumlah + $3, updated_at = NOW()
-                        WHERE tenant_id = $1 AND product_id = $2
-                    """, ctx["tenant_id"], item["product_id"], float(adj_qty))
-
-                    # If no row updated, insert
-                    result = await conn.fetchval("""
-                        SELECT COUNT(*) FROM persediaan
-                        WHERE tenant_id = $1 AND product_id = $2
-                    """, ctx["tenant_id"], item["product_id"])
-
-                    if result == 0:
-                        await conn.execute("""
-                            INSERT INTO persediaan (tenant_id, product_id, jumlah)
-                            VALUES ($1, $2, $3)
-                        """, ctx["tenant_id"], item["product_id"], float(adj_qty))
-
-                    # --- BUG #2 FIX: INSERT inventory_ledger entry ---
+                    # INSERT inventory_ledger entry (Law 16 compliant)
                     # Check if product is goods + track_inventory
                     product_row = await conn.fetchrow("""
                         SELECT id, nama_produk, item_code, track_inventory, item_type
@@ -1067,16 +1054,9 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                     WHERE stock_adjustment_id = $1
                 """, adjustment_id)
 
+                # NOTE: persediaan table writes removed - inventory_ledger is source of truth (Law 16)
                 for item in items:
-                    reversal_qty = -float(item["quantity_adjustment"])
-
-                    await conn.execute("""
-                        UPDATE persediaan
-                        SET jumlah = jumlah + $3, updated_at = NOW()
-                        WHERE tenant_id = $1 AND product_id = $2
-                    """, ctx["tenant_id"], item["product_id"], reversal_qty)
-
-                    # --- BUG #3 FIX: Reverse inventory_ledger entries ---
+                    # Reverse inventory_ledger entries (Law 16 compliant)
                     product_row = await conn.fetchrow("""
                         SELECT id, nama_produk, item_code, track_inventory, item_type
                         FROM products WHERE id = $1 AND tenant_id = $2

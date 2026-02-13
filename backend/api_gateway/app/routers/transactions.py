@@ -34,18 +34,28 @@ router = APIRouter()
 # ============================================
 # POS INVENTORY & JOURNAL HELPER
 # ============================================
-# WARNING (Law 16): This helper reads from legacy POS tables (transaksi_harian, item_transaksi).
+# DEPRECATED (Law 16): This helper reads from legacy POS tables (transaksi_harian, item_transaksi).
 # These tables are written by the orchestrator and read here for post-processing only.
 # TODO: Migrate orchestrator to write to sales_invoices/sales_invoice_items directly,
-# then update this helper to read from the proper tables.
+# then replace these reads with sales_invoices/sales_invoice_items queries.
+# Once orchestrator migration is complete, this function should use:
+#   - sales_invoices.total_amount instead of transaksi_harian.total_nominal
+#   - sales_invoices.payment_method instead of transaksi_harian.metode_pembayaran
+#   - sales_invoice_items (joined with products) instead of item_transaksi
 async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str, user_id: str):
     """
     After POS sale success, create inventory ledger entries and journal entries.
     Called after tenant_orchestrator confirms the sale.
 
-    NOTE: Reads from transaksi_harian/item_transaksi (legacy POS tables).
-    This is a known Law 16 violation pending orchestrator migration.
+    DEPRECATED (Law 16): Reads from transaksi_harian/item_transaksi (legacy POS tables).
+    Cannot migrate to sales_invoices yet because orchestrator still writes to legacy tables.
+    Persediaan writes removed - inventory_ledger is now the sole source of truth.
     """
+    logger.warning(
+        f"[DEPRECATED] _create_pos_inventory_and_journals called for txn {transaction_id}. "
+        "Still reading from legacy transaksi_harian/item_transaksi tables. "
+        "Migrate orchestrator to sales_invoices to resolve Law 16 violation."
+    )
     try:
         conn = await get_db_connection()
         try:
@@ -53,6 +63,8 @@ async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str
             await conn.execute("SELECT set_config('app.current_tenant_id', $1, false)", tenant_id)
 
             # Get transaction items
+            # DEPRECATED: reads from item_transaksi (legacy POS table)
+            # TODO: Replace with sales_invoice_items once orchestrator migrated
             items = await conn.fetch(
                 "SELECT it.*, p.purchase_price, p.item_code, p.nama_produk, p.track_inventory "
                 "FROM item_transaksi it "
@@ -66,6 +78,8 @@ async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str
                 return
 
             # Get transaction total
+            # DEPRECATED: reads from transaksi_harian (legacy POS table)
+            # TODO: Replace with sales_invoices once orchestrator migrated
             txn = await conn.fetchrow(
                 "SELECT total_nominal, metode_pembayaran FROM transaksi_harian WHERE id = $1",
                 transaction_id
@@ -88,7 +102,7 @@ async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str
                 unit_cost = item.get('purchase_price') or item.get('hpp_per_unit') or 0
                 item_total_cost = qty * unit_cost
 
-                # Get current balance
+                # Get current balance from inventory_ledger (Law 16 compliant)
                 current_balance = await conn.fetchval(
                     "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) "
                     "FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2::uuid",
@@ -96,7 +110,7 @@ async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str
                 )
                 new_balance = float(current_balance) - qty
 
-                # INSERT inventory_ledger
+                # INSERT inventory_ledger (Law 16 compliant)
                 await conn.execute("""
                     INSERT INTO inventory_ledger (
                         tenant_id, product_id, product_code, product_name,
@@ -117,13 +131,7 @@ async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str
                     f"POS Sale: {transaction_id[:8]}"
                 )
 
-                # Update persediaan cache
-                await conn.execute("""
-                    UPDATE persediaan SET
-                        stok = stok - $3,
-                        updated_at = NOW()
-                    WHERE tenant_id = $1 AND produk_id = $2
-                """, tenant_id, product_id, qty)
+                # NOTE: persediaan write removed (Law 16) - inventory_ledger is source of truth
 
                 total_cogs += item_total_cost
 
