@@ -1364,3 +1364,125 @@ async def remove_expense_attachment(
     except Exception as e:
         logger.error(f"Error removing expense attachment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to remove attachment")
+
+
+
+@router.get("/{expense_id}/journal-entries")
+async def get_expense_journal_entries(request: Request, expense_id: UUID):
+    """
+    Tab: Journal Entries - Get journal entries linked to this expense.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            expense = await conn.fetchrow(
+                """
+                SELECT id, expense_number, journal_id, status
+                FROM expenses
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                expense_id, ctx["tenant_id"]
+            )
+
+            if not expense:
+                raise HTTPException(status_code=404, detail="Expense not found")
+
+            journal_ids = set()
+            if expense["journal_id"]:
+                journal_ids.add(expense["journal_id"])
+
+            source_journals = await conn.fetch(
+                """
+                SELECT id FROM journal_entries
+                WHERE tenant_id = $1 AND source_id = $2
+                """,
+                ctx["tenant_id"], expense_id
+            )
+            for row in source_journals:
+                journal_ids.add(row["id"])
+
+            if not journal_ids:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                }
+
+            journals = await conn.fetch(
+                """
+                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                       je.source_type, je.status, je.total_debit, je.total_credit
+                FROM journal_entries je
+                WHERE je.id = ANY($1::uuid[])
+                ORDER BY je.journal_date, je.created_at
+                """,
+                list(journal_ids)
+            )
+
+            journal_data = []
+            total_debit = 0
+            total_credit = 0
+
+            for journal in journals:
+                lines = await conn.fetch(
+                    """
+                    SELECT jl.id, jl.line_number, jl.account_id, jl.debit, jl.credit, jl.memo,
+                           coa.account_code, coa.name as account_name
+                    FROM journal_lines jl
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                    """,
+                    journal["id"]
+                )
+
+                line_data = [
+                    {
+                        "id": str(line["id"]),
+                        "line_number": line["line_number"],
+                        "account_id": str(line["account_id"]),
+                        "account_code": line["account_code"],
+                        "account_name": line["account_name"],
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
+                        "memo": line["memo"] or ""
+                    }
+                    for line in lines
+                ]
+
+                journal_debit = float(journal["total_debit"] or 0)
+                journal_credit = float(journal["total_credit"] or 0)
+                total_debit += journal_debit
+                total_credit += journal_credit
+
+                journal_data.append({
+                    "id": str(journal["id"]),
+                    "journal_number": journal["journal_number"],
+                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
+                    "description": journal["description"],
+                    "source_type": journal["source_type"],
+                    "status": journal["status"],
+                    "total_debit": journal_debit,
+                    "total_credit": journal_credit,
+                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                    "lines": line_data
+                })
+
+            return {
+                "success": True,
+                "data": journal_data,
+                "total": len(journal_data),
+                "summary": {
+                    "total_debit": total_debit,
+                    "total_credit": total_credit,
+                    "is_balanced": abs(total_debit - total_credit) < 0.01
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting expense journal entries: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get journal entries")

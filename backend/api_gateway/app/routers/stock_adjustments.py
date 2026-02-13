@@ -1191,3 +1191,130 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
     except Exception as e:
         logger.error(f"Error voiding stock adjustment {adjustment_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void stock adjustment")
+
+
+
+@router.get("/{adjustment_id}/journal-entries")
+async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: str):
+    """
+    Tab: Journal Entries - Get journal entries linked to this stock adjustment.
+    Includes the original posting journal and any reversal journal.
+    """
+    try:
+        try:
+            uuid_module.UUID(adjustment_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid adjustment_id format")
+
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            sa = await conn.fetchrow(
+                """
+                SELECT id, adjustment_number, journal_id, status
+                FROM stock_adjustments
+                WHERE id = $1::uuid AND tenant_id = $2
+                """,
+                adjustment_id, ctx["tenant_id"]
+            )
+
+            if not sa:
+                raise HTTPException(status_code=404, detail="Stock adjustment not found")
+
+            journal_ids = []
+            if sa["journal_id"]:
+                journal_ids.append(sa["journal_id"])
+                reversal = await conn.fetchrow(
+                    """
+                    SELECT reversed_by_id FROM journal_entries
+                    WHERE id = $1 AND reversed_by_id IS NOT NULL
+                    """,
+                    sa["journal_id"]
+                )
+                if reversal and reversal["reversed_by_id"]:
+                    journal_ids.append(reversal["reversed_by_id"])
+
+            if not journal_ids:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                }
+
+            journals = await conn.fetch(
+                """
+                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                       je.source_type, je.status, je.total_debit, je.total_credit
+                FROM journal_entries je
+                WHERE je.id = ANY($1::uuid[])
+                ORDER BY je.journal_date, je.created_at
+                """,
+                journal_ids
+            )
+
+            journal_data = []
+            total_debit = 0
+            total_credit = 0
+
+            for journal in journals:
+                lines = await conn.fetch(
+                    """
+                    SELECT jl.id, jl.line_number, jl.account_id, jl.debit, jl.credit, jl.memo,
+                           coa.account_code, coa.name as account_name
+                    FROM journal_lines jl
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE jl.journal_id = $1
+                    ORDER BY jl.line_number
+                    """,
+                    journal["id"]
+                )
+
+                line_data = [
+                    {
+                        "id": str(line["id"]),
+                        "line_number": line["line_number"],
+                        "account_id": str(line["account_id"]),
+                        "account_code": line["account_code"],
+                        "account_name": line["account_name"],
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
+                        "memo": line["memo"] or ""
+                    }
+                    for line in lines
+                ]
+
+                journal_debit = float(journal["total_debit"] or 0)
+                journal_credit = float(journal["total_credit"] or 0)
+                total_debit += journal_debit
+                total_credit += journal_credit
+
+                journal_data.append({
+                    "id": str(journal["id"]),
+                    "journal_number": journal["journal_number"],
+                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
+                    "description": journal["description"],
+                    "source_type": journal["source_type"],
+                    "status": journal["status"],
+                    "total_debit": journal_debit,
+                    "total_credit": journal_credit,
+                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                    "lines": line_data
+                })
+
+            return {
+                "success": True,
+                "data": journal_data,
+                "total": len(journal_data),
+                "summary": {
+                    "total_debit": total_debit,
+                    "total_credit": total_credit,
+                    "is_balanced": abs(total_debit - total_credit) < 0.01
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting stock adjustment journal entries: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get journal entries")

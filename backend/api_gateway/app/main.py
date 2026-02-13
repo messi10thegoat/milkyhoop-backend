@@ -107,6 +107,8 @@ from .routers import fiscal_years
 from .routers import periods
 from .routers import user
 from .routers import bill_payments
+from .routers import payment_requests
+from .routers import action_chat
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -313,6 +315,7 @@ app.include_router(bills.router, prefix="/api/bills", tags=["bills"])
 app.include_router(
     bill_payments.router, prefix="/api/bill-payments", tags=["bill-payments"]
 )
+app.include_router(payment_requests.router)
 
 # Vendors router (Supplier/Vendor Master Data)
 app.include_router(vendors.router, prefix="/api/vendors", tags=["vendors"])
@@ -574,6 +577,9 @@ app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
 app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
 
+
+# Agentic Chat Action Mode router (Sprint 1 - Conversational Accounting)
+app.include_router(action_chat.router, prefix="/api/action-chat", tags=["action-chat"])
 
 @app.get("/")
 async def root():
