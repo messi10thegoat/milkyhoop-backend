@@ -36,11 +36,79 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
-# Legacy helper for backward compatibility
-async def get_db_connection():
-    """Get database connection from pool"""
-    pool = await get_pool()
-    return await pool.acquire()
+# ========================================
+# Journal-based balance helpers (Pure Ledger)
+# ========================================
+
+async def get_ar_balances_by_customer(conn, tenant_id: str, customer_ids=None):
+    """Get per-customer AR balance from journal via accounts_receivable linkage."""
+    if customer_ids is not None and len(customer_ids) == 0:
+        return {}
+    query = """
+        SELECT ar.customer_id::text as cid,
+               COALESCE(SUM(jl.debit - jl.credit), 0) as balance
+        FROM accounts_receivable ar
+        JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
+        JOIN journal_lines jl ON jl.journal_id = je.id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE ar.tenant_id = $1 AND je.status = 'POSTED'
+          AND coa.account_code LIKE '1-104%%' AND ar.customer_id IS NOT NULL
+    """
+    params = [tenant_id]
+    if customer_ids is not None:
+        query += " AND ar.customer_id::text = ANY($2)"
+        params.append(customer_ids)
+    query += " GROUP BY ar.customer_id"
+    rows = await conn.fetch(query, *params)
+    return {row['cid']: int(row['balance']) for row in rows}
+
+
+async def get_ap_balances_by_supplier(conn, tenant_id: str, supplier_ids=None):
+    """Get per-supplier AP balance from journal via accounts_payable linkage."""
+    if supplier_ids is not None and len(supplier_ids) == 0:
+        return {}
+    query = """
+        SELECT ap.supplier_id::text as sid,
+               COALESCE(SUM(jl.credit - jl.debit), 0) as balance
+        FROM accounts_payable ap
+        JOIN journal_entries je ON je.source_id = ap.source_id AND je.tenant_id = ap.tenant_id
+        JOIN journal_lines jl ON jl.journal_id = je.id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE ap.tenant_id = $1 AND je.status = 'POSTED'
+          AND coa.account_code LIKE '2-101%%' AND ap.supplier_id IS NOT NULL
+    """
+    params = [tenant_id]
+    if supplier_ids is not None:
+        query += " AND ap.supplier_id::text = ANY($2)"
+        params.append(supplier_ids)
+    query += " GROUP BY ap.supplier_id"
+    rows = await conn.fetch(query, *params)
+    return {row['sid']: int(row['balance']) for row in rows}
+
+
+async def get_total_ar_from_journal(conn, tenant_id: str) -> int:
+    """Total piutang from journal. Pure Ledger."""
+    row = await conn.fetchrow("""
+        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
+        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+    """, tenant_id)
+    return int(row['total_piutang']) if row else 0
+
+
+async def get_total_ap_from_journal(conn, tenant_id: str) -> int:
+    """Total hutang from journal. Pure Ledger."""
+    row = await conn.fetchrow("""
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
+        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND coa.account_code LIKE '2-101%%'
+    """, tenant_id)
+    return int(row['total_hutang']) if row else 0
+
+
+
 
 
 # ========================================
