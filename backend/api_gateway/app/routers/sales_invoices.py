@@ -881,20 +881,6 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 f"Sale: {invoice_number}",
             )
 
-            # Sync persediaan cache (subtract stock on sale)
-            await conn.execute(
-                """
-                UPDATE persediaan
-                SET jumlah = jumlah - $3,
-                    total_nilai = GREATEST(0, (jumlah - $3)) * nilai_per_unit,
-                    last_movement_at = NOW(),
-                    updated_at = NOW()
-                WHERE tenant_id = $1 AND product_id = $2
-            """,
-                ctx["tenant_id"],
-                item["item_id"],
-                quantity,
-            )
 
     # Create COGS journal if there are inventory items
     cogs_journal_id = None
@@ -1600,20 +1586,6 @@ async def post_invoice(
                             f"Sale: {invoice['invoice_number']}",
                         )
 
-                        # Sync persediaan cache (subtract stock on sale)
-                        await conn.execute(
-                            """
-                            UPDATE persediaan
-                            SET jumlah = jumlah - $3,
-                                total_nilai = GREATEST(0, (jumlah - $3)) * nilai_per_unit,
-                                last_movement_at = NOW(),
-                                updated_at = NOW()
-                            WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                            ctx["tenant_id"],
-                            item["item_id"],
-                            quantity,
-                        )
                         # Stock is tracked via inventory_ledger, not products.stock_quantity
                         # The kartu_stok insert above already records the movement
 
@@ -2362,24 +2334,6 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         f"Inventory restored for item {item['item_code']}: +{quantity}"
                     )
 
-                    # Sync persediaan cache (restore stock on void)
-                    await conn.execute(
-                        """
-                        INSERT INTO persediaan (id, tenant_id, produk_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at)
-                        VALUES (gen_random_uuid()::text, $1, $2::text, $2::uuid, 'gudang_utama', $3, $4, $5, NOW(), NOW(), NOW())
-                        ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
-                        DO UPDATE SET
-                            jumlah = persediaan.jumlah + $3,
-                            total_nilai = (persediaan.jumlah + $3) * EXCLUDED.nilai_per_unit,
-                            last_movement_at = NOW(),
-                            updated_at = NOW()
-                    """,
-                        ctx["tenant_id"],
-                        str(item["item_id"]),
-                        quantity,
-                        float(unit_cost),
-                        float(quantity) * float(unit_cost),
-                    )
 
                 # ============================================================
                 # 4. Update AR status to VOID

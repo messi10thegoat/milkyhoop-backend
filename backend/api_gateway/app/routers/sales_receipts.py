@@ -370,19 +370,6 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         f"Sales Receipt {receipt_number}"
                     )
 
-                    # Update persediaan cache
-                    await conn.execute(
-                        """
-                        INSERT INTO persediaan (id, tenant_id, produk_id, lokasi_gudang, jumlah, satuan, nilai_per_unit, total_nilai, product_id, last_movement_at)
-                        VALUES (gen_random_uuid()::text, $1, COALESCE($6, $2::text), COALESCE($7, 'default'), $3, 'pcs', $4, $3 * $4, $2, NOW())
-                        ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
-                        DO UPDATE SET jumlah = persediaan.jumlah - $5, total_nilai = (persediaan.jumlah - $5) * COALESCE(persediaan.nilai_per_unit, 0), last_movement_at = NOW(), updated_at = NOW()
-                        """,
-                        ctx["tenant_id"], item["item_id"], new_balance,
-                        item["unit_cost"], item["quantity"],
-                        item.get("item_code_from_db") or item.get("item_code") or str(item["item_id"])[:8],
-                        'default'
-                    )
 
             # Create journal entries
             # 1. Sales Journal
@@ -608,16 +595,6 @@ async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSales
                         f"Void Sales Receipt {existing['receipt_number']}"
                     )
 
-                    # Update persediaan cache (add back stock)
-                    await conn.execute(
-                        """
-                        UPDATE persediaan SET jumlah = jumlah + $2,
-                            total_nilai = (jumlah + $2) * COALESCE(nilai_per_unit, 0),
-                            last_movement_at = NOW(), updated_at = NOW()
-                        WHERE tenant_id = $1 AND product_id = $3
-                        """,
-                        ctx["tenant_id"], item["quantity"], item["item_id"]
-                    )
 
             # Update receipt status
             row = await conn.fetchrow(
