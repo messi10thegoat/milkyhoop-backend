@@ -1,0 +1,79 @@
+action_id: CREATE_VENDOR
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - daftar vendor
+    - tambah vendor
+    - vendor baru
+    - tambah pemasok
+    - supplier baru
+    - daftarkan pemasok
+    - pemasok baru
+  examples:
+    - daftarkan PT ABC sebagai vendor
+    - tambah vendor baru namanya Toko Baja Makmur
+    - saya mau tambah pemasok
+    - daftarkan supplier Ote-ote
+  anti_patterns:
+    - lihat daftar vendor
+    - siapa vendor terbesar
+    - hapus vendor
+
+required_fields:
+  - name: vendor_name
+    type: string
+    required: true
+    extract_hint: Nama perusahaan/toko/supplier
+    maps_to: name
+  - name: email
+    type: string
+    required: false
+    maps_to: email
+  - name: phone
+    type: string
+    required: false
+    maps_to: phone
+  - name: address
+    type: string
+    required: false
+    maps_to: address
+  - name: tax_id
+    type: string
+    required: false
+    extract_hint: NPWP
+    maps_to: tax_id
+  - name: contact_person
+    type: string
+    required: false
+    maps_to: contact_person
+
+validation:
+  layer_2:
+    - rule: VENDOR_NAME_UNIQUE
+      check: vendor with same name does not exist for tenant
+      on_duplicate: CLARIFICATION
+      message: "Vendor '{vendor_name}' sudah terdaftar. Maksudnya vendor ini, atau buat baru dengan nama berbeda?"
+  layer_3:
+    - rule: NAME_NOT_EMPTY
+      check: vendor_name.strip() != ''
+      message: Nama vendor tidak boleh kosong
+    - rule: NAME_MIN_LENGTH
+      check: len(vendor_name.strip()) >= 2
+      message: Nama vendor minimal 2 karakter
+
+kernel_route:
+  method: POST
+  endpoint: /api/vendors
+  payload_mapping:
+    vendor_name: name
+    email: email
+    phone: phone
+    address: address
+    tax_id: tax_id
+    contact_person: contact_person
+
+journal_template: null
+requires_confirmation: false

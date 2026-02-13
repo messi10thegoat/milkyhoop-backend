@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Neraca - {{ company_name }}</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+    <div class="report-header">
+        <div class="company-name">{{ company_name }}</div>
+        <div class="report-title">Neraca</div>
+        <div class="report-period">Per Tanggal {{ as_of_date | date_id }}</div>
+        <div class="report-basis">Basis: {{ basis }}</div>
+    </div>
+
+    <table class="report-table">
+        <thead>
+            <tr>
+                <th>Keterangan</th>
+                <th class="amount-col">Jumlah (Rp)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- ASET -->
+            <tr class="section-header">
+                <td colspan="2">ASET</td>
+            </tr>
+
+            {% for category in assets.categories %}
+            <tr class="sub-section">
+                <td colspan="2">{{ category.name }}</td>
+            </tr>
+            {% for account in category.accounts %}
+            <tr class="item">
+                <td>{{ account.code }} - {{ account.name }}</td>
+                <td class="amount">{{ account.balance | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total {{ category.name }}</td>
+                <td class="amount">{{ category.total | currency }}</td>
+            </tr>
+            <tr class="spacer"><td colspan="2"></td></tr>
+            {% endfor %}
+
+            <tr class="grand-total">
+                <td>TOTAL ASET</td>
+                <td class="amount">{{ total_assets | currency }}</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- LIABILITAS -->
+            <tr class="section-header">
+                <td colspan="2">LIABILITAS</td>
+            </tr>
+
+            {% for category in liabilities.categories %}
+            <tr class="sub-section">
+                <td colspan="2">{{ category.name }}</td>
+            </tr>
+            {% for account in category.accounts %}
+            <tr class="item">
+                <td>{{ account.code }} - {{ account.name }}</td>
+                <td class="amount">{{ account.balance | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total {{ category.name }}</td>
+                <td class="amount">{{ category.total | currency }}</td>
+            </tr>
+            <tr class="spacer"><td colspan="2"></td></tr>
+            {% endfor %}
+
+            <tr class="subtotal">
+                <td>Total Liabilitas</td>
+                <td class="amount">{{ liabilities.total | currency }}</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- EKUITAS -->
+            <tr class="section-header">
+                <td colspan="2">EKUITAS</td>
+            </tr>
+
+            {% for category in equity.categories %}
+            <tr class="sub-section">
+                <td colspan="2">{{ category.name }}</td>
+            </tr>
+            {% for account in category.accounts %}
+            <tr class="item">
+                <td>{{ account.code }} - {{ account.name }}</td>
+                <td class="amount">{{ account.balance | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total {{ category.name }}</td>
+                <td class="amount">{{ category.total | currency }}</td>
+            </tr>
+            <tr class="spacer"><td colspan="2"></td></tr>
+            {% endfor %}
+
+            <tr class="subtotal">
+                <td>Total Ekuitas</td>
+                <td class="amount">{{ equity.total | currency }}</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- TOTAL LIABILITAS & EKUITAS -->
+            <tr class="grand-total">
+                <td>TOTAL LIABILITAS & EKUITAS</td>
+                <td class="amount">{{ total_liabilities_and_equity | currency }}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    {% if total_assets == total_liabilities_and_equity %}
+    <div class="balance-check balance-ok">
+        Balance OK: Aset = Liabilitas + Ekuitas ({{ total_assets | currency }})
+    </div>
+    {% else %}
+    <div class="balance-check balance-error">
+        TIDAK BALANCE: Aset ({{ total_assets | currency }}) != Liabilitas + Ekuitas ({{ total_liabilities_and_equity | currency }})
+    </div>
+    {% endif %}
+
+    <div class="report-footer">
+        Dicetak pada: {{ generated_at.strftime("%d/%m/%Y %H:%M") }}
+    </div>
+</body>
+</html>

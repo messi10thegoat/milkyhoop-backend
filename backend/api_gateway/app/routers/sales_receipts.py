@@ -246,13 +246,16 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
             for idx, item in enumerate(body.items, 1):
                 line_calc = calculate_line_totals(item.model_dump())
 
-                # Get item cost
-                item_row = await conn.fetchrow(
-                    "SELECT unit_cost FROM items WHERE id = $1",
+                # Get product cost from products table
+                prod_row = await conn.fetchrow(
+                    "SELECT purchase_price, item_code, nama_produk, item_type, track_inventory FROM products WHERE id = $1",
                     item.item_id
                 )
-                unit_cost = item_row["unit_cost"] if item_row else 0
+                unit_cost = int(prod_row["purchase_price"]) if prod_row and prod_row["purchase_price"] else 0
                 item_total_cost = int(item.quantity * unit_cost)
+                item_code_from_db = prod_row["item_code"] if prod_row else None
+                item_name_from_db = prod_row["nama_produk"] if prod_row else None
+                track_inventory = prod_row["track_inventory"] if prod_row else True
 
                 processed_items.append({
                     **item.model_dump(),
@@ -260,6 +263,9 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     "unit_cost": unit_cost,
                     "total_cost": item_total_cost,
                     "line_number": idx,
+                    "item_code_from_db": item_code_from_db,
+                    "item_name_from_db": item_name_from_db,
+                    "track_inventory": track_inventory,
                 })
 
                 subtotal += line_calc["subtotal"]
@@ -331,17 +337,51 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                 items_data.append(SalesReceiptItemData(**dict(item_row)))
 
                 # Update inventory (reduce stock)
-                if warehouse_id:
+                if warehouse_id and item.get("track_inventory", True):
+                    # Get current balance
+                    current_balance = await conn.fetchval(
+                        "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
+                        ctx["tenant_id"], item["item_id"]
+                    )
+                    new_balance = current_balance - item["quantity"]
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
-                            tenant_id, item_id, warehouse_id, quantity_change,
-                            unit_cost, total_value, source_type, source_id, transaction_date
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'SALES_RECEIPT', $7, $8)
+                            tenant_id, product_id, product_code, product_name,
+                            movement_type, movement_date, source_type, source_id,
+                            quantity_in, quantity_out, quantity_balance,
+                            unit_cost, total_cost, average_cost,
+                            warehouse_id, created_by, notes
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            'SALE', $5, 'POS_SALE', $6,
+                            0, $7, $8,
+                            $9, $10, $9,
+                            $11, $12, $13
+                        )
                         """,
-                        ctx["tenant_id"], item["item_id"], warehouse_id,
-                        -item["quantity"], item["unit_cost"], -item["total_cost"],
-                        receipt_id, body.receipt_date
+                        ctx["tenant_id"], item["item_id"],
+                        item.get("item_code_from_db") or item.get("item_code"),
+                        item.get("item_name_from_db") or item.get("item_name"),
+                        body.receipt_date, receipt_id,
+                        item["quantity"], new_balance,
+                        item["unit_cost"], item["total_cost"],
+                        warehouse_id, ctx.get("user_id"),
+                        f"Sales Receipt {receipt_number}"
+                    )
+
+                    # Update persediaan cache
+                    await conn.execute(
+                        """
+                        INSERT INTO persediaan (id, tenant_id, produk_id, lokasi_gudang, jumlah, satuan, nilai_per_unit, total_nilai, product_id, last_movement_at)
+                        VALUES (gen_random_uuid()::text, $1, COALESCE($6, $2::text), COALESCE($7, 'default'), $3, 'pcs', $4, $3 * $4, $2, NOW())
+                        ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
+                        DO UPDATE SET jumlah = persediaan.jumlah - $5, total_nilai = (persediaan.jumlah - $5) * COALESCE(persediaan.nilai_per_unit, 0), last_movement_at = NOW(), updated_at = NOW()
+                        """,
+                        ctx["tenant_id"], item["item_id"], new_balance,
+                        item["unit_cost"], item["quantity"],
+                        item.get("item_code_from_db") or item.get("item_code") or str(item["item_id"])[:8],
+                        'default'
                     )
 
             # Create journal entries
@@ -443,7 +483,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
                 # CR Inventory
                 inv_acct = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10400'",
+                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10600'",
                     ctx["tenant_id"]
                 )
                 if inv_acct:
@@ -531,15 +571,52 @@ async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSales
 
             for item in items:
                 if existing["warehouse_id"]:
+                    # Get product info for ledger
+                    prod_info = await conn.fetchrow(
+                        "SELECT item_code, nama_produk FROM products WHERE id = $1",
+                        item["item_id"]
+                    )
+                    # Get current balance
+                    current_balance = await conn.fetchval(
+                        "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
+                        ctx["tenant_id"], item["item_id"]
+                    )
+                    new_balance = current_balance + item["quantity"]
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
-                            tenant_id, item_id, warehouse_id, quantity_change,
-                            unit_cost, total_value, source_type, source_id, transaction_date
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'SALES_RECEIPT_VOID', $7, CURRENT_DATE)
+                            tenant_id, product_id, product_code, product_name,
+                            movement_type, movement_date, source_type, source_id,
+                            quantity_in, quantity_out, quantity_balance,
+                            unit_cost, total_cost, average_cost,
+                            warehouse_id, created_by, notes
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            'SALE_VOID', CURRENT_DATE, 'POS_SALE_VOID', $5,
+                            $6, 0, $7,
+                            $8, $9, $8,
+                            $10, $11, $12
+                        )
                         """,
-                        ctx["tenant_id"], item["item_id"], existing["warehouse_id"],
-                        item["quantity"], item["unit_cost"], item["total_cost"], receipt_id
+                        ctx["tenant_id"], item["item_id"],
+                        prod_info["item_code"] if prod_info else None,
+                        prod_info["nama_produk"] if prod_info else item["item_name"],
+                        receipt_id,
+                        item["quantity"], new_balance,
+                        item["unit_cost"], item["total_cost"],
+                        existing["warehouse_id"], ctx.get("user_id"),
+                        f"Void Sales Receipt {existing['receipt_number']}"
+                    )
+
+                    # Update persediaan cache (add back stock)
+                    await conn.execute(
+                        """
+                        UPDATE persediaan SET jumlah = jumlah + $2,
+                            total_nilai = (jumlah + $2) * COALESCE(nilai_per_unit, 0),
+                            last_movement_at = NOW(), updated_at = NOW()
+                        WHERE tenant_id = $1 AND product_id = $3
+                        """,
+                        ctx["tenant_id"], item["quantity"], item["item_id"]
                     )
 
             # Update receipt status

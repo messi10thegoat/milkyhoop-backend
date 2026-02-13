@@ -91,6 +91,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 logger.info(f"Bypassing auth for Device WebSocket: {path}")
                 return await call_next(request)
 
+            # Allow internal service requests (action_executor calling kernel endpoints)
+            x_source = request.headers.get("X-Source", "")
+            x_tenant = request.headers.get("X-Tenant-ID", "")
+            x_user = request.headers.get("X-User-ID", "")
+            if x_source == "action_executor" and x_tenant:
+                request.state.user = {
+                    "tenant_id": x_tenant,
+                    "user_id": x_user or "",
+                    "role": "ADMIN",
+                    "source": "action_executor",
+                }
+                logger.info(f"Internal service auth bypass: {x_source} tenant={x_tenant}")
+                return await call_next(request)
+
             # Require authentication for all other paths
             auth_header = request.headers.get("Authorization")
             if not auth_header or not auth_header.startswith("Bearer "):

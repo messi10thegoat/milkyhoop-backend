@@ -1,0 +1,255 @@
+syntax = "proto3";
+
+package milkyhoop.actions;
+
+option go_package = "github.com/milkyhoop/milkyhoop/internal/proto/audit";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "action_plan.proto";  // Provides ActionType, ActionCategory, and HealthResponse
+
+// =============================
+// AuditService
+// Immutable audit logging for all actions in the Agentic Accounting system.
+// Every stage of an action's lifecycle is recorded:
+// intent parsing, validation, confirmation, execution, and journal posting.
+// =============================
+
+service AuditService {
+  // Log a single audit event
+  rpc LogEvent(LogEventRequest) returns (LogEventResponse);
+
+  // Query the audit trail for a specific action (by action_id)
+  rpc GetAuditTrail(GetAuditTrailRequest) returns (GetAuditTrailResponse);
+
+  // Query the full history of a specific entity (by entity_id)
+  rpc GetEntityHistory(GetEntityHistoryRequest) returns (GetEntityHistoryResponse);
+
+  // Health check endpoint
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// =============================
+// Enums
+// =============================
+
+enum AuditEventType {
+  // Intent lifecycle
+  INTENT_RECEIVED = 0;
+  INTENT_PARSED = 1;
+
+  // Validation lifecycle
+  VALIDATION_STARTED = 10;
+  VALIDATION_PASSED = 11;
+  VALIDATION_FAILED = 12;
+
+  // Confirmation lifecycle
+  CONFIRMATION_REQUESTED = 20;
+  CONFIRMATION_ACCEPTED = 21;
+  CONFIRMATION_REJECTED = 22;
+  CONFIRMATION_EXPIRED = 23;
+
+  // Execution lifecycle
+  EXECUTION_STARTED = 30;
+  EXECUTION_COMPLETED = 31;
+  EXECUTION_FAILED = 32;
+
+  // Journal lifecycle
+  JOURNAL_POSTED = 40;
+  JOURNAL_REVERSED = 41;
+}
+
+enum AuditSeverity {
+  INFO = 0;
+  WARNING = 1;
+  ERROR = 2;
+  CRITICAL = 3;
+}
+
+// =============================
+// LogEvent
+// =============================
+
+message LogEventRequest {
+  // Tenant context
+  string tenant_id = 1;
+
+  // Who triggered this event
+  string user_id = 2;
+
+  // The action this event belongs to
+  string action_id = 3;
+
+  // Type of audit event
+  AuditEventType event_type = 4;
+
+  // Severity level
+  AuditSeverity severity = 5;
+
+  // Which service produced this event
+  string source_service = 6;
+
+  // The action type being audited
+  ActionType action_type = 7;
+
+  // Action category for filtering
+  ActionCategory category = 8;
+
+  // Human-readable description of what happened
+  string description = 9;
+
+  // JSON string with event-specific details
+  // e.g. validation errors, journal entry details, etc.
+  string details_json = 10;
+
+  // The original user input / intent text (for INTENT_RECEIVED)
+  string original_input = 11;
+
+  // Confidence score from intent parsing (for INTENT_PARSED)
+  double confidence = 12;
+
+  // Entity affected by this action
+  string entity_id = 13;
+  string entity_type = 14;
+
+  // IP address of the request origin
+  string ip_address = 15;
+
+  // User agent string
+  string user_agent = 16;
+
+  // Idempotency key for deduplication
+  string idempotency_key = 17;
+
+  // Correlation ID for tracing across services
+  string correlation_id = 18;
+
+  // When the event occurred (if not set, server will use current time)
+  google.protobuf.Timestamp event_timestamp = 19;
+}
+
+message LogEventResponse {
+  // Whether the event was logged successfully
+  bool success = 1;
+
+  // Unique ID assigned to this audit event
+  string event_id = 2;
+
+  // Error message if logging failed
+  string error_message = 3;
+}
+
+// =============================
+// GetAuditTrail
+// =============================
+
+message GetAuditTrailRequest {
+  string tenant_id = 1;
+
+  // The action_id to retrieve the full trail for
+  string action_id = 2;
+
+  // Optional: filter by event types
+  repeated AuditEventType event_types = 3;
+
+  // Pagination
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message GetAuditTrailResponse {
+  // Ordered list of audit events for this action
+  repeated AuditEvent events = 1;
+
+  // Total count of events matching the query
+  int32 total_count = 2;
+
+  // Pagination token for next page
+  string next_page_token = 3;
+}
+
+// =============================
+// GetEntityHistory
+// =============================
+
+message GetEntityHistoryRequest {
+  string tenant_id = 1;
+
+  // The entity to retrieve history for
+  string entity_id = 2;
+  string entity_type = 3;
+
+  // Optional: filter by event types
+  repeated AuditEventType event_types = 4;
+
+  // Optional: time range filter
+  google.protobuf.Timestamp from_timestamp = 5;
+  google.protobuf.Timestamp to_timestamp = 6;
+
+  // Pagination
+  int32 page_size = 7;
+  string page_token = 8;
+}
+
+message GetEntityHistoryResponse {
+  // Ordered list of audit events for this entity
+  repeated AuditEvent events = 1;
+
+  // Total count of events matching the query
+  int32 total_count = 2;
+
+  // Pagination token for next page
+  string next_page_token = 3;
+}
+
+// =============================
+// Supporting Messages
+// =============================
+
+message AuditEvent {
+  // Unique event ID
+  string event_id = 1;
+
+  // Tenant context
+  string tenant_id = 2;
+
+  // Who triggered this event
+  string user_id = 3;
+
+  // The action this event belongs to
+  string action_id = 4;
+
+  // Type of audit event
+  AuditEventType event_type = 5;
+
+  // Severity level
+  AuditSeverity severity = 6;
+
+  // Which service produced this event
+  string source_service = 7;
+
+  // The action type being audited
+  ActionType action_type = 8;
+
+  // Action category
+  ActionCategory category = 9;
+
+  // Human-readable description
+  string description = 10;
+
+  // JSON string with event-specific details
+  string details_json = 11;
+
+  // Entity affected
+  string entity_id = 12;
+  string entity_type = 13;
+
+  // Correlation ID for cross-service tracing
+  string correlation_id = 14;
+
+  // When the event occurred
+  google.protobuf.Timestamp event_timestamp = 15;
+
+  // When the event was recorded in the audit log
+  google.protobuf.Timestamp recorded_at = 16;
+}

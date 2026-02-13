@@ -1,0 +1,42 @@
+action_id: UPDATE_PRODUCT
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - ubah produk
+    - update produk
+    - ganti harga produk
+    - perbaiki data produk
+    - edit barang
+  examples:
+    - ubah harga jual kemeja putih jadi 165rb
+    - ganti kategori produk kaos polos
+    - update harga beli barang X
+
+required_fields:
+  - name: entity_id_or_name
+    type: string
+    required: true
+    extract_hint: Nama atau ID produk yang mau diubah
+  - name: fields_to_update
+    type: object
+    required: true
+    extract_hint: Field apa yang mau diubah dan nilainya
+
+validation:
+  layer_2:
+    - rule: ENTITY_EXISTS
+      check: product with given name/id exists
+      message: "Tidak ditemukan produk '{entity_name}'. Cek kembali nama-nya."
+  layer_3:
+    - rule: NO_UNIT_CHANGE_IF_TRANSACTIONS
+      check: cannot change unit if transactions exist
+      message: Satuan produk tidak bisa diubah karena sudah ada transaksi.
+
+kernel_route:
+  method: PUT
+  endpoint: /api/items/{id}
+
+requires_confirmation: false

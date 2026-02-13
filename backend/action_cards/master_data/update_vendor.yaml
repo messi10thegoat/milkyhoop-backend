@@ -1,0 +1,42 @@
+action_id: UPDATE_VENDOR
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - ubah vendor
+    - update vendor
+    - ganti nama vendor
+    - perbaiki data vendor
+    - edit vendor
+  examples:
+    - ubah email vendor PT ABC jadi abc@email.com
+    - ganti alamat vendor Toko Baja
+    - update nomor telepon vendor
+
+required_fields:
+  - name: entity_id_or_name
+    type: string
+    required: true
+    extract_hint: Nama atau ID vendor yang mau diubah
+  - name: fields_to_update
+    type: object
+    required: true
+    extract_hint: Field apa yang mau diubah dan nilainya
+
+validation:
+  layer_2:
+    - rule: ENTITY_EXISTS
+      check: vendor with given name/id exists
+      message: "Tidak ditemukan vendor '{entity_name}'. Cek kembali nama-nya."
+  layer_3:
+    - rule: NO_CRITICAL_FIELD_CHANGE
+      check: cannot change tax_id if transactions exist
+      message: NPWP tidak bisa diubah karena sudah ada transaksi tercatat.
+
+kernel_route:
+  method: PATCH
+  endpoint: /api/vendors/{id}
+
+requires_confirmation: false

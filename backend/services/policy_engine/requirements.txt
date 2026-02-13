@@ -1,0 +1,27 @@
+# Policy Engine Dependencies
+# ==========================
+
+# Async PostgreSQL driver
+asyncpg==0.29.0
+
+# Pydantic for data validation
+pydantic>=2.0.0,<3.0.0
+
+# Structured logging
+structlog>=24.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Type hints
+typing-extensions>=4.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Optional: Kafka for event publishing
+# aiokafka>=0.10.0
+
+# Optional: Redis for caching
+# redis>=5.0.0

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Laporan Laba Rugi - {{ company_name }}</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+    <div class="report-header">
+        <div class="company-name">{{ company_name }}</div>
+        <div class="report-title">Laporan Laba Rugi</div>
+        <div class="report-period">Dari {{ period_start | date_id }} Sampai {{ period_end | date_id }}</div>
+        <div class="report-basis">Basis: {{ basis }}</div>
+    </div>
+
+    <table class="report-table">
+        <thead>
+            <tr>
+                <th>Keterangan</th>
+                <th class="amount-col">Jumlah (Rp)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- PENDAPATAN -->
+            <tr class="section-header">
+                <td colspan="2">{{ revenue.label | default("Pendapatan") }}</td>
+            </tr>
+            {% for item in revenue["items"] %}
+            <tr class="item">
+                <td>{{ item.accountCode }} - {{ item.accountName }}</td>
+                <td class="amount">{{ item.amount | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total Pendapatan</td>
+                <td class="amount">{{ revenue.total | currency }}</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- HARGA POKOK PENJUALAN -->
+            <tr class="section-header">
+                <td colspan="2">{{ cost_of_goods_sold.label | default("Harga Pokok Penjualan") }}</td>
+            </tr>
+            {% for item in cost_of_goods_sold["items"] %}
+            <tr class="item">
+                <td>{{ item.accountCode }} - {{ item.accountName }}</td>
+                <td class="amount">{{ item.amount | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total HPP</td>
+                <td class="amount">({{ cost_of_goods_sold.total | currency }})</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- LABA KOTOR -->
+            <tr class="subtotal">
+                <td>Laba Kotor</td>
+                <td class="amount {% if gross_profit < 0 %}negative{% endif %}">
+                    {% if gross_profit < 0 %}({{ (gross_profit * -1) | currency }}){% else %}{{ gross_profit | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- BEBAN USAHA -->
+            <tr class="section-header">
+                <td colspan="2">{{ operating_expenses.label | default("Beban Usaha") }}</td>
+            </tr>
+            {% for item in operating_expenses["items"] %}
+            <tr class="item">
+                <td>{{ item.accountCode }} - {{ item.accountName }}</td>
+                <td class="amount">{{ item.amount | currency }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Total Beban Usaha</td>
+                <td class="amount">({{ operating_expenses.total | currency }})</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- LABA USAHA -->
+            <tr class="subtotal">
+                <td>Laba Usaha</td>
+                <td class="amount {% if operating_income < 0 %}negative{% endif %}">
+                    {% if operating_income < 0 %}({{ (operating_income * -1) | currency }}){% else %}{{ operating_income | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- PENDAPATAN & BEBAN LAIN-LAIN -->
+            <tr class="section-header">
+                <td colspan="2">Pendapatan (Beban) Lain-Lain</td>
+            </tr>
+            {% if other_income and other_income["items"] %}
+            <tr class="sub-section">
+                <td colspan="2">{{ other_income.label | default("Pendapatan Lain") }}</td>
+            </tr>
+            {% for item in other_income["items"] %}
+            <tr class="item-indent">
+                <td>{{ item.accountCode }} - {{ item.accountName }}</td>
+                <td class="amount">{{ item.amount | currency }}</td>
+            </tr>
+            {% endfor %}
+            {% endif %}
+            {% if other_expenses and other_expenses["items"] %}
+            <tr class="sub-section">
+                <td colspan="2">{{ other_expenses.label | default("Beban Lain") }}</td>
+            </tr>
+            {% for item in other_expenses["items"] %}
+            <tr class="item-indent">
+                <td>{{ item.accountCode }} - {{ item.accountName }}</td>
+                <td class="amount">({{ item.amount | currency }})</td>
+            </tr>
+            {% endfor %}
+            {% endif %}
+            <tr class="subtotal">
+                <td>Total Pendapatan (Beban) Lain</td>
+                <td class="amount {% if (other_income.total | default(0)) - (other_expenses.total | default(0)) < 0 %}negative{% endif %}">
+                    {% set other_net = (other_income.total | default(0)) - (other_expenses.total | default(0)) %}
+                    {% if other_net < 0 %}({{ (other_net * -1) | currency }}){% else %}{{ other_net | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- LABA SEBELUM PAJAK -->
+            <tr class="subtotal">
+                <td>Laba Sebelum Pajak</td>
+                <td class="amount {% if income_before_tax < 0 %}negative{% endif %}">
+                    {% if income_before_tax < 0 %}({{ (income_before_tax * -1) | currency }}){% else %}{{ income_before_tax | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <!-- BEBAN PAJAK -->
+            <tr class="item">
+                <td>Beban Pajak Penghasilan</td>
+                <td class="amount">({{ tax_expense | currency }})</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- LABA BERSIH -->
+            <tr class="grand-total">
+                <td>LABA BERSIH</td>
+                <td class="amount {% if net_income < 0 %}negative{% endif %}">
+                    {% if net_income < 0 %}({{ (net_income * -1) | currency }}){% else %}{{ net_income | currency }}{% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="report-footer">
+        Dicetak pada: {{ generated_at.strftime("%d/%m/%Y %H:%M") }}
+    </div>
+</body>
+</html>

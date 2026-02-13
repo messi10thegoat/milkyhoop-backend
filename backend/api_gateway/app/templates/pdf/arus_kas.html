@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Laporan Arus Kas - {{ company_name }}</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+    <div class="report-header">
+        <div class="company-name">{{ company_name }}</div>
+        <div class="report-title">Laporan Arus Kas</div>
+        <div class="report-period">Dari {{ period_start | date_id }} Sampai {{ period_end | date_id }}</div>
+        <div class="report-basis">Basis: {{ basis }}</div>
+    </div>
+
+    <table class="report-table">
+        <thead>
+            <tr>
+                <th>Keterangan</th>
+                <th class="amount-col">Jumlah (Rp)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- SALDO KAS AWAL -->
+            <tr class="subtotal">
+                <td>Saldo Kas Awal</td>
+                <td class="amount">{{ opening_balance | currency }}</td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- AKTIVITAS OPERASI -->
+            <tr class="section-header">
+                <td colspan="2">{{ operating.label | default("Aktivitas Operasi") }}</td>
+            </tr>
+            {% for item in operating["items"] %}
+            <tr class="item">
+                <td>{{ item.label }}</td>
+                <td class="amount {% if item.amount < 0 %}negative{% endif %}">
+                    {% if item.amount < 0 %}({{ (item.amount * -1) | currency }}){% else %}{{ item.amount | currency }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            <tr class="subtotal">
+                <td>Arus Kas Bersih dari Aktivitas Operasi</td>
+                <td class="amount {% if operating.total < 0 %}negative{% endif %}">
+                    {% if operating.total < 0 %}({{ (operating.total * -1) | currency }}){% else %}{{ operating.total | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- AKTIVITAS INVESTASI -->
+            <tr class="section-header">
+                <td colspan="2">{{ investing.label | default("Aktivitas Investasi") }}</td>
+            </tr>
+            {% for item in investing["items"] %}
+            <tr class="item">
+                <td>{{ item.label }}</td>
+                <td class="amount {% if item.amount < 0 %}negative{% endif %}">
+                    {% if item.amount < 0 %}({{ (item.amount * -1) | currency }}){% else %}{{ item.amount | currency }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not investing["items"] %}
+            <tr class="item">
+                <td colspan="2" style="color: #999; font-style: italic;">Tidak ada aktivitas</td>
+            </tr>
+            {% endif %}
+            <tr class="subtotal">
+                <td>Arus Kas Bersih dari Aktivitas Investasi</td>
+                <td class="amount {% if investing.total < 0 %}negative{% endif %}">
+                    {% if investing.total < 0 %}({{ (investing.total * -1) | currency }}){% else %}{{ investing.total | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- AKTIVITAS PENDANAAN -->
+            <tr class="section-header">
+                <td colspan="2">{{ financing.label | default("Aktivitas Pendanaan") }}</td>
+            </tr>
+            {% for item in financing["items"] %}
+            <tr class="item">
+                <td>{{ item.label }}</td>
+                <td class="amount {% if item.amount < 0 %}negative{% endif %}">
+                    {% if item.amount < 0 %}({{ (item.amount * -1) | currency }}){% else %}{{ item.amount | currency }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not financing["items"] %}
+            <tr class="item">
+                <td colspan="2" style="color: #999; font-style: italic;">Tidak ada aktivitas</td>
+            </tr>
+            {% endif %}
+            <tr class="subtotal">
+                <td>Arus Kas Bersih dari Aktivitas Pendanaan</td>
+                <td class="amount {% if financing.total < 0 %}negative{% endif %}">
+                    {% if financing.total < 0 %}({{ (financing.total * -1) | currency }}){% else %}{{ financing.total | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- PERUBAHAN KAS BERSIH -->
+            <tr class="subtotal">
+                <td>Perubahan Kas Bersih</td>
+                <td class="amount {% if net_cash_change < 0 %}negative{% endif %}">
+                    {% if net_cash_change < 0 %}({{ (net_cash_change * -1) | currency }}){% else %}{{ net_cash_change | currency }}{% endif %}
+                </td>
+            </tr>
+
+            <tr class="spacer"><td colspan="2"></td></tr>
+
+            <!-- SALDO KAS AKHIR -->
+            <tr class="grand-total">
+                <td>SALDO KAS AKHIR</td>
+                <td class="amount {% if closing_balance < 0 %}negative{% endif %}">
+                    {% if closing_balance < 0 %}({{ (closing_balance * -1) | currency }}){% else %}{{ closing_balance | currency }}{% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="report-footer">
+        Dicetak pada: {{ generated_at.strftime("%d/%m/%Y %H:%M") }}
+    </div>
+</body>
+</html>

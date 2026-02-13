@@ -1,0 +1,38 @@
+action_id: UPDATE_CUSTOMER
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - ubah pelanggan
+    - update pelanggan
+    - ganti data pelanggan
+    - perbaiki data customer
+    - edit customer
+  examples:
+    - ubah email pelanggan PT Maju jadi maju@email.com
+    - ganti alamat customer Toko Sinar
+    - update nomor telepon pelanggan
+
+required_fields:
+  - name: entity_id_or_name
+    type: string
+    required: true
+    extract_hint: Nama atau ID pelanggan yang mau diubah
+  - name: fields_to_update
+    type: object
+    required: true
+    extract_hint: Field apa yang mau diubah dan nilainya
+
+validation:
+  layer_2:
+    - rule: ENTITY_EXISTS
+      check: customer with given name/id exists
+      message: "Tidak ditemukan pelanggan '{entity_name}'. Cek kembali nama-nya."
+
+kernel_route:
+  method: PATCH
+  endpoint: /api/customers/{id}
+
+requires_confirmation: false

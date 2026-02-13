@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+package milkyhoop.actions;
+
+option go_package = "github.com/milkyhoop/milkyhoop/internal/proto/action_executor";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "action_plan.proto";  // Provides ActionPlan, enums, and HealthResponse
+
+// =============================
+// ActionExecutorService
+// Executes validated action plans with two-phase commit:
+// 1. PrepareAction - creates a pending action with preview, returns confirmation token
+// 2. ExecuteAction - executes after user confirmation
+// Also supports cancellation and status queries.
+// =============================
+
+service ActionExecutorService {
+  // Prepare an action for execution (creates pending state, returns preview)
+  rpc PrepareAction(PrepareActionRequest) returns (PrepareActionResponse);
+
+  // Execute a previously prepared action (requires confirmation token)
+  rpc ExecuteAction(ExecuteActionRequest) returns (ExecuteActionResponse);
+
+  // Cancel a pending action before execution
+  rpc CancelAction(CancelActionRequest) returns (CancelActionResponse);
+
+  // Query the current status of an action
+  rpc GetActionStatus(GetActionStatusRequest) returns (GetActionStatusResponse);
+
+  // Health check endpoint
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// =============================
+// Enums
+// =============================
+
+enum ActionStatus {
+  PENDING = 0;      // Action prepared, waiting for confirmation
+  EXECUTING = 1;    // Action is being executed
+  COMPLETED = 2;    // Action executed successfully
+  FAILED = 3;       // Action execution failed
+  CANCELLED = 4;    // Action was cancelled by user
+  EXPIRED = 5;      // Action expired before confirmation
+}
+
+// =============================
+// PrepareAction
+// =============================
+
+message PrepareActionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  ActionPlan action_plan = 3;
+}
+
+message PrepareActionResponse {
+  // Whether preparation succeeded
+  bool success = 1;
+
+  // Unique ID for this pending action
+  string pending_action_id = 2;
+
+  // Token required to confirm execution
+  string confirmation_token = 3;
+
+  // Human-readable preview of what will happen
+  string preview_message = 4;
+
+  // Detailed preview data (journal entries, etc.)
+  ActionPreview preview = 5;
+
+  // When this pending action expires if not confirmed
+  google.protobuf.Timestamp expires_at = 6;
+
+  // Error message if preparation failed
+  string error_message = 7;
+}
+
+message ActionPreview {
+  // Summary of the action in human-readable form
+  string summary = 1;
+
+  // Journal entries that will be created
+  repeated JournalEntryPreview journal_entries = 2;
+
+  // Entities that will be created/modified
+  repeated EntityPreview entities = 3;
+
+  // Total monetary impact
+  double total_amount = 4;
+
+  // Currency code
+  string currency = 5;
+
+  // Key-value map of impact details
+  map<string, string> impact_summary = 6;
+}
+
+message JournalEntryPreview {
+  string account_code = 1;
+  string account_name = 2;
+  double debit = 3;
+  double credit = 4;
+  string description = 5;
+}
+
+message EntityPreview {
+  // Type of entity (e.g. "invoice", "payment", "customer")
+  string entity_type = 1;
+
+  // What will happen ("create", "update", "delete")
+  string operation = 2;
+
+  // Human-readable summary of the entity change
+  string summary = 3;
+}
+
+// =============================
+// ExecuteAction
+// =============================
+
+message ExecuteActionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string pending_action_id = 3;
+  string confirmation_token = 4;
+  string idempotency_key = 5;
+}
+
+message ExecuteActionResponse {
+  // Whether execution succeeded
+  bool success = 1;
+
+  // Current status of the action
+  ActionStatus status = 2;
+
+  // Result details (populated on success)
+  ActionResult result = 3;
+
+  // Error message (populated on failure)
+  string error_message = 4;
+
+  // Error code for programmatic handling
+  string error_code = 5;
+}
+
+message ActionResult {
+  // ID of the entity that was created/modified
+  string entity_id = 1;
+
+  // Business number (e.g. invoice number "INV-2026-0001")
+  string entity_number = 2;
+
+  // Type of entity (e.g. "sales_invoice", "payment")
+  string entity_type = 3;
+
+  // Journal entry ID if a journal was posted
+  string journal_entry_id = 4;
+
+  // Key-value map of additional impact details
+  map<string, string> impact = 5;
+
+  // Human-readable success message
+  string message = 6;
+
+  // When the action was completed
+  google.protobuf.Timestamp completed_at = 7;
+}
+
+// =============================
+// CancelAction
+// =============================
+
+message CancelActionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string pending_action_id = 3;
+  string reason = 4;
+}
+
+message CancelActionResponse {
+  bool success = 1;
+  ActionStatus status = 2;
+  string message = 3;
+}
+
+// =============================
+// GetActionStatus
+// =============================
+
+message GetActionStatusRequest {
+  string tenant_id = 1;
+  string action_id = 2;
+}
+
+message GetActionStatusResponse {
+  string action_id = 1;
+  ActionStatus status = 2;
+  ActionPlan action_plan = 3;
+  ActionResult result = 4;
+  string error_message = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}

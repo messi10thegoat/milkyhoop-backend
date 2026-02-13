@@ -1,0 +1,93 @@
+action_id: CREATE_PRODUCT
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - daftar produk
+    - tambah produk
+    - produk baru
+    - tambah barang
+    - barang baru
+    - daftarkan item
+    - tambah jasa
+    - daftarkan ke master data
+  examples:
+    - daftarkan produk kemeja putih lengan panjang
+    - tambah barang baru kaos polos harga jual 85rb harga beli 50rb
+    - saya mau tambah produk baru
+    - daftarkan ke master data kemeja putih beli 110rb jual 155rb
+  anti_patterns:
+    - stok produk
+    - produk paling laris
+    - harga produk berapa
+
+required_fields:
+  - name: product_name
+    type: string
+    required: true
+    extract_hint: Nama produk/barang/jasa
+    maps_to: name
+  - name: sku
+    type: string
+    required: false
+    maps_to: sku
+  - name: buy_price
+    type: number
+    required: false
+    extract_hint: Harga beli per unit
+    maps_to: purchase_price
+  - name: sell_price
+    type: number
+    required: false
+    extract_hint: Harga jual per unit
+    maps_to: sales_price
+  - name: unit
+    type: string
+    required: false
+    default: pcs
+    extract_hint: Satuan (pcs, kg, meter, liter, dll)
+    maps_to: base_unit
+  - name: category
+    type: string
+    required: false
+    maps_to: kategori
+  - name: track_inventory
+    type: boolean
+    required: false
+    default: true
+    maps_to: track_inventory
+
+validation:
+  layer_2:
+    - rule: SKU_UNIQUE
+      check: if sku provided, must be unique for tenant
+      on_duplicate: CLARIFICATION
+      message: "SKU '{sku}' sudah dipakai oleh produk lain."
+    - rule: PRODUCT_NAME_UNIQUE
+      check: product with same name does not exist for tenant
+      on_duplicate: CLARIFICATION
+      message: "Produk '{product_name}' sudah terdaftar. Maksudnya produk ini?"
+  layer_3:
+    - rule: NAME_NOT_EMPTY
+      check: product_name.strip() != ''
+      message: Nama produk tidak boleh kosong
+    - rule: PRICE_NOT_NEGATIVE
+      check: buy_price >= 0 if provided, sell_price >= 0 if provided
+      message: Harga tidak boleh negatif
+
+kernel_route:
+  method: POST
+  endpoint: /api/items
+  payload_mapping:
+    product_name: name
+    unit: base_unit
+    buy_price: purchase_price
+    sell_price: sales_price
+    sku: sku
+    category: kategori
+    track_inventory: track_inventory
+
+journal_template: null
+requires_confirmation: false

@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package milkyhoop.action_planner;
+
+option go_package = "github.com/milkyhoop/milkyhoop/internal/proto/action_planner";
+
+import "action_plan.proto";
+
+// ActionPlannerService - Intent classification, text parsing, and response generation.
+// Iron Law 0 & 10: This service ONLY plans. NEVER writes data.
+service ActionPlannerService {
+  rpc ClassifyIntent(ClassifyIntentRequest) returns (ClassifyIntentResponse);
+  rpc GeneratePlan(GeneratePlanRequest) returns (GeneratePlanResponse);
+  rpc ParseDocumentText(ParseDocumentTextRequest) returns (ParseDocumentTextResponse);
+  rpc GenerateResponse(GenerateResponseRequest) returns (GenerateResponseResponse);
+  rpc ExtractEntities(ExtractEntitiesRequest) returns (ExtractEntitiesResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (milkyhoop.actions.HealthResponse);
+}
+
+// === ClassifyIntent ===
+message ClassifyIntentRequest {
+  string text = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+}
+
+message ClassifyIntentResponse {
+  string intent = 1;        // ACTION, READ, CONFIRM, CANCEL, UNCLEAR
+  string action_type = 2;   // CREATE_PURCHASE_INVOICE, etc. or empty
+  double confidence = 3;
+  string reason = 4;
+  string source = 5;        // "llm" or "keyword_fallback"
+}
+
+// === GeneratePlan ===
+message GeneratePlanRequest {
+  string text = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+  string intent = 4;
+  string action_type = 5;
+  string context_json = 6;  // optional JSON context
+}
+
+message GeneratePlanResponse {
+  string action_plan_json = 1;  // JSON-serialized ActionPlan
+  bool success = 2;
+  string error = 3;
+}
+
+// === ParseDocumentText ===
+message ParseDocumentTextRequest {
+  string text = 1;
+  string action_type = 2;  // e.g. "CREATE_PURCHASE_INVOICE"
+}
+
+message ParseDocumentTextResponse {
+  string parsed_json = 1;  // JSON with vendor_name, items, etc.
+  bool success = 2;
+  string error = 3;
+}
+
+// === GenerateResponse ===
+message GenerateResponseRequest {
+  string text = 1;
+  string context = 2;      // optional context string
+}
+
+message GenerateResponseResponse {
+  string response_text = 1;
+  bool success = 2;
+}
+
+// === ExtractEntities ===
+message ExtractEntitiesRequest {
+  string text = 1;
+}
+
+message ExtractEntitiesResponse {
+  repeated string vendor_names = 1;
+  repeated string product_names = 2;
+  bool success = 3;
+  string error = 4;
+}
+
+// === HealthCheck ===
+message HealthCheckRequest {}

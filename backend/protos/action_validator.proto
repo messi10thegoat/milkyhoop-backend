@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package milkyhoop.actions;
+
+option go_package = "github.com/milkyhoop/milkyhoop/internal/proto/action_validator";
+
+import "google/protobuf/empty.proto";
+import "action_plan.proto";
+
+// =============================
+// ActionValidatorService
+// Validates action plans before execution.
+// Performs business rule checks, permission checks,
+// and dry-run accounting previews.
+// =============================
+
+service ActionValidatorService {
+  // Validate an action plan against all business rules
+  rpc ValidateAction(ValidateActionRequest) returns (ValidateActionResponse);
+
+  // Perform a dry-run to preview journal entries without persisting
+  rpc DryRunAction(DryRunActionRequest) returns (DryRunActionResponse);
+
+  // Health check endpoint
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// =============================
+// Request Messages
+// =============================
+
+message ValidateActionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  ActionPlan action_plan = 3;
+}
+
+message DryRunActionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  ActionPlan action_plan = 3;
+}
+
+// =============================
+// Response Messages
+// =============================
+
+message ValidateActionResponse {
+  // Whether the action passed all validation checks
+  bool valid = 1;
+
+  // List of validation errors (if any)
+  repeated ValidationError errors = 2;
+
+  // Dry-run result with journal preview
+  DryRunResult dry_run_result = 3;
+
+  // Whether the action requires user confirmation before execution
+  bool requires_confirmation = 4;
+
+  // Human-readable confirmation message to present to the user
+  string confirmation_message = 5;
+
+  // Risk level assessment
+  RiskLevel risk_level = 6;
+}
+
+message DryRunActionResponse {
+  // Whether the dry-run succeeded
+  bool success = 1;
+
+  // Dry-run result with journal preview
+  DryRunResult dry_run_result = 2;
+
+  // Errors encountered during dry-run
+  repeated ValidationError errors = 3;
+}
+
+// =============================
+// Supporting Messages
+// =============================
+
+message ValidationError {
+  // Which validation layer produced this error
+  // e.g. "permission", "business_rule", "accounting", "schema"
+  string layer = 1;
+
+  // Machine-readable error code
+  string code = 2;
+
+  // Human-readable error message
+  string message = 3;
+
+  // Whether this error blocks execution (true) or is just a warning (false)
+  bool blocking = 4;
+
+  // Optional: the field that caused the error
+  string field = 5;
+}
+
+message DryRunResult {
+  // Preview of journal entries that would be created
+  repeated JournalPreview journal_entries = 1;
+
+  // Total debit amount across all entries
+  double total_debit = 2;
+
+  // Total credit amount across all entries
+  double total_credit = 3;
+
+  // Whether debits and credits are balanced
+  bool balanced = 4;
+
+  // Key-value map of impact summaries
+  // e.g. {"ar_increase": "500000", "revenue_increase": "500000"}
+  map<string, string> impact_summary = 5;
+
+  // Currency code (e.g. "IDR")
+  string currency = 6;
+}
+
+message JournalPreview {
+  // Chart of accounts code
+  string account_code = 1;
+
+  // Human-readable account name
+  string account_name = 2;
+
+  // Debit amount (0 if credit entry)
+  double debit = 3;
+
+  // Credit amount (0 if debit entry)
+  double credit = 4;
+
+  // Optional description for this line
+  string description = 5;
+}

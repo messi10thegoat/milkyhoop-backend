@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Neraca Saldo - {{ company_name }}</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+    <div class="report-header">
+        <div class="company-name">{{ company_name }}</div>
+        <div class="report-title">Neraca Saldo</div>
+        <div class="report-period">Per Tanggal {{ as_of_date }}</div>
+    </div>
+
+    <table class="report-table">
+        <thead>
+            <tr>
+                <th>Kode</th>
+                <th style="text-align: left;">Nama Akun</th>
+                <th class="amount-col">Debit (Rp)</th>
+                <th class="amount-col">Kredit (Rp)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for account in accounts %}
+            <tr class="item">
+                <td style="padding-left: 4pt; white-space: nowrap;">{{ account.account_code }}</td>
+                <td>{{ account.account_name }}</td>
+                <td class="amount">{{ account.debit | currency if account.debit > 0 else '-' }}</td>
+                <td class="amount">{{ account.credit | currency if account.credit > 0 else '-' }}</td>
+            </tr>
+            {% endfor %}
+
+            <tr class="grand-total">
+                <td colspan="2">TOTAL</td>
+                <td class="amount">{{ total_debit | currency }}</td>
+                <td class="amount">{{ total_credit | currency }}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    {% if is_balanced %}
+    <div class="balance-check balance-ok">
+        Neraca Seimbang: Debit = Kredit ({{ total_debit | currency }})
+    </div>
+    {% else %}
+    <div class="balance-check balance-error">
+        TIDAK SEIMBANG: Debit ({{ total_debit | currency }}) != Kredit ({{ total_credit | currency }})
+    </div>
+    {% endif %}
+
+    <div class="report-footer">
+        Dicetak pada: {{ generated_at.strftime("%d/%m/%Y %H:%M") }}
+    </div>
+</body>
+</html>

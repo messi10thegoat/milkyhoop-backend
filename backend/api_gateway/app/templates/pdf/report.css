@@ -1,0 +1,174 @@
+/* report.css - A4 Accounting Report Stylesheet */
+@page {
+    size: A4;
+    margin: 1.5cm 2cm;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "DejaVu Sans", Arial, Helvetica, sans-serif;
+    font-size: 9pt;
+    color: #222;
+    line-height: 1.4;
+}
+
+/* Header */
+.report-header {
+    text-align: center;
+    margin-bottom: 18pt;
+    padding-bottom: 10pt;
+    border-bottom: 1.5pt solid #333;
+}
+
+.report-header .company-name {
+    font-size: 14pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+    letter-spacing: 0.5pt;
+}
+
+.report-header .report-title {
+    font-size: 12pt;
+    font-weight: bold;
+    margin-bottom: 3pt;
+}
+
+.report-header .report-period {
+    font-size: 9pt;
+    color: #555;
+    margin-bottom: 1pt;
+}
+
+.report-header .report-basis {
+    font-size: 8pt;
+    color: #777;
+    font-style: italic;
+}
+
+/* Main Report Table */
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6pt;
+}
+
+.report-table th {
+    text-align: left;
+    font-weight: bold;
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    color: #444;
+    border-bottom: 1.5pt solid #333;
+    padding: 5pt 4pt;
+}
+
+.report-table th.amount-col {
+    text-align: right;
+    width: 28%;
+}
+
+.report-table td {
+    padding: 3pt 4pt;
+    vertical-align: top;
+}
+
+.report-table td.amount {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* Section header row */
+.report-table tr.section-header td {
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 9pt;
+    padding-top: 10pt;
+    padding-bottom: 4pt;
+    color: #333;
+}
+
+/* Sub-section header */
+.report-table tr.sub-section td {
+    font-weight: bold;
+    font-size: 8.5pt;
+    padding-top: 6pt;
+    padding-bottom: 3pt;
+    color: #444;
+}
+
+/* Account item rows */
+.report-table tr.item td {
+    padding-left: 16pt;
+    font-size: 8.5pt;
+}
+
+.report-table tr.item-indent td:first-child {
+    padding-left: 32pt;
+}
+
+/* Subtotal row */
+.report-table tr.subtotal td {
+    font-weight: bold;
+    border-top: 0.75pt solid #999;
+    padding-top: 4pt;
+    padding-bottom: 4pt;
+}
+
+/* Grand total row */
+.report-table tr.grand-total td {
+    font-weight: bold;
+    font-size: 10pt;
+    border-top: 2pt double #333;
+    padding-top: 6pt;
+    padding-bottom: 6pt;
+}
+
+/* Separator row */
+.report-table tr.separator td {
+    padding: 3pt 0;
+}
+
+/* Negative amounts in parentheses */
+.negative {
+    color: #c00;
+}
+
+/* Spacer row */
+.report-table tr.spacer td {
+    padding: 6pt 0;
+}
+
+/* Footer */
+.report-footer {
+    margin-top: 24pt;
+    padding-top: 8pt;
+    border-top: 0.5pt solid #ccc;
+    font-size: 7pt;
+    color: #999;
+    text-align: right;
+}
+
+/* Balance check */
+.balance-check {
+    margin-top: 12pt;
+    font-size: 8pt;
+    color: #666;
+    text-align: right;
+    font-style: italic;
+}
+
+.balance-ok {
+    color: #090;
+}
+
+.balance-error {
+    color: #c00;
+    font-weight: bold;
+}

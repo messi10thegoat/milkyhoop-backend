@@ -1,0 +1,34 @@
+--- a/bill_payments.py
++++ b/bill_payments.py
+@@ -493,9 +493,22 @@ async def get_bill_payments_summary(request: Request):
+         raise HTTPException(status_code=500, detail="Failed to get summary")
+
+
++def validate_uuid(value: str, field_name: str = "id") -> UUID:
++    """Validate UUID format and return UUID object."""
++    try:
++        return UUID(value)
++    except (ValueError, AttributeError):
++        raise HTTPException(
++            status_code=400,
++            detail=f"Invalid {field_name} format. Expected UUID."
++        )
++
++
+ @router.get("/{payment_id}", response_model=BillPaymentDetailResponse)
+ async def get_bill_payment(request: Request, payment_id: str):
+     try:
++        payment_uuid = validate_uuid(payment_id, "payment_id")
+         ctx = get_user_context(request)
+         pool = await get_pool()
+
+@@ -505,7 +518,7 @@ async def get_bill_payment(request: Request, payment_id: str):
+             payment = await conn.fetchrow(
+                 """
+                 SELECT bp.*, ba.account_name as bank_account_name_lookup
+                 FROM bill_payments_v2 bp LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+-                WHERE bp.id = \$1::uuid AND bp.tenant_id = \$2""",
++                WHERE bp.id = \$1 AND bp.tenant_id = \$2""",
+                 payment_id,
+                 ctx["tenant_id"],
+             )

@@ -1,0 +1,73 @@
+action_id: CREATE_CUSTOMER
+version: v1
+category: MASTER_DATA
+risk_level: LOW
+
+intent_patterns:
+  keywords:
+    - daftar pelanggan
+    - tambah pelanggan
+    - pelanggan baru
+    - tambah customer
+    - customer baru
+    - daftarkan pembeli
+  examples:
+    - daftarkan PT Maju Jaya sebagai pelanggan
+    - tambah customer baru Toko Sinar
+    - saya punya pelanggan baru
+  anti_patterns:
+    - lihat daftar pelanggan
+    - pelanggan mana yang paling banyak transaksi
+
+required_fields:
+  - name: customer_name
+    type: string
+    required: true
+    extract_hint: Nama pelanggan/pembeli
+    maps_to: name
+  - name: email
+    type: string
+    required: false
+    maps_to: email
+  - name: phone
+    type: string
+    required: false
+    maps_to: phone
+  - name: address
+    type: string
+    required: false
+    maps_to: address
+  - name: tax_id
+    type: string
+    required: false
+    extract_hint: NPWP
+    maps_to: tax_id
+  - name: contact_person
+    type: string
+    required: false
+    maps_to: contact_person
+
+validation:
+  layer_2:
+    - rule: CUSTOMER_NAME_UNIQUE
+      check: customer with same name does not exist for tenant
+      on_duplicate: CLARIFICATION
+      message: "Pelanggan '{customer_name}' sudah terdaftar. Maksudnya pelanggan ini?"
+  layer_3:
+    - rule: NAME_NOT_EMPTY
+      check: customer_name.strip() != ''
+      message: Nama pelanggan tidak boleh kosong
+
+kernel_route:
+  method: POST
+  endpoint: /api/customers
+  payload_mapping:
+    customer_name: name
+    email: email
+    phone: phone
+    address: address
+    tax_id: tax_id
+    contact_person: contact_person
+
+journal_template: null
+requires_confirmation: false

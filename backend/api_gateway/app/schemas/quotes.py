@@ -136,6 +136,12 @@ class DeclineQuoteRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500, description="Decline reason")
 
 
+
+
+class VoidQuoteRequest(BaseModel):
+    """Schema for voiding a quote."""
+    reason: Optional[str] = Field(None, max_length=500, description="Void reason")
+
 class ConvertToInvoiceRequest(BaseModel):
     """Schema for converting quote to invoice."""
     invoice_date: Optional[date] = Field(None, description="Invoice date (defaults to today)")
@@ -221,6 +227,9 @@ class QuoteListResponse(BaseModel):
     items: List[QuoteListItem]
     total: int
     has_more: bool = False
+    page: int = 1
+    limit: int = 20
+    total_pages: int = 1
 
 
 class QuoteDetailResponse(BaseModel):

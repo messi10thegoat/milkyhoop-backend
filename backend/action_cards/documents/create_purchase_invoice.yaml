@@ -1,0 +1,85 @@
+action_id: CREATE_PURCHASE_INVOICE
+version: v1
+category: DOCUMENT
+risk_level: MEDIUM
+
+intent_patterns:
+  keywords:
+    - faktur pembelian
+    - faktur beli
+    - catat pembelian
+    - buat tagihan
+    - invoice pembelian
+    - bill baru
+  examples:
+    - buat faktur pembelian kertas dari PT Maju Jaya 500rb
+    - catat pembelian 10 rim kertas dari vendor ABC
+    - saya mau bikin tagihan pembelian
+  anti_patterns:
+    - lihat faktur
+    - cek tagihan
+    - status pembayaran
+
+required_fields:
+  - name: vendor_name
+    type: string
+    required: true
+    maps_to: vendor_name
+  - name: vendor_id
+    type: string
+    required: false
+    maps_to: vendor_id
+  - name: bill_date
+    type: string
+    required: false
+    maps_to: bill_date
+  - name: due_date
+    type: string
+    required: false
+    maps_to: due_date
+  - name: items
+    type: array
+    required: true
+    maps_to: items
+    item_fields:
+      - name: product_name
+        type: string
+        required: true
+      - name: qty
+        type: number
+        required: true
+      - name: unit
+        type: string
+        required: false
+      - name: price
+        type: number
+        required: true
+
+validation:
+  layer_2:
+    - rule: VENDOR_EXISTS
+      check: vendor must exist in system
+      message: Vendor tidak ditemukan
+    - rule: FISCAL_PERIOD_OPEN
+      check: posting date in open fiscal period
+      message: Periode akuntansi sudah ditutup
+  layer_3:
+    - rule: ITEMS_NOT_EMPTY
+      check: at least 1 line item
+      message: Minimal 1 item
+    - rule: AMOUNTS_POSITIVE
+      check: all quantities and prices > 0
+      message: Jumlah dan harga harus positif
+
+kernel_route:
+  method: POST
+  endpoint: /api/bills/v2
+
+journal_template:
+  debit:
+    - account: Persediaan/Beban (5-1100)
+    - account: PPN Masukan (1-1700)
+  credit:
+    - account: Hutang Usaha (2-1100)
+
+requires_confirmation: true

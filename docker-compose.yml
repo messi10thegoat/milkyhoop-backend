@@ -163,6 +163,12 @@ services:
       - RAGLLM_GRPC_HOST=ragllm_service
       - INTENT_PARSER_GRPC_HOST=intent_parser
       - FLOW_EXECUTOR_HOST=http://flow-executor:8088
+      - ACTION_PLANNER_GRPC_HOST=action_planner
+      - ACTION_PLANNER_GRPC_PORT=5090
+      - ACTION_VALIDATOR_GRPC_HOST=action_validator
+      - ACTION_VALIDATOR_GRPC_PORT=5091
+      - ACTION_EXECUTOR_GRPC_HOST=action_executor
+      - ACTION_EXECUTOR_GRPC_PORT=5092
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
     env_file:
       - .env
@@ -1213,6 +1219,105 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  action_planner:
+    build:
+      context: .
+      dockerfile: backend/services/action_planner/Dockerfile
+    ports:
+      - "7090:5090"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5090
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
+    volumes:
+      - ./logs/action_planner:/var/log
+      - ./backend/services/action_planner/app:/app/backend/services/action_planner/app
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5090"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  action_validator:
+    build:
+      context: .
+      dockerfile: backend/services/action_validator/Dockerfile
+    ports:
+      - "7091:5091"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5091
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=Proyek771977
+      - DB_NAME=milkydb
+    env_file:
+      - .env
+    volumes:
+      - ./logs/action_validator:/var/log
+      - ./backend/services/action_validator/app:/app/backend/services/action_validator/app
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5091"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  action_executor:
+    build:
+      context: .
+      dockerfile: backend/services/action_executor/Dockerfile
+    ports:
+      - "7095:5092"
+    networks:
+      - internal
+    environment:
+      - GRPC_PORT=5092
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=Proyek771977
+      - DB_NAME=milkydb
+      - API_GATEWAY_URL=http://api_gateway:8000
+    env_file:
+      - .env
+    volumes:
+      - ./logs/action_executor:/var/log
+      - ./backend/services/action_executor/app:/app/backend/services/action_executor/app
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:5092"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:

@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package milkyhoop.actions;
+
+option go_package = "github.com/milkyhoop/milkyhoop/internal/proto/action_plan";
+
+import "google/protobuf/timestamp.proto";
+
+// =============================
+// ActionPlan - Shared message definitions for the Agentic Accounting system.
+// Defines the structured plan that the Intent Parser produces
+// and the Validator/Executor consume.
+// Also contains shared messages (HealthResponse) used by all action services.
+// =============================
+
+// =============================
+// Enums
+// =============================
+
+enum ActionCategory {
+  MASTER_DATA = 0;   // Low risk: customer, vendor, product CRUD
+  DOCUMENT = 1;      // Medium risk: invoices, expenses (auto-journal)
+  PAYMENT = 2;       // High risk: receive/make payments
+  ACCOUNTING = 3;    // Critical: journal entries, period close
+  READ = 4;          // Safe: read-only queries
+}
+
+enum ActionType {
+  // Master Data (LOW RISK)
+  CREATE_CUSTOMER = 0;
+  UPDATE_CUSTOMER = 1;
+  CREATE_VENDOR = 2;
+  CREATE_PRODUCT = 3;
+
+  // Document (MEDIUM RISK - triggers auto-journal)
+  CREATE_SALES_INVOICE = 10;
+  CREATE_PURCHASE_INVOICE = 11;
+  CREATE_EXPENSE = 12;
+
+  // Payment (HIGH RISK)
+  RECEIVE_PAYMENT = 20;
+  MAKE_PAYMENT = 21;
+
+  // Accounting Core (CRITICAL)
+  POST_GENERAL_JOURNAL = 30;
+  REVERSE_JOURNAL = 31;
+  CLOSE_PERIOD = 32;
+  REOPEN_PERIOD = 33;
+
+  // Read (SAFE)
+  GET_BALANCE = 40;
+  GET_TRIAL_BALANCE = 41;
+  GET_AR_AGING = 42;
+  GET_PNL = 43;
+  GET_BALANCE_SHEET = 44;
+}
+
+enum RiskLevel {
+  RISK_LOW = 0;
+  RISK_MEDIUM = 1;
+  RISK_HIGH = 2;
+  RISK_CRITICAL = 3;
+}
+
+// =============================
+// Messages
+// =============================
+
+message ActionPlan {
+  // Unique identifier for this action plan
+  string action_id = 1;
+
+  // What type of action to perform
+  ActionType action_type = 2;
+
+  // Category grouping for risk assessment
+  ActionCategory category = 3;
+
+  // Version of the intent schema that produced this plan
+  string intent_version = 4;
+
+  // JSON string containing the draft payload for flexibility
+  // across different action types
+  string draft_payload_json = 5;
+
+  // Assumptions made during intent parsing
+  repeated string assumptions = 6;
+
+  // Whether this action requires explicit user confirmation
+  bool requires_confirmation = 7;
+
+  // Idempotency key to prevent duplicate execution
+  string idempotency_key = 8;
+
+  // Confidence score from intent parsing (0.0 to 1.0)
+  double confidence = 9;
+
+  // Human-readable reason/explanation for this action
+  string reason = 10;
+
+  // Risk level derived from category
+  RiskLevel risk_level = 11;
+
+  // When this plan was created
+  google.protobuf.Timestamp created_at = 12;
+}
+
+// =============================
+// Shared HealthCheck Response
+// Used by all action services
+// =============================
+
+message HealthResponse {
+  string status = 1;
+  string timestamp = 2;
+}

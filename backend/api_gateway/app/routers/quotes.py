@@ -5,7 +5,7 @@ NO journal entries - accounting impact happens on conversion.
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import asyncpg
 import logging
@@ -14,7 +14,7 @@ import uuid as uuid_module
 from ..config import settings
 from ..schemas.quotes import (
     CreateQuoteRequest, UpdateQuoteRequest,
-    SendQuoteRequest, DeclineQuoteRequest,
+    SendQuoteRequest, DeclineQuoteRequest, VoidQuoteRequest,
     ConvertToInvoiceRequest, ConvertToOrderRequest, DuplicateQuoteRequest,
     QuoteListResponse, QuoteDetailResponse, QuoteResponse,
     QuoteSummaryResponse, ExpiringQuotesResponse,
@@ -107,7 +107,7 @@ def calculate_quote_totals(items: list, discount_type: str, discount_value: floa
 @router.get("", response_model=QuoteListResponse)
 async def list_quotes(
     request: Request,
-    status: Optional[Literal['all', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']] = Query('all'),
+    status: Optional[str] = Query('all'),
     customer_id: Optional[str] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
@@ -126,7 +126,10 @@ async def list_quotes(
             params = [ctx['tenant_id']]
             param_idx = 2
 
-            if status != 'all':
+            # Map frontend status aliases
+            if status == "invoiced":
+                status = "converted"
+            if status != "all":
                 conditions.append(f"status = ${param_idx}")
                 params.append(status)
                 param_idx += 1
@@ -196,10 +199,16 @@ async def list_quotes(
                     is_expired=is_expired
                 ))
 
+            page = (skip // limit) + 1 if limit > 0 else 1
+            total_pages = (total + limit - 1) // limit if limit > 0 else 1
+
             return QuoteListResponse(
                 items=items,
                 total=total,
-                has_more=(skip + limit) < total
+                has_more=(skip + limit) < total,
+                page=page,
+                limit=limit,
+                total_pages=total_pages
             )
 
     except HTTPException:
@@ -226,7 +235,7 @@ async def get_expiring_quotes(
                 WHERE tenant_id = $1
                 AND status = 'sent'
                 AND expiry_date IS NOT NULL
-                AND expiry_date <= CURRENT_DATE + $2
+                AND expiry_date <= CURRENT_DATE + ($2::INTEGER)
                 AND expiry_date >= CURRENT_DATE
                 ORDER BY expiry_date ASC
             """
@@ -682,7 +691,31 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                 WHERE id = $1 AND tenant_id = $2
             """, uuid_module.UUID(quote_id), ctx['tenant_id'])
 
-            # TODO: Send email if body.send_email is True
+            # Send email notification if requested
+            if body and body.send_email:
+                try:
+                    customer_email = await conn.fetchval(
+                        "SELECT customer_email FROM quotes WHERE id = $1",
+                        uuid_module.UUID(quote_id)
+                    )
+                    if customer_email:
+                        email_subject = body.email_subject or f"Penawaran {quote['quote_number']}"
+                        logger.info(
+                            f"Quote email notification queued: "
+                            f"quote={quote['quote_number']}, "
+                            f"to={customer_email}, "
+                            f"subject={email_subject}"
+                        )
+                        # NOTE: Full SMTP integration pending.
+                        # When email service is available, replace with:
+                        # await email_service.send_quote(customer_email, quote['quote_number'], email_subject, body.email_message)
+                    else:
+                        logger.warning(
+                            f"Quote {quote['quote_number']}: send_email requested but no customer_email on record"
+                        )
+                except Exception as email_err:
+                    # Email failure should NOT fail the send operation
+                    logger.error(f"Failed to process email for quote {quote['quote_number']}: {email_err}")
 
             return QuoteResponse(
                 success=True,
@@ -771,6 +804,67 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
         raise HTTPException(status_code=500, detail="Failed to decline quote")
 
 
+
+# ============================================================================
+# VOID QUOTE
+# ============================================================================
+
+@router.post("/{quote_id}/void", response_model=QuoteResponse)
+async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None):
+    """
+    Void a quote. Only quotes in 'draft' or 'sent' status can be voided.
+    Quotes have no accounting impact, so no journal reversals are needed.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            quote = await conn.fetchrow("""
+                SELECT id, status, quote_number, total_amount, customer_name
+                FROM quotes
+                WHERE id = $1 AND tenant_id = $2
+            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+
+            if not quote:
+                raise HTTPException(status_code=404, detail="Quote not found")
+
+            if quote['status'] not in ('draft', 'sent'):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot void quote with status '{quote['status']}'. Only draft or sent quotes can be voided."
+                )
+
+            await conn.execute("""
+                UPDATE quotes SET status = 'void', updated_at = NOW()
+                WHERE id = $1 AND tenant_id = $2
+            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+
+            reason_str = body.reason if body and body.reason else 'No reason given'
+            logger.info(
+                f"Quote voided: {quote['quote_number']} "
+                f"(customer={quote['customer_name']}, amount={quote['total_amount']}, "
+                f"reason={reason_str})"
+            )
+
+            return QuoteResponse(
+                success=True,
+                message="Quote voided successfully",
+                data={
+                    "quote_id": quote_id,
+                    "quote_number": quote['quote_number'],
+                    "status": "void",
+                    "previous_status": quote['status']
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error voiding quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to void quote")
+
+
 @router.post("/{quote_id}/duplicate", response_model=QuoteResponse)
 async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteRequest = None):
     """Duplicate a quote."""
@@ -823,7 +917,7 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                     )
                 """,
                     new_id, ctx['tenant_id'], new_number, new_date, new_expiry,
-                    quote['customer_id'], quote['customer_name'], quote['customer_email'],
+                    str(quote['customer_id']), quote['customer_name'], quote['customer_email'],
                     quote['reference'], quote['subject'],
                     quote['subtotal'], quote['discount_type'], quote['discount_value'], quote['discount_amount'],
                     quote['tax_amount'], quote['total_amount'],
@@ -905,14 +999,14 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
 
                 # Generate invoice number
                 invoice_number = await conn.fetchval(
-                    "SELECT generate_invoice_number($1, 'INV')",
+                    "SELECT generate_sales_invoice_number($1, 'INV')",
                     ctx['tenant_id']
                 )
 
                 # Create invoice
                 invoice_id = uuid_module.uuid4()
                 invoice_date = body.invoice_date if body and body.invoice_date else date.today()
-                due_date = body.due_date if body and body.due_date else None
+                due_date = body.due_date if body and body.due_date else (invoice_date + timedelta(days=30))
 
                 # Recalculate totals for selected items
                 subtotal = sum(item['line_total'] - item['tax_amount'] for item in items)
@@ -933,7 +1027,7 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
                     )
                 """,
                     invoice_id, ctx['tenant_id'], invoice_number, invoice_date, due_date,
-                    quote['customer_id'], quote['customer_name'],
+                    str(quote['customer_id']), quote['customer_name'],
                     subtotal, tax_total, total,
                     uuid_module.UUID(quote_id), ctx['user_id']
                 )
@@ -944,15 +1038,16 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
                         INSERT INTO sales_invoice_items (
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
-                            tax_id, tax_rate, tax_amount, line_total
+                            tax_code, tax_rate, tax_amount, subtotal, total
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                     """,
                         uuid_module.uuid4(), invoice_id,
                         item['item_id'], item['description'],
                         item['quantity'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item['tax_id'], item['tax_rate'], item['tax_amount'], item['line_total']
+                        item.get('tax_code', 'PPN'), item['tax_rate'], item['tax_amount'],
+                        item['line_total'] - item.get('tax_amount', 0), item['line_total']
                     )
 
                 # Update quote status
@@ -1045,7 +1140,7 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
                 """,
                     so_id, ctx['tenant_id'], so_number, order_date,
                     body.expected_ship_date if body else None,
-                    quote['customer_id'], quote['customer_name'],
+                    str(quote['customer_id']), quote['customer_name'],
                     subtotal, tax_total, total,
                     uuid_module.UUID(quote_id), ctx['user_id']
                 )
