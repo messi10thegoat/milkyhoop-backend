@@ -186,7 +186,7 @@ async def list_customers(
             # Get items
             query = f"""
                 SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
-                       points, total_transaksi, total_nilai, saldo_hutang, is_active, created_at
+                       points, total_transaksi, total_nilai, is_active, created_at
                 FROM customers
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -195,6 +195,24 @@ async def list_customers(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+
+            # Pure Ledger: batch-fetch AR balances from journal for all customers in page
+            customer_ids = [str(row["id"]) for row in rows]
+            ar_balances = {}
+            if customer_ids:
+                ar_rows = await conn.fetch("""
+                    SELECT ar.customer_id::text as cid,
+                           COALESCE(SUM(jl.debit - jl.credit), 0) as balance
+                    FROM accounts_receivable ar
+                    JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE ar.tenant_id = $1 AND je.status = 'POSTED'
+                      AND coa.account_code LIKE '1-104%%' AND ar.customer_id IS NOT NULL
+                      AND ar.customer_id::text = ANY($2)
+                    GROUP BY ar.customer_id
+                """, ctx["tenant_id"], customer_ids)
+                ar_balances = {row['cid']: int(row['balance']) for row in ar_rows}
 
             items = [
                 {
@@ -210,7 +228,7 @@ async def list_customers(
                     "points": row["points"],
                     "total_transactions": row["total_transaksi"],
                     "total_value": row["total_nilai"],
-                    "outstanding_balance": row["saldo_hutang"],
+                    "outstanding_balance": ar_balances.get(str(row["id"]), 0),
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat()
                     if row["created_at"]
@@ -277,7 +295,7 @@ async def get_customer(request: Request, customer_id: str):
             query = """
                 SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
                        points, points_per_50k, total_transaksi, total_nilai,
-                       saldo_hutang, last_transaction_at, created_at, updated_at,
+                       last_transaction_at, created_at, updated_at,
                        default_currency_id, is_active,
                        contact_person, city, province, postal_code,
                        tax_id, payment_terms_days, credit_limit, notes,
@@ -367,7 +385,7 @@ async def get_customer(request: Request, customer_id: str):
                     "points_per_50k": row["points_per_50k"],
                     "total_transactions": int(stats["total_transaksi"]) if stats else (row["total_transaksi"] or 0),
                     "total_value": float(stats["total_nilai"]) if stats else float(row["total_nilai"] or 0),
-                    "outstanding_balance": float(ar_balance["saldo"]) if ar_balance else float(row["saldo_hutang"] or 0),
+                    "outstanding_balance": float(ar_balance["saldo"]) if ar_balance else 0,
                     "last_transaction_at": stats["last_transaction_at"].isoformat()
                     if stats and stats["last_transaction_at"]
                     else (row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None),
@@ -410,7 +428,7 @@ async def get_customer_balance(request: Request, customer_id: str):
         async with pool.acquire() as conn:
             # Check if customer exists
             customer = await conn.fetchrow(
-                "SELECT id, nama, saldo_hutang FROM customers WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
                 customer_id,
                 ctx["tenant_id"],
             )
@@ -437,7 +455,7 @@ async def get_customer_balance(request: Request, customer_id: str):
                     "customer_id": str(customer_id),
                     "customer_name": customer["nama"],
                     "total_balance": int(
-                        balance["total_balance"] or customer["saldo_hutang"] or 0
+                        balance["total_balance"] or 0
                     ),
                     "open_invoices": balance["open_count"] or 0,
                     "partial_invoices": balance["partial_count"] or 0,
@@ -1059,14 +1077,24 @@ async def get_customer_credit(request: Request, customer_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             customer = await conn.fetchrow(
-                "SELECT id, nama, saldo_hutang, credit_limit FROM customers WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, nama, credit_limit FROM customers WHERE id = $1 AND tenant_id = $2",
                 customer_id,
                 ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
             credit_limit = customer["credit_limit"] or 0
-            used_credit = customer["saldo_hutang"] or 0
+            # Pure Ledger: get used credit from journal AR balance
+            ar_row = await conn.fetchrow("""
+                SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as ar_balance
+                FROM accounts_receivable ar
+                JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
+                  AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+            """, ctx["tenant_id"], customer_id)
+            used_credit = int(ar_row["ar_balance"]) if ar_row else 0
             return {
                 "credit_limit": credit_limit,
                 "used_credit": used_credit,
@@ -1100,8 +1128,12 @@ async def set_customer_opening_balance(request: Request, customer_id: str):
             )
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
+            # Law 7: No Balance Override - saldo_hutang is computed from journal.
+            # Opening balance should be set via a journal entry, not a direct UPDATE.
+            # TODO: Create an opening balance journal entry instead.
+            # For now, we update ar_opening_balance as a reference field only.
             await conn.execute(
-                "UPDATE customers SET saldo_hutang = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                "UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
                 amount,
                 customer_id,
                 ctx["tenant_id"],
@@ -1138,7 +1170,7 @@ async def preview_customer_merge(request: Request):
             )
         async with pool.acquire() as conn:
             sources = await conn.fetch(
-                "SELECT id, nama, nomor_member, total_transaksi, saldo_hutang FROM customers WHERE id = ANY($1) AND tenant_id = $2",
+                "SELECT id, nama, nomor_member, total_transaksi FROM customers WHERE id = ANY($1) AND tenant_id = $2",
                 source_ids,
                 ctx["tenant_id"],
             )

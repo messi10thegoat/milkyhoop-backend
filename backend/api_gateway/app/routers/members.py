@@ -109,19 +109,18 @@ async def list_members(
 ):
     """
     List all members (customers) with optional filtering
-    Round 22: Uses connection pooling for faster response times.
+    Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
         # Get tenant_id from auth context
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        # Round 22: Use connection pool for better performance
         pool = await get_pool()
         async with pool.acquire() as conn:
             # Build query
             base_query = """
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
-                       points_per_50k, total_transaksi, total_nilai, saldo_hutang,
+                       points_per_50k, total_transaksi, total_nilai,
                        last_transaction_at, created_at
                 FROM customers
                 WHERE tenant_id = $1
@@ -155,10 +154,31 @@ async def list_members(
             # Execute query
             rows = await conn.fetch(base_query, *params)
 
+            # Collect IDs by type for batch journal balance queries
+            pelanggan_ids = []
+            supplier_ids = []
+            for row in rows:
+                rid = str(row['id'])
+                if row['tipe'] == 'pelanggan':
+                    pelanggan_ids.append(rid)
+                elif row['tipe'] == 'supplier':
+                    supplier_ids.append(rid)
+
+            # Pure Ledger: batch-fetch AR/AP balances from journal
+            ar_balances = await get_ar_balances_by_customer(conn, tenant_id, pelanggan_ids) if pelanggan_ids else {}
+            ap_balances = await get_ap_balances_by_supplier(conn, tenant_id, supplier_ids) if supplier_ids else {}
+
             members = []
             for row in rows:
+                rid = str(row['id'])
+                if row['tipe'] == 'pelanggan':
+                    balance = ar_balances.get(rid, 0)
+                elif row['tipe'] == 'supplier':
+                    balance = ap_balances.get(rid, 0)
+                else:
+                    balance = 0
                 members.append(MemberItem(
-                    id=row['id'],
+                    id=rid,
                     nama=row['nama'],
                     tipe=row['tipe'],
                     telepon=row['telepon'],
@@ -169,27 +189,28 @@ async def list_members(
                     points_per_50k=row['points_per_50k'] or 1,
                     total_transaksi=row['total_transaksi'] or 0,
                     total_nilai=row['total_nilai'] or 0,
-                    saldo_hutang=row['saldo_hutang'] or 0,
+                    saldo_hutang=balance,
                     last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
                     created_at=str(row['created_at']) if row['created_at'] else None
                 ))
 
-            # Get summary stats
-            summary_row = await conn.fetchrow("""
+            # Pure Ledger: summary from journal
+            count_row = await conn.fetchrow("""
                 SELECT
                     COUNT(*) FILTER (WHERE tipe = 'pelanggan') as total_pelanggan,
-                    COUNT(*) FILTER (WHERE tipe = 'supplier') as total_supplier,
-                    COALESCE(SUM(saldo_hutang) FILTER (WHERE tipe = 'pelanggan' AND saldo_hutang > 0), 0) as total_piutang,
-                    COALESCE(SUM(saldo_hutang) FILTER (WHERE tipe = 'supplier' AND saldo_hutang > 0), 0) as total_hutang
+                    COUNT(*) FILTER (WHERE tipe = 'supplier') as total_supplier
                 FROM customers
                 WHERE tenant_id = $1
             """, tenant_id)
 
+            total_piutang = await get_total_ar_from_journal(conn, tenant_id)
+            total_hutang = await get_total_ap_from_journal(conn, tenant_id)
+
             summary = MemberSummary(
-                total_pelanggan=summary_row['total_pelanggan'] or 0,
-                total_supplier=summary_row['total_supplier'] or 0,
-                total_piutang=summary_row['total_piutang'] or 0,
-                total_hutang=summary_row['total_hutang'] or 0
+                total_pelanggan=count_row['total_pelanggan'] or 0,
+                total_supplier=count_row['total_supplier'] or 0,
+                total_piutang=total_piutang,
+                total_hutang=total_hutang
             )
 
             return MemberListResponse(
@@ -214,12 +235,11 @@ async def search_members(
     Search members by name, phone number, or member number
     Optimized for POS autocomplete
 
-    Round 22: Uses connection pooling for faster response times.
+    Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        # Round 22: Use connection pool for better performance
         pool = await get_pool()
         async with pool.acquire() as conn:
             search_pattern = f"%{q}%"
@@ -227,7 +247,7 @@ async def search_members(
             # Search only pelanggan (not suppliers) for POS
             rows = await conn.fetch("""
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
-                       points_per_50k, total_transaksi, total_nilai, saldo_hutang,
+                       points_per_50k, total_transaksi, total_nilai,
                        last_transaction_at, created_at
                 FROM customers
                 WHERE tenant_id = $1
@@ -240,10 +260,15 @@ async def search_members(
                 LIMIT $4
             """, tenant_id, search_pattern, f"{q}%", limit)
 
+            # Pure Ledger: batch-fetch AR balances
+            member_ids = [str(row['id']) for row in rows]
+            ar_balances = await get_ar_balances_by_customer(conn, tenant_id, member_ids) if member_ids else {}
+
             members = []
             for row in rows:
+                rid = str(row['id'])
                 members.append(MemberItem(
-                    id=row['id'],
+                    id=rid,
                     nama=row['nama'],
                     tipe=row['tipe'],
                     telepon=row['telepon'],
@@ -254,7 +279,7 @@ async def search_members(
                     points_per_50k=row['points_per_50k'] or 1,
                     total_transaksi=row['total_transaksi'] or 0,
                     total_nilai=row['total_nilai'] or 0,
-                    saldo_hutang=row['saldo_hutang'] or 0,
+                    saldo_hutang=ar_balances.get(rid, 0),
                     last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
                     created_at=str(row['created_at']) if row['created_at'] else None
                 ))
@@ -273,17 +298,16 @@ async def search_members(
 async def get_member(request: Request, member_id: str):
     """
     Get member detail by ID
-    Round 22: Uses connection pooling for faster response times.
+    Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        # Round 22: Use connection pool for better performance
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
-                       points_per_50k, total_transaksi, total_nilai, saldo_hutang,
+                       points_per_50k, total_transaksi, total_nilai,
                        last_transaction_at, created_at
                 FROM customers
                 WHERE tenant_id = $1 AND id = $2
@@ -292,8 +316,19 @@ async def get_member(request: Request, member_id: str):
             if not row:
                 raise HTTPException(status_code=404, detail="Member not found")
 
+            # Pure Ledger: get balance from journal based on member type
+            rid = str(row['id'])
+            if row['tipe'] == 'pelanggan':
+                balances = await get_ar_balances_by_customer(conn, tenant_id, [rid])
+                balance = balances.get(rid, 0)
+            elif row['tipe'] == 'supplier':
+                balances = await get_ap_balances_by_supplier(conn, tenant_id, [rid])
+                balance = balances.get(rid, 0)
+            else:
+                balance = 0
+
             return MemberItem(
-                id=row['id'],
+                id=rid,
                 nama=row['nama'],
                 tipe=row['tipe'],
                 telepon=row['telepon'],
@@ -304,7 +339,7 @@ async def get_member(request: Request, member_id: str):
                 points_per_50k=row['points_per_50k'] or 1,
                 total_transaksi=row['total_transaksi'] or 0,
                 total_nilai=row['total_nilai'] or 0,
-                saldo_hutang=row['saldo_hutang'] or 0,
+                saldo_hutang=balance,
                 last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
                 created_at=str(row['created_at']) if row['created_at'] else None
             )
@@ -321,12 +356,11 @@ async def add_points(request: Request, data: AddPointsRequest):
     """
     Add points to member based on transaction amount
     Points = floor(transaction_amount / 50000) * points_per_50k
-    Round 22: Uses connection pooling for faster response times.
+    Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
         tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
 
-        # Round 22: Use connection pool for better performance
         pool = await get_pool()
         async with pool.acquire() as conn:
             # Get current member data
