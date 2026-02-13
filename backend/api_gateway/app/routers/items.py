@@ -155,13 +155,13 @@ async def list_items(
         conn = await get_db_connection()
 
         # Build query with filters - include conversions as JSON array
-        # Use subquery for persediaan to prevent duplicate rows when multiple stock entries exist
+        # Stock data derived from inventory_ledger (Law 16 compliance)
         query_parts = [
-            """SELECT p.*, COALESCE(ils.ledger_stock, per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count,
+            """SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count,
             v.name as vendor_name,
             CASE
-                WHEN p.track_inventory = true AND COALESCE(ils.ledger_stock, per.jumlah, 0) > 0
-                     AND p.reorder_level IS NOT NULL AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= p.reorder_level
+                WHEN p.track_inventory = true AND COALESCE(per.jumlah, 0) > 0
+                     AND p.reorder_level IS NOT NULL AND COALESCE(per.jumlah, 0) <= p.reorder_level
                 THEN true
                 ELSE false
             END as low_stock,
@@ -180,8 +180,8 @@ async def list_items(
         query_parts.append("FROM products p")
         query_parts.append(
             """LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(ps.jumlah), 0) as jumlah,
-                            COALESCE(SUM(ps.total_nilai), 0) as total_nilai,
+                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai,
                             (
                                 SELECT COUNT(*) FROM (
                                     SELECT 1 FROM inventory_ledger WHERE product_id = p.id AND tenant_id = p.tenant_id
@@ -199,18 +199,9 @@ async def list_items(
                                     SELECT 1 FROM recipes WHERE product_id = p.id AND tenant_id = p.tenant_id
                                 ) txns
                             ) as transaction_count
-                            FROM persediaan ps
-                            WHERE ps.product_id = p.id AND ps.tenant_id = p.tenant_id
+                            FROM inventory_ledger il
+                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
                         ) per ON true"""
-        )
-        query_parts.append(
-            """LEFT JOIN LATERAL (
-                SELECT quantity_balance as ledger_stock
-                FROM inventory_ledger il
-                WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                ORDER BY movement_date DESC, created_at DESC
-                LIMIT 1
-            ) ils ON true"""
         )
         query_parts.append(
             "LEFT JOIN vendors v ON v.id::text = p.preferred_vendor_id::text AND v.tenant_id = p.tenant_id"
@@ -246,14 +237,14 @@ async def list_items(
             query_parts.append("AND p.item_type = 'goods' AND p.track_inventory = true")
             if stock_status == "in_stock":
                 query_parts.append(
-                    "AND COALESCE(ils.ledger_stock, per.jumlah, 0) > COALESCE(p.reorder_level, 0)"
+                    "AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)"
                 )
             elif stock_status == "low_stock":
                 query_parts.append(
-                    "AND COALESCE(p.reorder_level, 0) > 0 AND COALESCE(ils.ledger_stock, per.jumlah, 0) > 0 AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= COALESCE(p.reorder_level, 0)"
+                    "AND COALESCE(p.reorder_level, 0) > 0 AND COALESCE(per.jumlah, 0) > 0 AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)"
                 )
             elif stock_status == "out_of_stock":
-                query_parts.append("AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= 0")
+                query_parts.append("AND COALESCE(per.jumlah, 0) <= 0")
 
         # Count total - use simplified query for count
         count_parts = [part for part in query_parts if not part.startswith("SELECT")]
@@ -547,30 +538,8 @@ async def create_item(request: Request, body: CreateItemRequest):
                 initial_rate = float(body.opening_stock_rate) if body.opening_stock_rate else (float(body.purchase_price) if body.purchase_price else 0.0)
                 initial_value = initial_qty * initial_rate
 
-                # Check if stock entry already exists
-                existing_stock = await conn.fetchval(
-                    "SELECT id FROM persediaan WHERE tenant_id = $1 AND product_id = $2 AND lokasi_gudang = 'gudang_utama'",
-                    tenant_id,
-                    item_id,
-                )
-                if not existing_stock:
-                    await conn.execute(
-                        """
-                        INSERT INTO persediaan (
-                            id, tenant_id, product_id, produk_id, lokasi_gudang, jumlah,
-                            nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, 'gudang_utama', $5, $6, $7, NOW(), NOW(), NOW())
-                        """,
-                        str(uuid.uuid4()),
-                        tenant_id,
-                        item_id,
-                        str(item_id),  # produk_id for backwards compat
-                        initial_qty,
-                        initial_rate,
-                        initial_value,
-                    )
-
                 # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
+                # (Law 16: stock derived from inventory_ledger, no persediaan writes)
                 if initial_qty > 0:
                     from datetime import date as dateclass_today
                     ob_date = None
@@ -597,7 +566,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                             'OPENING_BALANCE', gen_random_uuid(), $6,
                             $7, 0, $7,
                             $8, $9, $8,
-                            'Saldo awal persediaan', NOW()
+                            'Saldo awal inventaris', NOW()
                         )
                         """,
                         tenant_id,
@@ -1296,32 +1265,25 @@ async def get_items_summary(request: Request):
                 COUNT(*) FILTER (WHERE p.track_inventory = true) as tracked_count,
                 COUNT(*) FILTER (
                     WHERE p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) > COALESCE(p.reorder_level, 0)
+                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
                 ) as in_stock_count,
                 COUNT(*) FILTER (
                     WHERE p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) > 0
+                      AND COALESCE(per.jumlah, 0) > 0
                       AND p.reorder_level IS NOT NULL
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= p.reorder_level
+                      AND COALESCE(per.jumlah, 0) <= p.reorder_level
                 ) as low_stock_count,
                 COUNT(*) FILTER (
                     WHERE p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= 0
+                      AND COALESCE(per.jumlah, 0) <= 0
                 ) as out_of_stock_count
             FROM products p
             LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(ps.jumlah), 0) as jumlah,
-                            COALESCE(SUM(ps.total_nilai), 0) as total_nilai
-                            FROM persediaan ps
-                            WHERE ps.product_id = p.id AND ps.tenant_id = p.tenant_id
+                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
+                            FROM inventory_ledger il
+                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
                         ) per ON true
-            LEFT JOIN LATERAL (
-                SELECT quantity_balance as ledger_stock
-                FROM inventory_ledger il
-                WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                ORDER BY movement_date DESC, created_at DESC
-                LIMIT 1
-            ) ils ON true
             WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
         """
         row = await conn.fetchrow(summary_query, tenant_id)
@@ -1376,34 +1338,27 @@ async def get_items_stats(request: Request):
                 COUNT(*) FILTER (
                     WHERE p.item_type = 'goods'
                       AND p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) > COALESCE(p.reorder_level, 0)
+                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
                 ) as in_stock,
                 COUNT(*) FILTER (
                     WHERE p.item_type = 'goods'
                       AND p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) > 0
+                      AND COALESCE(per.jumlah, 0) > 0
                       AND COALESCE(p.reorder_level, 0) > 0
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
+                      AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
                 ) as low_stock,
                 COUNT(*) FILTER (
                     WHERE p.item_type = 'goods'
                       AND p.track_inventory = true
-                      AND COALESCE(ils.ledger_stock, per.jumlah, 0) <= 0
+                      AND COALESCE(per.jumlah, 0) <= 0
                 ) as out_of_stock
             FROM products p
             LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(ps.jumlah), 0) as jumlah,
-                            COALESCE(SUM(ps.total_nilai), 0) as total_nilai
-                            FROM persediaan ps
-                            WHERE ps.product_id = p.id AND ps.tenant_id = p.tenant_id
+                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
+                            FROM inventory_ledger il
+                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
                         ) per ON true
-            LEFT JOIN LATERAL (
-                SELECT quantity_balance as ledger_stock
-                FROM inventory_ledger il
-                WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                ORDER BY movement_date DESC, created_at DESC
-                LIMIT 1
-            ) ils ON true
             WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
         """
         row = await conn.fetchrow(stats_query, tenant_id)
@@ -1627,10 +1582,8 @@ async def export_items(
                     item_code as code, nama_produk as name, item_type, base_unit as unit, sku,
                     sales_price as selling_price, purchase_price,
                     COALESCE(
-                        (SELECT quantity_balance FROM inventory_ledger il
-                         WHERE il.product_id = products.id AND il.tenant_id = CAST(products.tenant_id AS TEXT)
-                         ORDER BY movement_date DESC, created_at DESC LIMIT 1),
-                        (SELECT SUM(ps.jumlah) FROM persediaan ps WHERE ps.product_id = products.id AND ps.tenant_id = products.tenant_id),
+                        (SELECT SUM(il.quantity_in) - SUM(il.quantity_out) FROM inventory_ledger il
+                         WHERE il.product_id = products.id AND il.tenant_id = CAST(products.tenant_id AS TEXT)),
                         0
                     ) as current_stock,
                     kategori as category, deskripsi as description,
@@ -2056,13 +2009,13 @@ async def get_item(request: Request, item_id: UUID):
     try:
         conn = await get_db_connection()
 
-        # Get item
+        # Get item - stock data derived from inventory_ledger (Law 16 compliance)
         item_query = """
-            SELECT p.*, COALESCE(ils.ledger_stock, per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count
+            SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count
             FROM products p
             LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(ps.jumlah), 0) as jumlah,
-                            COALESCE(SUM(ps.total_nilai), 0) as total_nilai,
+                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai,
                             (
                                 SELECT COUNT(*) FROM (
                                     SELECT 1 FROM inventory_ledger WHERE product_id = p.id AND tenant_id = p.tenant_id
@@ -2080,16 +2033,9 @@ async def get_item(request: Request, item_id: UUID):
                                     SELECT 1 FROM recipes WHERE product_id = p.id AND tenant_id = p.tenant_id
                                 ) txns
                             ) as transaction_count
-                            FROM persediaan ps
-                            WHERE ps.product_id = p.id AND ps.tenant_id = p.tenant_id
+                            FROM inventory_ledger il
+                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
                         ) per ON true
-            LEFT JOIN LATERAL (
-                SELECT quantity_balance as ledger_stock
-                FROM inventory_ledger il
-                WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                ORDER BY movement_date DESC, created_at DESC
-                LIMIT 1
-            ) ils ON true
             WHERE p.id = $1 AND p.tenant_id = $2 AND p.deleted_at IS NULL
         """
         row = await conn.fetchrow(item_query, str(item_id), tenant_id)
@@ -2524,21 +2470,9 @@ async def duplicate_item(request: Request, item_id: UUID):
                     conv.get("sales_price"),
                 )
 
-            # Create initial stock entry if tracked
-            if item_row.get("track_inventory") and item_row.get("item_type") == "goods":
-                await conn.execute(
-                    """
-                    INSERT INTO persediaan (
-                        id, tenant_id, product_id, produk_id, lokasi_gudang, jumlah,
-                        nilai_per_unit, total_nilai, created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, 'gudang_utama', 0, $5, 0, NOW(), NOW())
-                    """,
-                    str(uuid.uuid4()),
-                    tenant_id,
-                    new_id,
-                    str(new_id),
-                    item_row.get("purchase_price") or 0,
-                )
+            # Note: No initial stock entry needed for duplicate.
+            # Stock is derived from inventory_ledger movements (Law 16).
+            # Duplicate starts with 0 stock until actual transactions occur.
 
         logger.info(f"Duplicated item {item_id} -> {new_id} for tenant {tenant_id}")
 
@@ -2668,9 +2602,9 @@ async def create_stock_adjustment(request: Request, item_id: str):
             if not item:
                 raise HTTPException(status_code=404, detail="Item not found")
 
-            # Get current stock from persediaan table
+            # Get current stock from inventory_ledger (Law 16 compliance)
             old_stock = await conn.fetchval(
-                "SELECT COALESCE(jumlah, 0) FROM persediaan WHERE product_id = $1 AND tenant_id = $2",
+                "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
                 product_uuid,
                 ctx["tenant_id"],
             ) or 0
@@ -2691,27 +2625,8 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 )
 
 
-            # Upsert stock in persediaan table
-            existing = await conn.fetchval(
-                "SELECT COUNT(*) FROM persediaan WHERE product_id = $1 AND tenant_id = $2",
-                product_uuid,
-                ctx["tenant_id"],
-            )
-
-            if existing and existing > 0:
-                await conn.execute(
-                    "UPDATE persediaan SET jumlah = $1, updated_at = NOW() WHERE product_id = $2 AND tenant_id = $3",
-                    new_stock,
-                    product_uuid,
-                    ctx["tenant_id"],
-                )
-            else:
-                await conn.execute(
-                    "INSERT INTO persediaan (id, tenant_id, product_id, jumlah) VALUES (gen_random_uuid()::text, $1, $2, $3)",
-                    ctx["tenant_id"],
-                    product_uuid,
-                    new_stock,
-                )
+            # Stock adjustment is recorded via inventory_ledger entry below (Law 16).
+            # No persediaan write needed - stock is derived from ledger movements.
 
             # --- Journal creation for accounting compliance (Iron Law 8) ---
             import uuid as uuid_module
@@ -2720,23 +2635,27 @@ async def create_stock_adjustment(request: Request, item_id: str):
             journal_id = None
             adjustment_qty = abs(new_stock - old_stock)
 
-            # Get unit cost with fallbacks: persediaan.nilai_per_unit -> products.purchase_price -> products.sales_price
+            # Get unit cost with fallbacks: inventory_ledger.average_cost -> products.purchase_price -> products.sales_price
             cost_row = await conn.fetchrow("""
                 SELECT
-                    COALESCE(ps.nilai_per_unit, 0) as persediaan_cost,
+                    COALESCE(il.average_cost, 0) as ledger_cost,
                     COALESCE(p.purchase_price, 0) as purchase_price,
                     COALESCE(p.sales_price, 0) as sales_price
                 FROM products p
-                LEFT JOIN persediaan ps ON ps.product_id = p.id AND ps.tenant_id = p.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT average_cost FROM inventory_ledger
+                    WHERE product_id = p.id AND tenant_id = CAST(p.tenant_id AS TEXT)
+                    ORDER BY movement_date DESC, created_at DESC LIMIT 1
+                ) il ON true
                 WHERE p.id = $1 AND p.tenant_id = $2
             """, product_uuid, ctx["tenant_id"])
 
             unit_cost = 0
             cost_source = None
             if cost_row:
-                if float(cost_row["persediaan_cost"] or 0) > 0:
-                    unit_cost = float(cost_row["persediaan_cost"])
-                    cost_source = "persediaan"
+                if float(cost_row["ledger_cost"] or 0) > 0:
+                    unit_cost = float(cost_row["ledger_cost"])
+                    cost_source = "inventory_ledger"
                 elif float(cost_row["purchase_price"] or 0) > 0:
                     unit_cost = float(cost_row["purchase_price"])
                     cost_source = "purchase_price"
@@ -2822,6 +2741,52 @@ async def create_stock_adjustment(request: Request, item_id: str):
                     """, uuid_module.uuid4(), journal_id, 2, credit_account, total_value, description, product_uuid)
 
                     logger.info(f"Journal {journal_number} created for stock adjustment on {item_id}")
+
+            # --- Record inventory_ledger movement for the adjustment (Law 16) ---
+            if new_stock != old_stock:
+                adj_diff = new_stock - old_stock
+                qty_in = float(adj_diff) if adj_diff > 0 else 0
+                qty_out = float(abs(adj_diff)) if adj_diff < 0 else 0
+                # Get product details for ledger entry
+                prod_info = await conn.fetchrow(
+                    "SELECT item_code, nama_produk FROM products WHERE id = $1 AND tenant_id = $2",
+                    product_uuid, ctx["tenant_id"]
+                )
+                prod_code = prod_info["item_code"] if prod_info else ""
+                prod_name = prod_info["nama_produk"] if prod_info else ""
+                adj_total_cost = float(adjustment_qty) * unit_cost
+
+                await conn.execute("""
+                    INSERT INTO inventory_ledger (
+                        id, tenant_id, product_id, product_code, product_name,
+                        movement_type, movement_date,
+                        source_type, source_id, source_number,
+                        quantity_in, quantity_out, quantity_balance,
+                        unit_cost, total_cost, average_cost,
+                        journal_id, notes, created_at
+                    ) VALUES (
+                        gen_random_uuid(), $1, $2, $3, $4,
+                        'ADJUSTMENT', CURRENT_DATE,
+                        'STOCK_ADJUSTMENT', $5, $6,
+                        $7, $8, $9,
+                        $10, $11, $10,
+                        $12, $13, NOW()
+                    )
+                """,
+                    ctx["tenant_id"],
+                    product_uuid,
+                    prod_code,
+                    prod_name,
+                    product_uuid,  # source_id
+                    f"QSA-{item_id[:8]}",  # source_number
+                    qty_in,
+                    qty_out,
+                    float(new_stock),
+                    unit_cost,
+                    adj_total_cost,
+                    journal_id,  # may be None
+                    f"Penyesuaian stok: {reason}",
+                )
 
             # --- Audit trail (Fix 3) ---
             item_name = item["nama_produk"] or "Unknown"
