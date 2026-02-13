@@ -10,7 +10,6 @@ from typing import Optional, Literal
 from uuid import UUID
 import logging
 import asyncpg
-import uuid as uuid_module
 
 from ..schemas.sales_invoices import (
     CreateInvoiceRequest,
@@ -25,7 +24,6 @@ from ..schemas.sales_invoices import (
     InvoiceCalculationResponse,
 )
 from ..config import settings
-from ..utils.money import cents_to_decimal_string
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,25 +126,79 @@ async def get_invoice_summary(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Pure Ledger: Summary from journal-based outstanding
             query = """
+                WITH ar_journal_outstanding AS (
+                    SELECT
+                        si2.id as invoice_id,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si2.id
+                              AND je2.source_type = 'INVOICE'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as invoice_debit,
+                        COALESCE((
+                            SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = si2.id
+                              AND rpa.tenant_id = $1
+                              AND rp.status = 'posted'
+                              AND rp.journal_id IS NOT NULL
+                        ), 0) as payment_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si2.id
+                              AND je2.source_type = 'INVOICE_REVERSAL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) as reversal_credit
+                    FROM sales_invoices si2
+                    WHERE si2.tenant_id = $1
+                      AND si2.status NOT IN ('draft', 'void', 'paid')
+                ),
+                ar_with_outstanding AS (
+                    SELECT invoice_id,
+                        (invoice_debit - payment_credit - reversal_credit) as outstanding
+                    FROM ar_journal_outstanding
+                    WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                )
                 SELECT
-                    COUNT(*) as total_count,
-                    COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
-                    COUNT(*) FILTER (WHERE status = 'posted') as posted_count,
-                    COUNT(*) FILTER (WHERE status = 'partial') as partial_count,
-                    COUNT(*) FILTER (WHERE status = 'paid') as paid_count,
-                    COUNT(*) FILTER (WHERE status = 'overdue' OR (status IN ('posted', 'partial') AND due_date < CURRENT_DATE)) as overdue_count,
-                    COALESCE(SUM(total_amount - amount_paid) FILTER (WHERE status IN ('posted', 'partial', 'overdue')), 0) as total_outstanding,
-                    COALESCE(SUM(total_amount - amount_paid) FILTER (WHERE (status = 'overdue' OR (status IN ('posted', 'partial') AND due_date < CURRENT_DATE))), 0) as total_overdue
-                FROM sales_invoices
-                WHERE tenant_id = $1
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1) as total_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'draft') as draft_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'posted') as posted_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'partial') as partial_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'paid') as paid_count,
+                    (SELECT COUNT(*) FROM sales_invoices si3
+                     LEFT JOIN ar_with_outstanding aw ON aw.invoice_id = si3.id
+                     WHERE si3.tenant_id = $1
+                       AND (si3.status = 'overdue' OR (si3.status IN ('posted', 'partial') AND si3.due_date < CURRENT_DATE))
+                       AND aw.outstanding > 0
+                    ) as overdue_count,
+                    COALESCE((SELECT SUM(outstanding) FROM ar_with_outstanding), 0) as total_outstanding,
+                    COALESCE((
+                        SELECT SUM(aw.outstanding)
+                        FROM ar_with_outstanding aw
+                        JOIN sales_invoices si3 ON si3.id = aw.invoice_id
+                        WHERE si3.status = 'overdue'
+                           OR (si3.status IN ('posted', 'partial') AND si3.due_date < CURRENT_DATE)
+                    ), 0) as total_overdue
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
 
             return {
                 "success": True,
                 "data": {
-                        "status": "draft",
+                    "status": "draft",
                     "total_count": row["total_count"],
                     "draft_count": row["draft_count"],
                     "posted_count": row["posted_count"],
@@ -199,7 +251,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         return {
             "success": True,
             "data": {
-                        "status": "draft",
+                "status": "draft",
                 "subtotal": subtotal,
                 "discount_amount": total_item_discount + invoice_discount,
                 "tax_amount": total_tax,
@@ -254,8 +306,9 @@ async def list_invoices(
             if status:
                 if status == "overdue":
                     # Overdue = posted/partial AND due_date < today AND not fully paid
+                    # Pure Ledger: overdue = posted/partial + past due + has journal outstanding
                     conditions.append(
-                        "(status IN ('posted', 'partial') AND due_date < CURRENT_DATE AND amount_paid < total_amount)"
+                        "(status IN ('posted', 'partial') AND due_date < CURRENT_DATE AND id IN (SELECT aw.invoice_id FROM (SELECT si2.id as invoice_id, COALESCE((SELECT SUM(jl2.debit) FROM journal_lines jl2 JOIN journal_entries je2 ON je2.id = jl2.journal_id JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id WHERE je2.source_id = si2.id AND je2.source_type = 'INVOICE' AND je2.tenant_id = $1 AND je2.status = 'POSTED' AND coa2.account_code LIKE '1-104%%'), 0) - COALESCE((SELECT SUM(rpa.amount_applied) FROM receive_payment_allocations rpa JOIN receive_payments rp ON rp.id = rpa.payment_id WHERE rpa.invoice_id = si2.id AND rpa.tenant_id = $1 AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0) - COALESCE((SELECT SUM(jl2.credit) FROM journal_lines jl2 JOIN journal_entries je2 ON je2.id = jl2.journal_id JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id WHERE je2.source_id = si2.id AND je2.source_type = 'INVOICE_REVERSAL' AND je2.tenant_id = $1 AND je2.status = 'POSTED' AND coa2.account_code LIKE '1-104%%'), 0) as outstanding FROM sales_invoices si2 WHERE si2.tenant_id = $1 AND si2.status NOT IN ('draft', 'void', 'paid')) aw WHERE aw.outstanding > 0))"
                     )
                 else:
                     conditions.append(f"status = ${param_idx}")
@@ -382,9 +435,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
             return {
                 "success": True,
                 "data": {
-                        "status": "draft",
+                    "status": "draft",
                     "id": str(invoice["id"]),
-                    "invoice_number": invoice['invoice_number'],
+                    "invoice_number": invoice["invoice_number"],
                     "customer_id": str(invoice["customer_id"])
                     if invoice["customer_id"]
                     else None,
@@ -449,10 +502,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     ],
                     "payments": [
                         {
-                            "id": str(p['id']),
-                            "amount": p['amount'],
+                            "id": str(p["id"]),
+                            "amount": p["amount"],
                             "payment_date": p["payment_date"].isoformat(),
-                            "payment_method": p['payment_method'],
+                            "payment_method": p["payment_method"],
                             "account_id": str(p["account_id"]),
                             "bank_account_id": str(p["bank_account_id"])
                             if p["bank_account_id"]
@@ -504,7 +557,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     """Internal helper to post an invoice within the same transaction."""
     import uuid
     from datetime import date as dt_date
-    
+
     # Get invoice data
     invoice = await conn.fetchrow(
         """
@@ -512,9 +565,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                invoice_date, due_date
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
-        invoice_id, ctx["tenant_id"]
+        invoice_id,
+        ctx["tenant_id"],
     )
-    
+
     # Create AR record
     ar_id = await conn.fetchval(
         """
@@ -526,17 +580,22 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         ) VALUES ($1, $2::uuid, $3, 'INVOICE', $4, $5, $6, 0, $7, $8, 'OPEN')
         RETURNING id
         """,
-        ctx["tenant_id"], invoice["customer_id"], invoice["customer_name"],
-        invoice_id, invoice_number, total_amount,
-        invoice["invoice_date"], invoice["due_date"]
+        ctx["tenant_id"],
+        invoice["customer_id"],
+        invoice["customer_name"],
+        invoice_id,
+        invoice_number,
+        total_amount,
+        invoice["invoice_date"],
+        invoice["due_date"],
     )
-    
+
     # Create journal entry
     journal_id = uuid.uuid4()
     trace_id = str(uuid.uuid4())
     today = dt_date.today()
     year_month_str = today.strftime("%y%m")
-    
+
     journal_seq = await conn.fetchval(
         """
         INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
@@ -545,10 +604,12 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
         RETURNING last_number
         """,
-        ctx["tenant_id"], today.year, today.month
+        ctx["tenant_id"],
+        today.year,
+        today.month,
     )
     journal_number = f"JV-{year_month_str}-{journal_seq:04d}"
-    
+
     await conn.execute(
         """
         INSERT INTO journal_entries (
@@ -557,21 +618,27 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             total_debit, total_credit, status, created_by
         ) VALUES ($1, $2, $3, $4, $5, 'INVOICE', $6, $7, $8, $8, 'POSTED', $9)
         """,
-        journal_id, ctx["tenant_id"], journal_number, invoice["invoice_date"],
+        journal_id,
+        ctx["tenant_id"],
+        journal_number,
+        invoice["invoice_date"],
         f"Faktur Penjualan {invoice_number} - {invoice['customer_name']}",
-        invoice_id, trace_id, total_amount, ctx["user_id"]
+        invoice_id,
+        trace_id,
+        total_amount,
+        ctx["user_id"],
     )
-    
+
     # Get AR and Sales accounts
     ar_account = await conn.fetchrow(
         "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10400'",
-        ctx["tenant_id"]
+        ctx["tenant_id"],
     )
     sales_account = await conn.fetchrow(
         "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
-        ctx["tenant_id"]
+        ctx["tenant_id"],
     )
-    
+
     # Insert journal lines
     if ar_account:
         await conn.execute(
@@ -579,20 +646,26 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
             VALUES ($1, $2, 1, $3, $4, 0, $5)
             """,
-            uuid.uuid4(), journal_id, ar_account["id"], total_amount,
-            f"Piutang - {invoice_number}"
+            uuid.uuid4(),
+            journal_id,
+            ar_account["id"],
+            total_amount,
+            f"Piutang - {invoice_number}",
         )
-    
+
     if sales_account:
         await conn.execute(
             """
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
             VALUES ($1, $2, 2, $3, 0, $4, $5)
             """,
-            uuid.uuid4(), journal_id, sales_account["id"], total_amount,
-            f"Penjualan - {invoice_number}"
+            uuid.uuid4(),
+            journal_id,
+            sales_account["id"],
+            total_amount,
+            f"Penjualan - {invoice_number}",
         )
-    
+
     # =============================================================
     # COGS CALCULATION AND INVENTORY LEDGER (matching post_invoice logic)
     # =============================================================
@@ -651,14 +724,16 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             line_cogs = int(quantity * float(avg_cost))
             total_cogs += line_cogs
 
-            cogs_items.append({
-                "item_id": str(item["item_id"]),
-                "item_code": item["item_code"] or product["item_code"],
-                "quantity": quantity,
-                "unit_cost": avg_cost,
-                "total_cost": line_cogs,
-                "cost_source": cost_source,
-            })
+            cogs_items.append(
+                {
+                    "item_id": str(item["item_id"]),
+                    "item_code": item["item_code"] or product["item_code"],
+                    "quantity": quantity,
+                    "unit_cost": avg_cost,
+                    "total_cost": line_cogs,
+                    "cost_source": cost_source,
+                }
+            )
 
             # Update sales_invoice_items with cost info
             await conn.execute(
@@ -720,14 +795,19 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             )
 
             # Sync persediaan cache (subtract stock on sale)
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE persediaan
                 SET jumlah = jumlah - $3,
                     total_nilai = GREATEST(0, (jumlah - $3)) * nilai_per_unit,
                     last_movement_at = NOW(),
                     updated_at = NOW()
                 WHERE tenant_id = $1 AND product_id = $2
-            """, ctx["tenant_id"], item["item_id"], quantity)
+            """,
+                ctx["tenant_id"],
+                item["item_id"],
+                quantity,
+            )
 
     # Create COGS journal if there are inventory items
     cogs_journal_id = None
@@ -806,6 +886,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             )
 
             import logging
+
             logging.getLogger(__name__).info(
                 f"COGS journal created in auto_post: {cogs_journal_id}, amount: {total_cogs}"
             )
@@ -820,8 +901,12 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             cogs_posted_at = CASE WHEN $6::bigint > 0 THEN NOW() ELSE NULL END
         WHERE id = $4
         """,
-        ar_id, journal_id, ctx["user_id"], invoice_id,
-        cogs_journal_id, total_cogs
+        ar_id,
+        journal_id,
+        ctx["user_id"],
+        invoice_id,
+        cogs_journal_id,
+        total_cogs,
     )
 
     return {
@@ -953,12 +1038,16 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 if body.auto_post:
                     # Import here to avoid circular import
                     from uuid import UUID as UUID_type
-                    
+
                     # Post the invoice (creates AR, journal, COGS)
                     post_result = await _internal_post_invoice(
-                        conn, ctx, UUID_type(str(invoice_id)), invoice_number, total_amount
+                        conn,
+                        ctx,
+                        UUID_type(str(invoice_id)),
+                        invoice_number,
+                        total_amount,
                     )
-                    
+
                     return {
                         "success": True,
                         "message": "Invoice created and posted successfully",
@@ -1027,7 +1116,8 @@ async def update_invoice(
             # Guard: Cannot update non-draft invoices
             if invoice["status"] != "draft":
                 raise HTTPException(
-                    status_code=400, detail="Cannot edit posted invoice. Only draft invoices can be edited."
+                    status_code=400,
+                    detail="Cannot edit posted invoice. Only draft invoices can be edited.",
                 )
 
             async with conn.transaction():
@@ -1137,8 +1227,7 @@ async def update_invoice(
                 return {
                     "success": True,
                     "message": "Invoice updated successfully",
-                    "data": {
-                        "status": "draft","id": str(invoice_id)},
+                    "data": {"status": "draft", "id": str(invoice_id)},
                 }
 
     except HTTPException:
@@ -1219,7 +1308,7 @@ async def post_invoice(
                     invoice["customer_id"],
                     invoice["customer_name"],
                     invoice_id,
-                    invoice['invoice_number'],
+                    invoice["invoice_number"],
                     invoice["total_amount"],
                     invoice["invoice_date"],
                     invoice["due_date"],
@@ -1415,7 +1504,7 @@ async def post_invoice(
                             product["nama_produk"],
                             invoice["invoice_date"],
                             invoice_id,
-                            invoice['invoice_number'],
+                            invoice["invoice_number"],
                             quantity,
                             new_balance,
                             avg_cost,
@@ -1424,16 +1513,20 @@ async def post_invoice(
                             f"Sale: {invoice['invoice_number']}",
                         )
 
-
                         # Sync persediaan cache (subtract stock on sale)
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             UPDATE persediaan
                             SET jumlah = jumlah - $3,
                                 total_nilai = GREATEST(0, (jumlah - $3)) * nilai_per_unit,
                                 last_movement_at = NOW(),
                                 updated_at = NOW()
                             WHERE tenant_id = $1 AND product_id = $2
-                        """, ctx["tenant_id"], item["item_id"], quantity)
+                        """,
+                            ctx["tenant_id"],
+                            item["item_id"],
+                            quantity,
+                        )
                         # Stock is tracked via inventory_ledger, not products.stock_quantity
                         # The kartu_stok insert above already records the movement
 
@@ -1620,7 +1713,8 @@ async def record_payment(
                     # Check if account_id is a bank account
                     bank_check = await conn.fetchrow(
                         "SELECT id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        account_uuid, ctx["tenant_id"]
+                        account_uuid,
+                        ctx["tenant_id"],
                     )
                     bank_account_uuid = account_uuid if bank_check else None
 
@@ -1660,13 +1754,12 @@ async def record_payment(
                         body.amount,
                     )
 
-
                 # Update sales_invoices amount_paid and status (Iron Law 3: append-only)
                 await conn.execute(
                     """
                     UPDATE sales_invoices
                     SET amount_paid = amount_paid + $1,
-                        status = CASE 
+                        status = CASE
                             WHEN total_amount <= (amount_paid + $1) THEN 'paid'
                             ELSE 'partial'
                         END,
@@ -1680,6 +1773,7 @@ async def record_payment(
                 # Create bank transaction to update bank balance (if bank_account_id provided)
                 if bank_account_uuid:
                     import uuid as uuid_module
+
                     bank_tx_id = uuid_module.uuid4()
                     await conn.execute(
                         """
@@ -1696,9 +1790,9 @@ async def record_payment(
                         body.payment_date,
                         body.amount,  # Positive = inflow
                         invoice_id,
-                        f"Payment received for invoice",
+                        "Payment received for invoice",
                         body.reference or "Customer Payment",
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                 # =========================================================
@@ -1710,8 +1804,7 @@ async def record_payment(
 
                 # Get journal number
                 journal_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, $2)",
-                    ctx["tenant_id"], "RCV"
+                    "SELECT get_next_journal_number($1, $2)", ctx["tenant_id"], "RCV"
                 )
                 if not journal_number:
                     journal_number = f"JRN-PAY-{payment_id}"
@@ -1719,15 +1812,18 @@ async def record_payment(
                 # Get invoice number for description
                 inv_number = await conn.fetchval(
                     "SELECT invoice_number FROM sales_invoices WHERE id = $1",
-                    invoice_id
+                    invoice_id,
                 )
 
                 # Resolve bank_account_id to chart_of_accounts.id (coa_id)
-                bank_coa_id = account_uuid  # default: use account_id (which is a COA id)
+                bank_coa_id = (
+                    account_uuid  # default: use account_id (which is a COA id)
+                )
                 if bank_account_uuid:
                     bank_acct = await conn.fetchrow(
                         "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        bank_account_uuid, ctx["tenant_id"]
+                        bank_account_uuid,
+                        ctx["tenant_id"],
                     )
                     if bank_acct and bank_acct["coa_id"]:
                         bank_coa_id = bank_acct["coa_id"]
@@ -1735,12 +1831,12 @@ async def record_payment(
                 # Get AR account
                 ar_account_id = await conn.fetchval(
                     "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                    ctx["tenant_id"], "1-10400"
+                    ctx["tenant_id"],
+                    "1-10400",
                 )
                 if not ar_account_id:
                     raise HTTPException(
-                        status_code=500,
-                        detail="AR account (1-10400) not found"
+                        status_code=500, detail="AR account (1-10400) not found"
                     )
 
                 # Create journal entry header
@@ -1794,7 +1890,8 @@ async def record_payment(
                 # Update payment record with journal_id
                 await conn.execute(
                     "UPDATE sales_invoice_payments SET journal_id = $1 WHERE id = $2",
-                    journal_id, payment_id
+                    journal_id,
+                    payment_id,
                 )
 
                 # Update bank_transaction with journal_id (if bank tx was created)
@@ -1804,7 +1901,8 @@ async def record_payment(
                         UPDATE bank_transactions SET journal_id = $1
                         WHERE id = $2
                         """,
-                        journal_id, bank_tx_id
+                        journal_id,
+                        bank_tx_id,
                     )
 
                 logger.info(
@@ -1874,11 +1972,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
 
             # Check if period is open for void date
             from datetime import date as dt_date
+
             today = dt_date.today()
             await check_period_is_open(conn, ctx["tenant_id"], today)
 
             async with conn.transaction():
                 import uuid
+
                 year_month_str = today.strftime("%y%m")
                 reversal_journal_id = None
                 cogs_reversal_journal_id = None
@@ -1972,7 +2072,11 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 # 2. Create REVERSAL Journal for COGS (if exists)
                 # Iron Law 2: Journal Immutability - REVERSAL, not delete
                 # ============================================================
-                if invoice["cogs_journal_id"] and invoice["total_cogs"] and invoice["total_cogs"] > 0:
+                if (
+                    invoice["cogs_journal_id"]
+                    and invoice["total_cogs"]
+                    and invoice["total_cogs"] > 0
+                ):
                     cogs_reversal_journal_id = uuid.uuid4()
                     cogs_trace_id = str(uuid.uuid4())
 
@@ -2051,7 +2155,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         cogs_reversal_journal_id,
                     )
 
-                    logger.info(f"COGS reversal journal created: {cogs_reversal_journal_id}")
+                    logger.info(
+                        f"COGS reversal journal created: {cogs_reversal_journal_id}"
+                    )
 
                 # ============================================================
                 # 3. Restore Inventory via Ledger Entry
@@ -2111,7 +2217,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         item["nama_produk"],
                         today,
                         invoice_id,
-                        invoice['invoice_number'],
+                        invoice["invoice_number"],
                         quantity,  # quantity_in (restore)
                         new_balance,
                         unit_cost,
@@ -2120,10 +2226,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         f"VOID: {invoice['invoice_number']} - Stock restored",
                     )
 
-                    logger.info(f"Inventory restored for item {item['item_code']}: +{quantity}")
+                    logger.info(
+                        f"Inventory restored for item {item['item_code']}: +{quantity}"
+                    )
 
                     # Sync persediaan cache (restore stock on void)
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO persediaan (id, tenant_id, produk_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at)
                         VALUES (gen_random_uuid()::text, $1, $2::text, $2::uuid, 'gudang_utama', $3, $4, $5, NOW(), NOW(), NOW())
                         ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
@@ -2132,7 +2241,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                             total_nilai = (persediaan.jumlah + $3) * EXCLUDED.nilai_per_unit,
                             last_movement_at = NOW(),
                             updated_at = NOW()
-                    """, ctx["tenant_id"], str(item["item_id"]), quantity, float(unit_cost), float(quantity) * float(unit_cost))
+                    """,
+                        ctx["tenant_id"],
+                        str(item["item_id"]),
+                        quantity,
+                        float(unit_cost),
+                        float(quantity) * float(unit_cost),
+                    )
 
                 # ============================================================
                 # 4. Update AR status to VOID
@@ -2169,8 +2284,12 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     "data": {
                         "status": "draft",
                         "id": str(invoice_id),
-                        "reversal_journal_id": str(reversal_journal_id) if reversal_journal_id else None,
-                        "cogs_reversal_journal_id": str(cogs_reversal_journal_id) if cogs_reversal_journal_id else None,
+                        "reversal_journal_id": str(reversal_journal_id)
+                        if reversal_journal_id
+                        else None,
+                        "cogs_reversal_journal_id": str(cogs_reversal_journal_id)
+                        if cogs_reversal_journal_id
+                        else None,
                     },
                 }
 
@@ -2179,6 +2298,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
     except Exception as e:
         logger.error(f"Error voiding invoice {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void invoice")
+
 
 # =============================================================================
 # DELETE INVOICE (Draft only)
@@ -2227,9 +2347,9 @@ async def delete_invoice(request: Request, invoice_id: UUID):
                 "success": True,
                 "message": "Invoice deleted successfully",
                 "data": {
-                        "status": "draft",
+                    "status": "draft",
                     "id": str(invoice_id),
-                    "invoice_number": invoice['invoice_number'],
+                    "invoice_number": invoice["invoice_number"],
                 },
             }
 
@@ -2372,7 +2492,7 @@ async def get_invoice_pdf(
             # Convert to dict for template
             invoice_data = {
                 "id": str(invoice["id"]),
-                "invoice_number": invoice['invoice_number'],
+                "invoice_number": invoice["invoice_number"],
                 "customer_id": str(invoice["customer_id"])
                 if invoice["customer_id"]
                 else None,
@@ -2418,7 +2538,7 @@ async def get_invoice_pdf(
         pdf_bytes = pdf_service.generate_sales_invoice_pdf(invoice_data)
 
         # Generate filename
-        invoice_num = invoice['invoice_number'] or str(invoice_id)[:8]
+        invoice_num = invoice["invoice_number"] or str(invoice_id)[:8]
         filename = f"Faktur-{invoice_num}.pdf"
 
         if format == "inline":
@@ -2448,7 +2568,7 @@ async def get_invoice_pdf(
         return {
             "success": True,
             "data": {
-                        "status": "draft",
+                "status": "draft",
                 "url": url,
                 "expires_at": expires_at.isoformat() + "Z",
                 "filename": filename,
@@ -2500,36 +2620,48 @@ async def get_invoice_activity(
             activities = []
 
             # 1. Creation activity
-            activities.append({
-                "id": f"created-{invoice_id}",
-                "type": "CREATED",
-                "description": f"Faktur {invoice['invoice_number']} dibuat",
-                "timestamp": invoice["created_at"].isoformat() if invoice["created_at"] else None,
-                "actor_id": str(invoice["created_by"]) if invoice["created_by"] else None,
-                "actor_name": None,
-            })
+            activities.append(
+                {
+                    "id": f"created-{invoice_id}",
+                    "type": "CREATED",
+                    "description": f"Faktur {invoice['invoice_number']} dibuat",
+                    "timestamp": invoice["created_at"].isoformat()
+                    if invoice["created_at"]
+                    else None,
+                    "actor_id": str(invoice["created_by"])
+                    if invoice["created_by"]
+                    else None,
+                    "actor_name": None,
+                }
+            )
 
             # 2. Posted activity
             if invoice["posted_at"]:
-                activities.append({
-                    "id": f"posted-{invoice_id}",
-                    "type": "POSTED",
-                    "description": f"Faktur {invoice['invoice_number']} diposting",
-                    "timestamp": invoice["posted_at"].isoformat(),
-                    "actor_id": str(invoice["posted_by"]) if invoice["posted_by"] else None,
-                    "actor_name": None,
-                })
+                activities.append(
+                    {
+                        "id": f"posted-{invoice_id}",
+                        "type": "POSTED",
+                        "description": f"Faktur {invoice['invoice_number']} diposting",
+                        "timestamp": invoice["posted_at"].isoformat(),
+                        "actor_id": str(invoice["posted_by"])
+                        if invoice["posted_by"]
+                        else None,
+                        "actor_name": None,
+                    }
+                )
 
             # 3. Voided activity
             if invoice["voided_at"]:
-                activities.append({
-                    "id": f"voided-{invoice_id}",
-                    "type": "VOIDED",
-                    "description": f"Faktur {invoice['invoice_number']} dibatalkan: {invoice['voided_reason'] or 'Tidak ada alasan'}",
-                    "timestamp": invoice["voided_at"].isoformat(),
-                    "actor_id": None,
-                    "actor_name": None,
-                })
+                activities.append(
+                    {
+                        "id": f"voided-{invoice_id}",
+                        "type": "VOIDED",
+                        "description": f"Faktur {invoice['invoice_number']} dibatalkan: {invoice['voided_reason'] or 'Tidak ada alasan'}",
+                        "timestamp": invoice["voided_at"].isoformat(),
+                        "actor_id": None,
+                        "actor_name": None,
+                    }
+                )
 
             # 4. Payment activities
             payments = await conn.fetch(
@@ -2542,14 +2674,18 @@ async def get_invoice_activity(
                 invoice_id,
             )
             for p in payments:
-                activities.append({
-                    "id": f"payment-{p['id']}",
-                    "type": "PAYMENT_RECEIVED",
-                    "description": f"Pembayaran diterima: Rp {p['amount']:,} via {p['payment_method'] or 'Transfer'}",
-                    "timestamp": p["created_at"].isoformat() if p["created_at"] else None,
-                    "actor_id": str(p["created_by"]) if p["created_by"] else None,
-                    "actor_name": None,
-                })
+                activities.append(
+                    {
+                        "id": f"payment-{p['id']}",
+                        "type": "PAYMENT_RECEIVED",
+                        "description": f"Pembayaran diterima: Rp {p['amount']:,} via {p['payment_method'] or 'Transfer'}",
+                        "timestamp": p["created_at"].isoformat()
+                        if p["created_at"]
+                        else None,
+                        "actor_id": str(p["created_by"]) if p["created_by"] else None,
+                        "actor_name": None,
+                    }
+                )
 
             # 5. Get from audit_logs if available
             audit_rows = await conn.fetch(
@@ -2565,22 +2701,28 @@ async def get_invoice_activity(
             )
             for row in audit_rows:
                 metadata = row["metadata"] or {}
-                activities.append({
-                    "id": str(row["id"]),
-                    "type": row["eventType"] or "AUDIT",
-                    "description": metadata.get("description", row["eventType"] or "Activity"),
-                    "timestamp": row["createdAt"].isoformat() if row["createdAt"] else None,
-                    "actor_id": row["userId"],
-                    "actor_name": metadata.get("user_name"),
-                    "changes": metadata.get("changes"),
-                })
+                activities.append(
+                    {
+                        "id": str(row["id"]),
+                        "type": row["eventType"] or "AUDIT",
+                        "description": metadata.get(
+                            "description", row["eventType"] or "Activity"
+                        ),
+                        "timestamp": row["createdAt"].isoformat()
+                        if row["createdAt"]
+                        else None,
+                        "actor_id": row["userId"],
+                        "actor_name": metadata.get("user_name"),
+                        "changes": metadata.get("changes"),
+                    }
+                )
 
             # Sort by timestamp descending
             activities.sort(key=lambda x: x["timestamp"] or "", reverse=True)
 
             # Apply pagination
             total = len(activities)
-            paginated = activities[offset:offset + limit]
+            paginated = activities[offset : offset + limit]
 
             return {
                 "success": True,
@@ -2695,29 +2837,31 @@ async def get_invoice_journals(
                     entry["id"],
                 )
 
-                result_entries.append({
-                    "id": str(entry["id"]),
-                    "journal_number": entry["journal_number"],
-                    "date": entry["journal_date"].isoformat(),
-                    "description": entry["description"],
-                    "source_type": entry["source_type"],
-                    "status": entry["status"],
-                    "total_debit": float(entry["total_debit"]),
-                    "total_credit": float(entry["total_credit"]),
-                    "is_reversal": entry["reversal_of_id"] is not None,
-                    "is_reversed": entry["reversed_by_id"] is not None,
-                    "lines": [
-                        {
-                            "line_number": line["line_number"],
-                            "account_code": line["account_code"],
-                            "account_name": line["account_name"],
-                            "memo": line["memo"],
-                            "debit": float(line["debit"]),
-                            "credit": float(line["credit"]),
-                        }
-                        for line in lines
-                    ],
-                })
+                result_entries.append(
+                    {
+                        "id": str(entry["id"]),
+                        "journal_number": entry["journal_number"],
+                        "date": entry["journal_date"].isoformat(),
+                        "description": entry["description"],
+                        "source_type": entry["source_type"],
+                        "status": entry["status"],
+                        "total_debit": float(entry["total_debit"]),
+                        "total_credit": float(entry["total_credit"]),
+                        "is_reversal": entry["reversal_of_id"] is not None,
+                        "is_reversed": entry["reversed_by_id"] is not None,
+                        "lines": [
+                            {
+                                "line_number": line["line_number"],
+                                "account_code": line["account_code"],
+                                "account_name": line["account_name"],
+                                "memo": line["memo"],
+                                "debit": float(line["debit"]),
+                                "credit": float(line["credit"]),
+                            }
+                            for line in lines
+                        ],
+                    }
+                )
 
             return {
                 "success": True,
