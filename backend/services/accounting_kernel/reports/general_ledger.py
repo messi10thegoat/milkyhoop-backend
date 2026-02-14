@@ -73,28 +73,28 @@ class GeneralLedgerReport:
                     "account_name": a.account_name,
                     "account_type": a.account_type.value,
                     "normal_balance": a.normal_balance.value,
-                    "opening_balance": float(a.opening_balance),
+                    "opening_balance": int(a.opening_balance),
                     "transactions": [
                         {
                             "journal_date": t.journal_date.isoformat(),
                             "journal_number": t.journal_number,
                             "description": t.description,
-                            "debit": float(t.debit),
-                            "credit": float(t.credit),
-                            "balance": float(t.balance),
+                            "debit": int(t.debit),
+                            "credit": int(t.credit),
+                            "balance": int(t.balance),
                             "source_type": t.source_type,
                             "memo": t.memo
                         }
                         for t in a.transactions
                     ],
-                    "total_debit": float(a.total_debit),
-                    "total_credit": float(a.total_credit),
-                    "closing_balance": float(a.closing_balance)
+                    "total_debit": int(a.total_debit),
+                    "total_credit": int(a.total_credit),
+                    "closing_balance": int(a.closing_balance)
                 }
                 for a in self.accounts
             ],
-            "grand_total_debit": float(self.grand_total_debit),
-            "grand_total_credit": float(self.grand_total_credit),
+            "grand_total_debit": int(self.grand_total_debit),
+            "grand_total_credit": int(self.grand_total_credit),
             "generated_at": self.generated_at.isoformat()
         }
 
@@ -394,10 +394,10 @@ class GeneralLedgerGenerator:
                 "account_name": row['account_name'],
                 "account_type": row['account_type'],
                 "normal_balance": row['normal_balance'],
-                "opening_balance": float(row['opening_balance']),
-                "period_debit": float(row['period_debit']),
-                "period_credit": float(row['period_credit']),
-                "closing_balance": float(row['closing_balance'])
+                "opening_balance": int(row["opening_balance"]),
+                "period_debit": int(row["period_debit"]),
+                "period_credit": int(row["period_credit"]),
+                "closing_balance": int(row["closing_balance"])
             }
             for row in rows
         ]

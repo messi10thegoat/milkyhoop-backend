@@ -6,7 +6,7 @@ Endpoints for managing accounting periods including close/reopen operations.
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
 import asyncpg
 from datetime import datetime
@@ -522,17 +522,139 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 ctx["user_id"],
             )
 
+
+            # ── Create closing journal entries ──────────────────────────
+            # DR all REVENUE accounts (zero them out)
+            # CR all EXPENSE accounts (zero them out)
+            # Net difference → Retained Earnings (3-20000)
+            closing_journal_id = None
+
+            income_accounts = []
+            expense_accounts = []
+
+            for row in tb_data:
+                balance = row["total_credit"] - row["total_debit"]  # net balance
+                if balance == 0:
+                    continue
+                atype = row["account_type"]
+                if atype in ("INCOME", "REVENUE"):
+                    income_accounts.append((row["account_id"], row["account_code"], balance))
+                elif atype == "EXPENSE":
+                    expense_accounts.append((row["account_id"], row["account_code"], balance))
+
+            if income_accounts or expense_accounts:
+                # Get Retained Earnings account
+                retained_earnings = await conn.fetchrow(
+                    """
+                    SELECT id, account_code FROM chart_of_accounts
+                    WHERE tenant_id = $1 AND account_code = '3-20000'
+                    """,
+                    ctx["tenant_id"],
+                )
+
+                if retained_earnings:
+                    total_income = sum(b for _, _, b in income_accounts)
+                    total_expense = sum(b for _, _, b in expense_accounts)
+                    net_income = total_income - total_expense
+
+                    # Generate closing journal number
+                    clo_seq = await conn.fetchval(
+                        "SELECT COUNT(*) + 1 FROM journal_entries WHERE tenant_id = $1 AND source_type = 'CLOSING'",
+                        ctx["tenant_id"],
+                    )
+                    clo_number = f"CLO-{period['end_date'].strftime('%Y%m')}-{str(clo_seq).zfill(3)}"
+
+                    closing_total = sum(abs(b) for _, _, b in income_accounts) + sum(abs(b) for _, _, b in expense_accounts)
+
+                    closing_journal_id = await conn.fetchval(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, status,
+                            total_debit, total_credit,
+                            created_by, period_id
+                        ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 'CLOSING', 'POSTED',
+                                  $5, $5, $6, $7)
+                        RETURNING id
+                        """,
+                        ctx["tenant_id"],
+                        clo_number,
+                        period["end_date"],
+                        f"Closing entries for period ending {period['end_date']}",
+                        closing_total,
+                        ctx["user_id"],
+                        period_id,
+                    )
+
+                    line_num = 1
+
+                    # Close income accounts (DR to reduce credit balance)
+                    for acct_id, code, balance in income_accounts:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, account_id, line_number,
+                                debit, credit, memo
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5)
+                            """,
+                            closing_journal_id, acct_id, line_num,
+                            abs(balance), f"Close {code} to Retained Earnings",
+                        )
+                        line_num += 1
+
+                    # Close expense accounts (CR to reduce debit balance)
+                    for acct_id, code, balance in expense_accounts:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, account_id, line_number,
+                                debit, credit, memo
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
+                            """,
+                            closing_journal_id, acct_id, line_num,
+                            abs(balance), f"Close {code} to Retained Earnings",
+                        )
+                        line_num += 1
+
+                    # Retained Earnings entry (balancing entry)
+                    if net_income >= 0:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, account_id, line_number,
+                                debit, credit, memo
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
+                            """,
+                            closing_journal_id, retained_earnings["id"], line_num,
+                            net_income, "Net income to Retained Earnings",
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, account_id, line_number,
+                                debit, credit, memo
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5)
+                            """,
+                            closing_journal_id, retained_earnings["id"], line_num,
+                            abs(net_income), "Net loss to Retained Earnings",
+                        )
+
+                    logger.info(f"Created closing journal {clo_number} with {line_num} lines")
+
             # Close the period
             await conn.execute(
                 """
                 UPDATE fiscal_periods
-                SET status = 'CLOSED', closed_at = NOW(), closed_by = $3, lock_reason = $4
+                SET status = 'CLOSED', closed_at = NOW(), closed_by = $3,
+                    lock_reason = $4, closing_journal_id = $5
                 WHERE id = $1 AND tenant_id = $2
             """,
                 period_id,
                 ctx["tenant_id"],
                 ctx["user_id"],
                 body.closing_notes,
+                closing_journal_id,
             )
 
             # Get updated period

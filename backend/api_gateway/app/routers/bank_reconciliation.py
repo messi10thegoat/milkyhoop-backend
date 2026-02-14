@@ -1434,132 +1434,133 @@ async def create_match(
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-            # Verify session
-            session = await conn.fetchrow(
-                "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
-                session_id,
-                ctx["tenant_id"],
-            )
 
-            if not session:
-                raise HTTPException(status_code=404, detail="Session not found")
-
-            if session["status"] != "in_progress":
-                raise HTTPException(
-                    status_code=400, detail="Can only match in in-progress sessions"
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                    session_id,
+                    ctx["tenant_id"],
                 )
 
-            # Verify statement line
-            statement_line = await conn.fetchrow(
-                "SELECT id, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
-                UUID(body.statement_line_id),
-                session_id,
-            )
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
 
-            if not statement_line:
-                raise HTTPException(status_code=404, detail="Statement line not found")
-
-            if statement_line["match_status"] == "matched":
-                raise HTTPException(
-                    status_code=400, detail="Statement line is already matched"
-                )
-
-            # Verify transactions
-            tx_ids = [UUID(tx_id) for tx_id in body.transaction_ids]
-            transactions = await conn.fetch(
-                """
-                SELECT id, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit, is_cleared
-                FROM bank_transactions
-                WHERE id = ANY($1) AND account_id = $2 AND tenant_id = $3
-                """,
-                tx_ids,
-                session["account_id"],
-                ctx["tenant_id"],
-            )
-
-            if len(transactions) != len(tx_ids):
-                raise HTTPException(
-                    status_code=404, detail="One or more transactions not found"
-                )
-
-            # Check no transaction is already cleared
-            for tx in transactions:
-                if tx["is_cleared"]:
+                if session["status"] != "in_progress":
                     raise HTTPException(
-                        status_code=400,
-                        detail=f"Transaction {tx['id']} is already matched",
+                        status_code=400, detail="Can only match in in-progress sessions"
                     )
 
-            # Validate amount and type match
-            line_amount = statement_line["amount"]
-            line_is_credit = statement_line["is_credit"]
-            total_tx_amount = sum(tx["amount"] for tx in transactions)
+                # Verify statement line
+                statement_line = await conn.fetchrow(
+                    "SELECT id, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2 FOR UPDATE",
+                    UUID(body.statement_line_id),
+                    session_id,
+                )
 
-            # For proper matching, types should be compatible
-            # Credits in statement = receipts/income, Debits = payments/expenses
+                if not statement_line:
+                    raise HTTPException(status_code=404, detail="Statement line not found")
 
-            # Determine match type
-            if len(tx_ids) == 1:
-                match_type = "one_to_one"
-            else:
-                match_type = "one_to_many"
+                if statement_line["match_status"] == "matched":
+                    raise HTTPException(
+                        status_code=400, detail="Statement line is already matched"
+                    )
 
-            # Create match record
-            match_id = uuid.uuid4()
-            await conn.execute(
-                """
-                INSERT INTO reconciliation_matches (
-                    id, tenant_id, session_id, statement_line_id,
-                    match_type, confidence, created_by, created_at
-                ) VALUES ($1, $2, $3, $4, $5, 'manual', $6, NOW())
-                """,
-                match_id,
-                ctx["tenant_id"],
-                session_id,
-                UUID(body.statement_line_id),
-                match_type,
-                ctx["user_id"],
-            )
+                # Verify transactions
+                tx_ids = [UUID(tx_id) for tx_id in body.transaction_ids]
+                transactions = await conn.fetch(
+                    """
+                    SELECT id, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit, is_cleared
+                    FROM bank_transactions
+                    WHERE id = ANY($1) AND account_id = $2 AND tenant_id = $3
+                    """,
+                    tx_ids,
+                    session["account_id"],
+                    ctx["tenant_id"],
+                )
 
-            # Update transactions
-            now = datetime.utcnow()
-            for tx_id in tx_ids:
+                if len(transactions) != len(tx_ids):
+                    raise HTTPException(
+                        status_code=404, detail="One or more transactions not found"
+                    )
+
+                # Check no transaction is already cleared
+                for tx in transactions:
+                    if tx["is_cleared"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Transaction {tx['id']} is already matched",
+                        )
+
+                # Validate amount and type match
+                line_amount = statement_line["amount"]
+                line_is_credit = statement_line["is_credit"]
+                total_tx_amount = sum(tx["amount"] for tx in transactions)
+
+                # For proper matching, types should be compatible
+                # Credits in statement = receipts/income, Debits = payments/expenses
+
+                # Determine match type
+                if len(tx_ids) == 1:
+                    match_type = "one_to_one"
+                else:
+                    match_type = "one_to_many"
+
+                # Create match record
+                match_id = uuid.uuid4()
                 await conn.execute(
                     """
-                    UPDATE bank_transactions
-                    SET is_cleared = true,
-                        cleared_at = $2,
-                        matched_statement_line_id = $3
+                    INSERT INTO reconciliation_matches (
+                        id, tenant_id, session_id, statement_line_id,
+                        match_type, confidence, created_by, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'manual', $6, NOW())
+                    """,
+                    match_id,
+                    ctx["tenant_id"],
+                    session_id,
+                    UUID(body.statement_line_id),
+                    match_type,
+                    ctx["user_id"],
+                )
+
+                # Update transactions
+                now = datetime.utcnow()
+                for tx_id in tx_ids:
+                    await conn.execute(
+                        """
+                        UPDATE bank_transactions
+                        SET is_cleared = true,
+                            cleared_at = $2,
+                            matched_statement_line_id = $3
+                        WHERE id = $1
+                        """,
+                        tx_id,
+                        now,
+                        UUID(body.statement_line_id),
+                    )
+
+                # Update statement line status
+                await conn.execute(
+                    """
+                    UPDATE bank_statement_lines_v2
+                    SET match_status = 'matched'
                     WHERE id = $1
                     """,
-                    tx_id,
-                    now,
                     UUID(body.statement_line_id),
                 )
 
-            # Update statement line status
-            await conn.execute(
-                """
-                UPDATE bank_statement_lines_v2
-                SET match_status = 'matched'
-                WHERE id = $1
-                """,
-                UUID(body.statement_line_id),
-            )
+                # Update session stats
+                await update_reconciliation_session_stats(conn, session_id)
 
-            # Update session stats
-            await update_reconciliation_session_stats(conn, session_id)
+                # Get updated stats
+                stats = await get_session_statistics(conn, session_id)
 
-            # Get updated stats
-            stats = await get_session_statistics(conn, session_id)
-
-            return MatchResponse(
-                match_id=str(match_id),
-                match_type=match_type,
-                confidence="manual",
-                cleared_amount=line_amount,
-                session_stats=stats,
-            )
+                return MatchResponse(
+                    match_id=str(match_id),
+                    match_type=match_type,
+                    confidence="manual",
+                    cleared_amount=line_amount,
+                    session_stats=stats,
+                )
 
     except HTTPException:
         raise
@@ -2139,33 +2140,37 @@ async def complete_session(
                     now,
                 )
 
+                line_num = 0
+
                 # Create journal entry lines
                 # Debit/Credit depends on adjustment type
                 if adj.type in ["bank_fee", "correction"]:
                     # Fee: Debit expense, Credit bank
+                    line_num += 1
                     await conn.execute(
                         """
-                        INSERT INTO journal_entry_lines (
-                            id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                         """,
                         uuid.uuid4(),
-                        ctx["tenant_id"],
                         journal_id,
+                        line_num,
                         UUID(adj.account_id),
                         adj.amount,
                         adj.description,
                     )
                     if bank_account and bank_account["coa_id"]:
+                        line_num += 1
                         await conn.execute(
                             """
-                            INSERT INTO journal_entry_lines (
-                                id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                             """,
                             uuid.uuid4(),
-                            ctx["tenant_id"],
                             journal_id,
+                            line_num,
                             bank_account["coa_id"],
                             adj.amount,
                             adj.description,
@@ -2173,57 +2178,61 @@ async def complete_session(
                 elif adj.type == "interest":
                     # Interest: Debit bank, Credit income
                     if bank_account and bank_account["coa_id"]:
+                        line_num += 1
                         await conn.execute(
                             """
-                            INSERT INTO journal_entry_lines (
-                                id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                             """,
                             uuid.uuid4(),
-                            ctx["tenant_id"],
                             journal_id,
+                            line_num,
                             bank_account["coa_id"],
                             adj.amount,
                             adj.description,
                         )
+                    line_num += 1
                     await conn.execute(
                         """
-                        INSERT INTO journal_entry_lines (
-                            id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                         """,
                         uuid.uuid4(),
-                        ctx["tenant_id"],
                         journal_id,
+                        line_num,
                         UUID(adj.account_id),
                         adj.amount,
                         adj.description,
                     )
                 else:
                     # Other: Default to debit expense, credit bank
+                    line_num += 1
                     await conn.execute(
                         """
-                        INSERT INTO journal_entry_lines (
-                            id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                         """,
                         uuid.uuid4(),
-                        ctx["tenant_id"],
                         journal_id,
+                        line_num,
                         UUID(adj.account_id),
                         adj.amount,
                         adj.description,
                     )
                     if bank_account and bank_account["coa_id"]:
+                        line_num += 1
                         await conn.execute(
                             """
-                            INSERT INTO journal_entry_lines (
-                                id, tenant_id, journal_entry_id, account_id, debit, credit, description
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                             """,
                             uuid.uuid4(),
-                            ctx["tenant_id"],
                             journal_id,
+                            line_num,
                             bank_account["coa_id"],
                             adj.amount,
                             adj.description,

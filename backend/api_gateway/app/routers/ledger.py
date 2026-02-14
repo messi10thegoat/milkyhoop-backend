@@ -80,7 +80,7 @@ async def list_ledger_accounts(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
 
             conditions = ["coa.tenant_id = $1", "coa.is_active = TRUE"]
             params = [ctx["tenant_id"], as_of_date]
@@ -95,7 +95,7 @@ async def list_ledger_accounts(
 
             having_clause = ""
             if not include_zero:
-                having_clause = "HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0"
+                having_clause = "AND (COALESCE(bal.total_debit, 0) != 0 OR COALESCE(bal.total_credit, 0) != 0)"
 
             # Query uses parameterized placeholders ($1, $2, etc.) - safe from SQL injection
             query = f"""
@@ -105,20 +105,26 @@ async def list_ledger_accounts(
                     coa.name,
                     coa.account_type,
                     coa.normal_balance,
-                    COALESCE(SUM(jl.debit), 0) as debit_balance,
-                    COALESCE(SUM(jl.credit), 0) as credit_balance,
+                    COALESCE(bal.total_debit, 0) as debit_balance,
+                    COALESCE(bal.total_credit, 0) as credit_balance,
                     CASE
                         WHEN coa.normal_balance = 'DEBIT'
-                        THEN COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
-                        ELSE COALESCE(SUM(jl.credit), 0) - COALESCE(SUM(jl.debit), 0)
+                        THEN COALESCE(bal.total_debit, 0) - COALESCE(bal.total_credit, 0)
+                        ELSE COALESCE(bal.total_credit, 0) - COALESCE(bal.total_debit, 0)
                     END as net_balance
                 FROM chart_of_accounts coa
-                LEFT JOIN journal_lines jl ON jl.account_id = coa.id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.status = 'POSTED'
-                    AND je.journal_date <= $2
+                LEFT JOIN (
+                    SELECT jl.account_id,
+                           SUM(jl.debit) as total_debit,
+                           SUM(jl.credit) as total_credit
+                    FROM journal_lines jl
+                    INNER JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.status = 'POSTED'
+                      AND je.tenant_id = $1
+                      AND je.journal_date <= $2
+                    GROUP BY jl.account_id
+                ) bal ON bal.account_id = coa.id
                 WHERE {where_clause}
-                GROUP BY coa.id
                 {having_clause}
                 ORDER BY coa.account_code
             """  # nosec B608
@@ -165,20 +171,27 @@ async def get_ledger_summary(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
 
             rows = await conn.fetch(
                 """
                 SELECT
                     coa.account_type,
                     COUNT(DISTINCT coa.id) as account_count,
-                    COALESCE(SUM(jl.debit), 0) as total_debit,
-                    COALESCE(SUM(jl.credit), 0) as total_credit
+                    COALESCE(SUM(bal.total_debit), 0) as total_debit,
+                    COALESCE(SUM(bal.total_credit), 0) as total_credit
                 FROM chart_of_accounts coa
-                LEFT JOIN journal_lines jl ON jl.account_id = coa.id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.status = 'POSTED'
-                    AND je.journal_date <= $2
+                LEFT JOIN (
+                    SELECT jl.account_id,
+                           SUM(jl.debit) as total_debit,
+                           SUM(jl.credit) as total_credit
+                    FROM journal_lines jl
+                    INNER JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.status = 'POSTED'
+                      AND je.tenant_id = $1
+                      AND je.journal_date <= $2
+                    GROUP BY jl.account_id
+                ) bal ON bal.account_id = coa.id
                 WHERE coa.tenant_id = $1 AND coa.is_active = TRUE
                 GROUP BY coa.account_type
             """,
@@ -259,7 +272,7 @@ async def get_account_ledger(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
 
             # Get account info
             account = await conn.fetchrow(
@@ -428,7 +441,7 @@ async def get_account_balance(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
 
             row = await conn.fetchrow(
                 """
@@ -437,15 +450,21 @@ async def get_account_balance(
                     coa.account_code,
                     coa.name,
                     coa.normal_balance,
-                    COALESCE(SUM(jl.debit), 0) as debit_balance,
-                    COALESCE(SUM(jl.credit), 0) as credit_balance
+                    COALESCE(bal.total_debit, 0) as debit_balance,
+                    COALESCE(bal.total_credit, 0) as credit_balance
                 FROM chart_of_accounts coa
-                LEFT JOIN journal_lines jl ON jl.account_id = coa.id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.status = 'POSTED'
-                    AND je.journal_date <= $3
+                LEFT JOIN (
+                    SELECT jl.account_id,
+                           SUM(jl.debit) as total_debit,
+                           SUM(jl.credit) as total_credit
+                    FROM journal_lines jl
+                    INNER JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.status = 'POSTED'
+                      AND je.tenant_id = $2
+                      AND je.journal_date <= $3
+                    GROUP BY jl.account_id
+                ) bal ON bal.account_id = coa.id
                 WHERE coa.id = $1 AND coa.tenant_id = $2
-                GROUP BY coa.id
             """,
                 account_id,
                 ctx["tenant_id"],

@@ -265,7 +265,7 @@ async def get_journal(request: Request, journal_id: UUID):
                     account_id=str(line["account_id"]),
                     account_code=line["account_code"],
                     account_name=line["account_name"],
-                    description=line["memo"] or line["description"],
+                    description=line.get("memo") or line.get("description", ""),
                     debit=line["debit"] or Decimal("0"),
                     credit=line["credit"] or Decimal("0"),
                 )
@@ -586,7 +586,7 @@ async def reverse_journal(
                         reversal_id,
                         i,
                         line["account_id"],
-                        line["memo"],
+                        line.get("memo", ""),
                         line["credit"],
                         line["debit"],
                     )  # Swapped

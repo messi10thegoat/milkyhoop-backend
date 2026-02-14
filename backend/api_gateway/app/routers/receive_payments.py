@@ -546,6 +546,11 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
 
                 if not customer:
                     raise HTTPException(status_code=400, detail="Customer not found")
+                # Auto-fill names if not provided
+                if not body.customer_name:
+                    body.customer_name = customer["nama"] or body.customer_id
+                if not body.bank_account_name:
+                    body.bank_account_name = bank_account["name"] or bank_account["account_code"]
 
                 # Validate source deposit if source_type='deposit'
                 if body.source_type == "deposit":

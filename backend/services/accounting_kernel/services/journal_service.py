@@ -187,8 +187,8 @@ class JournalService:
                 )
 
                 # Calculate totals from lines
-                total_debit = sum(float(line.debit) for line, _ in resolved_lines)
-                total_credit = sum(float(line.credit) for line, _ in resolved_lines)
+                total_debit = sum(Decimal(str(line.debit)) for line, _ in resolved_lines)
+                total_credit = sum(Decimal(str(line.credit)) for line, _ in resolved_lines)
 
                 await conn.execute(
                     """
@@ -228,8 +228,8 @@ class JournalService:
                         journal_id,
                         idx,
                         account_id,
-                        float(line_input.debit),
-                        float(line_input.credit),
+                        Decimal(str(line_input.debit)),
+                        Decimal(str(line_input.credit)),
                         line_input.memo or line_input.description or ""
                     )
 
@@ -252,8 +252,8 @@ class JournalService:
                         "journal_date": request.journal_date.isoformat(),
                         "source_type": request.source_type.value,
                         "source_id": str(request.source_id) if request.source_id else None,
-                        "total_debit": float(sum(l.debit for l, _ in resolved_lines)),
-                        "total_credit": float(sum(l.credit for l, _ in resolved_lines)),
+                        "total_debit": str(sum(Decimal(str(l.debit)) for l, _ in resolved_lines)),
+                        "total_credit": str(sum(Decimal(str(l.credit)) for l, _ in resolved_lines)),
                     }
                 )
 

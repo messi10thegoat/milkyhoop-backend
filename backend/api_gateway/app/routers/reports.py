@@ -5,6 +5,7 @@ and Trial Balance using the Accounting Kernel.
 Supports both Cash and Accrual accounting basis.
 """
 from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
 import logging
@@ -309,8 +310,8 @@ async def get_neraca(request: Request, periode: str):
             """, tenant_id, as_of)
 
             def net_bal(row):
-                d, c = float(row["total_debit"]), float(row["total_credit"])
-                return int(d - c) if row["normal_balance"] == "DEBIT" else int(c - d)
+                d, c = int(row["total_debit"] or 0), int(row["total_credit"] or 0)
+                return (d - c) if row["normal_balance"] == "DEBIT" else (c - d)
 
             kas = bank = piutang_usaha = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
             peralatan = kendaraan = bangunan = tanah = akum_penyusutan = 0
@@ -1206,12 +1207,12 @@ async def get_trial_balance_full(
             }
 
             for row in rows:
-                opening_d = float(row["opening_debit"])
-                opening_c = float(row["opening_credit"])
-                period_d = float(row["period_debit"])
-                period_c = float(row["period_credit"])
-                closing_d = float(row["closing_debit"])
-                closing_c = float(row["closing_credit"])
+                opening_d = int(row["opening_debit"] or 0)
+                opening_c = int(row["opening_credit"] or 0)
+                period_d = int(row["period_debit"] or 0)
+                period_c = int(row["period_credit"] or 0)
+                closing_d = int(row["closing_debit"] or 0)
+                closing_c = int(row["closing_credit"] or 0)
 
                 # Skip zero balance accounts unless requested
                 if not show_zero_balance and not row["is_header"]:
@@ -3054,6 +3055,13 @@ async def get_cash_flow_report(
     """
     Get cash flow statement for a period.
     """
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "This endpoint is deprecated. Use /api/reports/arus-kas/{periode} instead.",
+            "deprecated": True
+        }
+    )
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -3199,6 +3207,13 @@ async def get_balance_sheet(
     """
     Get balance sheet as of a specific date.
     """
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "This endpoint is deprecated. Use /api/reports/neraca/{periode} instead.",
+            "deprecated": True
+        }
+    )
     try:
         ctx = get_user_context(request)
         pool = await get_pool()

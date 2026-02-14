@@ -59,8 +59,8 @@ class JournalLine:
             "account_code": self.account_code,
             "account_name": self.account_name,
             "line_number": self.line_number,
-            "debit": float(self.debit),
-            "credit": float(self.credit),
+            "debit": int(self.debit),
+            "credit": int(self.credit),
             "description": self.description,
             "department_id": str(self.department_id) if self.department_id else None,
             "project_id": str(self.project_id) if self.project_id else None,
@@ -148,8 +148,8 @@ class JournalEntry:
             "reversal_reason": self.reversal_reason,
             "reversed_at": self.reversed_at.isoformat() if self.reversed_at else None,
             # Totals
-            "total_debit": float(self.total_debit),
-            "total_credit": float(self.total_credit),
+            "total_debit": int(self.total_debit),
+            "total_credit": int(self.total_credit),
             "is_balanced": self.is_balanced,
             "lines": [line.to_dict() for line in self.lines],
         }

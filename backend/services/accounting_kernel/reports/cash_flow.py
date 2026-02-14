@@ -95,44 +95,44 @@ class CashFlowReport:
             "period_start": self.period_start.isoformat(),
             "period_end": self.period_end.isoformat(),
             "company_name": self.company_name,
-            "net_income": float(self.net_income),
+            "net_income": int(self.net_income),
             "operating_activities": {
                 "title": self.operating_activities.title,
                 "lines": [
                     {
                         "description": l.description,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.operating_activities.lines
                 ],
-                "subtotal": float(self.cash_from_operating)
+                "subtotal": int(self.cash_from_operating)
             },
             "investing_activities": {
                 "title": self.investing_activities.title,
                 "lines": [
                     {
                         "description": l.description,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.investing_activities.lines
                 ],
-                "subtotal": float(self.cash_from_investing)
+                "subtotal": int(self.cash_from_investing)
             },
             "financing_activities": {
                 "title": self.financing_activities.title,
                 "lines": [
                     {
                         "description": l.description,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.financing_activities.lines
                 ],
-                "subtotal": float(self.cash_from_financing)
+                "subtotal": int(self.cash_from_financing)
             },
-            "net_change_in_cash": float(self.net_change_in_cash),
-            "beginning_cash": float(self.beginning_cash),
-            "ending_cash": float(self.ending_cash),
-            "actual_ending_cash": float(self.actual_ending_cash),
+            "net_change_in_cash": int(self.net_change_in_cash),
+            "beginning_cash": int(self.beginning_cash),
+            "ending_cash": int(self.ending_cash),
+            "actual_ending_cash": int(self.actual_ending_cash),
             "is_balanced": self.is_balanced,
             "generated_at": self.generated_at.isoformat()
         }

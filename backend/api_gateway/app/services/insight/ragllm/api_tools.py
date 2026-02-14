@@ -310,6 +310,141 @@ API_TOOLS: List[Dict[str, Any]] = [
         },
     },
 
+    # ===== WAVE 4: ACCOUNTING CORE =====
+    {
+        "type": "function",
+        "function": {
+            "name": "get_general_ledger",
+            "description": "Buku besar (general ledger) — riwayat transaksi per akun dengan running balance. Use untuk lihat detail transaksi satu akun.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account_id": {
+                        "type": "string",
+                        "description": "Account ID (UUID) or account code (e.g. '1-1100'). Kalau user sebut nama akun, coba resolve dulu via get_chart_of_accounts."
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date YYYY-MM-DD (optional)"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date YYYY-MM-DD (optional)"
+                    }
+                },
+                "required": ["account_id"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chart_of_accounts",
+            "description": "Daftar akun (chart of accounts). Use untuk resolve nama akun ke account_id, atau lihat struktur akun.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "Search by name or code (optional)"
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Filter by type: ASSET, LIABILITY, EQUITY, INCOME, EXPENSE (optional)"
+                    },
+                    "is_active": {
+                        "type": "boolean",
+                        "description": "Filter active accounts (optional)"
+                    }
+                },
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_accounting_periods",
+            "description": "Daftar periode akuntansi dengan status (OPEN/CLOSED). Use untuk cek periode mana yang masih bisa di-post atau sudah ditutup.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status: OPEN or CLOSED (optional)"
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Filter by year (optional)"
+                    }
+                },
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_journal_entries",
+            "description": "Daftar jurnal umum (journal entries). Bisa filter by source_type atau date. Use untuk lihat jurnal manual, reversal, atau jurnal tertentu.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_type": {
+                        "type": "string",
+                        "description": "Filter by source_type: MANUAL, SALES_INVOICE, PURCHASE_INVOICE, PAYMENT, REVERSAL, etc (optional)"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date YYYY-MM-DD (optional)"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date YYYY-MM-DD (optional)"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status: POSTED or DRAFT (optional)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Limit results (default 50)"
+                    }
+                },
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_bank_reconciliation",
+            "description": "Rekonsiliasi bank — status rekonsiliasi rekening bank, transaksi yang belum dicocokkan (unreconciled transactions). Use untuk proses reconciliation atau cek selisih bank.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bank_account_id": {
+                        "type": "string",
+                        "description": "Bank account ID (UUID) or account code (optional, kalau kosong tampilkan semua rekening)"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status: RECONCILED, UNRECONCILED (optional)"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date YYYY-MM-DD (optional)"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date YYYY-MM-DD (optional)"
+                    }
+                },
+                "required": []
+            },
+        },
+    },
+
     # ===== MASTER DATA =====
     {
         "type": "function",
@@ -428,6 +563,12 @@ TOOL_ENDPOINTS = {
     "get_bill_payments":    {"method": "GET", "path": "/api/bill-payments"},
     "get_expenses":         {"method": "GET", "path": "/api/expenses"},
     "get_journals":         {"method": "GET", "path": "/api/journals"},
+    # Wave 4: Accounting Core
+    "get_general_ledger":       {"method": "GET", "path": "/api/ledger/{account_id}"},
+    "get_chart_of_accounts":    {"method": "GET", "path": "/api/accounts"},
+    "get_accounting_periods":   {"method": "GET", "path": "/api/periods"},
+    "get_journal_entries":      {"method": "GET", "path": "/api/journals"},
+    "get_bank_reconciliation":  {"method": "GET", "path": "/api/bank-reconciliation"},
     # Master Data
     "get_accounts":       {"method": "GET", "path": "/api/accounts"},
     "get_customers":      {"method": "GET", "path": "/api/customers"},

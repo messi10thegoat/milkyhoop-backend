@@ -114,11 +114,11 @@ class ProfitLossReport:
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.revenue.lines
                 ],
-                "subtotal": float(self.total_revenue)
+                "subtotal": int(self.total_revenue)
             },
             "cogs": {
                 "title": self.cogs.title,
@@ -126,37 +126,37 @@ class ProfitLossReport:
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.cogs.lines
                 ],
-                "subtotal": float(self.total_cogs)
+                "subtotal": int(self.total_cogs)
             },
-            "gross_profit": float(self.gross_profit),
+            "gross_profit": int(self.gross_profit),
             "operating_expenses": {
                 "title": self.operating_expenses.title,
                 "lines": [
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.operating_expenses.lines
                 ],
-                "subtotal": float(self.total_operating_expenses)
+                "subtotal": int(self.total_operating_expenses)
             },
-            "operating_income": float(self.operating_income),
+            "operating_income": int(self.operating_income),
             "other_income": {
                 "title": self.other_income.title,
                 "lines": [
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.other_income.lines
                 ],
-                "subtotal": float(self.total_other_income)
+                "subtotal": int(self.total_other_income)
             },
             "other_expenses": {
                 "title": self.other_expenses.title,
@@ -164,15 +164,15 @@ class ProfitLossReport:
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.other_expenses.lines
                 ],
-                "subtotal": float(self.total_other_expenses)
+                "subtotal": int(self.total_other_expenses)
             },
-            "net_income_before_tax": float(self.net_income_before_tax),
-            "tax_expense": float(self.tax_expense),
-            "net_income": float(self.net_income),
+            "net_income_before_tax": int(self.net_income_before_tax),
+            "tax_expense": int(self.tax_expense),
+            "net_income": int(self.net_income),
             "generated_at": self.generated_at.isoformat()
         }
 
@@ -331,10 +331,10 @@ class ProfitLossGenerator:
             "period1": report1.to_dict(),
             "period2": report2.to_dict(),
             "variance": {
-                "total_revenue": float(report1.total_revenue - report2.total_revenue),
-                "gross_profit": float(report1.gross_profit - report2.gross_profit),
-                "operating_income": float(report1.operating_income - report2.operating_income),
-                "net_income": float(report1.net_income - report2.net_income),
+                "total_revenue": int(report1.total_revenue - report2.total_revenue),
+                "gross_profit": int(report1.gross_profit - report2.gross_profit),
+                "operating_income": int(report1.operating_income - report2.operating_income),
+                "net_income": int(report1.net_income - report2.net_income),
                 "revenue_change_pct": (
                     float((report1.total_revenue - report2.total_revenue) / report2.total_revenue * 100)
                     if report2.total_revenue != 0 else 0

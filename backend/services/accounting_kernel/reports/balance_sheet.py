@@ -126,11 +126,11 @@ class BalanceSheetReport:
                         {
                             "account_code": l.account_code,
                             "account_name": l.account_name,
-                            "amount": float(l.amount)
+                            "amount": int(l.amount)
                         }
                         for l in self.current_assets.lines
                     ],
-                    "subtotal": float(self.total_current_assets)
+                    "subtotal": int(self.total_current_assets)
                 },
                 "fixed_assets": {
                     "title": self.fixed_assets.title,
@@ -138,11 +138,11 @@ class BalanceSheetReport:
                         {
                             "account_code": l.account_code,
                             "account_name": l.account_name,
-                            "amount": float(l.amount)
+                            "amount": int(l.amount)
                         }
                         for l in self.fixed_assets.lines
                     ],
-                    "subtotal": float(self.total_fixed_assets)
+                    "subtotal": int(self.total_fixed_assets)
                 },
                 "other_assets": {
                     "title": self.other_assets.title,
@@ -150,13 +150,13 @@ class BalanceSheetReport:
                         {
                             "account_code": l.account_code,
                             "account_name": l.account_name,
-                            "amount": float(l.amount)
+                            "amount": int(l.amount)
                         }
                         for l in self.other_assets.lines
                     ],
-                    "subtotal": float(self.total_other_assets)
+                    "subtotal": int(self.total_other_assets)
                 },
-                "total": float(self.total_assets)
+                "total": int(self.total_assets)
             },
             "liabilities": {
                 "current_liabilities": {
@@ -165,11 +165,11 @@ class BalanceSheetReport:
                         {
                             "account_code": l.account_code,
                             "account_name": l.account_name,
-                            "amount": float(l.amount)
+                            "amount": int(l.amount)
                         }
                         for l in self.current_liabilities.lines
                     ],
-                    "subtotal": float(self.total_current_liabilities)
+                    "subtotal": int(self.total_current_liabilities)
                 },
                 "long_term_liabilities": {
                     "title": self.long_term_liabilities.title,
@@ -177,13 +177,13 @@ class BalanceSheetReport:
                         {
                             "account_code": l.account_code,
                             "account_name": l.account_name,
-                            "amount": float(l.amount)
+                            "amount": int(l.amount)
                         }
                         for l in self.long_term_liabilities.lines
                     ],
-                    "subtotal": float(self.total_long_term_liabilities)
+                    "subtotal": int(self.total_long_term_liabilities)
                 },
-                "total": float(self.total_liabilities)
+                "total": int(self.total_liabilities)
             },
             "equity": {
                 "title": self.equity.title,
@@ -191,15 +191,15 @@ class BalanceSheetReport:
                     {
                         "account_code": l.account_code,
                         "account_name": l.account_name,
-                        "amount": float(l.amount)
+                        "amount": int(l.amount)
                     }
                     for l in self.equity.lines
                 ],
-                "retained_earnings": float(self.retained_earnings),
-                "current_period_income": float(self.current_period_income),
-                "total": float(self.total_equity)
+                "retained_earnings": int(self.retained_earnings),
+                "current_period_income": int(self.current_period_income),
+                "total": int(self.total_equity)
             },
-            "total_liabilities_equity": float(self.total_liabilities_equity),
+            "total_liabilities_equity": int(self.total_liabilities_equity),
             "is_balanced": self.is_balanced,
             "generated_at": self.generated_at.isoformat()
         }
@@ -400,11 +400,11 @@ class BalanceSheetGenerator:
             "period1": report1.to_dict(),
             "period2": report2.to_dict(),
             "variance": {
-                "total_assets": float(report1.total_assets - report2.total_assets),
-                "total_liabilities": float(
+                "total_assets": int(report1.total_assets - report2.total_assets),
+                "total_liabilities": int(
                     report1.total_liabilities - report2.total_liabilities
                 ),
-                "total_equity": float(report1.total_equity - report2.total_equity),
+                "total_equity": int(report1.total_equity - report2.total_equity),
                 "current_assets_change_pct": (
                     float(
                         (report1.total_current_assets - report2.total_current_assets)
@@ -435,9 +435,9 @@ class BalanceSheetGenerator:
         )
 
         return {
-            "working_capital": float(working_capital),
+            "working_capital": int(working_capital),
             "current_ratio": round(current_ratio, 2),
-            "current_assets": float(report.total_current_assets),
-            "current_liabilities": float(report.total_current_liabilities),
+            "current_assets": int(report.total_current_assets),
+            "current_liabilities": int(report.total_current_liabilities),
             "as_of_date": as_of_date.isoformat()
         }

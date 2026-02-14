@@ -516,6 +516,44 @@ class PlanGenerator:
         }
 
         # =================================================================
+
+    async def parse_journal_text(self, text: str) -> dict:
+        """
+        Parse journal entry text using LLM PARSE_JOURNAL_V1 prompt.
+        Returns structured dict with entry_date, description, reference, lines[].
+        """
+        try:
+            messages = self._build_messages_with_examples(
+                "parse_journal",
+                text,
+            )
+            raw = await self._call_openai(
+                messages=messages,
+                max_tokens=800,
+                temperature=0.1,
+                timeout=settings.LLM_TIMEOUT_PARSE,
+            )
+
+            if raw:
+                parsed = self._parse_json_response(raw)
+                if parsed and isinstance(parsed, dict):
+                    logger.info(
+                        f"LLM journal parse: {len(parsed.get('lines', []))} lines"
+                    )
+                    return parsed
+
+        except Exception as e:
+            logger.warning(f"Journal parse failed: {e}")
+
+        # Fallback: return empty structure
+        return {
+            "entry_date": None,
+            "description": "Jurnal manual",
+            "reference": None,
+            "lines": [],
+        }
+
+
     # PUBLIC: PARSE DOCUMENT TEXT
     # =================================================================
     async def parse_document_text(

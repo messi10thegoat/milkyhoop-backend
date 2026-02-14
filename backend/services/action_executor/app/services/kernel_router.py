@@ -1,3 +1,4 @@
+from datetime import datetime, date, timedelta
 """
 Kernel Router
 
@@ -9,6 +10,7 @@ IRON LAW 0: All writes go through the Kernel (API Gateway endpoints).
 IRON LAW 10: AI never writes directly — executor calls established endpoints.
 """
 import json
+import re
 import logging
 from typing import Any, Dict, Optional
 
@@ -68,7 +70,15 @@ ACTION_ROUTES: Dict[str, Dict[str, str]] = {
         "method": "POST",
         "path": "/api/bank-transfers",
     },
-    "CREATE_PURCHASE_ORDER": {
+    "CLOSE_PERIOD": {
+        "method": "POST",
+        "path": "/api/periods/{period_id}/close",
+    },
+    "REOPEN_PERIOD": {
+        "method": "POST",
+        "path": "/api/periods/{period_id}/reopen",
+    },
+        "CREATE_PURCHASE_ORDER": {
         "method": "POST",
         "path": "/api/purchase-orders",
     },
@@ -93,6 +103,150 @@ class KernelRouter:
         if self._session and not self._session.closed:
             await self._session.close()
 
+    @staticmethod
+    def _is_account_code(value: str) -> bool:
+        """Check if a value looks like an account code (e.g. 5-20100) rather than a UUID."""
+        if not isinstance(value, str):
+            return False
+        # Account codes match pattern: digit-digits (e.g. "5-20100", "6-10100")
+        # UUIDs match pattern: 8-4-4-4-12 hex chars
+        if re.match(r"^\d+-\d+$", value):
+            return True
+        return False
+
+    async def _resolve_account_code(
+        self, account_code: str, tenant_id: str, user_id: str
+    ) -> str:
+        """Resolve an account code (e.g. 5-20100) to its UUID via the API Gateway.
+        
+        Strategy:
+        1. Exact match by code search
+        2. If not found, infer account_type from code prefix and pick a sensible default
+        3. If all fails, raise ValueError so the saga can abort gracefully
+        """
+        url = f"{self.base_url}/api/accounts/dropdown"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Tenant-ID": str(tenant_id),
+            "X-User-ID": str(user_id),
+            "X-Source": "action_executor",
+        }
+
+        # --- Step 1: exact search ---
+        params = {"search": account_code}
+        try:
+            session = await self._get_session()
+            async with session.get(url, headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    body = await resp.json()
+                    items = body.get("data") or body.get("items") or []
+                    if isinstance(body, list):
+                        items = body
+                    # Find exact match by code
+                    for item in items:
+                        if item.get("code") == account_code:
+                            resolved_id = str(item.get("id", ""))
+                            logger.info(
+                                f"Resolved account code {account_code} -> {resolved_id}"
+                            )
+                            return resolved_id
+                    # If no exact match but we have results, use first
+                    if items:
+                        resolved_id = str(items[0].get("id", ""))
+                        logger.warning(
+                            f"No exact match for {account_code}, using first result: {resolved_id}"
+                        )
+                        return resolved_id
+                else:
+                    logger.warning(
+                        f"Account dropdown search failed for {account_code}: HTTP {resp.status}"
+                    )
+        except Exception as e:
+            logger.warning(f"Error resolving account code {account_code}: {e}")
+
+        # --- Step 2: fallback - infer account type from code prefix and pick default ---
+        # Code prefixes: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=REVENUE, 5/6=EXPENSE
+        prefix = account_code.split("-")[0] if "-" in account_code else ""
+        type_map = {"1": "ASSET", "2": "LIABILITY", "3": "EQUITY", "4": "REVENUE", "5": "EXPENSE", "6": "EXPENSE"}
+        inferred_type = type_map.get(prefix)
+
+        if inferred_type:
+            logger.info(
+                f"Account code {account_code} not found, trying fallback with type={inferred_type}"
+            )
+            fallback_params = {"type": inferred_type}
+            try:
+                async with session.get(url, headers=headers, params=fallback_params) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        items = body.get("data") or body.get("items") or []
+                        if isinstance(body, list):
+                            items = body
+                        if items:
+                            # Prefer "Lain-lain" (miscellaneous) account as safest default
+                            for item in items:
+                                name_lower = (item.get("name") or "").lower()
+                                if "lain" in name_lower:
+                                    resolved_id = str(item.get("id", ""))
+                                    logger.warning(
+                                        f"Fallback: resolved {account_code} -> {resolved_id} "
+                                        f"({item.get('code')} - {item.get('name')})"
+                                    )
+                                    return resolved_id
+                            # Otherwise use first non-header account
+                            resolved_id = str(items[0].get("id", ""))
+                            logger.warning(
+                                f"Fallback: resolved {account_code} -> {resolved_id} "
+                                f"({items[0].get('code')} - {items[0].get('name')})"
+                            )
+                            return resolved_id
+            except Exception as e:
+                logger.warning(f"Error in fallback resolution for {account_code}: {e}")
+
+        # --- Step 3: complete failure ---
+        error_msg = (
+            f"Cannot resolve account code '{account_code}' to a UUID. "
+            f"This code does not exist in the tenant's chart of accounts."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+
+
+
+    async def _resolve_references(
+        self, action_type: str, tenant_id: str, user_id: str, payload: dict
+    ) -> dict:
+        """Resolve human-readable codes (like account codes) to UUIDs."""
+        payload = dict(payload)  # shallow copy
+
+        if action_type == "CREATE_EXPENSE":
+            # Resolve account_id if it looks like an account code
+            account_id = payload.get("account_id") or payload.get("expense_account_id")
+            if account_id and self._is_account_code(str(account_id)):
+                resolved = await self._resolve_account_code(
+                    str(account_id), tenant_id, user_id
+                )
+                if "account_id" in payload:
+                    payload["account_id"] = resolved
+                if "expense_account_id" in payload:
+                    payload["expense_account_id"] = resolved
+
+        if action_type == "POST_GENERAL_JOURNAL":
+            # Resolve account codes in journal lines
+            lines = payload.get("lines") or payload.get("entries") or []
+            for line in lines:
+                # Try multiple field names for account reference
+                account_ref = line.get("account_id") or line.get("account_name_or_code") or line.get("account_code")
+                if account_ref:
+                    # Resolve if it looks like a code OR if account_id is missing
+                    if not line.get("account_id") or self._is_account_code(str(account_ref)):
+                        resolved = await self._resolve_account_code(
+                            str(account_ref), tenant_id, user_id
+                        )
+                        line["account_id"] = resolved
+
+        return payload
 
     def _map_payload(self, action_type: str, draft_payload: dict) -> dict:
         """Map action plan field names to API endpoint field names."""
@@ -124,6 +278,19 @@ class KernelRouter:
                 payload["kategori"] = payload.pop("category")
 
         elif action_type == "CREATE_SALES_INVOICE":
+            # Field mapping: issue_date -> invoice_date
+            if "issue_date" in payload and "invoice_date" not in payload:
+                payload["invoice_date"] = payload.pop("issue_date")
+            
+            # Default dates if missing (business rule: today + NET 30)
+            # Note: These are sensible defaults for the document layer, not accounting mutations
+            # The actual journal entry will record these explicit dates (IronLaw 6: Source Traceability)
+            if not payload.get("invoice_date"):
+                payload["invoice_date"] = date.today().isoformat()
+            if not payload.get("due_date"):
+                invoice_dt = date.fromisoformat(payload["invoice_date"])
+                payload["due_date"] = (invoice_dt + timedelta(days=30)).isoformat()
+            
             # Frontend uses "name" but API uses "description" for items
             items = payload.get("items") or payload.get("line_items") or []
             mapped_items = []
@@ -140,6 +307,7 @@ class KernelRouter:
                     mapped_item["unit_price"] = mapped_item.pop("price")
                 mapped_items.append(mapped_item)
             payload["items"] = mapped_items
+
 
         elif action_type == "RECEIVE_PAYMENT":
             # Map "amount" to "total_amount" if needed
@@ -219,6 +387,50 @@ class KernelRouter:
             }
             return {k: v for k, v in mapped.items() if v is not None}
 
+
+        elif action_type == "POST_GENERAL_JOURNAL":
+            # Map journal entry fields
+            lines = payload.get("lines") or payload.get("entries") or []
+            mapped_lines = []
+            for line in lines:
+                mapped_lines.append({
+                    "account_id": line.get("account_id"),
+                    "debit": float(line.get("debit", 0)),
+                    "credit": float(line.get("credit", 0)),
+                    "description": line.get("description", ""),
+                })
+            mapped = {
+                "entry_date": payload.get("entry_date") or payload.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                "description": payload.get("description"),
+                "reference": payload.get("reference", ""),
+                "lines": mapped_lines,
+                "save_as_draft": False,
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "REVERSE_JOURNAL":
+            # Map reversal fields
+            mapped = {
+                "reversal_date": payload.get("reversal_date") or payload.get("date"),
+                "reason": payload.get("reason") or "Reversal via chat",
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "CLOSE_PERIOD":
+            # Map period close fields
+            mapped = {
+                "closing_notes": payload.get("closing_notes") or payload.get("notes", ""),
+                "force": payload.get("force", False),
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        elif action_type == "REOPEN_PERIOD":
+            # Map period reopen fields
+            mapped = {
+                "reason": payload.get("reason") or "Reopen via chat",
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
         elif action_type == "CREATE_PURCHASE_ORDER":
             # Map to purchase-orders API schema
             items = []
@@ -281,6 +493,13 @@ class KernelRouter:
         if "{journal_id}" in path:
             journal_id = payload.get("journal_id", "")
             path = path.replace("{journal_id}", str(journal_id))
+        if "{period_id}" in path:
+            period_id = payload.get("period_id", "")
+            path = path.replace("{period_id}", str(period_id))
+
+
+        # Resolve account codes to UUIDs before mapping
+        payload = await self._resolve_references(action_type, tenant_id, user_id, payload)
 
         # Map payload field names for the target API endpoint
         payload = self._map_payload(action_type, payload)
@@ -392,6 +611,8 @@ class KernelRouter:
             "CREATE_CREDIT_NOTE": "credit_note",
             "BANK_TRANSFER": "bank_transfer",
             "CREATE_PURCHASE_ORDER": "purchase_order",
+            "CLOSE_PERIOD": "period",
+            "REOPEN_PERIOD": "period",
         }
 
         journal_entry_id = str(data.get("journal_entry_id") or data.get("journal_id") or "")

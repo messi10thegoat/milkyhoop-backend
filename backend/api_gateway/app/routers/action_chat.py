@@ -35,12 +35,50 @@ from ..services.action_validator_client import get_action_validator_client
 from ..services.action_executor_client import get_action_executor_client
 
 # RAG-LLM Insight Engine
-from ..services.insight.ragllm import InsightOrchestrator
+from ..services.insight.ragllm import InsightOrchestrator, ContextService
+import grpc
+import json
+from backend.api_gateway.libs.milkyhoop_protos import conversation_service_pb2, conversation_service_pb2_grpc
+
 _ragllm = InsightOrchestrator()
+_context_service = ContextService()
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+async def save_to_chat_history(
+    user_id: str,
+    tenant_id: str,
+    message: str,
+    response: str,
+    intent: str = "action_chat",
+    metadata: dict = None,
+) -> bool:
+    try:
+        channel = grpc.aio.insecure_channel("conversation_service:5002")
+        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
+        request = conversation_service_pb2.SaveMessageRequest(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            message=message,
+            response=response,
+            intent=intent,
+            metadata_json=json.dumps(metadata or {}),
+        )
+        save_response = await stub.SaveMessage(request)
+        await channel.close()
+        if save_response.status == "success":
+            logger.info(f"[ChatHistory] Saved: {save_response.message_id}")
+            return True
+        else:
+            logger.warning(f"[ChatHistory] Non-success: {save_response.status}")
+            return False
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Save failed: {e}")
+        return False
+
+
 
 
 def get_user_context(request: Request) -> dict:
@@ -85,6 +123,7 @@ async def send_message(request: Request, body: ChatMessageRequest):
     """
     ctx = get_user_context(request)
     planner = get_action_planner_client()
+    conversation_id = body.conversation_id if hasattr(body, "conversation_id") else None
 
     text = (body.text or "").strip()
     if not text:
@@ -92,6 +131,20 @@ async def send_message(request: Request, body: ChatMessageRequest):
             "User baru buka chat, belum ketik apa-apa. Sapa singkat.",
             context="User baru memulai percakapan."
         )
+        # Save to chat history
+        logger.warning("[ChatHistory] DEBUG: About to save greeting to history")
+        try:
+            await save_to_chat_history(
+                user_id=ctx["user_id"],
+                tenant_id=ctx["tenant_id"],
+                message="",
+                response=greeting or "Halo! Ada yang bisa saya bantu soal keuangan bisnis kamu?",
+                intent="greeting",
+                metadata={"conversation_id": conversation_id}
+            )
+        except Exception as e:
+            logger.warning(f"[ChatHistory] Save failed: {e}")
+        
         return make_response(
             MessageType.TEXT,
             text=greeting or "Halo! Ada yang bisa saya bantu soal keuangan bisnis kamu?"
@@ -107,29 +160,97 @@ async def send_message(request: Request, body: ChatMessageRequest):
 
     # --- CONFIRM (text-based, without pending action context) ---
     if intent_type == "CONFIRM":
-        response = await planner.generate_response(
+        response_text = await planner.generate_response(
             text,
             context="User mengkonfirmasi tapi tidak ada pending action. Jelaskan bahwa konfirmasi dilakukan lewat tombol Lanjutkan di preview card."
         )
-        return make_response(MessageType.TEXT, text=response or "Belum ada aksi yang perlu dikonfirmasi.")
+        # Save to chat history
+        logger.warning("[ChatHistory] DEBUG: About to save greeting to history")
+        try:
+            await save_to_chat_history(
+                user_id=ctx["user_id"],
+                tenant_id=ctx["tenant_id"],
+                message=text,
+                response=response_text or "Belum ada aksi yang perlu dikonfirmasi.",
+                intent="confirm",
+                metadata={"conversation_id": conversation_id}
+            )
+        except Exception as e:
+            logger.warning(f"[ChatHistory] Save failed: {e}")
+        return make_response(MessageType.TEXT, text=response_text or "Belum ada aksi yang perlu dikonfirmasi.")
 
     # --- CANCEL (text-based) ---
     if intent_type == "CANCEL":
-        response = await planner.generate_response(
+        response_text = await planner.generate_response(
             text,
             context="User membatalkan tapi tidak ada pending action. Acknowledge dan tanya mau ngapain."
         )
-        return make_response(MessageType.TEXT, text=response or "Oke, tidak ada yang dibatalkan. Ada yang lain?")
+        # Save to chat history
+        logger.warning("[ChatHistory] DEBUG: About to save greeting to history")
+        try:
+            await save_to_chat_history(
+                user_id=ctx["user_id"],
+                tenant_id=ctx["tenant_id"],
+                message=text,
+                response=response_text or "Oke, tidak ada yang dibatalkan. Ada yang lain?",
+                intent="cancel",
+                metadata={"conversation_id": conversation_id}
+            )
+        except Exception as e:
+            logger.warning(f"[ChatHistory] Save failed: {e}")
+        return make_response(MessageType.TEXT, text=response_text or "Oke, tidak ada yang dibatalkan. Ada yang lain?")
 
     # --- READ ---
     if intent_type == "READ":
-        return await _handle_read_intent(text, ctx, planner)
+        response = await _handle_read_intent(text, ctx, planner)
+        # Save to chat history
+        logger.warning("[ChatHistory] DEBUG: About to save greeting to history")
+        try:
+            await save_to_chat_history(
+                user_id=ctx["user_id"],
+                tenant_id=ctx["tenant_id"],
+                message=text,
+                response=response.text or "",
+                intent="read",
+                metadata={"conversation_id": conversation_id, "message_type": str(response.message_type)}
+            )
+        except Exception as e:
+            logger.warning(f"[ChatHistory] Save failed: {e}")
+        return response
 
     # --- ACTION ---
     if intent_type == "ACTION":
-        return await _handle_action_intent(text, action_type, ctx, planner)
+        response = await _handle_action_intent(text, action_type, ctx, planner)
+        # Save to chat history
+        logger.warning("[ChatHistory] DEBUG: About to save greeting to history")
+        try:
+            await save_to_chat_history(
+                user_id=ctx["user_id"],
+                tenant_id=ctx["tenant_id"],
+                message=text,
+                response=response.text or "",
+                intent=f"action_{action_type.lower()}",
+                metadata={"conversation_id": conversation_id, "action_type": action_type, "message_type": str(response.message_type)}
+            )
+        except Exception as e:
+            logger.warning(f"[ChatHistory] Save failed: {e}")
+        return response
 
     # --- UNCLEAR ---
+    # Save to chat history
+    logger.warning(f"[ChatHistory] DEBUG: About to save: text={text[:50] if text else 'empty'}")
+    try:
+        await save_to_chat_history(
+            user_id=ctx["user_id"],
+            tenant_id=ctx["tenant_id"],
+            message=text or "",
+            response="",  # Response text extracted from make_response
+            intent="action_chat",
+            metadata={"conversation_id": conversation_id}
+        )
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Save failed: {e}")
+    
     return await _handle_unclear_intent(text, ctx, planner)
 
 
@@ -142,10 +263,14 @@ async def _handle_read_intent(text: str, ctx: dict, planner) -> ChatMessageRespo
     tenant_id = ctx.get("tenant_id", "")
 
     try:
+        # Get tenant context for date awareness
+        context = await _context_service.get_context(tenant_id, auth_token)
+        
         result = await _ragllm.answer(
             question=text,
             auth_token=auth_token,
             tenant_id=tenant_id,
+            context=context,
         )
         answer = result.get("answer", "")
         if answer and not result.get("error"):
@@ -364,6 +489,55 @@ async def _handle_action_intent(text: str, action_type: str, ctx: dict, planner)
             )
             return make_response(MessageType.TEXT, text=response or f"Data PO belum lengkap, butuh: {', '.join(missing)}")
 
+
+    # --- Wave 4: Accounting Core ---
+    elif action_type == "POST_GENERAL_JOURNAL":
+        # Parse journal entry via planner
+        parsed = await planner.parse_document_text(text, "POST_GENERAL_JOURNAL")
+        if not parsed:
+            parsed = {"description": None, "lines": []}
+        
+        has_lines = parsed.get("lines") and len(parsed["lines"]) >= 2
+        
+        if has_lines:
+            return await _validate_and_prepare(
+                action_type=action_type,
+                category="JOURNAL",
+                payload=parsed,
+                ctx=ctx,
+                planner=planner,
+                original_text=text,
+            )
+        else:
+            response = await planner.generate_response(
+                text,
+                context="User mau buat jurnal manual tapi data kurang. Butuh minimal 2 baris dengan debit dan kredit. Contoh: 'debit Kas 5 juta, kredit Pendapatan 5 juta'. Tanya mau buat jurnal apa."
+            )
+            return make_response(MessageType.TEXT, text=response or "Untuk membuat jurnal manual, saya butuh minimal 2 baris dengan debit dan kredit. Contoh: 'debit Kas 5 juta, kredit Pendapatan 5 juta'. Mau buat jurnal apa?")
+    
+    elif action_type == "REVERSE_JOURNAL":
+        # Generic routing for now (use structured endpoint)
+        return await _validate_and_prepare(
+            action_type=action_type,
+            category="JOURNAL",
+            payload={"text": text},  # Let planner extract journal_id
+            ctx=ctx,
+            planner=planner,
+            original_text=text,
+        )
+    
+    elif action_type in ["CLOSE_PERIOD", "REOPEN_PERIOD"]:
+        # Generic routing for now (use structured endpoint)
+        return await _validate_and_prepare(
+            action_type=action_type,
+            category="PERIOD",
+            payload={"text": text},  # Let planner extract period_id
+            ctx=ctx,
+            planner=planner,
+            original_text=text,
+        )
+
+
     else:
         response = await planner.generate_response(
             text,
@@ -563,6 +737,42 @@ async def _validate_and_prepare(
             "po_date": payload.get("po_date") or payload.get("date"),
             "expected_date": payload.get("expected_delivery_date"),
         }
+    # --- Wave 4: Accounting Core ---
+    elif action_type == "POST_GENERAL_JOURNAL":
+        description = payload.get("description", "Jurnal manual")
+        lines_count = len(payload.get("lines", []))
+        title = "Jurnal Manual"
+        text_msg = f"Preview jurnal manual ({lines_count} baris). Pastikan debit = kredit sebelum posting."
+        summary = {
+            "title": title,
+            "description": description,
+            "lines_count": lines_count,
+        }
+    elif action_type == "REVERSE_JOURNAL":
+        journal_id = payload.get("journal_id", "")
+        title = "Reverse Jurnal"
+        text_msg = f"Reverse jurnal {journal_id}. Jurnal reversal akan dibuat dengan tanggal hari ini."
+        summary = {
+            "title": title,
+            "journal_id": journal_id,
+        }
+    elif action_type == "CLOSE_PERIOD":
+        period_id = payload.get("period_id", "")
+        title = "Tutup Periode"
+        text_msg = f"PERINGATAN: Tutup periode {period_id}. Setelah ditutup, tidak bisa posting ke periode ini."
+        summary = {
+            "title": title,
+            "period_id": period_id,
+        }
+    elif action_type == "REOPEN_PERIOD":
+        period_id = payload.get("period_id", "")
+        title = "Buka Kembali Periode"
+        text_msg = f"Buka kembali periode {period_id}. Hati-hati, ini akan mempengaruhi laporan keuangan."
+        summary = {
+            "title": title,
+            "period_id": period_id,
+        }
+
     else:
         counterparty = "unknown"
         title = action_type
@@ -855,10 +1065,14 @@ async def _handle_unclear_intent(text: str, ctx: dict, planner) -> ChatMessageRe
 
     # Try ragllm — it might be a data question the intent classifier missed
     try:
+        # Get tenant context for date awareness
+        context = await _context_service.get_context(tenant_id, auth_token)
+        
         result = await _ragllm.answer(
             question=text,
             auth_token=auth_token,
             tenant_id=tenant_id,
+            context=context,
         )
         answer = result.get("answer", "")
         if answer and not result.get("error"):
@@ -1063,6 +1277,18 @@ async def send_structured_message(request: Request, body: dict):
             planner=planner,
             original_text="",
         )
+    elif action_type in ["POST_GENERAL_JOURNAL", "REVERSE_JOURNAL", "CLOSE_PERIOD", "REOPEN_PERIOD"]:
+        # Wave 4 accounting actions: validate → prepare → preview (needs user confirmation)
+        category = "JOURNAL" if action_type in ["POST_GENERAL_JOURNAL", "REVERSE_JOURNAL"] else "PERIOD"
+        return await _validate_and_prepare(
+            action_type=action_type,
+            category=category,
+            payload=raw_data,
+            ctx=ctx,
+            planner=planner,
+            original_text="",
+        )
+
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported action_type: {action_type}")
 

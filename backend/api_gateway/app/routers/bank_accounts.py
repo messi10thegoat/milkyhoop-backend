@@ -604,7 +604,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         f"Opening Balance - {body.account_name}",
                         bank_account_id,
                         str(trace_id),
-                        float(body.opening_balance),
+                        int(body.opening_balance),
                         ctx["user_id"],
                     )
 
@@ -622,7 +622,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             uuid_module.uuid4(),
                             journal_id,
                             equity_account_id,
-                            float(body.opening_balance),
+                            int(body.opening_balance),
                             f"Modal Saldo Awal - {body.account_name}",
                         )
                         await conn.execute(
@@ -634,7 +634,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             uuid_module.uuid4(),
                             journal_id,
                             coa_id,
-                            float(body.opening_balance),
+                            int(body.opening_balance),
                             f"Saldo Awal Hutang - {body.account_name}",
                         )
                     else:
@@ -648,7 +648,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             uuid_module.uuid4(),
                             journal_id,
                             coa_id,
-                            float(body.opening_balance),
+                            int(body.opening_balance),
                             f"Saldo Awal - {body.account_name}",
                         )
                         await conn.execute(
@@ -660,7 +660,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             uuid_module.uuid4(),
                             journal_id,
                             equity_account_id,
-                            float(body.opening_balance),
+                            int(body.opening_balance),
                             f"Modal Saldo Awal - {body.account_name}",
                         )
 
@@ -1253,7 +1253,7 @@ async def adjust_bank_balance(
                     f"Bank Adjustment - {ba['account_name']}: {body.reason}",
                     bank_account_id,
                     str(trace_id),
-                    float(abs(adjustment)),
+                    int(abs(adjustment)),
                     ctx["user_id"],
                 )
 
@@ -1270,7 +1270,7 @@ async def adjust_bank_balance(
                         uuid_module.uuid4(),
                         journal_id,
                         ba["coa_id"],
-                        float(adjustment),
+                        int(adjustment),
                         f"Penyesuaian Saldo - {body.reason}",
                     )
                     # Cr. Opening Balance Equity (as adjustment source)
@@ -1291,7 +1291,7 @@ async def adjust_bank_balance(
                         uuid_module.uuid4(),
                         journal_id,
                         equity_id,
-                        float(adjustment),
+                        int(adjustment),
                         f"Koreksi Saldo - {body.reason}",
                     )
                 else:
@@ -1313,7 +1313,7 @@ async def adjust_bank_balance(
                         uuid_module.uuid4(),
                         journal_id,
                         equity_id,
-                        float(abs(adjustment)),
+                        int(abs(adjustment)),
                         f"Koreksi Saldo - {body.reason}",
                     )
                     # Cr. Bank Account
@@ -1326,7 +1326,7 @@ async def adjust_bank_balance(
                         uuid_module.uuid4(),
                         journal_id,
                         ba["coa_id"],
-                        float(abs(adjustment)),
+                        int(abs(adjustment)),
                         f"Penyesuaian Saldo - {body.reason}",
                     )
 

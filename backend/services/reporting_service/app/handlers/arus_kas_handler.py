@@ -20,7 +20,7 @@ from queries.financial_queries import build_where_clause
 logger = logging.getLogger(__name__)
 
 # Feature flag for Accounting Kernel
-USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'false').lower() == 'true'
+USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'true').lower() == 'true'
 
 
 class ArusKasHandler:
@@ -162,8 +162,9 @@ class ArusKasHandler:
                 return result
 
             except Exception as e:
-                logger.error(f"❌ Kernel failed, falling back to legacy: {e}")
-                # Fall through to legacy implementation
+                logger.error(f'Accounting kernel error: {e}')
+                await context.abort(grpc.StatusCode.INTERNAL, f'Accounting kernel error: {str(e)}')
+                return  # Never reached, but explicit
 
         # Legacy implementation using transaksiharian
         rls_client = RLSPrismaClient(tenant_id=request.tenant_id, bypass_rls=True)

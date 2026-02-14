@@ -567,7 +567,7 @@ async def create_opening_balance(
 
             journal_query = """
                 INSERT INTO journal_entries (
-                    tenant_id, entry_number, entry_date, description,
+                    tenant_id, journal_number, journal_date, description,
                     total_debit, total_credit, status, source_type, source_id,
                     is_opening_balance, created_by
                 ) VALUES (
@@ -577,17 +577,17 @@ async def create_opening_balance(
             """
 
             # Generate entry number
-            entry_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
+            journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
             existing_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND entry_number LIKE $2",
+                "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
                 tenant_id, f"OB-{body.opening_date.strftime('%Y%m%d')}%"
             )
             if existing_count > 0:
-                entry_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
+                journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
 
             journal_id = await conn.fetchval(
                 journal_query,
-                tenant_id, entry_number, body.opening_date,
+                tenant_id, journal_number, body.opening_date,
                 body.description or "Saldo Awal / Opening Balance",
                 total_debit, total_credit, user_id
             )
@@ -596,8 +596,8 @@ async def create_opening_balance(
             for idx, line in enumerate(journal_lines, 1):
                 await conn.execute(
                     """
-                    INSERT INTO journal_entry_lines (
-                        journal_id, account_id, description, debit, credit, line_number
+                    INSERT INTO journal_lines (
+                        journal_id, account_id, memo, debit, credit, line_number
                     ) VALUES ($1, $2::uuid, $3, $4, $5, $6)
                     """,
                     journal_id, line["account_id"],
@@ -757,7 +757,7 @@ async def create_opening_balance(
                 data={
                     "id": str(record_id),
                     "gl_journal_id": str(journal_id),
-                    "entry_number": entry_number,
+                    "journal_number": journal_number,
                     "opening_date": body.opening_date.isoformat(),
                     "total_debit": total_debit,
                     "total_credit": total_credit,
@@ -847,8 +847,8 @@ async def update_opening_balance(
                 # Get old journal lines
                 old_lines = await conn.fetch(
                     """
-                    SELECT account_id, debit, credit, description
-                    FROM journal_entry_lines
+                    SELECT account_id, debit, credit, memo
+                    FROM journal_lines
                     WHERE journal_id = $1
                     """,
                     old_journal_id
@@ -862,7 +862,7 @@ async def update_opening_balance(
                 reversal_id = await conn.fetchval(
                     """
                     INSERT INTO journal_entries (
-                        tenant_id, entry_number, entry_date, description,
+                        tenant_id, journal_number, journal_date, description,
                         total_debit, total_credit, status, source_type,
                         is_opening_balance, created_by
                     ) VALUES (
@@ -878,12 +878,12 @@ async def update_opening_balance(
                 for idx, line in enumerate(old_lines, 1):
                     await conn.execute(
                         """
-                        INSERT INTO journal_entry_lines (
-                            journal_id, account_id, description, debit, credit, line_number
+                        INSERT INTO journal_lines (
+                            journal_id, account_id, memo, debit, credit, line_number
                         ) VALUES ($1, $2, $3, $4, $5, $6)
                         """,
                         reversal_id, line["account_id"],
-                        f"Reversal - {line['description']}",
+                        f"Reversal - {line['memo']}",
                         line["credit"], line["debit"], idx  # Swap debit/credit
                     )
 
@@ -957,18 +957,18 @@ async def update_opening_balance(
             total_debit = sum(l["debit"] for l in journal_lines)
             total_credit = sum(l["credit"] for l in journal_lines)
 
-            entry_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
+            journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
             existing_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND entry_number LIKE $2",
+                "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
                 tenant_id, f"OB-{body.opening_date.strftime('%Y%m%d')}%"
             )
             if existing_count > 0:
-                entry_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
+                journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
 
             journal_id = await conn.fetchval(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, entry_number, entry_date, description,
+                    tenant_id, journal_number, journal_date, description,
                     total_debit, total_credit, status, source_type,
                     is_opening_balance, created_by
                 ) VALUES (
@@ -976,7 +976,7 @@ async def update_opening_balance(
                     true, $7
                 ) RETURNING id
                 """,
-                tenant_id, entry_number, body.opening_date,
+                tenant_id, journal_number, body.opening_date,
                 body.description or f"Updated Opening Balance: {body.reason}",
                 total_debit, total_credit, user_id
             )
@@ -984,8 +984,8 @@ async def update_opening_balance(
             for idx, line in enumerate(journal_lines, 1):
                 await conn.execute(
                     """
-                    INSERT INTO journal_entry_lines (
-                        journal_id, account_id, description, debit, credit, line_number
+                    INSERT INTO journal_lines (
+                        journal_id, account_id, memo, debit, credit, line_number
                     ) VALUES ($1, $2::uuid, $3, $4, $5, $6)
                     """,
                     journal_id, line["account_id"],
@@ -1047,7 +1047,7 @@ async def update_opening_balance(
                     "id": str(record_id),
                     "superseded_id": str(existing["id"]),
                     "gl_journal_id": str(journal_id),
-                    "entry_number": entry_number,
+                    "journal_number": journal_number,
                     "opening_date": body.opening_date.isoformat(),
                     "total_debit": total_debit,
                     "total_credit": total_credit,

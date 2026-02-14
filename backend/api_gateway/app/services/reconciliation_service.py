@@ -89,11 +89,10 @@ class ReconciliationService:
                 SELECT COALESCE(SUM(jl.credit - jl.debit), 0) as balance
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.journal_date = jl.journal_date
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1
                   AND je.status = 'POSTED'
-                  AND coa.code = $2
+                  AND coa.account_code = $2
             """
             gl_balance = await conn.fetchval(gl_query, tenant_id, self.AP_ACCOUNT_CODE)
 
@@ -232,10 +231,10 @@ class ReconciliationService:
             "in_sync": result.is_in_sync,
             "status": "OK" if result.is_in_sync and total_issues == 0 else "WARNING",
             "bills_outstanding": result.bills_outstanding,
-            "ap_subledger": float(result.ap_subledger),
-            "gl_ap_balance": float(result.gl_ap_balance),
-            "variance_bills_ap": float(result.variance_bills_ap),
-            "variance_ap_gl": float(result.variance_ap_gl),
+            "ap_subledger": int(result.ap_subledger),
+            "gl_ap_balance": int(result.gl_ap_balance),
+            "variance_bills_ap": int(result.variance_bills_ap),
+            "variance_ap_gl": int(result.variance_ap_gl),
             "issues_count": total_issues,
             "issues": {
                 "bills_without_ap": len(unmatched['bills_without_ap']),

@@ -26,7 +26,7 @@ ACTION_TYPE_POST_GENERAL_JOURNAL = 30
 ACTION_TYPE_REVERSE_JOURNAL = 31
 ACTION_TYPE_CLOSE_PERIOD = 32
 ACTION_TYPE_REOPEN_PERIOD = 33
-ACTION_TYPE_CREATE_CREDIT_NOTE = 40
+ACTION_TYPE_CREATE_CREDIT_NOTE = 13
 ACTION_TYPE_CREATE_PURCHASE_ORDER = 14
 ACTION_TYPE_BANK_TRANSFER = 22
 
@@ -60,6 +60,16 @@ REQUIRED_FIELDS: Dict[int, List[str]] = {
 
 # Fields that should contain positive amounts
 AMOUNT_FIELDS: Set[str] = {"amount", "total", "subtotal", "tax_amount", "grand_total", "dpp", "ppn"}
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Safely convert a value to float."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
 
 
 class InvariantValidator(BaseValidator):
@@ -129,6 +139,20 @@ class InvariantValidator(BaseValidator):
                         blocking=True,
                         field_name=field_name,
                     )
+
+
+        # --- Check bank transfer same-account ---
+        if ctx.action_type == ACTION_TYPE_BANK_TRANSFER:
+            from_bank_id = payload.get("from_bank_id") or payload.get("source_account_id")
+            to_bank_id = payload.get("to_bank_id") or payload.get("destination_account_id")
+            if from_bank_id and to_bank_id and str(from_bank_id).strip() == str(to_bank_id).strip():
+                ctx.add_error(
+                    layer="INVARIANTS",
+                    code="SAME_BANK_ACCOUNT",
+                    message="Cannot transfer to the same bank account",
+                    blocking=True,
+                    field_name="to_bank_id",
+                )
 
         # --- Check line items for negative quantities ---
         items = payload.get("items") or payload.get("line_items") or []
@@ -213,6 +237,62 @@ class InvariantValidator(BaseValidator):
                     blocking=True,
                     field_name=f"entries[{i}]",
                 )
+
+        # --- Check journal balance (POST_GENERAL_JOURNAL) ---
+        if ctx.action_type == ACTION_TYPE_POST_GENERAL_JOURNAL:
+            lines = payload.get("entries") or payload.get("journal_entries") or payload.get("line_items") or []
+            if not lines:
+                ctx.add_error(
+                    layer="INVARIANTS",
+                    code="EMPTY_JOURNAL_LINES",
+                    message="Journal lines cannot be empty",
+                    blocking=True,
+                )
+            elif len(lines) < 2:
+                ctx.add_error(
+                    layer="INVARIANTS",
+                    code="INSUFFICIENT_JOURNAL_LINES",
+                    message="Journal must have at least 2 lines",
+                    blocking=True,
+                )
+            else:
+                # Calculate totals
+                total_debit = sum(_safe_float(line.get("debit", 0)) for line in lines if isinstance(line, dict))
+                total_credit = sum(_safe_float(line.get("credit", 0)) for line in lines if isinstance(line, dict))
+                
+                # Check balance
+                if abs(total_debit - total_credit) > 0.01:  # 1 cent tolerance
+                    diff = total_debit - total_credit
+                    ctx.add_error(
+                        layer="INVARIANTS",
+                        code="JOURNAL_UNBALANCED",
+                        message=f"Jurnal tidak balance: debit Rp {total_debit:,.0f} ≠ kredit Rp {total_credit:,.0f}. Selisih Rp {abs(diff):,.0f}",
+                        blocking=True,
+                        field_name="entries",
+                    )
+                
+                # Check each line has debit XOR credit
+                for i, line in enumerate(lines):
+                    if not isinstance(line, dict):
+                        continue
+                    debit = _safe_float(line.get("debit", 0))
+                    credit = _safe_float(line.get("credit", 0))
+                    if (debit > 0 and credit > 0) or (debit == 0 and credit == 0):
+                        ctx.add_error(
+                            layer="INVARIANTS",
+                            code="INVALID_JOURNAL_LINE",
+                            message=f"Line {i+1}: must have debit OR credit, not both or neither",
+                            blocking=True,
+                            field_name=f"entries[{i}]",
+                        )
+                    if debit < 0 or credit < 0:
+                        ctx.add_error(
+                            layer="INVARIANTS",
+                            code="NEGATIVE_AMOUNT",
+                            message=f"Line {i+1}: amounts cannot be negative",
+                            blocking=True,
+                            field_name=f"entries[{i}]",
+                        )
 
         # --- Check product prices are not negative (optional fields) ---
         if ctx.action_type in (ACTION_TYPE_CREATE_PRODUCT,):

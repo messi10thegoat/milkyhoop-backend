@@ -20,7 +20,7 @@ from queries.financial_queries import build_where_clause
 logger = logging.getLogger(__name__)
 
 # Feature flag for Accounting Kernel
-USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'false').lower() == 'true'
+USE_ACCOUNTING_KERNEL = os.getenv('USE_ACCOUNTING_KERNEL', 'true').lower() == 'true'
 
 
 class NeracaHandler:
@@ -83,7 +83,7 @@ class NeracaHandler:
         
         # BALANCE CHECK
         total_liabilitas_dan_ekuitas = total_liabilitas + total_ekuitas
-        is_balanced = abs(total_aset - total_liabilitas_dan_ekuitas) < 100  # Allow small rounding errors
+        is_balanced = total_aset == total_liabilitas_dan_ekuitas
         
         return pb.LaporanNeraca(
             tenant_id=where['tenantId'],
@@ -172,8 +172,9 @@ class NeracaHandler:
                 return result
 
             except Exception as e:
-                logger.error(f"❌ Kernel failed, falling back to legacy: {e}")
-                # Fall through to legacy implementation
+                logger.error(f'Accounting kernel error: {e}')
+                await context.abort(grpc.StatusCode.INTERNAL, f'Accounting kernel error: {str(e)}')
+                return  # Never reached, but explicit
 
         # Legacy implementation using transaksiharian
         rls_client = RLSPrismaClient(tenant_id=request.tenant_id, bypass_rls=True)

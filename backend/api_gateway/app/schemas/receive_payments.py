@@ -45,11 +45,11 @@ class CreateReceivePaymentRequest(BaseModel):
     """Request body for creating a receive payment."""
 
     customer_id: str = Field(..., description="Customer UUID")
-    customer_name: str = Field(..., min_length=1, max_length=255)
+    customer_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up if not provided")
     payment_date: date
     payment_method: Literal["cash", "bank_transfer"]
     bank_account_id: str = Field(..., description="Kas/Bank account UUID (CoA)")
-    bank_account_name: str = Field(..., min_length=1, max_length=255)
+    bank_account_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up if not provided")
     total_amount: int = Field(..., gt=0, description="Total payment amount in IDR")
     discount_amount: int = Field(0, ge=0, description="Early payment discount in IDR")
     discount_account_id: Optional[str] = Field(
@@ -70,9 +70,9 @@ class CreateReceivePaymentRequest(BaseModel):
     @field_validator("customer_name")
     @classmethod
     def validate_customer_name(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Customer name is required")
-        return v.strip()
+        if v is not None:
+            return v.strip() or None
+        return v
 
     @field_validator("source_deposit_id")
     @classmethod

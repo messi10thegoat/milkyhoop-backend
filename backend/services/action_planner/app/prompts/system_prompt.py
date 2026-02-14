@@ -19,7 +19,7 @@ Tugas kamu: klasifikasi intent pengguna dari pesan chat.
 Respond HANYA dalam JSON format (tanpa markdown):
 {
   "intent": "ACTION" | "READ" | "CONFIRM" | "CANCEL" | "UNCLEAR",
-  "action_type": "CREATE_PURCHASE_INVOICE" | "CREATE_SALES_INVOICE" | "CREATE_VENDOR" | "CREATE_CUSTOMER" | "CREATE_PRODUCT" | "MAKE_PAYMENT" | "RECEIVE_PAYMENT" | "UPDATE_VENDOR" | "UPDATE_CUSTOMER" | "UPDATE_PRODUCT" | null,
+  "action_type": "CREATE_PURCHASE_INVOICE" | "CREATE_SALES_INVOICE" | "CREATE_VENDOR" | "CREATE_CUSTOMER" | "CREATE_PRODUCT" | "MAKE_PAYMENT" | "RECEIVE_PAYMENT" | "UPDATE_VENDOR" | "UPDATE_CUSTOMER" | "UPDATE_PRODUCT" | "POST_GENERAL_JOURNAL" | "REVERSE_JOURNAL" | "CLOSE_PERIOD" | "REOPEN_PERIOD" | null,
   "confidence": 0.0-1.0,
   "reason": "penjelasan singkat"
 }
@@ -41,7 +41,11 @@ Definisi action_type:
 - CREATE_PRODUCT: Tambah/daftar produk/barang/item/jasa baru.
 - UPDATE_VENDOR: Update/ubah/edit data vendor/supplier.
 - UPDATE_CUSTOMER: Update/ubah/edit data customer/pelanggan.
-- UPDATE_PRODUCT: Update/ubah/edit data produk/barang."""
+- UPDATE_PRODUCT: Update/ubah/edit data produk/barang.
+- POST_GENERAL_JOURNAL: Jurnal umum, jurnal manual, posting jurnal, catat jurnal, buat jurnal penyesuaian, adjusting entry, debit kredit manual.
+- REVERSE_JOURNAL: Reverse jurnal, balik jurnal, batalkan jurnal, reversal, koreksi jurnal dengan reversal.
+- CLOSE_PERIOD: Tutup periode, close period, tutup buku, akhir periode, closing bulan, finalisasi periode.
+- REOPEN_PERIOD: Buka kembali periode, reopen period, buka periode tertutup."""
 
 
 # =============================================================================
@@ -228,4 +232,90 @@ PROMPT_REGISTRY["parse_master_data"] = {
     "v1": PARSE_MASTER_DATA_V1,
     "active": "v1",
     "description": "Parse free text into master data structure (vendor/customer/product)",
+}
+
+
+# =============================================================================
+# V1 - PARSE JOURNAL ENTRY
+# =============================================================================
+PARSE_JOURNAL_V1 = """Kamu adalah parser jurnal untuk sistem akuntansi MilkyHoop.
+
+Tugas: Extract data jurnal umum dari teks pengguna.
+
+Respond HANYA dalam JSON format (tanpa markdown):
+{
+  "entry_date": "YYYY-MM-DD" | null,
+  "description": "string (required)",
+  "reference": "string" | null,
+  "lines": [
+    {
+      "account_name_or_code": "string (nama akun atau kode seperti Kas, 1-1100)",
+      "debit": 0,
+      "credit": 0,
+      "description": "string" | null
+    }
+  ]
+}
+
+EXTRACTION RULES:
+1. Extract SEMUA akun yang disebutkan dengan jumlahnya
+2. Identifikasi debit vs credit dari keyword:
+   - "debit", "dr", "d" -> debit
+   - "kredit", "credit", "cr", "c" -> credit
+3. Parse amounts: "5 juta" = 5000000, "2,5jt" = 2500000, "500rb" = 500000
+4. Jika tanggal disebutkan, extract. Jika tidak, isi null (sistem akan pakai hari ini)
+5. Description = tujuan transaksi keseluruhan
+6. Line description = catatan per-line (optional)
+
+CRITICAL RULES:
+- JANGAN tambahkan balancing entries jika tidak balance
+- JANGAN ubah jumlah yang disebutkan user
+- JANGAN hitung total
+- Extract PERSIS seperti yang user sebutkan
+
+CONTOH:
+
+User: "posting jurnal debit Kas 5 juta kredit Pendapatan 5 juta"
+Output:
+{
+  "entry_date": null,
+  "description": "Posting jurnal manual",
+  "reference": null,
+  "lines": [
+    {"account_name_or_code": "Kas", "debit": 5000000, "credit": 0, "description": null},
+    {"account_name_or_code": "Pendapatan", "debit": 0, "credit": 5000000, "description": null}
+  ]
+}
+
+User: "jurnal penyesuaian tanggal 31 Jan: debit Beban Gaji 15jt kredit Hutang Gaji 15jt"
+Output:
+{
+  "entry_date": "2026-01-31",
+  "description": "Jurnal penyesuaian",
+  "reference": null,
+  "lines": [
+    {"account_name_or_code": "Beban Gaji", "debit": 15000000, "credit": 0, "description": null},
+    {"account_name_or_code": "Hutang Gaji", "debit": 0, "credit": 15000000, "description": null}
+  ]
+}
+
+User: "catat jurnal: debit Piutang 10jt, kredit Pendapatan Jasa 9jt, kredit PPN 1jt, referensi INV-001"
+Output:
+{
+  "entry_date": null,
+  "description": "Catat jurnal manual",
+  "reference": "INV-001",
+  "lines": [
+    {"account_name_or_code": "Piutang", "debit": 10000000, "credit": 0, "description": null},
+    {"account_name_or_code": "Pendapatan Jasa", "debit": 0, "credit": 9000000, "description": null},
+    {"account_name_or_code": "PPN", "debit": 0, "credit": 1000000, "description": null}
+  ]
+}
+"""
+
+# Register parse_journal in PROMPT_REGISTRY
+PROMPT_REGISTRY["parse_journal"] = {
+    "v1": PARSE_JOURNAL_V1,
+    "active": "v1",
+    "description": "Parse free text into journal entry structure",
 }

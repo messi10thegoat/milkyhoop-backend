@@ -19,8 +19,8 @@ sys.path.append("/app/backend/api_gateway/libs/milkyhoop_protos")
 
 # Conversation Service imports - CHAT PERSISTENCE
 try:
-    from conversation_service_pb2 import GetChatHistoryRequest, SaveMessageRequest
-    from conversation_service_pb2_grpc import ConversationServiceStub
+    from milkyhoop_protos.conversation_service_pb2 import GetChatHistoryRequest, SaveMessageRequest
+    from milkyhoop_protos.conversation_service_pb2_grpc import ConversationServiceStub
 except ImportError as e:
     print(f"⚠️ Warning: conversation_service_pb2 import failed: {e}")
     print("   This is OK if conversation_service is not available")
