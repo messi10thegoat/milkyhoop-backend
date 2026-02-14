@@ -513,15 +513,33 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     )
 
                 # Validate bank account exists and is asset type
+                # Support both CoA UUID and bank_accounts UUID
+                bank_account_uuid = UUID(body.bank_account_id)
                 bank_account = await conn.fetchrow(
                     """
                     SELECT id, account_code, name, account_type
                     FROM chart_of_accounts
                     WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
-                    UUID(body.bank_account_id),
+                    bank_account_uuid,
                     ctx["tenant_id"],
                 )
+
+                # If not found in CoA, try bank_accounts table (frontend sends bank_accounts.id)
+                if not bank_account:
+                    ba_row = await conn.fetchrow(
+                        """
+                        SELECT ba.coa_id, ca.id, ca.account_code, ca.name, ca.account_type
+                        FROM bank_accounts ba
+                        JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
+                        WHERE ba.id = $1 AND ba.tenant_id = $2
+                        """,
+                        bank_account_uuid,
+                        ctx["tenant_id"],
+                    )
+                    if ba_row:
+                        bank_account = ba_row
+                        body.bank_account_id = str(ba_row["coa_id"])
 
                 if not bank_account:
                     raise HTTPException(
@@ -1197,7 +1215,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             payment["customer_name"],
             payment["unapplied_amount"],
             payment["payment_date"],
-            payment["payment_method"],
+            payment["payment_method"].replace("bank_transfer", "transfer"),
             payment["bank_account_id"],
             f"Overpayment from {payment['payment_number']}",
             f"Auto-created from overpayment on {payment['payment_number']}",
