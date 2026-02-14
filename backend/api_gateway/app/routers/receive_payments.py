@@ -1215,7 +1215,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             payment["customer_name"],
             payment["unapplied_amount"],
             payment["payment_date"],
-            payment["payment_method"].replace("bank_transfer", "transfer"),
+            payment["payment_method"],
             payment["bank_account_id"],
             f"Overpayment from {payment['payment_number']}",
             f"Auto-created from overpayment on {payment['payment_number']}",
