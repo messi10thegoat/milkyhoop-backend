@@ -5,16 +5,18 @@ Cursor-grade accounting agent: proactive, efficient, multi-modal.
 5 modes: ACTION, INSIGHT, ANALYSIS, PLANNING, BRAINSTORM.
 """
 
-PROMPT_VERSION = "v4.0.0"
-
 from datetime import date
+
+from .tutorial_registry import list_available_tutorials
+
+PROMPT_VERSION = "v4.0.0"
 
 
 def build_system_prompt(tenant_name: str, today: str | None = None) -> str:
     """Build the constitutional system prompt with dynamic context."""
     today_str = today or date.today().isoformat()
 
-    return f"""Kamu adalah akuntan senior MilkyHoop — cerdas, proaktif, dan efisien.
+    base_prompt = f"""Kamu adalah akuntan senior MilkyHoop — cerdas, proaktif, dan efisien.
 Kamu membantu user mengelola pembukuan melalui percakapan natural.
 Kamu berpikir seperti CFO yang juga paham teknologi.
 
@@ -91,7 +93,7 @@ MODE 5 — BRAINSTORM (trigger: gimana kalau, apa pendapatmu, strategi, ide)
 - Jika harga ada di master data, GUNAKAN langsung — jangan tanya user.
 - Jika user kasih harga explicit, pakai harga user (override master data).
 - Jika item ambigu (>1 match yang mirip), BARU tanya user untuk pilih.
-- SEARCH STRATEGY (PENTING): 
+- SEARCH STRATEGY (PENTING):
   * search_items: Gunakan SATU KATA PERTAMA saja. "kaos 24s" → search("kaos"). "kemeja batik" → search("kemeja"). JANGAN pakai 2+ kata.
   * search_accounts: Gunakan kata kunci inti. "biaya listrik" → search("listrik", account_type="expense"). "sewa kantor" → search("sewa", account_type="expense").
   * Jika 0 hasil, coba sinonim: "asuransi" tidak ketemu? Coba "beban".
@@ -181,7 +183,7 @@ CLOSE_PERIOD / REOPEN_PERIOD → propose_action {{period_id}}
 - **Hutang** (Accounts Payable / AP) = uang yang KITA HARUS BAYAR ke vendor/supplier
   → Tools: get_ap_aging, get_bills, get_bill_payments, get_overdue_bills
   → Keyword user: "hutang", "tagihan", "bayar ke vendor", "AP"
-- **Piutang** (Accounts Receivable / AR) = uang yang PELANGGAN HARUS BAYAR ke kita  
+- **Piutang** (Accounts Receivable / AR) = uang yang PELANGGAN HARUS BAYAR ke kita
   → Tools: get_ar_aging, get_invoices, get_receive_payments, get_overdue_invoices
   → Keyword user: "piutang", "tagih", "faktur penjualan", "AR"
 - Jika user bilang "hutang" → WAJIB pakai get_ap_aging atau get_bills. JANGAN pakai get_ar_aging.
@@ -443,7 +445,7 @@ Saat menampilkan data keuangan, SELALU gunakan Bahasa Indonesia:
 
 # Hutang context
 - "balance" (hutang) → "Sisa Hutang"
-- "total_outstanding" (hutang) → "Total Hutang"  
+- "total_outstanding" (hutang) → "Total Hutang"
 - "vendor" → "Vendor/Supplier"
 - "bill" → "Tagihan Pembelian"
 - "bill_number" → "No. Tagihan"
@@ -1104,6 +1106,57 @@ ATURAN CHART:
 5. Untuk tabel besar (neraca saldo, buku besar), fokus pada top entries + total
 """
 
+    tutorial_section = """
+
+## Tutorial Mode
+
+You can guide users through interactive tutorials. Tutorials teach users how to use MilkyHoop features step-by-step.
+
+### Available Tools
+- `list_tutorials` — See all available tutorials
+- `get_tutorial(key)` — Get tutorial structure with steps
+- `start_tutorial(key)` — Begin a tutorial, creates progress record
+- `advance_tutorial(key)` — Move to next step after completion
+- `dismiss_tutorial(key)` — Skip/dismiss when user wants to stop
+
+### TUTORIAL_STEP Response Format
+When guiding through a tutorial, respond with message_type TUTORIAL_STEP:
+{
+  "message_type": "TUTORIAL_STEP",
+  "data": {
+    "tutorial_key": "<key>",
+    "step_key": "<step_key>",
+    "step_index": <n>,
+    "total_steps": <total>,
+    "content": "<your narration in markdown, in user's language>",
+    "linked_action": "<DirectAction key or null>",
+    "skippable": true,
+    "actions": [
+      {"key": "continue", "label": "Lanjut"},
+      {"key": "skip", "label": "Lewati"}
+    ]
+  }
+}
+
+When a step has a linked_action, add a start_action button:
+  {"key": "start_action", "label": "Mulai buat [entity] →"}
+
+### Narration Rules
+- Detect user's language from their messages (Indonesian or English)
+- Keep narration short (2-3 sentences per step)
+- When step has linked_action, end with invitation: "Mau coba sekarang?"
+- One step at a time — never list all steps at once
+- If prerequisite already met (user has data), acknowledge and advance
+
+### Auto-trigger
+When context includes auto_tutorial, gently offer the tutorial once. If user declines, respect it.
+"""
+
+    tutorial_list = str(list_available_tutorials())
+    tutorial_appendix = f"\n### Available Tutorials\n{tutorial_list}"
+
+    return base_prompt + tutorial_section + tutorial_appendix
+
 
 def get_intent_bias(user_text: str) -> str:
     """
@@ -1113,58 +1166,166 @@ def get_intent_bias(user_text: str) -> str:
     text_lower = user_text.lower()
 
     action_signals = [
-        "buat", "bikin", "create", "tambah", "catat",
-        "bayar", "terima", "posting", "tutup", "void",
-        "kirim", "transfer", "hapus", "reverse", "balik",
-        "faktur", "invoice", "tagihan", "jurnal", "journal",
-        "pembayaran", "payment", "expense", "biaya",
+        "buat",
+        "bikin",
+        "create",
+        "tambah",
+        "catat",
+        "bayar",
+        "terima",
+        "posting",
+        "tutup",
+        "void",
+        "kirim",
+        "transfer",
+        "hapus",
+        "reverse",
+        "balik",
+        "faktur",
+        "invoice",
+        "tagihan",
+        "jurnal",
+        "journal",
+        "pembayaran",
+        "payment",
+        "expense",
+        "biaya",
     ]
 
     analysis_signals = [
-        "bagus", "sehat", "tren", "trend", "perbandingan", "compare",
-        "bagaimana", "apakah", "analisis", "analisa", "evaluasi",
-        "performa", "kinerja", "margin", "profitabilitas",
-        "rasio", "ratio", "likuid", "likuiditas", "solvabilitas",
-        "budget", "anggaran", "over budget", "cost center", "departemen",
-            "transfer bank", "transfer antar", "mutasi bank", "transaksi bank", "transfer masuk", "transfer keluar", "riwayat bank",
-            "uang muka", "deposit vendor", "deposit pelanggan", "advance",
-            "giro", "cheque", "cek",
-            "recurring", "berulang", "subscription", "langganan",
-            "sales order", "pesanan", "order pending",
-            "quote", "penawaran", "quotation",
-            "aset", "asset", "aset tetap", "fixed asset", "depresiasi", "penyusutan",
-            "stock adjustment", "penyesuaian stok", "stok rusak",
-            "payroll", "gaji", "penggajian", "salary",
+        "bagus",
+        "sehat",
+        "tren",
+        "trend",
+        "perbandingan",
+        "compare",
+        "bagaimana",
+        "apakah",
+        "analisis",
+        "analisa",
+        "evaluasi",
+        "performa",
+        "kinerja",
+        "margin",
+        "profitabilitas",
+        "rasio",
+        "ratio",
+        "likuid",
+        "likuiditas",
+        "solvabilitas",
+        "budget",
+        "anggaran",
+        "over budget",
+        "cost center",
+        "departemen",
+        "transfer bank",
+        "transfer antar",
+        "mutasi bank",
+        "transaksi bank",
+        "transfer masuk",
+        "transfer keluar",
+        "riwayat bank",
+        "uang muka",
+        "deposit vendor",
+        "deposit pelanggan",
+        "advance",
+        "giro",
+        "cheque",
+        "cek",
+        "recurring",
+        "berulang",
+        "subscription",
+        "langganan",
+        "sales order",
+        "pesanan",
+        "order pending",
+        "quote",
+        "penawaran",
+        "quotation",
+        "aset",
+        "asset",
+        "aset tetap",
+        "fixed asset",
+        "depresiasi",
+        "penyusutan",
+        "stock adjustment",
+        "penyesuaian stok",
+        "stok rusak",
+        "payroll",
+        "gaji",
+        "penggajian",
+        "salary",
     ]
 
     planning_signals = [
-        "rencana", "plan", "tutup buku", "closing", "akhir bulan",
-        "akhir tahun", "migrasi", "langkah", "persiapan", "checklist",
+        "rencana",
+        "plan",
+        "tutup buku",
+        "closing",
+        "akhir bulan",
+        "akhir tahun",
+        "migrasi",
+        "langkah",
+        "persiapan",
+        "checklist",
     ]
 
     brainstorm_signals = [
-        "gimana kalau", "apa pendapatmu", "strategi", "ide",
-        "saran", "rekomendasi", "opsi", "alternatif", "solusi",
+        "gimana kalau",
+        "apa pendapatmu",
+        "strategi",
+        "ide",
+        "saran",
+        "rekomendasi",
+        "opsi",
+        "alternatif",
+        "solusi",
     ]
 
     # Auto-wired from registry — no manual update needed per new module
     from .direct_action_registry import get_all_signal_words
+
     direct_action_signals = get_all_signal_words()
 
+    # Tutorial signals — auto-wired from tutorial_registry
+    from .tutorial_registry import get_all_tutorial_signal_words
+
+    tutorial_signal_words = get_all_tutorial_signal_words()
+
     edit_signals = [
-        "mau edit", "edit data", "mau ubah", "ingin edit",
-        "saya mau edit", "ganti", "ubah", "koreksi",
+        "mau edit",
+        "edit data",
+        "mau ubah",
+        "ingin edit",
+        "saya mau edit",
+        "ganti",
+        "ubah",
+        "koreksi",
     ]
 
     reconfirm_signals = [
-        "konfirmasi", "tabel konfirmasi", "bikinkan lagi", "bikin lagi",
-        "lanjutkan", "proceed", "ok lanjut", "usulkan lagi",
-        "sudah betul", "silakan dibuat", "ok buat", "bikin aja",
+        "konfirmasi",
+        "tabel konfirmasi",
+        "bikinkan lagi",
+        "bikin lagi",
+        "lanjutkan",
+        "proceed",
+        "ok lanjut",
+        "usulkan lagi",
+        "sudah betul",
+        "silakan dibuat",
+        "ok buat",
+        "bikin aja",
     ]
 
     recon_signals = [
-        "rekonsiliasi", "rekon", "reconcil", "rekening koran",
-        "statement bank", "bank statement", "cocokkan mutasi",
+        "rekonsiliasi",
+        "rekon",
+        "reconcil",
+        "rekening koran",
+        "statement bank",
+        "bank statement",
+        "cocokkan mutasi",
     ]
 
     file_signals = ["[attached:", "file ini", "import file", "upload file"]
@@ -1173,6 +1334,7 @@ def get_intent_bias(user_text: str) -> str:
 
     # Query signals — from registry (auto-wired)
     from .direct_action_registry import QUERY_ACTIONS
+
     query_signal_words = []
     for qconfig in QUERY_ACTIONS.values():
         query_signal_words.extend(qconfig.signal_words)
@@ -1180,6 +1342,7 @@ def get_intent_bias(user_text: str) -> str:
     has_edit = any(w in text_lower for w in edit_signals)
     has_reconfirm = any(w in text_lower for w in reconfirm_signals)
     has_direct_action = any(w in text_lower for w in direct_action_signals)
+    has_tutorial = any(w in text_lower for w in tutorial_signal_words)
     has_query = any(w in text_lower for w in query_signal_words)
     has_action = any(w in text_lower for w in action_signals)
     has_analysis = any(w in text_lower for w in analysis_signals)
@@ -1188,21 +1351,29 @@ def get_intent_bias(user_text: str) -> str:
 
     # Document review detection
     doc_review_signals = [
-        "review dokumen", "review document", "cek dokumen", "cek draft",
-        "lihat draft", "dokumen masuk", "inbox review",
+        "review dokumen",
+        "review document",
+        "cek dokumen",
+        "cek draft",
+        "lihat draft",
+        "dokumen masuk",
+        "inbox review",
     ]
     has_doc_review = any(w in text_lower for w in doc_review_signals)
 
     if has_doc_review:
         # Try to extract document UUID from text
         import re as _re_doc
-        uuid_match = _re_doc.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text_lower)
+
+        uuid_match = _re_doc.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text_lower
+        )
         doc_id_hint = f" Document ID: {uuid_match.group()}" if uuid_match else ""
         return (
             "\n\n## HINT\n"
             "MODE: REVIEW DOKUMEN. User ingin review draft dokumen yang dibuat AI.\n"
-            "WAJIB panggil start_workflow(workflow_type=\"document_review\", "
-            "user_data={{document_id: \"<UUID dari pesan>\"}}).\n"
+            'WAJIB panggil start_workflow(workflow_type="document_review", '
+            'user_data={{document_id: "<UUID dari pesan>"}}).\n'
             "Engine akan otomatis fetch dokumen, presentasikan draft, dan propose confirm.\n"
             "Ikuti llm_instruction dari engine. Presentasikan dalam bahasa bisnis."
             + doc_id_hint
@@ -1213,7 +1384,7 @@ def get_intent_bias(user_text: str) -> str:
             "\n\n## HINT\n"
             "MODE: REKONSILIASI BANK. WAJIB gunakan tool `start_workflow`. "
             "1. Lookup akun bank via get_bank_accounts untuk dapatkan account_id. "
-            "2. Panggil start_workflow(workflow_type=\"bank_reconciliation\", user_data={...}). "
+            '2. Panggil start_workflow(workflow_type="bank_reconciliation", user_data={...}). '
             "3. Extract data dari pesan user: account_id, statement_ending_balance, file_ref. "
             "4. JANGAN set no_file=True kecuali user EKSPLISIT bilang ingin rekonsiliasi manual/tanpa file. "
             "5. Ikuti llm_instruction dari engine. JANGAN manage state sendiri. "
@@ -1242,9 +1413,19 @@ def get_intent_bias(user_text: str) -> str:
         return (
             "\n\n## HINT\n"
             "MODE: EDIT. User ingin edit data sebelum konfirmasi. "
-            "Respond SINGKAT: \"Apa yang mau diubah?\" atau langsung tanya field spesifik. "
+            'Respond SINGKAT: "Apa yang mau diubah?" atau langsung tanya field spesifik. '
             "JANGAN parafrase ulang apa yang user minta. JANGAN verbose. "
             "Maksimal 1 kalimat pendek."
+        )
+    elif has_tutorial:
+        return (
+            "\n\n## HINT\n"
+            "MODE: TUTORIAL. User ingin memulai atau melanjutkan tutorial interaktif. "
+            "Gunakan tutorial tools: list_tutorials, get_tutorial, start_tutorial, "
+            "advance_tutorial, dismiss_tutorial. "
+            "Respond dengan message_type TUTORIAL_STEP. "
+            "Narasi singkat 2-3 kalimat per step. "
+            "Satu step per turn — jangan list semua sekaligus."
         )
     elif has_query and not has_action and not has_direct_action:
         return (
