@@ -81,6 +81,75 @@ async def get_next_journal_number(conn, tenant_id: str, prefix: str = "JV") -> s
     return f"{prefix}-{year_month_str}-{seq:04d}"
 
 
+
+# =============================================================================
+# GUARD: Block manual journal from touching derived-layer accounts (Law 31 Gate 4)
+# =============================================================================
+async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
+    """
+    Block manual journal from touching accounts that have derived layers.
+    These accounts MUST be accessed via their proper modules to maintain
+    dual-layer sync (Law 31 Gate 4).
+    
+    - RECEIVABLE/PAYABLE -> use Payment/Settlement module
+    - Persediaan/HPP -> use Stock Adjustment module
+    - Bank CoA -> ALLOWED (not blocked here)
+    """
+    account_ids = [UUID(line.account_id) for line in lines]
+
+    # Check RECEIVABLE and PAYABLE accounts
+    ar_ap_accounts = await conn.fetch("""
+        SELECT id, account_code, name, account_type
+        FROM chart_of_accounts
+        WHERE id = ANY($1) AND account_type IN ('RECEIVABLE', 'PAYABLE')
+          AND tenant_id = $2
+    """, account_ids, tenant_id)
+
+    if ar_ap_accounts:
+        names = ', '.join(f"{a['account_code']} {a['name']}" for a in ar_ap_accounts)
+        acct_type = ar_ap_accounts[0]['account_type']
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Manual journal tidak boleh menyentuh akun {acct_type}. "
+                f"Akun: {names}. "
+                f"Gunakan modul Payment/Settlement untuk transaksi piutang/hutang."
+            )
+        )
+
+    # Check inventory/COGS accounts (default + product-level overrides)
+    inventory_cogs_rows = await conn.fetch("""
+        SELECT DISTINCT coa_id FROM (
+            SELECT id AS coa_id FROM chart_of_accounts
+            WHERE account_code IN ('1-10600', '5-10100') AND tenant_id = $1
+            UNION
+            SELECT inventory_account_id AS coa_id FROM products
+            WHERE tenant_id = $1 AND inventory_account_id IS NOT NULL
+            UNION
+            SELECT cogs_account_id AS coa_id FROM products
+            WHERE tenant_id = $1 AND cogs_account_id IS NOT NULL
+        ) sub WHERE coa_id IS NOT NULL
+    """, tenant_id)
+
+    blocked_ids = {row['coa_id'] for row in inventory_cogs_rows}
+    blocked_lines = [aid for aid in account_ids if aid in blocked_ids]
+
+    if blocked_lines:
+        blocked_accounts = await conn.fetch("""
+            SELECT account_code, name FROM chart_of_accounts
+            WHERE id = ANY($1) AND tenant_id = $2
+        """, blocked_lines, tenant_id)
+        names = ', '.join(f"{a['account_code']} {a['name']}" for a in blocked_accounts)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Manual journal tidak boleh menyentuh akun Persediaan/HPP. "
+                f"Akun: {names}. "
+                f"Gunakan modul Stock Adjustment untuk transaksi inventory."
+            )
+        )
+
+
 # =============================================================================
 # LIST JOURNALS
 # =============================================================================
@@ -94,6 +163,8 @@ async def list_journals(
     source_type: Optional[str] = Query(None),
     account_id: Optional[UUID] = Query(None, description="Filter by account in lines"),
     search: Optional[str] = Query(None, description="Search description"),
+    sort_by: Optional[str] = Query(None, description="Sort field: created_at, journal_date, total_debit, description"),
+    sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
@@ -167,12 +238,25 @@ async def list_journals(
             offset = (page - 1) * limit
             params.extend([limit, offset])
 
+            # Dynamic sort
+            ALLOWED_SORT_FIELDS = {
+                "created_at": "je.created_at",
+                "journal_date": "je.journal_date",
+                "date": "je.journal_date",
+                "total_debit": "je.total_debit",
+                "amount": "je.total_debit",
+                "description": "je.description",
+            }
+            sort_col = ALLOWED_SORT_FIELDS.get(sort_by or "created_at", "je.created_at")
+            sort_dir = "ASC" if sort_order and sort_order.lower() == "asc" else "DESC"
+            order_clause = f"{sort_col} {sort_dir}"
+
             query = f"""
                 SELECT je.id, je.journal_number, je.journal_date, je.description,
                        je.source_type, je.total_debit, je.total_credit, je.status, je.created_at
                 FROM journal_entries je
                 WHERE {where_clause}
-                ORDER BY je.created_at DESC
+                ORDER BY {order_clause}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
 
@@ -361,11 +445,20 @@ async def create_journal(request: Request, body: CreateJournalRequest):
             total_debit = sum(line.debit for line in body.lines)
             total_credit = sum(line.credit for line in body.lines)
 
-            # Get journal number
-            journal_number = await get_next_journal_number(conn, ctx["tenant_id"], "JV")
-
             async with conn.transaction():
-                # Create journal header
+                # Law 13: Advisory lock on manual journal creation
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MANUAL_CREATE:{ctx['tenant_id']}"
+                )
+
+                # Law 23: Generate journal number inside transaction
+                journal_number = await get_next_journal_number(conn, ctx["tenant_id"], "JV")
+
+                # Law 31 Gate 4: Block derived-layer accounts in manual journal
+                await validate_no_derived_layer_accounts(conn, ctx["tenant_id"], body.lines)
+
+                # Law 20: Always INSERT as DRAFT first
                 journal_id = await conn.fetchval(
                     """
                     INSERT INTO journal_entries (
@@ -373,7 +466,7 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                         source_type, total_debit, total_credit, status,
                         period_id, created_by
                     )
-                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'DRAFT', $7, $8)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -382,7 +475,6 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                     body.description,
                     total_debit,
                     total_credit,
-                    initial_status,
                     period["id"] if period else None,
                     ctx["user_id"],
                 )
@@ -402,6 +494,13 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                         line.description,
                         line.debit,
                         line.credit,
+                    )
+
+                # Law 20: If intended status is POSTED, update after lines (triggers hash chain)
+                if initial_status == "POSTED":
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        journal_id,
                     )
 
             return await get_journal(request, journal_id)
@@ -461,16 +560,23 @@ async def post_journal(request: Request, journal_id: UUID):
                     detail=f"Cannot post to {period['status'].lower()} period",
                 )
 
-            # Post journal
-            await conn.execute(
-                """
-                UPDATE journal_entries
-                SET status = 'POSTED', updated_at = NOW()
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                journal_id,
-                ctx["tenant_id"],
-            )
+            async with conn.transaction():
+                # Law 13: Advisory lock on journal posting
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MANUAL_POST:{str(journal_id)}"
+                )
+
+                # Post journal
+                await conn.execute(
+                    """
+                    UPDATE journal_entries
+                    SET status = 'POSTED', updated_at = NOW()
+                    WHERE id = $1 AND tenant_id = $2
+                """,
+                    journal_id,
+                    ctx["tenant_id"],
+                )
 
             return await get_journal(request, journal_id)
 
@@ -545,15 +651,22 @@ async def reverse_journal(
                     detail=f"Cannot post reversal to {period['status'].lower()} period",
                 )
 
-            # Create reversal
-            reversal_number = await get_next_journal_number(
-                conn, ctx["tenant_id"], "JV"
-            )
             total_debit = sum(line["credit"] for line in lines)  # Swap debit/credit
             total_credit = sum(line["debit"] for line in lines)
 
             async with conn.transaction():
-                # Create reversal journal
+                # Law 13: Advisory lock on journal reversal
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MANUAL_REVERSE:{str(journal_id)}"
+                )
+
+                # Law 23: Generate journal number inside transaction
+                reversal_number = await get_next_journal_number(
+                    conn, ctx["tenant_id"], "JV"
+                )
+
+                # Law 20: Create reversal journal as DRAFT first
                 reversal_id = await conn.fetchval(
                     """
                     INSERT INTO journal_entries (
@@ -561,7 +674,7 @@ async def reverse_journal(
                         source_type, total_debit, total_credit, status,
                         period_id, reversal_of_id, reversal_reason, created_by
                     )
-                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'POSTED', $7, $8, $9, $10)
+                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'DRAFT', $7, $8, $9, $10)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -590,6 +703,12 @@ async def reverse_journal(
                         line["credit"],
                         line["debit"],
                     )  # Swapped
+
+                # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    reversal_id,
+                )
 
                 # Link original to reversal
                 await conn.execute(

@@ -1,0 +1,71 @@
+scenarios:
+- id: AJE-001
+  category: action_journal
+  description: Depreciation adjusting journal entry with debit and credit
+  messages:
+  - buat jurnal penyesuaian debit Beban Penyusutan 1.000.000, kredit Akumulasi Penyusutan
+    1.000.000
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_JOURNAL_ENTRY
+  expect_contains:
+  - Penyusutan
+  tags:
+  - journal
+  - adjusting
+  - depreciation
+  timeout_seconds: 60
+- id: AJE-002
+  category: action_journal
+  description: Correction journal entry for supplies
+  messages:
+  - jurnal koreksi debit Perlengkapan Kantor 500.000 kredit Beban Perlengkapan 500.000
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_JOURNAL_ENTRY
+  expect_contains:
+  - Perlengkapan
+  tags:
+  - journal
+  - correction
+  timeout_seconds: 60
+- id: AJE-003
+  category: action_journal
+  description: Memorial journal entry for salary with abbreviated amount
+  messages:
+  - 'catat jurnal memorial: debit beban gaji 10jt kredit kas 10jt'
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_JOURNAL_ENTRY
+  expect_contains: []
+  tags:
+  - journal
+  - memorial
+  - salary
+  - abbreviation
+  timeout_seconds: 60
+- id: AJE-004
+  category: action_journal
+  description: General end-of-month adjusting journal entry
+  messages:
+  - buat jurnal umum penyesuaian akhir bulan
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - journal
+  - adjusting
+  - end-of-month
+  timeout_seconds: 60
+- id: AJE-005
+  category: action_journal
+  description: Account reclassification journal entry
+  messages:
+  - jurnal reklasifikasi akun
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - journal
+  - reclassification
+  timeout_seconds: 60

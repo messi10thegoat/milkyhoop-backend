@@ -39,6 +39,7 @@ from ..schemas.stock_adjustments import (
     StockAdjustmentSummaryResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,9 +47,9 @@ router = APIRouter()
 # Connection pool
 _pool: Optional[asyncpg.Pool] = None
 
-# Account codes
-INVENTORY_ACCOUNT = "1-10600"           # Persediaan Barang Dagang
-ADJUSTMENT_EXPENSE_ACCOUNT = "5-50100"  # Penyesuaian Persediaan
+# Account codes resolved at runtime via resolve_account_id (Law 27)
+INVENTORY_ACCOUNT_CODE = "1-10600"           # Persediaan Barang Dagang
+ADJUSTMENT_EXPENSE_ACCOUNT_CODE = "5-50100"  # Penyesuaian Persediaan
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -63,6 +64,18 @@ async def get_pool() -> asyncpg.Pool:
             command_timeout=30
         )
     return _pool
+
+
+async def check_period_is_open(conn, tenant_id: str, journal_date):
+    """Law 5: Validate that the fiscal period for the given date is open."""
+    period = await conn.fetchrow("""
+        SELECT id, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
+    """, tenant_id, journal_date)
+    if not period:
+        raise HTTPException(status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini")
+    if period["status"] != "OPEN":
+        raise HTTPException(status_code=400, detail="Periode akuntansi sudah ditutup")
 
 
 def get_user_context(request: Request) -> dict:
@@ -123,8 +136,8 @@ async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[d
         "name": product['name'],
         "code": product['code'],
         "unit": product['unit'],
-        "current_stock": float(current_stock),
-        "unit_cost": int(avg_cost) if avg_cost else 0
+        "current_stock": int(current_stock),  # Law 25: read path
+        "unit_cost": int(avg_cost) if avg_cost else 0  # Law 25: read path
     }
 
 
@@ -279,7 +292,7 @@ async def get_stock_adjustments_summary(request: Request):
                         "damaged": row["damaged_count"] or 0,
                         "expired": row["expired_count"] or 0,
                     },
-                    "total_value": int(row["total_value"] or 0),
+                    "total_value": int(row["total_value"] or 0),  # Law 25: read path
                 }
             }
 
@@ -340,15 +353,15 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             "product_id": str(item["product_id"]),
                             "product_code": item["product_code"],
                             "product_name": item["product_name"],
-                            "quantity_before": float(item["quantity_before"]),
-                            "quantity_adjustment": float(item["quantity_adjustment"]),
-                            "quantity_after": float(item["quantity_after"]),
+                            "quantity_before": int(item["quantity_before"]),  # Law 25: read path
+                            "quantity_adjustment": int(item["quantity_adjustment"]),  # Law 25: read path
+                            "quantity_after": int(item["quantity_after"]),  # Law 25: read path
                             "unit": item["unit"],
                             "unit_cost": item["unit_cost"],
                             "total_value": item["total_value"],
                             "reason_detail": item["reason_detail"],
-                            "system_quantity": float(item["system_quantity"]) if item["system_quantity"] else None,
-                            "physical_quantity": float(item["physical_quantity"]) if item["physical_quantity"] else None,
+                            "system_quantity": int(item["system_quantity"]) if item["system_quantity"] else None,  # Law 25: read path
+                            "physical_quantity": int(item["physical_quantity"]) if item["physical_quantity"] else None,  # Law 25: read path
                             "line_number": item["line_number"],
                         }
                         for item in items
@@ -431,7 +444,7 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                     quantity_adjustment = Decimal(str(item.quantity_adjustment))
                     quantity_after = quantity_before + quantity_adjustment
                     unit_cost = product["unit_cost"]
-                    item_total_value = int(abs(quantity_adjustment) * unit_cost)
+                    item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
 
                     system_quantity = None
                     physical_quantity = None
@@ -440,7 +453,7 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                         system_quantity = quantity_before
                         quantity_adjustment = physical_quantity - system_quantity
                         quantity_after = physical_quantity
-                        item_total_value = int(abs(quantity_adjustment) * unit_cost)
+                        item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
 
                     await conn.execute("""
                         INSERT INTO stock_adjustment_items (
@@ -455,15 +468,15 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                         UUID(item.product_id),
                         product["code"],
                         product["name"],
-                        float(quantity_before),
-                        float(quantity_adjustment),
-                        float(quantity_after),
+                        quantity_before,  # Law 25: pass Decimal directly
+                        quantity_adjustment,
+                        quantity_after,
                         product["unit"],
                         unit_cost,
                         item_total_value,
                         item.reason_detail,
-                        float(system_quantity) if system_quantity is not None else None,
-                        float(physical_quantity) if physical_quantity is not None else None,
+                        system_quantity,  # Law 25: already Decimal or None
+                        physical_quantity,
                         idx
                     )
 
@@ -586,7 +599,7 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                         quantity_adjustment = Decimal(str(item.quantity_adjustment))
                         quantity_after = quantity_before + quantity_adjustment
                         unit_cost = product["unit_cost"]
-                        item_total_value = int(abs(quantity_adjustment) * unit_cost)
+                        item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
 
                         system_quantity = None
                         physical_quantity = None
@@ -595,7 +608,7 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                             system_quantity = quantity_before
                             quantity_adjustment = physical_quantity - system_quantity
                             quantity_after = physical_quantity
-                            item_total_value = int(abs(quantity_adjustment) * unit_cost)
+                            item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
 
                         await conn.execute("""
                             INSERT INTO stock_adjustment_items (
@@ -610,15 +623,15 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                             UUID(item.product_id),
                             product["code"],
                             product["name"],
-                            float(quantity_before),
-                            float(quantity_adjustment),
-                            float(quantity_after),
+                            quantity_before,  # Law 25: pass Decimal directly (was float())
+                            quantity_adjustment,  # Law 25: pass Decimal directly (was float())
+                            quantity_after,  # Law 25: pass Decimal directly (was float())
                             product["unit"],
                             unit_cost,
                             item_total_value,
                             item.reason_detail,
-                            float(system_quantity) if system_quantity is not None else None,
-                            float(physical_quantity) if physical_quantity is not None else None,
+                            system_quantity,  # Law 25: pass Decimal directly (was float())
+                            physical_quantity,  # Law 25: pass Decimal directly (was float())
                             idx
                         )
 
@@ -709,6 +722,9 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock to prevent concurrent posting
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ:{adjustment_id}")
+
                 sa = await conn.fetchrow("""
                     SELECT * FROM stock_adjustments
                     WHERE id = $1 AND tenant_id = $2
@@ -722,6 +738,9 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         status_code=400,
                         detail=f"Cannot post adjustment with status '{sa['status']}'"
                     )
+
+                # Law 5: Check fiscal period is open
+                await check_period_is_open(conn, ctx["tenant_id"], sa["adjustment_date"])
 
                 items = await conn.fetch("""
                     SELECT * FROM stock_adjustment_items
@@ -744,16 +763,13 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                     else:
                         total_decrease += item_value
 
-                # Get account IDs
-                inventory_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], INVENTORY_ACCOUNT)
-
-                adjustment_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], ADJUSTMENT_EXPENSE_ACCOUNT)
+                # Law 27: Resolve account IDs at runtime
+                inventory_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], INVENTORY_ACCOUNT_CODE
+                )
+                adjustment_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], ADJUSTMENT_EXPENSE_ACCOUNT_CODE
+                )
 
                 if not inventory_account_id or not adjustment_account_id:
                     raise HTTPException(
@@ -761,18 +777,19 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         detail="Required accounts not found in CoA"
                     )
 
-                # Create journal entry
+                # Law 20: Create journal entry as DRAFT first
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
                 journal_number = f"SA-{sa['adjustment_number']}"
                 total_value = total_increase + total_decrease
 
+                # Step 1: INSERT as DRAFT (Law 20)
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'POSTED', $8, $8, $9)
+                        memo, source_type, source_id, trace_id,
+                        status, total_debit, total_credit, created_by, updated_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9, $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -781,10 +798,11 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                     f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
                     adjustment_id,
                     str(trace_id),
-                    float(total_value),
+                    total_value,  # Law 25: pass Decimal directly
                     ctx["user_id"]
                 )
 
+                # Step 2: INSERT journal_lines
                 line_number = 1
 
                 if total_increase > 0:
@@ -795,7 +813,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
                         uuid_module.uuid4(), journal_id, line_number,
-                        inventory_account_id, float(total_increase),
+                        inventory_account_id, total_increase,  # Law 25
                         f"Penambahan Persediaan - {sa['adjustment_number']}"
                     )
                     line_number += 1
@@ -807,7 +825,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
                         uuid_module.uuid4(), journal_id, line_number,
-                        adjustment_account_id, float(total_increase),
+                        adjustment_account_id, total_increase,  # Law 25
                         f"Koreksi Persediaan - {sa['adjustment_number']}"
                     )
                     line_number += 1
@@ -820,7 +838,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
                         uuid_module.uuid4(), journal_id, line_number,
-                        adjustment_account_id, float(total_decrease),
+                        adjustment_account_id, total_decrease,  # Law 25
                         f"Penyesuaian Persediaan - {sa['adjustment_number']}"
                     )
                     line_number += 1
@@ -832,9 +850,12 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
                         uuid_module.uuid4(), journal_id, line_number,
-                        inventory_account_id, float(total_decrease),
+                        inventory_account_id, total_decrease,  # Law 25
                         f"Pengurangan Persediaan - {sa['adjustment_number']}"
                     )
+
+                # Step 3: UPDATE to POSTED (Law 20)
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
                 # Update inventory_ledger for each item (Law 16 compliant)
                 # NOTE: persediaan table writes removed - inventory_ledger is source of truth
@@ -916,12 +937,12 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                             sa["adjustment_date"],
                             adjustment_id,
                             sa["adjustment_number"],
-                            float(qty_in),
-                            float(qty_out),
-                            float(new_balance),
-                            float(unit_cost),
-                            float(total_cost),
-                            float(new_avg_cost),
+                            qty_in,  # Law 25: pass Decimal directly
+                            qty_out,
+                            new_balance,
+                            unit_cost,
+                            total_cost,
+                            new_avg_cost,
                             sa["storage_location_id"],
                             journal_id,
                             ctx["user_id"],
@@ -977,6 +998,9 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock to prevent concurrent voiding
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ_VOID:{adjustment_id}")
+
                 sa = await conn.fetchrow("""
                     SELECT * FROM stock_adjustments
                     WHERE id = $1 AND tenant_id = $2
@@ -999,6 +1023,9 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         "data": {"id": str(adjustment_id)}
                     }
 
+                # Law 5: Check fiscal period is open for reversal date
+                await check_period_is_open(conn, ctx["tenant_id"], date.today())
+
                 # Create reversal journal
                 reversal_journal_id = None
                 if sa["journal_id"]:
@@ -1010,12 +1037,13 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
 
                     reversal_number = f"RV-{sa['adjustment_number']}"
 
+                    # Step 1: INSERT reversal as DRAFT (Law 20)
                     await conn.execute("""
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'POSTED', $7, $7, $8)
+                            memo, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by, updated_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'DRAFT', $7, $7, $8, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1023,10 +1051,11 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         f"Void {sa['adjustment_number']} - {body.reason}",
                         adjustment_id,
                         sa["journal_id"],
-                        float(sa["total_value"]),
+                        sa["total_value"],  # Law 25: pass Decimal directly
                         ctx["user_id"]
                     )
 
+                    # Step 2: INSERT reversal journal_lines
                     for idx, line in enumerate(original_lines, 1):
                         await conn.execute("""
                             INSERT INTO journal_lines (
@@ -1042,6 +1071,10 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                             f"Reversal - {line['memo'] or ''}"
                         )
 
+                    # Step 3: UPDATE reversal to POSTED (Law 20)
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)
+
+                    # Law 26: Link reversal - set reversed_by_id on original, mark as VOID
                     await conn.execute("""
                         UPDATE journal_entries
                         SET reversed_by_id = $2, status = 'VOID'
@@ -1129,12 +1162,12 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                             item["product_name"],
                             adjustment_id,
                             sa["adjustment_number"],
-                            float(qty_in),
-                            float(qty_out),
-                            float(new_balance),
-                            float(unit_cost),
-                            float(total_cost),
-                            float(new_avg_cost),
+                            qty_in,  # Law 25: pass Decimal directly
+                            qty_out,
+                            new_balance,
+                            unit_cost,
+                            total_cost,
+                            new_avg_cost,
                             sa["storage_location_id"],
                             reversal_journal_id,
                             ctx["user_id"],
@@ -1225,7 +1258,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
 
             journals = await conn.fetch(
                 """
-                SELECT je.id, je.journal_number, je.journal_date, je.description,
+                SELECT je.id, je.journal_number, je.journal_date, je.memo as description,
                        je.source_type, je.status, je.total_debit, je.total_credit
                 FROM journal_entries je
                 WHERE je.id = ANY($1::uuid[])
@@ -1258,15 +1291,15 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": float(line["debit"] or 0),
-                        "credit": float(line["credit"] or 0),
+                        "debit": int(line["debit"] or 0),  # Law 25: read path
+                        "credit": int(line["credit"] or 0),  # Law 25: read path
                         "memo": line["memo"] or ""
                     }
                     for line in lines
                 ]
 
-                journal_debit = float(journal["total_debit"] or 0)
-                journal_credit = float(journal["total_credit"] or 0)
+                journal_debit = int(journal["total_debit"] or 0)  # Law 25: read path
+                journal_credit = int(journal["total_credit"] or 0)  # Law 25: read path
                 total_debit += journal_debit
                 total_credit += journal_credit
 

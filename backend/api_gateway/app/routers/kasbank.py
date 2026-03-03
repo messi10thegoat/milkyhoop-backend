@@ -146,7 +146,10 @@ async def get_account_transactions(
     end_date: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
-    """Get transactions for a specific cash/bank account."""
+    """
+    Get transactions for a specific cash/bank account.
+    Iron Law 1: Amounts derived from journal_lines (ledger supremacy).
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -171,22 +174,25 @@ async def get_account_transactions(
             if not account:
                 raise HTTPException(status_code=404, detail="Account not found")
 
+            coa_id = account["coa_id"]
+
+            # Build journal-derived query (Iron Law 1)
             date_filter = ""
-            params = [ctx["tenant_id"], account_id]
+            params = [coa_id, ctx["tenant_id"]]
             param_idx = 3
 
             if start_date:
-                date_filter += f" AND date >= ${param_idx}::date"
+                date_filter += f" AND je.journal_date >= ${param_idx}::date"
                 params.append(start_date)
                 param_idx += 1
             if end_date:
-                date_filter += f" AND date <= ${param_idx}::date"
+                date_filter += f" AND je.journal_date <= ${param_idx}::date"
                 params.append(end_date)
                 param_idx += 1
 
             search_filter = ""
             if search:
-                search_filter = f" AND (reference ILIKE ${param_idx} OR description ILIKE ${param_idx})"
+                search_filter = f" AND (je.source_number ILIKE ${param_idx} OR je.description ILIKE ${param_idx})"
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -194,68 +200,57 @@ async def get_account_transactions(
 
             rows = await conn.fetch(
                 f"""
-                SELECT * FROM (
-                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
-                        payment_date as date, total_amount as amount, 'debit' as entry_type,
-                        COALESCE(notes, 'Payment Received') as description, 'posted' as status
-                    FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'expense' as type, expense_number as reference,
-                        expense_date as date, total_amount as amount, 'credit' as entry_type,
-                        COALESCE(notes, 'Expense') as description, status
-                    FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
-                        transfer_date as date, amount, 'credit' as entry_type,
-                        COALESCE(notes, 'Transfer Out') as description, status
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
-                        transfer_date as date, amount, 'debit' as entry_type,
-                        COALESCE(notes, 'Transfer In') as description, status
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT bp.id::text, 'bill_payment' as type, bp.reference as reference,
-                        bp.payment_date as date, bp.amount, 'credit' as entry_type,
-                        COALESCE(bp.notes, 'Bill Payment') as description, 'posted' as status
-                    FROM bill_payments bp
-                    WHERE bp.tenant_id = $1 AND bp.bank_account_id::text = $2
-                ) t
-                WHERE 1=1 {date_filter} {search_filter}
-                ORDER BY date DESC, reference DESC
+                SELECT
+                    je.id::text,
+                    je.source_type as type,
+                    je.source_number as reference,
+                    je.journal_date as date,
+                    jl.debit,
+                    jl.credit,
+                    CASE WHEN jl.debit > 0 THEN 'debit' ELSE 'credit' END as entry_type,
+                    COALESCE(je.description, je.source_type) as description,
+                    'posted' as status
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.reversed_by_id IS NULL
+                    {date_filter}
+                    {search_filter}
+                ORDER BY je.journal_date DESC, je.created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
                 """,
                 *params,
             )
 
-            count_params = [ctx["tenant_id"], account_id]
+            # Count query (same filters, no LIMIT/OFFSET)
+            count_params = params[:-2]  # exclude limit and offset
             count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM (
-                    SELECT id FROM receive_payments WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id FROM expenses WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id FROM bank_transfers WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id FROM bill_payments WHERE tenant_id = $1 AND bank_account_id::text = $2
-                ) t
+                f"""
+                SELECT COUNT(*)
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.reversed_by_id IS NULL
+                    {date_filter}
+                    {search_filter}
                 """,
                 *count_params,
             )
 
             transactions = [
                 {
-                    "id": row["id"], "type": row["type"], "reference": row["reference"],
+                    "id": row["id"],
+                    "type": row["type"],
+                    "reference": row["reference"],
                     "date": row["date"].isoformat() if row["date"] else None,
-                    "amount": row["amount"], "entry_type": row["entry_type"],
-                    "description": row["description"], "status": row["status"],
+                    "amount": row["debit"] if row["debit"] > 0 else row["credit"],
+                    "entry_type": row["entry_type"],
+                    "description": row["description"],
+                    "status": row["status"],
                 }
                 for row in rows
             ]
@@ -304,34 +299,36 @@ async def get_account_summary(
 
             period_filter = {"day": "1 day", "week": "7 days", "month": "30 days", "year": "365 days"}.get(period, "30 days")
 
+            # Iron Law 1: Derive inflows/outflows from journal_lines
+            coa_id = account["coa_id"]
             inflows = await conn.fetchval(
                 f"""
-                SELECT COALESCE(SUM(amount), 0) FROM (
-                    SELECT total_amount as amount FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2
-                      AND payment_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
-                    UNION ALL
-                    SELECT amount FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2
-                      AND transfer_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
-                ) t
+                SELECT COALESCE(SUM(jl.debit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.reversed_by_id IS NULL
+                    AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
+                    AND jl.debit > 0
                 """,
-                ctx["tenant_id"], account_id,
+                coa_id, ctx["tenant_id"],
             )
 
             outflows = await conn.fetchval(
                 f"""
-                SELECT COALESCE(SUM(amount), 0) FROM (
-                    SELECT total_amount as amount FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2
-                      AND expense_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
-                    UNION ALL
-                    SELECT amount FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2
-                      AND transfer_date >= CURRENT_DATE - INTERVAL '{period_filter}' AND status = 'posted'
-                ) t
+                SELECT COALESCE(SUM(jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.reversed_by_id IS NULL
+                    AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
+                    AND jl.credit > 0
                 """,
-                ctx["tenant_id"], account_id,
+                coa_id, ctx["tenant_id"],
             )
 
             return {
@@ -375,12 +372,33 @@ async def get_kasbank_stats(request: Request):
                 ctx["tenant_id"],
             )
 
+            # Iron Law 1: Derive inflows/outflows from journal_lines
             today_in = await conn.fetchval(
-                "SELECT COALESCE(SUM(total_amount), 0) FROM receive_payments WHERE tenant_id = $1 AND payment_date = CURRENT_DATE AND status = 'posted'",
+                """
+                SELECT COALESCE(SUM(jl.debit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                    AND je.journal_date = CURRENT_DATE
+                    AND je.reversed_by_id IS NULL
+                    AND coa.account_type IN ('BANK', 'CASH')
+                    AND jl.debit > 0
+                """,
                 ctx["tenant_id"],
             )
             today_out = await conn.fetchval(
-                "SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE tenant_id = $1 AND expense_date = CURRENT_DATE AND status = 'posted'",
+                """
+                SELECT COALESCE(SUM(jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                    AND je.journal_date = CURRENT_DATE
+                    AND je.reversed_by_id IS NULL
+                    AND coa.account_type IN ('BANK', 'CASH')
+                    AND jl.credit > 0
+                """,
                 ctx["tenant_id"],
             )
 

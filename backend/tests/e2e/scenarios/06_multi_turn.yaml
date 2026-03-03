@@ -1,0 +1,24 @@
+scenarios:
+  - id: "MT-001"
+    category: "happy_path"
+    description: "Multi-turn: ask about item, then create invoice"
+    messages:
+      - "ada item emas di master data?"
+      - "ok, buatkan faktur penjualan emas 1 gram ke Grapgrap Clothing"
+    expect_behavior: ["text_response", "propose_action"]
+    expect_action_type: "CREATE_SALES_INVOICE"
+    expect_confirm_success: true
+    preconditions: ["customer_exists:Grapgrap", "item_exists:Emas"]
+    tags: ["multi_turn", "sales"]
+
+  - id: "MT-002"
+    category: "happy_path"
+    description: "Multi-turn: check balance then record expense"
+    messages:
+      - "berapa saldo kas saat ini?"
+      - "catat biaya transportasi Rp 150000 dari kas"
+    expect_behavior: ["text_response", "propose_action"]
+    expect_action_type: "CREATE_EXPENSE"
+    expect_confirm_success: true
+    preconditions: []
+    tags: ["multi_turn", "expense"]

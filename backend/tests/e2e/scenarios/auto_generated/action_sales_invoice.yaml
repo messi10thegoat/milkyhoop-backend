@@ -1,0 +1,323 @@
+scenarios:
+- id: ASI-001
+  category: action_sales_invoice
+  description: Direct complete sales invoice request with customer, item, and quantity
+  messages:
+  - buat faktur penjualan ke Grapgrap Clothing, Kaos Oblong Gramasi 24s 10 pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos Oblong
+  tags:
+  - action
+  - sales
+  - direct
+  timeout_seconds: 60
+- id: ASI-002
+  category: action_sales_invoice
+  description: Natural language sales request using jual
+  messages:
+  - jual 5 kemeja batik ke E2E Wave2 Test Corp
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - E2E Wave2 Test Corp
+  - Kemeja Batik
+  tags:
+  - action
+  - sales
+  - natural
+  timeout_seconds: 60
+- id: ASI-003
+  category: action_sales_invoice
+  description: Slang fakturin with informal quantity word lembar
+  messages:
+  - fakturin Grapgrap Clothing kaos 24s 20 lembar
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos
+  tags:
+  - action
+  - sales
+  - slang
+  timeout_seconds: 60
+- id: ASI-004
+  category: action_sales_invoice
+  description: Multi-item sales invoice with two different products
+  messages:
+  - 'buat invoice ke Grapgrap Clothing: Kaos Oblong 24s 10 pcs, Kemeja Batik 5 pcs'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos Oblong
+  - Kemeja Batik
+  tags:
+  - action
+  - sales
+  - multi-item
+  timeout_seconds: 60
+- id: ASI-005
+  category: action_sales_invoice
+  description: Sales invoice with percentage discount
+  messages:
+  - faktur penjualan Grapgrap Clothing, Dryfit NFL 10 pcs diskon 10%
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Dryfit NFL
+  tags:
+  - action
+  - sales
+  - discount
+  timeout_seconds: 60
+- id: ASI-006
+  category: action_sales_invoice
+  description: Sales invoice with due date specified in days
+  messages:
+  - buat faktur ke E2E Wave2 Test Corp, Emas 24 Karat 2 pcs, jatuh tempo 30 hari
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - E2E Wave2 Test Corp
+  - Emas 24 Karat
+  tags:
+  - action
+  - sales
+  - due-date
+  timeout_seconds: 60
+- id: ASI-007
+  category: action_sales_invoice
+  description: Abbreviated FP with short customer and item names
+  messages:
+  - FP ke Grapgrap, kaos 24s 15
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  - Kaos
+  tags:
+  - action
+  - sales
+  - abbreviation
+  timeout_seconds: 60
+- id: ASI-008
+  category: action_sales_invoice
+  description: English-Indonesian mixed language sales request
+  messages:
+  - create sales invoice to Grapgrap Clothing, Kaos Oblong 5 pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos Oblong
+  tags:
+  - action
+  - sales
+  - english-mix
+  timeout_seconds: 60
+- id: ASI-009
+  category: action_sales_invoice
+  description: Polite request with tolong buatkan
+  messages:
+  - tolong buatkan faktur penjualan ke Grapgrap Clothing, Kemeja Batik 3 pcs
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kemeja Batik
+  tags:
+  - action
+  - sales
+  - polite
+  timeout_seconds: 60
+- id: ASI-010
+  category: action_sales_invoice
+  description: Sales invoice with additional notes
+  messages:
+  - 'buat faktur Grapgrap Clothing, Dryfit NFL 8 pcs, catatan: kirim via JNE'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Dryfit NFL
+  tags:
+  - action
+  - sales
+  - notes
+  timeout_seconds: 60
+- id: ASI-011
+  category: action_sales_invoice
+  description: Quantity expressed as selusin (a dozen)
+  messages:
+  - buat faktur jual selusin kaos 24s ke Grapgrap Clothing
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos
+  tags:
+  - action
+  - sales
+  - quantity-words
+  timeout_seconds: 60
+- id: ASI-012
+  category: action_sales_invoice
+  description: Repeat customer context with faktur lagi
+  messages:
+  - faktur lagi ke Grapgrap Clothing, kali ini Emas 24 Karat 1 pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Emas 24 Karat
+  tags:
+  - action
+  - sales
+  - repeat
+  timeout_seconds: 60
+- id: ASI-013
+  category: action_sales_invoice
+  description: Minimal terse sales request
+  messages:
+  - jual kaos 24s 10 ke Grapgrap
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  - Kaos
+  tags:
+  - action
+  - sales
+  - minimal
+  timeout_seconds: 60
+- id: ASI-014
+  category: action_sales_invoice
+  description: Formal polite request with mohon and full item name
+  messages:
+  - mohon dibuatkan faktur penjualan untuk pelanggan Grapgrap Clothing dengan item
+    Kaos Oblong Gramasi 24s sebanyak 10 unit
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos Oblong Gramasi 24s
+  tags:
+  - action
+  - sales
+  - formal
+  timeout_seconds: 60
+- id: ASI-015
+  category: action_sales_invoice
+  description: Sales invoice with PPN tax mention
+  messages:
+  - buat faktur penjualan Grapgrap Clothing, Kemeja Batik 5 pcs, include PPN
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kemeja Batik
+  tags:
+  - action
+  - sales
+  - tax
+  timeout_seconds: 60
+- id: ASI-016
+  category: action_sales_invoice
+  description: Sales invoice with price override per unit
+  messages:
+  - jual kaos 24s 10 pcs ke Grapgrap, harga 50000 per pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  - Kaos
+  tags:
+  - action
+  - sales
+  - price-override
+  timeout_seconds: 60
+- id: ASI-017
+  category: action_sales_invoice
+  description: All caps request with mixed case customer name
+  messages:
+  - BUAT FAKTUR PENJUALAN ke grapgrap clothing kaos 24s 10
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  - Kaos
+  tags:
+  - action
+  - sales
+  - mixed-case
+  timeout_seconds: 60
+- id: ASI-018
+  category: action_sales_invoice
+  description: Sales invoice with customer address mention
+  messages:
+  - faktur ke Grapgrap Clothing di Manado, Kaos Oblong 24s 20 pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap Clothing
+  - Kaos Oblong
+  tags:
+  - action
+  - sales
+  - address
+  timeout_seconds: 60
+- id: ASI-019
+  category: action_sales_invoice
+  description: Intent expressed as saya mau jual
+  messages:
+  - saya mau jual Dryfit NFL 5 pcs ke E2E Wave2 Test Corp
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - E2E Wave2 Test Corp
+  - Dryfit NFL
+  tags:
+  - action
+  - sales
+  - intent
+  timeout_seconds: 60
+- id: ASI-020
+  category: action_sales_invoice
+  description: Typo tolerance in faktur pnjualan
+  messages:
+  - buat faktur pnjualan ke Grapgrap, kaos oblong 10 pcs
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  - Kaos
+  tags:
+  - action
+  - sales
+  - typo
+  timeout_seconds: 60

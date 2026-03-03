@@ -13,6 +13,7 @@ from .routers import health
 from .routers import chat
 from .routers import session
 from .routers import auth
+from .routers import signup
 from .routers import customer
 from .routers import transactions
 from .routers import products
@@ -52,6 +53,7 @@ from backend.api_gateway.app.routers import tenant_chat
 from .routers import reports
 from .routers import accounting_settings
 from .routers import financial_reports_journal
+from .routers import psak_reports
 from .routers import dashboard
 from .routers import qr_auth
 from .routers import device
@@ -109,7 +111,12 @@ from .routers import periods
 from .routers import user
 from .routers import bill_payments
 from .routers import payment_requests
-from .routers import action_chat
+# DEPRECATED: replaced by unified_chat at /api/v3/chat
+# from .routers import action_chat
+from .routers import chat_history
+from .routers import chat_usage
+from .routers import unified_chat
+from .routers import document_intake
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -120,6 +127,7 @@ from .middleware.account_lockout_middleware import AccountLockoutMiddleware
 from .middleware.request_id_middleware import RequestIDMiddleware
 from .middleware.waf_middleware import WAFMiddleware
 from .middleware.tenant_validation_middleware import TenantValidationMiddleware
+from .middleware.rls_context import patch_asyncpg_pool
 
 # Import FLE middleware (optional - for PII encryption)
 try:
@@ -215,6 +223,9 @@ if FLE_AVAILABLE and settings.FLE_ENABLED:
     print("FLE Middleware enabled - PII encryption active")
 
 # 1. Security Headers (runs last, adds headers to response)
+# Law 24: Patch asyncpg to auto-set app.tenant_id on every connection acquire
+patch_asyncpg_pool()
+
 app.add_middleware(SecurityHeadersMiddleware)
 
 # 2. Request ID Tracking (for audit trail)
@@ -275,6 +286,7 @@ async def shutdown_event():
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
+app.include_router(signup.router, prefix="/api/auth/signup", tags=["signup"])
 app.include_router(session.router, tags=["authentication"])
 app.include_router(customer.router, prefix="", tags=["customer"])
 app.include_router(ragcrud_test.router, prefix="/api/test/ragcrud", tags=["ragcrud"])
@@ -359,6 +371,7 @@ app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-l
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(accounting_settings.router, prefix="/api", tags=["settings"])
 app.include_router(financial_reports_journal.router, prefix="/api/reports", tags=["reports-journal"])
+app.include_router(psak_reports.router, prefix="/api/reports/psak", tags=["psak-reports"])
 
 # Dashboard Summary router (aggregated KPIs)
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
@@ -582,7 +595,12 @@ app.include_router(payroll.router, prefix="", tags=["payroll"])
 
 
 # Agentic Chat Action Mode router (Sprint 1 - Conversational Accounting)
-app.include_router(action_chat.router, prefix="/api/action-chat", tags=["action-chat"])
+# DEPRECATED: replaced by unified_chat at /api/v3/chat
+# app.include_router(action_chat.router, prefix="/api/action-chat", tags=["action-chat"])
+app.include_router(chat_history.router, prefix="/api/v3/chat", tags=["chat-history"])
+app.include_router(chat_usage.router, prefix="/api/v3/chat", tags=["chat-usage"])
+app.include_router(unified_chat.router, prefix="/api/v3/chat", tags=["unified-chat"])
+app.include_router(document_intake.router, prefix="/api/document-intake", tags=["document-intake"])
 
 @app.get("/")
 async def root():

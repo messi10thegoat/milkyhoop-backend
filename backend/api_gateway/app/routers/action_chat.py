@@ -55,25 +55,53 @@ async def save_to_chat_history(
     intent: str = "action_chat",
     metadata: dict = None,
 ) -> bool:
+    """Save user message + assistant response to the 4-layer memory tables.
+    
+    Uses asyncpg directly (no Prisma) — writes to chat_sessions + chat_messages.
+    """
     try:
-        channel = grpc.aio.insecure_channel("conversation_service:5002")
-        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
-        request = conversation_service_pb2.SaveMessageRequest(
-            user_id=user_id,
-            tenant_id=tenant_id,
-            message=message,
-            response=response,
-            intent=intent,
-            metadata_json=json.dumps(metadata or {}),
+        from ..services.unified_agent.db_utils import get_session_db_pool
+        pool = await get_session_db_pool()
+        
+        # Get or create session for this user+tenant
+        session = await pool.fetchrow(
+            """SELECT id FROM chat_sessions 
+               WHERE tenant_id = $1 AND user_id = $2::uuid AND status = 'active'
+               ORDER BY updated_at DESC LIMIT 1""",
+            tenant_id, user_id
         )
-        save_response = await stub.SaveMessage(request)
-        await channel.close()
-        if save_response.status == "success":
-            logger.info(f"[ChatHistory] Saved: {save_response.message_id}")
-            return True
+        if session:
+            session_id = session["id"]
         else:
-            logger.warning(f"[ChatHistory] Non-success: {save_response.status}")
-            return False
+            session_id = await pool.fetchval(
+                """INSERT INTO chat_sessions (tenant_id, user_id) 
+                   VALUES ($1, $2::uuid) RETURNING id""",
+                tenant_id, user_id
+            )
+        
+        # Save user message
+        await pool.execute(
+            """INSERT INTO chat_messages (session_id, tenant_id, role, content, message_type)
+               VALUES ($1, $2, 'user', $3, 'TEXT')""",
+            session_id, tenant_id, message
+        )
+        
+        # Save assistant response
+        msg_type = (metadata or {}).get("message_type", "TEXT")
+        await pool.execute(
+            """INSERT INTO chat_messages (session_id, tenant_id, role, content, message_type)
+               VALUES ($1, $2, 'assistant', $3, $4)""",
+            session_id, tenant_id, response, msg_type
+        )
+        
+        # Update session timestamp
+        await pool.execute(
+            "UPDATE chat_sessions SET updated_at = now() WHERE id = $1",
+            session_id
+        )
+        
+        logger.info(f"[ChatHistory] Saved to session {session_id}")
+        return True
     except Exception as e:
         logger.warning(f"[ChatHistory] Save failed: {e}")
         return False
@@ -237,21 +265,21 @@ async def send_message(request: Request, body: ChatMessageRequest):
         return response
 
     # --- UNCLEAR ---
-    # Save to chat history
+    response = await _handle_unclear_intent(text, ctx, planner)
     logger.warning(f"[ChatHistory] DEBUG: About to save: text={text[:50] if text else 'empty'}")
     try:
         await save_to_chat_history(
             user_id=ctx["user_id"],
             tenant_id=ctx["tenant_id"],
             message=text or "",
-            response="",  # Response text extracted from make_response
+            response=response.text or "",
             intent="action_chat",
             metadata={"conversation_id": conversation_id}
         )
     except Exception as e:
         logger.warning(f"[ChatHistory] Save failed: {e}")
     
-    return await _handle_unclear_intent(text, ctx, planner)
+    return response
 
 
 # =============================================================================

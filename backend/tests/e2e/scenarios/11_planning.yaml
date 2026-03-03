@@ -1,0 +1,20 @@
+scenarios:
+  - id: "PL-001"
+    category: "planning"
+    description: "Month-end closing checklist"
+    messages:
+      - "saya mau tutup buku bulan Januari"
+    expect_behavior: ["text_response"]
+    expect_contains: ["tutup buku"]
+    expect_not_contains: ["error"]
+    tags: ["planning", "v4"]
+
+  - id: "PL-002"
+    category: "planning"
+    description: "Tax preparation planning"
+    messages:
+      - "apa yang perlu disiapkan untuk laporan pajak?"
+    expect_behavior: ["text_response"]
+    expect_contains: ["pajak"]
+    expect_not_contains: ["error"]
+    tags: ["planning", "v4"]

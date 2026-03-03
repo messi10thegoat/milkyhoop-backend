@@ -32,8 +32,10 @@ class CreateCustomerRequest(BaseModel):
     contact_person: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=50)
     mobile_phone: Optional[str] = Field(None, max_length=50)
+    phone2: Optional[str] = Field(None, max_length=50, description="Second phone number")
     email: Optional[str] = Field(None, max_length=255)
     website: Optional[str] = Field(None, max_length=255)
+    community: Optional[str] = Field(None, max_length=255, description="Community/organization membership")
     
     # Address
     address: Optional[str] = None
@@ -97,8 +99,10 @@ class UpdateCustomerRequest(BaseModel):
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     mobile_phone: Optional[str] = None
+    phone2: Optional[str] = None
     email: Optional[str] = None
     website: Optional[str] = None
+    community: Optional[str] = None
     
     # Address
     address: Optional[str] = None
@@ -149,7 +153,9 @@ class CustomerListItem(BaseModel):
     display_name: Optional[str] = None
     customer_type: Optional[str] = None
     phone: Optional[str] = None
+    phone2: Optional[str] = None
     email: Optional[str] = None
+    community: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     tax_id: Optional[str] = None
@@ -191,8 +197,10 @@ class CustomerDetail(BaseModel):
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     mobile_phone: Optional[str] = None
+    phone2: Optional[str] = None
     email: Optional[str] = None
     website: Optional[str] = None
+    community: Optional[str] = None
     
     # Address
     address: Optional[str] = None

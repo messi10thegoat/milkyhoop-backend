@@ -1,0 +1,137 @@
+scenarios:
+- id: PL-001
+  category: planning
+  description: Prosedur tutup buku bulanan
+  messages:
+  - saya mau tutup buku bulan Januari
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - planning
+  - closing
+  timeout_seconds: 60
+- id: PL-002
+  category: planning
+  description: Persiapan lapor pajak bulanan
+  messages:
+  - persiapan lapor pajak bulanan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pajak
+  - PPN
+  tags:
+  - planning
+  - tax
+  timeout_seconds: 60
+- id: PL-003
+  category: planning
+  description: Langkah-langkah rekonsiliasi bank
+  messages:
+  - langkah-langkah rekonsiliasi bank
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - rekonsiliasi
+  - bank
+  tags:
+  - planning
+  - reconciliation
+  timeout_seconds: 60
+- id: PL-004
+  category: planning
+  description: Checklist akhir tahun fiskal
+  messages:
+  - checklist akhir tahun fiskal
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - checklist
+  - akhir tahun
+  tags:
+  - planning
+  - year_end
+  timeout_seconds: 60
+- id: PL-005
+  category: planning
+  description: Prosedur retur penjualan
+  messages:
+  - cara memproses retur penjualan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - retur
+  tags:
+  - planning
+  - returns
+  timeout_seconds: 60
+- id: PL-006
+  category: planning
+  description: Prosedur penghapusan piutang macet
+  messages:
+  - prosedur penghapusan piutang macet
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  - hapus
+  tags:
+  - planning
+  - bad_debt
+  timeout_seconds: 60
+- id: PL-007
+  category: planning
+  description: Langkah setup multi-currency
+  messages:
+  - langkah setup multi-currency
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - currency
+  - mata uang
+  tags:
+  - planning
+  - multicurrency
+  timeout_seconds: 60
+- id: PL-008
+  category: planning
+  description: Migrasi dari cash basis ke accrual
+  messages:
+  - cara pindah dari cash basis ke accrual
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - accrual
+  - cash basis
+  tags:
+  - planning
+  - accounting_method
+  timeout_seconds: 60
+- id: PL-009
+  category: planning
+  description: Persiapan audit eksternal
+  messages:
+  - persiapan audit eksternal
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - audit
+  tags:
+  - planning
+  - audit
+  timeout_seconds: 60
+- id: PL-010
+  category: planning
+  description: Prosedur stock opname di sistem
+  messages:
+  - bagaimana cara stock opname di sistem?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - opname
+  - stok
+  tags:
+  - planning
+  - inventory
+  timeout_seconds: 60

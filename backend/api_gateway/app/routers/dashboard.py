@@ -6,7 +6,7 @@ Pure Ledger: All financial data queries journal_entries + journal_lines
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Literal
 import logging
 import asyncpg
 from datetime import datetime, timedelta, date
@@ -42,6 +42,7 @@ class LabaRugiSummary(BaseModel):
     prev_profit: Optional[int] = None  # Previous period profit
     prev_pendapatan: Optional[int] = None  # Previous period revenue
     profit_change_pct: Optional[float] = None  # % change vs previous
+    basis: Optional[str] = None  # 'accrual' or 'cash'
 
 
 class PiutangSummary(BaseModel):
@@ -218,10 +219,10 @@ class APReconciliationResponse(BaseModel):
     in_sync: bool
     status: str  # "OK" | "WARNING"
     bills_outstanding: int
-    ap_subledger: float
-    gl_ap_balance: float
-    variance_bills_ap: float
-    variance_ap_gl: float
+    ap_subledger: int
+    gl_ap_balance: int
+    variance_bills_ap: int
+    variance_ap_gl: int
     issues_count: int
     issues: dict
 
@@ -332,15 +333,22 @@ def calc_change_pct(current: int, prev: int) -> float:
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
-    request: Request, period: str = Query("30d", regex="^(7d|30d|month)$")
+    request: Request,
+    period: str = Query("30d", regex="^(7d|30d|month)$"),
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
+    basis: Optional[str] = Query(None, description="Accounting basis: accrual or cash"),
 ):
     """
     Get aggregated dashboard summary for all 4 cards.
 
-    Period options:
+    Period options (legacy):
     - 7d: Last 7 days
     - 30d: Last 30 days (default)
     - month: Current month
+
+    OR use start_date + end_date for fiscal period filtering.
+    basis: accrual (default) or cash — affects P&L calculation.
     """
     try:
         # Get tenant_id from auth context
@@ -351,43 +359,75 @@ async def get_dashboard_summary(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        start_date, end_date, period_label = get_period_date_range(period)
-        prev_start_date, prev_end_date = get_prev_period_date_range(period)
+        # If start_date/end_date provided, use them (fiscal period mode)
+        if start_date and end_date:
+            from datetime import date as date_type
+            sd = date_type.fromisoformat(start_date)
+            ed = date_type.fromisoformat(end_date)
+            period_label = f"{sd.strftime('%d/%m/%Y')} - {ed.strftime('%d/%m/%Y')}"
+            # Previous period = same duration before start_date
+            delta = (ed - sd).days
+            prev_end_date = sd - timedelta(days=1)
+            prev_start_date = prev_end_date - timedelta(days=delta)
+            start_date = sd
+            end_date = ed
+        else:
+            start_date, end_date, period_label = get_period_date_range(period)
+            prev_start_date, prev_end_date = get_prev_period_date_range(period)
+
+        # Resolve accounting basis (default: tenant setting or accrual)
+        effective_basis = basis  # Will resolve after DB connection if None
 
         conn = await get_db_connection()
         try:
             # ============================
             # 1. LABA RUGI (P&L Summary)
-            # Pure Ledger: queries journal_entries + journal_lines
+            # Pure Ledger: uses get_revenue_by_basis / get_expenses_by_basis SQL functions
+            # Supports both accrual and cash basis
             # ============================
-            pl_query = """
-                SELECT
-                    COALESCE(SUM(CASE WHEN coa.account_code LIKE '4-%%' THEN jl.credit - jl.debit ELSE 0 END), 0) as pendapatan,
-                    COALESCE(SUM(CASE WHEN coa.account_code LIKE '5-1%%' THEN jl.debit - jl.credit ELSE 0 END), 0) as hpp,
-                    COALESCE(SUM(CASE WHEN (coa.account_code LIKE '5-%%' OR coa.account_code LIKE '6-%%') THEN jl.debit - jl.credit ELSE 0 END), 0) as total_expenses
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND je.journal_date BETWEEN $2 AND $3
-                  AND (coa.account_code LIKE '4-%%' OR coa.account_code LIKE '5-%%' OR coa.account_code LIKE '6-%%')
-            """
-            pl_row = await conn.fetchrow(pl_query, tenant_id, start_date, end_date)
 
-            pendapatan = int(pl_row["pendapatan"]) if pl_row else 0
-            hpp = int(pl_row["hpp"]) if pl_row else 0
-            pengeluaran = int(pl_row["total_expenses"]) if pl_row else 0
+            # Resolve basis if not provided
+            if effective_basis is None:
+                settings_row = await conn.fetchrow(
+                    "SELECT default_report_basis FROM accounting_settings WHERE tenant_id = $1",
+                    tenant_id,
+                )
+                effective_basis = settings_row["default_report_basis"] if settings_row else "accrual"
+
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+
+            sd = start_date if isinstance(start_date, date) else start_date
+            ed = end_date if isinstance(end_date, date) else end_date
+
+            # Revenue via basis-aware SQL function
+            revenue_rows = await conn.fetch(
+                "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
+                tenant_id, sd, ed, effective_basis,
+            )
+            pendapatan = sum(int(r["total_amount"]) for r in revenue_rows)
+
+            # Expenses via basis-aware SQL function
+            expense_rows = await conn.fetch(
+                "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
+                tenant_id, sd, ed, effective_basis,
+            )
+            pengeluaran = sum(int(r["total_amount"]) for r in expense_rows)
             profit = pendapatan - pengeluaran
             margin_persen = (
                 round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0
             )
 
-            # Previous period P&L (same journal-based query)
-            prev_pl_row = await conn.fetchrow(
-                pl_query, tenant_id, prev_start_date, prev_end_date
+            # Previous period P&L (same basis)
+            prev_revenue_rows = await conn.fetch(
+                "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
+                tenant_id, prev_start_date, prev_end_date, effective_basis,
             )
-            prev_pendapatan = int(prev_pl_row["pendapatan"]) if prev_pl_row else 0
-            prev_pengeluaran = int(prev_pl_row["total_expenses"]) if prev_pl_row else 0
+            prev_pendapatan = sum(int(r["total_amount"]) for r in prev_revenue_rows)
+            prev_expense_rows = await conn.fetch(
+                "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
+                tenant_id, prev_start_date, prev_end_date, effective_basis,
+            )
+            prev_pengeluaran = sum(int(r["total_amount"]) for r in prev_expense_rows)
             prev_profit = prev_pendapatan - prev_pengeluaran
             profit_change_pct = calc_change_pct(profit, prev_profit)
 
@@ -400,21 +440,18 @@ async def get_dashboard_summary(
                 prev_profit=prev_profit,
                 prev_pendapatan=prev_pendapatan,
                 profit_change_pct=profit_change_pct,
+                basis=effective_basis,
             )
 
             # ============================
             # 2. PIUTANG (AR) - from ledger
             # Pure Ledger: queries journal_entries + journal_lines
             # ============================
-            ar_total_query = """
-                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND coa.account_code LIKE '1-104%%'
-            """
-            ar_total_row = await conn.fetchrow(ar_total_query, tenant_id)
+            # Law 1/16: Pure ledger AR total via compute_ar_summary()
+            ar_total_row = await conn.fetchrow(
+                "SELECT total_outstanding AS total_piutang FROM compute_ar_summary($1)",
+                tenant_id,
+            )
             ar_total = int(ar_total_row["total_piutang"]) if ar_total_row else 0
 
             # Pure Ledger: AR aging from journal-based per-invoice outstanding
@@ -456,16 +493,30 @@ async def get_dashboard_summary(
                               AND je2.tenant_id = $1
                               AND je2.status = 'POSTED'
                               AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit
+                        ), 0) as reversal_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
+                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
+                              AND NOT EXISTS(
+                                  SELECT 1 FROM receive_payment_allocations rpa2
+                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
+                              )
+                        ), 0) as payment_journal_credit
                     FROM sales_invoices si
                     WHERE si.tenant_id = $1
                       AND si.status NOT IN ('draft', 'void', 'paid')
                 ),
                 ar_with_outstanding AS (
                     SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit) as outstanding
+                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
                     FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
                 )
                 SELECT COUNT(DISTINCT customer_name) as customer_count,
                     COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
@@ -488,11 +539,65 @@ async def get_dashboard_summary(
 
             # Previous period AR balance - Pure Ledger
             prev_ar_query = """
-                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
-                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND je.journal_date <= $2 AND coa.account_code LIKE '1-104%%'
+                WITH invoice_outstanding_prev AS (
+                    SELECT
+                        si.id,
+                        COALESCE((
+                            SELECT SUM(jl2.debit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND je2.journal_date <= $2
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) -
+                        COALESCE((
+                            SELECT SUM(rpa.amount_applied)
+                            FROM receive_payment_allocations rpa
+                            JOIN receive_payments rp ON rp.id = rpa.payment_id
+                            WHERE rpa.invoice_id = si.id
+                              AND rpa.tenant_id = $1
+                              AND rp.status = 'posted'
+                              AND rp.journal_id IS NOT NULL
+                              AND rp.payment_date <= $2
+                        ), 0) -
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_id = si.id
+                              AND je2.source_type = 'INVOICE_REVERSAL'
+                              AND je2.tenant_id = $1
+                              AND je2.status = 'POSTED'
+                              AND je2.journal_date <= $2
+                              AND coa2.account_code LIKE '1-104%%'
+                        ), 0) -
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
+                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
+                              AND je2.journal_date <= $2
+                              AND coa2.account_code LIKE '1-104%%'
+                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
+                              AND NOT EXISTS(
+                                  SELECT 1 FROM receive_payment_allocations rpa2
+                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
+                              )
+                        ), 0) as outstanding
+                    FROM sales_invoices si
+                    WHERE si.tenant_id = $1
+                      AND si.status NOT IN ('draft', 'void', 'paid')
+                )
+                SELECT COALESCE(SUM(outstanding), 0) as total_piutang
+                FROM invoice_outstanding_prev
+                WHERE outstanding > 0
             """
             prev_ar_row = await conn.fetchrow(prev_ar_query, tenant_id, prev_end_date)
             ar_prev_total = int(prev_ar_row["total_piutang"]) if prev_ar_row else 0
@@ -517,15 +622,11 @@ async def get_dashboard_summary(
             # 3. HUTANG (AP) - from ledger
             # Pure Ledger: queries journal_entries + journal_lines
             # ============================
-            ap_total_query = """
-                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND coa.account_code LIKE '2-101%%'
-            """
-            ap_total_row = await conn.fetchrow(ap_total_query, tenant_id)
+            # Law 1/16: Pure ledger AP total via compute_ap_summary()
+            ap_total_row = await conn.fetchrow(
+                "SELECT total_outstanding AS total_hutang FROM compute_ap_summary($1)",
+                tenant_id,
+            )
             ap_total = int(ap_total_row["total_hutang"]) if ap_total_row else 0
 
             # Pure Ledger: AP aging from journal-based per-bill outstanding
@@ -552,11 +653,18 @@ async def get_dashboard_summary(
                         COALESCE((
                             SELECT SUM(bpa.amount_applied)
                             FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
                             WHERE bpa.bill_id = b.id
-                              AND bp.tenant_id = $1
-                              AND bp.status = 'posted'
-                              AND bp.journal_id IS NOT NULL
+                              AND bpv2.tenant_id = $1
+                              AND bpv2.status = 'posted'
+                              AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -571,7 +679,7 @@ async def get_dashboard_summary(
                         ), 0) as adjustment_debit
                     FROM bills b
                     WHERE b.tenant_id = $1
-                      AND b.status NOT IN ('paid', 'void')
+                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
                 ),
                 ap_with_outstanding AS (
                     SELECT *,
@@ -592,18 +700,22 @@ async def get_dashboard_summary(
 
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - CURRENT_DATE as days_until_due
-                FROM bills WHERE tenant_id = $1 AND status NOT IN ('paid', 'void')
+                FROM bills WHERE tenant_id = $1 AND status_v2 NOT IN ('draft', 'void', 'paid')
                 ORDER BY due_date ASC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
 
             # Previous period AP balance - Pure Ledger
+            # Law 1/16: Pure ledger previous period AP
             prev_ap_query = """
-                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
-                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) AS total_hutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND je.journal_date <= $2 AND coa.account_code LIKE '2-101%%'
+                WHERE coa.account_type = 'PAYABLE'
+                  AND je.status = 'POSTED'
+                  AND je.tenant_id = $1
+                  AND je.journal_date <= $2
             """
             prev_ap_row = await conn.fetchrow(prev_ap_query, tenant_id, prev_end_date)
             ap_prev_total = int(prev_ap_row["total_hutang"]) if prev_ap_row else 0
@@ -708,15 +820,19 @@ async def get_dashboard_summary(
             # ============================
             # 5. KPI METRICS (DSO/DPO)
             # ============================
-            days_in_period = get_days_in_period(period)
+            # Use actual date range if available, otherwise derive from period
+            if start_date and end_date:
+                days_in_period = (end_date - start_date).days or 1
+            else:
+                days_in_period = get_days_in_period(period)
 
             # DSO = AR / daily_revenue
             daily_revenue = pendapatan / days_in_period if days_in_period > 0 else 0
             dso = round(piutang.total / daily_revenue, 1) if daily_revenue > 0 else 0.0
             dso_status = calculate_dso_status(dso)
 
-            # DPO = AP / daily_purchases (hpp)
-            daily_purchases = hpp / days_in_period if days_in_period > 0 else 0
+            # DPO = AP / daily_purchases
+            daily_purchases = pengeluaran / days_in_period if days_in_period > 0 else 0
             dpo = (
                 round(hutang.total / daily_purchases, 1) if daily_purchases > 0 else 0.0
             )
@@ -777,16 +893,9 @@ async def get_piutang_detail(
 
         conn = await get_db_connection()
         try:
-            # Pure Ledger: total piutang from journal_entries + journal_lines
+            # Pure Ledger: total piutang via compute_ar_summary()
             total_row = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND coa.account_code LIKE '1-104%%'
-            """,
+                "SELECT total_outstanding AS total_piutang FROM compute_ar_summary($1)",
                 tenant_id,
             )
             total_piutang = int(total_row["total_piutang"]) if total_row else 0
@@ -838,16 +947,30 @@ async def get_piutang_detail(
                               AND je2.tenant_id = $1
                               AND je2.status = 'POSTED'
                               AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit
+                        ), 0) as reversal_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
+                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
+                              AND NOT EXISTS(
+                                  SELECT 1 FROM receive_payment_allocations rpa2
+                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
+                              )
+                        ), 0) as payment_journal_credit
                     FROM sales_invoices si
                     WHERE si.tenant_id = $1
                       AND si.status NOT IN ('draft', 'void', 'paid')
                 ),
                 ar_with_outstanding AS (
                     SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit) as outstanding
+                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
                     FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
                 )
                 SELECT COUNT(DISTINCT customer_name) as customer_count,
                     COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
@@ -899,16 +1022,9 @@ async def get_hutang_detail(
 
         conn = await get_db_connection()
         try:
-            # Pure Ledger: total hutang from journal_entries + journal_lines
+            # Pure Ledger: total hutang via compute_ap_summary()
             total_row = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND coa.account_code LIKE '2-101%%'
-            """,
+                "SELECT total_outstanding AS total_hutang FROM compute_ap_summary($1)",
                 tenant_id,
             )
             total_hutang = int(total_row["total_hutang"]) if total_row else 0
@@ -945,11 +1061,18 @@ async def get_hutang_detail(
                         COALESCE((
                             SELECT SUM(bpa.amount_applied)
                             FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
                             WHERE bpa.bill_id = b.id
-                              AND bp.tenant_id = $1
-                              AND bp.status = 'posted'
-                              AND bp.journal_id IS NOT NULL
+                              AND bpv2.tenant_id = $1
+                              AND bpv2.status = 'posted'
+                              AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -964,7 +1087,7 @@ async def get_hutang_detail(
                         ), 0) as adjustment_debit
                     FROM bills b
                     WHERE b.tenant_id = $1
-                      AND b.status NOT IN ('paid', 'void')
+                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
                 ),
                 ap_with_outstanding AS (
                     SELECT *,
@@ -1097,15 +1220,17 @@ async def health_check():
 
 @router.get("/cash-flow-trends", response_model=CashFlowTrendsResponse)
 async def get_cash_flow_trends(
-    request: Request, period: str = Query("7d", regex="^(7d|30d|month)$")
+    request: Request,
+    period: str = Query("7d", regex="^(7d|30d|month)$"),
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
 ):
     """
-    Get daily cash flow trends (kas masuk/keluar) for chart visualization.
+    Get cash flow trends (kas masuk/keluar) for chart visualization.
 
-    Period options:
-    - 7d: Last 7 days (default)
-    - 30d: Last 30 days
-    - month: Current month
+    Period options (legacy): 7d, 30d, month
+    OR use start_date + end_date for fiscal period filtering.
+    Auto-aggregates by month when range > 60 days.
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -1117,78 +1242,120 @@ async def get_cash_flow_trends(
 
         # Calculate date range
         now = datetime.now()
-        if period == "7d":
-            start_date = now - timedelta(days=6)  # Include today = 7 days
-        elif period == "30d":
-            start_date = now - timedelta(days=29)
-        else:  # month
-            start_date = datetime(now.year, now.month, 1)
+        if start_date and end_date:
+            from datetime import date as date_type
+            cf_start = date_type.fromisoformat(start_date)
+            cf_end = date_type.fromisoformat(end_date)
+        else:
+            if period == "7d":
+                cf_start = now.date() - timedelta(days=6)
+            elif period == "30d":
+                cf_start = now.date() - timedelta(days=29)
+            else:  # month
+                cf_start = date(now.year, now.month, 1)
+            cf_end = now.date()
+
+        # Determine aggregation: monthly for ranges > 60 days, daily otherwise
+        range_days = (cf_end - cf_start).days
+        use_monthly = range_days > 60
 
         conn = await get_db_connection()
         try:
-            # Query daily cash flow from journal entries
-            # Kas Masuk = Debit to Cash/Bank accounts (money coming in)
-            # Kas Keluar = Credit from Cash/Bank accounts (money going out)
-            query = """
-                WITH daily_flows AS (
-                    SELECT
-                        DATE(je.journal_date) as flow_date,
-                        COALESCE(SUM(CASE
-                            WHEN jl.debit > 0 AND c.account_code LIKE '1-10%'
-                            THEN jl.debit
-                            ELSE 0
-                        END), 0) as kas_masuk,
-                        COALESCE(SUM(CASE
-                            WHEN jl.credit > 0 AND c.account_code LIKE '1-10%'
-                            THEN jl.credit
-                            ELSE 0
-                        END), 0) as kas_keluar
-                    FROM journal_entries je
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts c ON c.id = jl.account_id
-                    WHERE je.tenant_id = $1
-                      AND je.journal_date >= $2
-                      AND je.journal_date <= $3
-                      AND je.status = 'POSTED'
-                    GROUP BY DATE(je.journal_date)
-                )
-                SELECT flow_date, kas_masuk, kas_keluar
-                FROM daily_flows
-                ORDER BY flow_date
-            """
-
-            rows = await conn.fetch(query, tenant_id, start_date.date(), now.date())
-
-            # Build date range with all days (even if no transactions)
-            trends = []
-            total_masuk = 0
-            total_keluar = 0
-
-            # Create a dict for quick lookup
-            flow_by_date = {row["flow_date"]: row for row in rows}
-
-            # Generate all dates in range
-            current = start_date.date()
-            end = now.date()
-            while current <= end:
-                flow = flow_by_date.get(current)
-                kas_masuk = int(flow["kas_masuk"]) if flow else 0
-                kas_keluar = int(flow["kas_keluar"]) if flow else 0
-
-                trends.append(
-                    CashFlowTrend(
-                        date=current.isoformat(),
-                        label=get_day_label(
-                            datetime.combine(current, datetime.min.time())
-                        ),
-                        kas_masuk=kas_masuk,
-                        kas_keluar=kas_keluar,
+            if use_monthly:
+                # Monthly aggregation for fiscal year views
+                query = """
+                    WITH monthly_flows AS (
+                        SELECT
+                            DATE_TRUNC('month', je.journal_date)::date as flow_date,
+                            COALESCE(SUM(CASE
+                                WHEN jl.debit > 0 AND c.account_code LIKE '1-10%%'
+                                THEN jl.debit ELSE 0
+                            END), 0) as kas_masuk,
+                            COALESCE(SUM(CASE
+                                WHEN jl.credit > 0 AND c.account_code LIKE '1-10%%'
+                                THEN jl.credit ELSE 0
+                            END), 0) as kas_keluar
+                        FROM journal_entries je
+                        JOIN journal_lines jl ON jl.journal_id = je.id
+                        JOIN chart_of_accounts c ON c.id = jl.account_id
+                        WHERE je.tenant_id = $1
+                          AND je.journal_date >= $2 AND je.journal_date <= $3
+                          AND je.status = 'POSTED'
+                        GROUP BY DATE_TRUNC('month', je.journal_date)
                     )
-                )
+                    SELECT flow_date, kas_masuk, kas_keluar FROM monthly_flows ORDER BY flow_date
+                """
+                rows = await conn.fetch(query, tenant_id, cf_start, cf_end)
 
-                total_masuk += kas_masuk
-                total_keluar += kas_keluar
-                current += timedelta(days=1)
+                trends = []
+                total_masuk = 0
+                total_keluar = 0
+                month_names = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+                flow_by_month = {row["flow_date"]: row for row in rows}
+
+                # Generate all months in range
+                current_month = date(cf_start.year, cf_start.month, 1)
+                while current_month <= cf_end:
+                    flow = flow_by_month.get(current_month)
+                    km = int(flow["kas_masuk"]) if flow else 0
+                    kk = int(flow["kas_keluar"]) if flow else 0
+                    trends.append(CashFlowTrend(
+                        date=current_month.isoformat(),
+                        label=month_names[current_month.month - 1],
+                        kas_masuk=km, kas_keluar=kk,
+                    ))
+                    total_masuk += km
+                    total_keluar += kk
+                    # Next month
+                    if current_month.month == 12:
+                        current_month = date(current_month.year + 1, 1, 1)
+                    else:
+                        current_month = date(current_month.year, current_month.month + 1, 1)
+            else:
+                # Daily aggregation (existing behavior)
+                query = """
+                    WITH daily_flows AS (
+                        SELECT
+                            DATE(je.journal_date) as flow_date,
+                            COALESCE(SUM(CASE
+                                WHEN jl.debit > 0 AND c.account_code LIKE '1-10%%'
+                                THEN jl.debit ELSE 0
+                            END), 0) as kas_masuk,
+                            COALESCE(SUM(CASE
+                                WHEN jl.credit > 0 AND c.account_code LIKE '1-10%%'
+                                THEN jl.credit ELSE 0
+                            END), 0) as kas_keluar
+                        FROM journal_entries je
+                        JOIN journal_lines jl ON jl.journal_id = je.id
+                        JOIN chart_of_accounts c ON c.id = jl.account_id
+                        WHERE je.tenant_id = $1
+                          AND je.journal_date >= $2 AND je.journal_date <= $3
+                          AND je.status = 'POSTED'
+                        GROUP BY DATE(je.journal_date)
+                    )
+                    SELECT flow_date, kas_masuk, kas_keluar FROM daily_flows ORDER BY flow_date
+                """
+                rows = await conn.fetch(query, tenant_id, cf_start, cf_end)
+
+                trends = []
+                total_masuk = 0
+                total_keluar = 0
+                flow_by_date = {row["flow_date"]: row for row in rows}
+
+                current = cf_start
+                while current <= cf_end:
+                    flow = flow_by_date.get(current)
+                    km = int(flow["kas_masuk"]) if flow else 0
+                    kk = int(flow["kas_keluar"]) if flow else 0
+                    trends.append(CashFlowTrend(
+                        date=current.isoformat(),
+                        label=get_day_label(datetime.combine(current, datetime.min.time())),
+                        kas_masuk=km, kas_keluar=kk,
+                    ))
+                    total_masuk += km
+                    total_keluar += kk
+                    current += timedelta(days=1)
 
             # Query today's transaction counts
             today_trx_query = """
@@ -1243,15 +1410,14 @@ async def get_top_expenses(
     request: Request,
     period: str = Query("30d", regex="^(7d|30d|month)$"),
     limit: int = Query(5, ge=1, le=20),
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
 ):
     """
     Get top expense categories breakdown for period.
 
-    Period options:
-    - 7d: Last 7 days
-    - 30d: Last 30 days (default)
-    - month: Current month
-
+    Period options (legacy): 7d, 30d, month
+    OR use start_date + end_date for fiscal period filtering.
     Limit: Number of top categories to return (1-20, default 5)
     """
     try:
@@ -1264,12 +1430,18 @@ async def get_top_expenses(
 
         # Calculate date range
         now = datetime.now()
-        if period == "7d":
-            start_date = now - timedelta(days=7)
-        elif period == "30d":
-            start_date = now - timedelta(days=30)
-        else:  # month
-            start_date = datetime(now.year, now.month, 1)
+        if start_date and end_date:
+            from datetime import date as date_type
+            te_start = date_type.fromisoformat(start_date)
+            te_end = date_type.fromisoformat(end_date)
+        else:
+            if period == "7d":
+                te_start = now.date() - timedelta(days=7)
+            elif period == "30d":
+                te_start = now.date() - timedelta(days=30)
+            else:  # month
+                te_start = date(now.year, now.month, 1)
+            te_end = now.date()
 
         conn = await get_db_connection()
         try:
@@ -1286,7 +1458,7 @@ async def get_top_expenses(
                   AND je.journal_date >= $2
                   AND je.journal_date <= $3
                   AND je.status = 'POSTED'
-                  AND (c.account_code LIKE '5-%' OR c.account_code LIKE '6-%')
+                  AND (c.account_code LIKE '5-%%' OR c.account_code LIKE '6-%%')
                   AND jl.debit > 0
                 GROUP BY COALESCE(c.category, c.name)
                 ORDER BY amount DESC
@@ -1294,7 +1466,7 @@ async def get_top_expenses(
             """
 
             rows = await conn.fetch(
-                query, tenant_id, start_date.date(), now.date(), limit
+                query, tenant_id, te_start, te_end, limit
             )
 
             # Calculate total and percentages
@@ -1382,16 +1554,30 @@ async def get_overdue_invoices(request: Request):
                               AND je2.tenant_id = $1
                               AND je2.status = 'POSTED'
                               AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit
+                        ), 0) as reversal_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
+                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
+                              AND NOT EXISTS(
+                                  SELECT 1 FROM receive_payment_allocations rpa2
+                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
+                              )
+                        ), 0) as payment_journal_credit
                     FROM sales_invoices si
                     WHERE si.tenant_id = $1
                       AND si.status NOT IN ('draft', 'void', 'paid')
                 ),
                 ar_with_outstanding AS (
                     SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit) as outstanding
+                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
                     FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
                 )
                 SELECT
                     invoice_number,
@@ -1482,11 +1668,18 @@ async def get_overdue_bills(request: Request):
                         COALESCE((
                             SELECT SUM(bpa.amount_applied)
                             FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
                             WHERE bpa.bill_id = b.id
-                              AND bp.tenant_id = $1
-                              AND bp.status = 'posted'
-                              AND bp.journal_id IS NOT NULL
+                              AND bpv2.tenant_id = $1
+                              AND bpv2.status = 'posted'
+                              AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1501,7 +1694,7 @@ async def get_overdue_bills(request: Request):
                         ), 0) as adjustment_debit
                     FROM bills b
                     WHERE b.tenant_id = $1
-                      AND b.status NOT IN ('paid', 'void')
+                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
                 ),
                 ap_with_outstanding AS (
                     SELECT *,
@@ -1601,11 +1794,18 @@ async def get_reconciliation_status(request: Request):
                         COALESCE((
                             SELECT SUM(bpa.amount_applied)
                             FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
                             WHERE bpa.bill_id = b.id
-                              AND bp.tenant_id = $1
-                              AND bp.status = 'posted'
-                              AND bp.journal_id IS NOT NULL
+                              AND bpv2.tenant_id = $1
+                              AND bpv2.status = 'posted'
+                              AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1620,7 +1820,7 @@ async def get_reconciliation_status(request: Request):
                         ), 0) as adjustment_debit
                     FROM bills b
                     WHERE b.tenant_id = $1
-                      AND b.status NOT IN ('paid', 'void')
+                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
                 ),
                 ap_with_outstanding AS (
                     SELECT *,
@@ -1654,7 +1854,7 @@ async def get_reconciliation_status(request: Request):
                     JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1
                   AND je.status = 'POSTED'
-                  AND coa.account_code = '2-10100'
+                  AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
             """
             gl_balance = await conn.fetchval(gl_query, tenant_id)
 
@@ -1699,11 +1899,11 @@ async def get_reconciliation_status(request: Request):
             )
 
             # Calculate variances
-            variance_bills_ap = float(bills_total) - float(ap_total or 0)
-            variance_ap_gl = float(ap_total or 0) - float(gl_balance or 0)
+            variance_bills_ap = int(bills_total) - int(ap_total or 0)
+            variance_ap_gl = int(ap_total or 0) - int(gl_balance or 0)
 
-            # Check if in sync (tolerance: 0.01)
-            is_in_sync = abs(variance_bills_ap) < 0.01 and abs(variance_ap_gl) < 0.01
+            # Check if in sync (int amounts, exact match)
+            is_in_sync = variance_bills_ap == 0 and variance_ap_gl == 0
 
             total_issues = bills_no_ap + bills_no_journal + ap_no_bill + amount_mismatch
 
@@ -1711,8 +1911,8 @@ async def get_reconciliation_status(request: Request):
                 in_sync=is_in_sync and total_issues == 0,
                 status="OK" if (is_in_sync and total_issues == 0) else "WARNING",
                 bills_outstanding=int(bills_total),
-                ap_subledger=float(ap_total or 0),
-                gl_ap_balance=float(gl_balance or 0),
+                ap_subledger=int(ap_total or 0),
+                gl_ap_balance=int(gl_balance or 0),
                 variance_bills_ap=variance_bills_ap,
                 variance_ap_gl=variance_ap_gl,
                 issues_count=total_issues,
@@ -1847,16 +2047,30 @@ async def get_cash_flow_projection(request: Request):
                               AND je2.tenant_id = $1
                               AND je2.status = 'POSTED'
                               AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit
+                        ), 0) as reversal_credit,
+                        COALESCE((
+                            SELECT SUM(jl2.credit)
+                            FROM journal_lines jl2
+                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
+                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
+                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
+                              AND coa2.account_code LIKE '1-104%%'
+                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
+                              AND NOT EXISTS(
+                                  SELECT 1 FROM receive_payment_allocations rpa2
+                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
+                              )
+                        ), 0) as payment_journal_credit
                     FROM sales_invoices si
                     WHERE si.tenant_id = $1
                       AND si.status NOT IN ('draft', 'void', 'paid')
                 ),
                 ar_with_outstanding AS (
                     SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit) as outstanding
+                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
                     FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit) > 0
+                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
                 )
                 SELECT due_date, SUM(outstanding) as expected
                 FROM ar_with_outstanding
@@ -1895,11 +2109,18 @@ async def get_cash_flow_projection(request: Request):
                         COALESCE((
                             SELECT SUM(bpa.amount_applied)
                             FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
+                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
                             WHERE bpa.bill_id = b.id
-                              AND bp.tenant_id = $1
-                              AND bp.status = 'posted'
-                              AND bp.journal_id IS NOT NULL
+                              AND bpv2.tenant_id = $1
+                              AND bpv2.status = 'posted'
+                              AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1914,7 +2135,7 @@ async def get_cash_flow_projection(request: Request):
                         ), 0) as adjustment_debit
                     FROM bills b
                     WHERE b.tenant_id = $1
-                      AND b.status NOT IN ('paid', 'void')
+                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
                 ),
                 ap_with_outstanding AS (
                     SELECT *,

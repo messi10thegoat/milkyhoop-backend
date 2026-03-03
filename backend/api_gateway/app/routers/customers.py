@@ -149,13 +149,27 @@ async def list_customers(
             param_idx = 2
 
             if search:
-                conditions.append(
-                    f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
-                    f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                    f"OR telepon ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                # Split search into words for fuzzy matching
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
+                        f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                        f"OR telepon ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
+                            f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                            f"OR telepon ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             if tipe is not None:
                 conditions.append(f"tipe = ${param_idx}")
@@ -187,7 +201,8 @@ async def list_customers(
             # Get items
             query = f"""
                 SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
-                       points, total_transaksi, total_nilai, is_active, created_at
+                       points, total_transaksi, total_nilai, is_active, created_at,
+                       phone2, community
                 FROM customers
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -197,21 +212,15 @@ async def list_customers(
 
             rows = await conn.fetch(query, *params)
 
-            # Pure Ledger: batch-fetch AR balances from journal for all customers in page
+            # Phase 3: AR balances from compute_ar_outstanding() DB function
             customer_ids = [str(row["id"]) for row in rows]
             ar_balances = {}
             if customer_ids:
                 ar_rows = await conn.fetch("""
-                    SELECT ar.customer_id::text as cid,
-                           COALESCE(SUM(jl.debit - jl.credit), 0) as balance
-                    FROM accounts_receivable ar
-                    JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE ar.tenant_id = $1 AND je.status = 'POSTED'
-                      AND coa.account_code LIKE '1-104%%' AND ar.customer_id IS NOT NULL
-                      AND ar.customer_id::text = ANY($2)
-                    GROUP BY ar.customer_id
+                    SELECT customer_id as cid, COALESCE(SUM(outstanding), 0) as balance
+                    FROM compute_ar_outstanding($1)
+                    WHERE customer_id = ANY($2)
+                    GROUP BY customer_id
                 """, ctx["tenant_id"], customer_ids)
                 ar_balances = {row['cid']: int(row['balance']) for row in ar_rows}
 
@@ -224,7 +233,9 @@ async def list_customers(
                     "display_name": row["display_name"],
                     "type": row["tipe"],
                     "phone": row["telepon"],
+                    "phone2": row["phone2"],
                     "email": row["email"],
+                    "community": row["community"],
                     "address": row["alamat"],
                     "points": row["points"],
                     "total_transactions": row["total_transaksi"],
@@ -302,7 +313,8 @@ async def get_customer(request: Request, customer_id: str):
                        tax_id, payment_terms_days, credit_limit, notes,
                        mobile_phone, website, company_name, display_name,
                        customer_type, is_pkp, nik, currency,
-                       ar_opening_balance, opening_balance_date, opening_balance_notes
+                       ar_opening_balance, opening_balance_date, opening_balance_notes,
+                       phone2, community
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -331,15 +343,10 @@ async def get_customer(request: Request, customer_id: str):
                   AND status NOT IN ('draft', 'void')
             """, customer_id, ctx["tenant_id"])
 
-            # Pure Ledger: AR balance from journal (Law 16)
+            # Phase 3: AR balance from compute_customer_ar() DB function (Law 16)
             ar_balance = await conn.fetchrow("""
-                SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as saldo
-                FROM accounts_receivable ar
-                JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
-                JOIN journal_lines jl ON jl.journal_id = je.id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
-                  AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+                SELECT COALESCE(SUM(outstanding), 0) as saldo
+                FROM compute_customer_ar($1, $2)
             """, ctx["tenant_id"], customer_id)
 
             return {
@@ -350,15 +357,15 @@ async def get_customer(request: Request, customer_id: str):
                     "name": row["nama"],
                     "company_name": row["company_name"],
                     "display_name": row["display_name"],
-                    "company_name": row["company_name"],
-                    "display_name": row["display_name"],
                     
                     # Contact
                     "contact_person": row["contact_person"],
                     "phone": row["telepon"],
                     "mobile_phone": row["mobile_phone"],
+                    "phone2": row["phone2"],
                     "email": row["email"],
                     "website": row["website"],
+                    "community": row["community"],
                     
                     # Address
                     "address": row["alamat"],
@@ -388,8 +395,8 @@ async def get_customer(request: Request, customer_id: str):
                     "points": row["points"],
                     "points_per_50k": row["points_per_50k"],
                     "total_transactions": int(stats["total_transaksi"]) if stats else (row["total_transaksi"] or 0),
-                    "total_value": float(stats["total_nilai"]) if stats else float(row["total_nilai"] or 0),
-                    "outstanding_balance": float(ar_balance["saldo"]) if ar_balance else 0,
+                    "total_value": int(stats["total_nilai"] or 0) if stats else int(row["total_nilai"] or 0),
+                    "outstanding_balance": int(ar_balance["saldo"] or 0) if ar_balance else 0,
                     "last_transaction_at": stats["last_transaction_at"].isoformat()
                     if stats and stats["last_transaction_at"]
                     else (row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None),
@@ -439,27 +446,15 @@ async def get_customer_balance(request: Request, customer_id: str):
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
 
-            # Pure Ledger: AR balance from journal (Law 16)
+            # Phase 3: AR balance from compute_customer_ar() DB function (Law 16)
             balance_query = """
-                WITH ar_journal AS (
-                    SELECT ar.id, ar.due_date, ar.status,
-                        COALESCE(SUM(jl.debit - jl.credit), 0) as remaining
-                    FROM accounts_receivable ar
-                    JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
-                      AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
-                      AND ar.status IN ('OPEN', 'PARTIAL')
-                    GROUP BY ar.id, ar.due_date, ar.status
-                    HAVING COALESCE(SUM(jl.debit - jl.credit), 0) > 0
-                )
                 SELECT
-                    COALESCE(SUM(remaining), 0) as total_balance,
-                    COUNT(*) FILTER (WHERE status = 'OPEN') as open_count,
-                    COUNT(*) FILTER (WHERE status = 'PARTIAL') as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE) as overdue_count
-                FROM ar_journal
+                    COALESCE(SUM(outstanding), 0) as total_balance,
+                    COUNT(*) FILTER (WHERE invoice_status IN ('posted', 'OPEN')) as open_count,
+                    COUNT(*) FILTER (WHERE invoice_status IN ('partial', 'PARTIAL')) as partial_count,
+                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND outstanding > 0) as overdue_count
+                FROM compute_customer_ar($1, $2)
+                WHERE outstanding > 0
             """
             balance = await conn.fetchrow(balance_query, ctx["tenant_id"], customer_id)
 
@@ -545,17 +540,18 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                         detail="Invalid opening_balance_date format. Use YYYY-MM-DD"
                     )
 
-            # Insert customer with ALL fields
-            await conn.execute(
-                """
-                INSERT INTO customers (
+            async with conn.transaction():
+                # Insert customer with ALL fields
+                await conn.execute(
+                    """
+                    INSERT INTO customers (
                     id, tenant_id, nomor_member, nama, telepon, email, alamat,
                     contact_person, city, province, postal_code,
                     tax_id, payment_terms_days, credit_limit, notes,
                     mobile_phone, website, company_name, display_name,
                     customer_type, is_pkp, nik, currency,
                     ar_opening_balance, opening_balance_date, opening_balance_notes,
-                    created_by
+                    created_by, phone2, community
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11,
@@ -563,55 +559,57 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     $16, $17, $18, $19,
                     $20, $21, $22, $23,
                     $24, $25, $26,
-                    $27
+                    $27, $28, $29
                 )
             """,
-                new_id,                           # $1  id
-                ctx["tenant_id"],                 # $2  tenant_id
-                body.code,                        # $3  nomor_member
-                body.name,                        # $4  nama
-                body.phone,                       # $5  telepon
-                body.email,                       # $6  email
-                body.address,                     # $7  alamat
-                body.contact_person,              # $8  contact_person
-                body.city,                        # $9  city
-                body.province,                    # $10 province
-                body.postal_code,                 # $11 postal_code
-                body.tax_id,                      # $12 tax_id
-                body.payment_terms_days,          # $13 payment_terms_days
-                body.credit_limit,                # $14 credit_limit
-                body.notes,                       # $15 notes
-                body.mobile_phone,                # $16 mobile_phone
-                body.website,                     # $17 website
-                body.company_name,                # $18 company_name
-                body.display_name or body.name,   # $19 display_name (default to name)
-                body.customer_type or "BADAN",    # $20 customer_type
-                body.is_pkp,                      # $21 is_pkp
-                body.nik,                         # $22 nik
-                body.currency or "IDR",           # $23 currency
-                body.ar_opening_balance or 0,    # $24 ar_opening_balance
-                opening_date,                     # $25 opening_balance_date
-                body.opening_balance_notes,       # $26 opening_balance_notes
-                ctx["user_id"],                   # $27 created_by
-            )
+                    new_id,                           # $1  id
+                    ctx["tenant_id"],                 # $2  tenant_id
+                    body.code,                        # $3  nomor_member
+                    body.name,                        # $4  nama
+                    body.phone,                       # $5  telepon
+                    body.email,                       # $6  email
+                    body.address,                     # $7  alamat
+                    body.contact_person,              # $8  contact_person
+                    body.city,                        # $9  city
+                    body.province,                    # $10 province
+                    body.postal_code,                 # $11 postal_code
+                    body.tax_id,                      # $12 tax_id
+                    body.payment_terms_days,          # $13 payment_terms_days
+                    body.credit_limit,                # $14 credit_limit
+                    body.notes,                       # $15 notes
+                    body.mobile_phone,                # $16 mobile_phone
+                    body.website,                     # $17 website
+                    body.company_name,                # $18 company_name
+                    body.display_name or body.name,   # $19 display_name (default to name)
+                    body.customer_type or "BADAN",    # $20 customer_type
+                    body.is_pkp,                      # $21 is_pkp
+                    body.nik,                         # $22 nik
+                    body.currency or "IDR",           # $23 currency
+                    body.ar_opening_balance or 0,    # $24 ar_opening_balance
+                    opening_date,                     # $25 opening_balance_date
+                    body.opening_balance_notes,       # $26 opening_balance_notes
+                    ctx["user_id"],                   # $27 created_by
+                    body.phone2,                      # $28 phone2
+                    body.community,                   # $29 community
+                )
 
-            # Extract user info for activity logging
-            user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
-            user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+                # Extract user info for activity logging
+                user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
+                user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
 
-            # Log activity
-            await conn.execute("""
-                INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
-                VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
-            """, new_id, ctx["tenant_id"], user_id, user_name)
+                # Log activity
+                await conn.execute("""
+                    INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
+                    VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
+                """, new_id, ctx["tenant_id"], user_id, user_name)
 
-            logger.info(f"Customer created: {new_id}, name={body.name}")
+                logger.info(f"Customer created: {new_id}, name={body.name}")
 
-            return {
-                "success": True,
-                "message": "Customer created successfully",
-                "data": {"id": str(new_id), "name": body.name, "code": body.code},
-            }
+                return {
+                    "success": True,
+                    "message": "Customer created successfully",
+                    "data": {"id": str(new_id), "name": body.name, "code": body.code},
+                }
 
     except HTTPException:
         raise
@@ -660,7 +658,8 @@ async def update_customer(
                 """SELECT nama, company_name, telepon, email, credit_limit, payment_terms_days, 
                         is_active, contact_person, city, province, postal_code, 
                         tax_id, notes, mobile_phone, website, display_name,
-                        customer_type, is_pkp, nik, currency, alamat
+                        customer_type, is_pkp, nik, currency, alamat,
+                        phone2, community
                    FROM customers WHERE id = $1""",
                 customer_id
             )
@@ -712,67 +711,69 @@ async def update_customer(
                 SET {", ".join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
             """
-            await conn.execute(query, *params)
 
-            # Build change details for activity logging
-            field_labels = {
-                "name": "Nama",
-                "nama": "Nama",
-                "company_name": "Perusahaan",
-                "phone": "Telepon",
-                "telepon": "Telepon",
-                "email": "Email",
-                "credit_limit": "Limit kredit",
-                "payment_terms_days": "Termin pembayaran",
-                "is_active": "Status aktif",
-                "contact_person": "Kontak person",
-                "city": "Kota",
-                "province": "Provinsi",
-                "postal_code": "Kode pos",
-                "tax_id": "NPWP",
-                "notes": "Catatan",
-                "mobile_phone": "HP",
-                "website": "Website",
-                "display_name": "Nama tampilan",
-                "customer_type": "Tipe pelanggan",
-                "is_pkp": "PKP",
-                "nik": "NIK",
-                "currency": "Mata uang",
-                "address": "Alamat",
-                "alamat": "Alamat",
-            }
-            
-            change_parts = []
-            for field, new_value in update_data.items():
-                db_field = field_mapping.get(field, field)
-                old_value = current.get(db_field) if current else None
-                
-                # Compare values (handle None cases)
-                if old_value != new_value:
-                    label = field_labels.get(field, field_labels.get(db_field, field))
-                    old_display = old_value if old_value is not None else "-"
-                    new_display = new_value if new_value is not None else "-"
-                    change_parts.append(f"{label}: {old_display} -> {new_display}")
-            
-            # Log activity if there were changes
-            if change_parts:
-                details = "\n".join(change_parts)
-                user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
-                user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
-                
-                await conn.execute("""
-                    INSERT INTO customer_activities 
-                    (customer_id, tenant_id, type, description, details, actor_id, actor_name)
-                    VALUES ($1, $2, 'updated', 'Pelanggan diperbarui', $3, $4, $5)
-                """, customer_id, ctx["tenant_id"], details, user_id, user_name)
+            async with conn.transaction():
+                await conn.execute(query, *params)
 
-            logger.info(f"Customer updated: {customer_id}")
+                # Build change details for activity logging
+                field_labels = {
+                    "name": "Nama",
+                    "nama": "Nama",
+                    "company_name": "Perusahaan",
+                    "phone": "Telepon",
+                    "telepon": "Telepon",
+                    "email": "Email",
+                    "credit_limit": "Limit kredit",
+                    "payment_terms_days": "Termin pembayaran",
+                    "is_active": "Status aktif",
+                    "contact_person": "Kontak person",
+                    "city": "Kota",
+                    "province": "Provinsi",
+                    "postal_code": "Kode pos",
+                    "tax_id": "NPWP",
+                    "notes": "Catatan",
+                    "mobile_phone": "HP",
+                    "website": "Website",
+                    "display_name": "Nama tampilan",
+                    "customer_type": "Tipe pelanggan",
+                    "is_pkp": "PKP",
+                    "nik": "NIK",
+                    "currency": "Mata uang",
+                    "address": "Alamat",
+                    "alamat": "Alamat",
+                }
 
-            return {
-                "success": True,
-                "message": "Customer updated successfully",
-                "data": {"id": str(customer_id)},
-            }
+                change_parts = []
+                for field, new_value in update_data.items():
+                    db_field = field_mapping.get(field, field)
+                    old_value = current.get(db_field) if current else None
+
+                    # Compare values (handle None cases)
+                    if old_value != new_value:
+                        label = field_labels.get(field, field_labels.get(db_field, field))
+                        old_display = old_value if old_value is not None else "-"
+                        new_display = new_value if new_value is not None else "-"
+                        change_parts.append(f"{label}: {old_display} -> {new_display}")
+
+                # Log activity if there were changes
+                if change_parts:
+                    details = "\n".join(change_parts)
+                    user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
+                    user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+
+                    await conn.execute("""
+                        INSERT INTO customer_activities
+                        (customer_id, tenant_id, type, description, details, actor_id, actor_name)
+                        VALUES ($1, $2, 'updated', 'Pelanggan diperbarui', $3, $4, $5)
+                    """, customer_id, ctx["tenant_id"], details, user_id, user_name)
+
+                logger.info(f"Customer updated: {customer_id}")
+
+                return {
+                    "success": True,
+                    "message": "Customer updated successfully",
+                    "data": {"id": str(customer_id)},
+                }
 
     except HTTPException:
         raise
@@ -793,96 +794,97 @@ async def delete_customer(request: Request, customer_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check if customer exists
-            existing = await conn.fetchrow(
-                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Customer not found")
-
-            # Check for ANY transaction history (invoices)
-            has_invoices = await conn.fetchval(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM sales_invoices
-                    WHERE customer_id = $1 AND tenant_id = $2
-                    LIMIT 1
+            async with conn.transaction():
+                # Check if customer exists
+                existing = await conn.fetchrow(
+                    "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                    customer_id,
+                    ctx["tenant_id"],
                 )
-                """,
-                str(customer_id),
-                ctx["tenant_id"],
-            )
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Customer not found")
 
-            if has_invoices:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
+                # Check for ANY transaction history (invoices)
+                has_invoices = await conn.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM sales_invoices
+                        WHERE customer_id = $1 AND tenant_id = $2
+                        LIMIT 1
+                    )
+                    """,
+                    str(customer_id),
+                    ctx["tenant_id"],
                 )
 
-            # Check for receive_payments
-            has_payments = await conn.fetchval(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM receive_payments
-                    WHERE customer_id = $1 AND tenant_id = $2
-                    LIMIT 1
-                )
-                """,
-                str(customer_id),
-                ctx["tenant_id"],
-            )
+                if has_invoices:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
+                    )
 
-            if has_payments:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
-                )
-
-            # Check for any AR records (even settled ones = proof of past transactions)
-            has_ar = await conn.fetchval(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM accounts_receivable
-                    WHERE customer_id::text = $1 AND tenant_id = $2
-                    LIMIT 1
-                )
-                """,
-                str(customer_id),
-                ctx["tenant_id"],
-            )
-
-            if has_ar:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
+                # Check for receive_payments
+                has_payments = await conn.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM receive_payments
+                        WHERE customer_id = $1 AND tenant_id = $2
+                        LIMIT 1
+                    )
+                    """,
+                    str(customer_id),
+                    ctx["tenant_id"],
                 )
 
-            # Soft delete - mark as inactive with audit trail
-            await conn.execute(
-                """
-                UPDATE customers
-                SET is_active = false,
-                    deleted_at = NOW(),
-                    deleted_by = $3,
-                    updated_at = NOW()
-                WHERE id = $1 AND tenant_id = $2
-                """,
-                customer_id,
-                ctx["tenant_id"],
-                ctx.get("user_id", "system"),
-            )
+                if has_payments:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
+                    )
 
-            logger.info(
-                f"Customer soft-deleted: {customer_id}, name={existing['nama']}, by={ctx.get('user_id', 'unknown')}"
-            )
+                # Check for any AR records (even settled ones = proof of past transactions)
+                has_ar = await conn.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM accounts_receivable
+                        WHERE customer_id::text = $1 AND tenant_id = $2
+                        LIMIT 1
+                    )
+                    """,
+                    str(customer_id),
+                    ctx["tenant_id"],
+                )
 
-            return {
-                "success": True,
-                "message": "Customer deactivated successfully",
-                "data": {"id": str(customer_id), "name": existing["nama"]},
-            }
+                if has_ar:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
+                    )
+
+                # Soft delete - mark as inactive with audit trail
+                await conn.execute(
+                    """
+                    UPDATE customers
+                    SET is_active = false,
+                        deleted_at = NOW(),
+                        deleted_by = $3,
+                        updated_at = NOW()
+                    WHERE id = $1 AND tenant_id = $2
+                    """,
+                    customer_id,
+                    ctx["tenant_id"],
+                    ctx.get("user_id", "system"),
+                )
+
+                logger.info(
+                    f"Customer soft-deleted: {customer_id}, name={existing['nama']}, by={ctx.get('user_id', 'unknown')}"
+                )
+
+                return {
+                    "success": True,
+                    "message": "Customer deactivated successfully",
+                    "data": {"id": str(customer_id), "name": existing["nama"]},
+                }
 
     except HTTPException:
         raise
@@ -912,50 +914,18 @@ async def get_customer_open_invoices(
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
-            # Pure Ledger: Get invoices with journal-based remaining (Law 16)
+            # Phase 3: Open invoices from compute_customer_ar() DB function (Law 16)
             rows = await conn.fetch(
                 """
                 SELECT
-                    si.id, si.invoice_number, si.invoice_date, si.due_date,
-                    si.total_amount,
-                    COALESCE((
-                        SELECT SUM(jl.debit)
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.source_id = si.id AND je.source_type = 'INVOICE'
-                          AND je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND coa.account_code LIKE '1-104%%'
-                    ), 0) - COALESCE((
-                        SELECT SUM(rpa.amount_applied)
-                        FROM receive_payment_allocations rpa
-                        JOIN receive_payments rp ON rp.id = rpa.payment_id
-                        WHERE rpa.invoice_id = si.id AND rpa.tenant_id = $1
-                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
-                    ), 0) - COALESCE((
-                        SELECT SUM(jl.credit)
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.source_id = si.id AND je.source_type = 'INVOICE_REVERSAL'
-                          AND je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND coa.account_code LIKE '1-104%%'
-                    ), 0) - COALESCE((
-                        SELECT SUM(sip_jl.credit)
-                        FROM sales_invoice_payments sip
-                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
-                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
-                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
-                        WHERE sip.invoice_id = si.id AND sip_je.status = 'POSTED'
-                          AND sip_coa.account_code LIKE '1-104%%'
-                    ), 0) as remaining_amount,
-                    CASE WHEN si.due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
-                    GREATEST(0, CURRENT_DATE - si.due_date) as overdue_days
-                FROM sales_invoices si
-                WHERE si.tenant_id = $1
-                  AND si.customer_id = $2
-                  AND si.status IN ('posted', 'partial', 'overdue')
-                ORDER BY si.due_date ASC, si.invoice_date ASC
+                    invoice_id as id, invoice_number, invoice_date, due_date,
+                    invoice_total as total_amount,
+                    outstanding as remaining_amount,
+                    CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
+                    GREATEST(0, CURRENT_DATE - due_date) as overdue_days
+                FROM compute_customer_ar($1, $2)
+                WHERE outstanding > 0
+                ORDER BY due_date ASC, invoice_date ASC
             """,
                 ctx["tenant_id"],
                 customer_id,
@@ -1171,15 +1141,10 @@ async def get_customer_credit(request: Request, customer_id: str):
             if not customer:
                 raise HTTPException(status_code=404, detail="Customer not found")
             credit_limit = customer["credit_limit"] or 0
-            # Pure Ledger: get used credit from journal AR balance
+            # Phase 3: AR balance from compute_customer_ar() DB function
             ar_row = await conn.fetchrow("""
-                SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as ar_balance
-                FROM accounts_receivable ar
-                JOIN journal_entries je ON je.source_id = ar.source_id AND je.tenant_id = ar.tenant_id
-                JOIN journal_lines jl ON jl.journal_id = je.id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE ar.tenant_id = $1 AND ar.customer_id::text = $2
-                  AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
+                SELECT COALESCE(SUM(outstanding), 0) as ar_balance
+                FROM compute_customer_ar($1, $2)
             """, ctx["tenant_id"], customer_id)
             used_credit = int(ar_row["ar_balance"]) if ar_row else 0
             return {
@@ -1200,40 +1165,124 @@ async def get_customer_credit(request: Request, customer_id: str):
 
 
 @router.post("/{customer_id}/opening-balance")
-async def set_customer_opening_balance(request: Request, customer_id: str):
-    """Set or update customer opening AR balance."""
+async def set_customer_opening_balance(request: Request, customer_id: UUID, body: dict):
+    """Set customer opening AR balance via journal entry (Law 1, 7, 20)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        body = await request.json()
         amount = body.get("amount", 0)
+
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+
         async with pool.acquire() as conn:
-            customer = await conn.fetchrow(
-                "SELECT id FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id,
-                ctx["tenant_id"],
-            )
-            if not customer:
-                raise HTTPException(status_code=404, detail="Customer not found")
-            # Law 7: No Balance Override - saldo_hutang is computed from journal.
-            # Opening balance should be set via a journal entry, not a direct UPDATE.
-            # TODO: Create an opening balance journal entry instead.
-            # For now, we update ar_opening_balance as a reference field only.
-            await conn.execute(
-                "UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                amount,
-                customer_id,
-                ctx["tenant_id"],
-            )
-            return {
-                "success": True,
-                "message": "Opening balance updated",
-                "data": {"customer_id": customer_id, "amount": amount},
-            }
+            async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CUSTOMER_OPENING:{str(customer_id)}"
+                )
+
+                # Verify customer exists
+                customer = await conn.fetchrow(
+                    "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                    customer_id, ctx["tenant_id"]
+                )
+                if not customer:
+                    raise HTTPException(status_code=404, detail="Customer not found")
+
+                # Check if opening balance journal already exists
+                existing = await conn.fetchval(
+                    """SELECT id FROM journal_entries
+                    WHERE tenant_id = $1 AND source_type = 'OPENING'
+                    AND source_id = $2 AND status = 'POSTED'""",
+                    ctx["tenant_id"], customer_id
+                )
+                if existing:
+                    raise HTTPException(status_code=400, detail="Opening balance already set. Use reversal to correct.")
+
+                # Resolve accounts (Law 27)
+                from ..services.resolve_account import resolve_account_id
+                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10400')
+                equity_account_id = await resolve_account_id(conn, ctx["tenant_id"], '3-10000')
+
+                # Generate journal number
+                import uuid as uuid_module
+                from datetime import date as dt_date
+                today = dt_date.today()
+                year_month_str = today.strftime("%y%m")
+
+                journal_seq = await conn.fetchval(
+                    """INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                    VALUES ($1, 'OB', $2, $3, 1)
+                    ON CONFLICT (tenant_id, prefix, year, month)
+                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                    RETURNING last_number""",
+                    ctx["tenant_id"], today.year, today.month
+                )
+                journal_number = f"OB-{year_month_str}-{journal_seq:04d}"
+
+                # Law 20: DRAFT→lines→POSTED
+                journal_id = uuid_module.uuid4()
+                trace_id = str(uuid_module.uuid4())
+
+                await conn.execute(
+                    """INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date,
+                        description, source_type, source_id, trace_id,
+                        total_debit, total_credit, status, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, $8, $8, 'DRAFT', $9)""",
+                    journal_id, ctx["tenant_id"], journal_number, today,
+                    f"Saldo Awal Piutang - {customer['nama']}",
+                    customer_id, trace_id, amount, ctx["user_id"]
+                )
+
+                # Dr. AR (1-10400), Cr. Opening Balance Equity (3-10000)
+                await conn.execute(
+                    """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, 1, $3, $4, 0, $5),
+                           ($6, $2, 2, $7, 0, $4, $5)""",
+                    uuid_module.uuid4(), journal_id, ar_account_id, amount,
+                    f"Saldo Awal Piutang - {customer['nama']}",
+                    uuid_module.uuid4(), equity_account_id
+                )
+
+                # Law 20: DRAFT→POSTED
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id
+                )
+
+                # Update reference field (for display only, NOT source of truth)
+                await conn.execute(
+                    "UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                    amount, customer_id, ctx["tenant_id"]
+                )
+
+                # Log activity
+                await conn.execute(
+                    """INSERT INTO customer_activities (tenant_id, customer_id, activity_type, description, created_by)
+                    VALUES ($1, $2, 'opening_balance', $3, $4)""",
+                    ctx["tenant_id"], customer_id,
+                    f"Saldo awal piutang: Rp {amount:,}",
+                    ctx["user_id"]
+                )
+
+                return {
+                    "success": True,
+                    "message": "Opening balance set successfully",
+                    "data": {
+                        "customer_id": str(customer_id),
+                        "amount": amount,
+                        "journal_id": str(journal_id),
+                        "journal_number": journal_number
+                    }
+                }
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error setting opening balance: {e}", exc_info=True)
+        logger.error(f"Error setting opening balance for {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to set opening balance")
 
 
@@ -1313,17 +1362,50 @@ async def merge_customers(request: Request):
             )
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CUSTOMER_MERGE:{str(target_id)}"
+                )
+
                 await conn.execute(
                     "UPDATE sales_invoices SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
                     target_id,
                     ctx["tenant_id"],
                     source_ids,
                 )
+
+                # Update all child tables
                 await conn.execute(
-                    "UPDATE customers SET is_active = false WHERE id = ANY($1) AND tenant_id = $2",
-                    source_ids,
-                    ctx["tenant_id"],
+                    "UPDATE receive_payments SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
+                    target_id, ctx["tenant_id"], source_ids,
                 )
+                await conn.execute(
+                    "UPDATE customer_deposits SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
+                    str(target_id), ctx["tenant_id"], [str(s) for s in source_ids],
+                )
+                await conn.execute(
+                    "UPDATE credit_notes SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
+                    target_id, ctx["tenant_id"], source_ids,
+                )
+                await conn.execute(
+                    "UPDATE accounts_receivable SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
+                    str(target_id), ctx["tenant_id"], [str(s) for s in source_ids],
+                )
+                await conn.execute(
+                    "UPDATE customers SET is_active = false, deleted_at = NOW(), deleted_by = $3 WHERE id = ANY($1) AND tenant_id = $2",
+                    source_ids, ctx["tenant_id"], ctx["user_id"],
+                )
+
+                # Log merge activity
+                for source_id in source_ids:
+                    await conn.execute(
+                        """INSERT INTO customer_activities (tenant_id, customer_id, activity_type, description, created_by)
+                        VALUES ($1, $2, 'merge', $3, $4)""",
+                        ctx["tenant_id"], target_id,
+                        f"Merged customer {source_id} into this customer",
+                        ctx["user_id"]
+                    )
             return {
                 "success": True,
                 "message": f"Merged {len(source_ids)} customers",
@@ -1475,6 +1557,22 @@ async def get_customer_journal_entries(
                     INNER JOIN sales_invoices si ON si.id = sip.invoice_id
                     WHERE {where_clause}
                       AND si.customer_id = ${customer_id_param_idx}
+                    UNION
+                    -- PAYMENT_RECEIVED orphan journals (description-based fallback)
+                    SELECT DISTINCT je.id as journal_id
+                    FROM journal_entries je
+                    WHERE {where_clause}
+                      AND je.source_type = 'PAYMENT_RECEIVED'
+                      AND EXISTS(
+                          SELECT 1 FROM sales_invoices si2
+                          WHERE si2.customer_id = ${customer_id_param_idx}
+                            AND si2.tenant_id = je.tenant_id
+                            AND je.description LIKE '%%' || si2.invoice_number || '%%'
+                      )
+                      AND NOT EXISTS(
+                          SELECT 1 FROM receive_payment_allocations rpa2
+                          WHERE rpa2.payment_id = je.source_id
+                      )
                 )
                 SELECT 
                     je.id,
@@ -1522,8 +1620,8 @@ async def get_customer_journal_entries(
                         "account_id": str(lr["account_id"]),
                         "account_name": lr["account_name"],
                         "account_code": lr["account_code"],
-                        "debit": float(lr["debit"]) if lr["debit"] else 0,
-                        "credit": float(lr["credit"]) if lr["credit"] else 0,
+                        "debit": int(lr["debit"]) if lr["debit"] else 0,
+                        "credit": int(lr["credit"]) if lr["credit"] else 0,
                         "memo": lr["memo"],
                     }
                     for lr in line_rows
@@ -1535,8 +1633,8 @@ async def get_customer_journal_entries(
                     "journal_number": row["journal_number"],
                     "description": row["description"],
                     "source_type": row["source_type"],
-                    "total_debit": float(row["total_debit"]) if row["total_debit"] else 0,
-                    "total_credit": float(row["total_credit"]) if row["total_credit"] else 0,
+                    "total_debit": int(row["total_debit"]) if row["total_debit"] else 0,
+                    "total_credit": int(row["total_credit"]) if row["total_credit"] else 0,
                     "status": row["status"],
                     "lines": lines,
                 })
@@ -1713,7 +1811,7 @@ async def get_customer_activity(
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
                 document_number=row.get("document_number"),
-                total=float(row["total"]) if row.get("total") is not None else None,
+                total=int(row["total"]) if row.get("total") is not None else None,
                 field_name=row.get("field_name"),
                 old_value=row.get("old_value"),
                 new_value=row.get("new_value"),

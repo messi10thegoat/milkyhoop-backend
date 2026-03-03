@@ -67,7 +67,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
     XSS_PATTERNS: List[Pattern] = [
         re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL),
         re.compile(r"javascript\s*:", re.IGNORECASE),
-        re.compile(r"on\w+\s*=", re.IGNORECASE),  # onclick, onerror, etc.
+        re.compile(r"(?:^|\s|['\"])on(click|error|load|mouseover|mouseout|keyup|keydown|focus|blur|change|submit|input|scroll|resize|unload|beforeunload|abort|afterprint|animationend|copy|cut|paste|drag|drop|hashchange|message|offline|online|pagehide|pageshow|popstate|progress|storage|touchstart|touchend|touchmove|wheel)\s*=", re.IGNORECASE),  # HTML event handlers
         re.compile(r"<\s*img[^>]+src\s*=\s*['\"]?\s*javascript:", re.IGNORECASE),
         re.compile(r"<\s*iframe", re.IGNORECASE),
         re.compile(r"<\s*embed", re.IGNORECASE),
@@ -219,19 +219,25 @@ class WAFMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 pass
 
-            # Read and check body
-            try:
-                body = await request.body()
-                if body:
-                    body_str = body.decode("utf-8", errors="ignore")
-                    threat = self._detect_threat(body_str, "Body")
-                    if threat:
-                        logger.warning(
-                            f"WAF: {threat} in body from {request.client.host}"
-                        )
-                        return self._block_request(f"Blocked: {threat}", 403)
-            except Exception as e:
-                logger.error(f"WAF: Error reading body: {e}")
+            # Skip body threat detection for file uploads (multipart/form-data)
+            # CSV/XLSX bank statements contain patterns like -- ; | that trigger false positives
+            content_type = request.headers.get("content-type", "")
+            is_file_upload = "multipart/form-data" in content_type
+
+            # Read and check body (skip threat detection for file uploads)
+            if not is_file_upload:
+                try:
+                    body = await request.body()
+                    if body:
+                        body_str = body.decode("utf-8", errors="ignore")
+                        threat = self._detect_threat(body_str, "Body")
+                        if threat:
+                            logger.warning(
+                                f"WAF: {threat} in body from {request.client.host}"
+                            )
+                            return self._block_request(f"Blocked: {threat}", 403)
+                except Exception as e:
+                    logger.error(f"WAF: Error reading body: {e}")
 
         # All checks passed
         response = await call_next(request)

@@ -46,6 +46,7 @@ from ..schemas.credit_notes import (
     CreditNoteRefundResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,10 +54,10 @@ router = APIRouter()
 # Connection pool
 _pool: Optional[asyncpg.Pool] = None
 
-# Account codes
-AR_ACCOUNT = "1-10300"         # Piutang Usaha
-SALES_RETURN_ACCOUNT = "4-10300"  # Retur Penjualan
-TAX_PAYABLE_ACCOUNT = "2-10300"   # PPN Keluaran
+# Account codes (resolved dynamically via Law 27)
+AR_ACCOUNT_CODE = "1-10300"         # Piutang Usaha
+SALES_RETURN_ACCOUNT_CODE = "4-10300"  # Retur Penjualan
+TAX_PAYABLE_ACCOUNT_CODE = "2-10300"   # PPN Keluaran
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -124,7 +125,7 @@ def calculate_item_totals(item: dict) -> dict:
 
 
 
-async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> float:
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
     """Compute invoice remaining from journal lines on AR account (Law 16).
 
     For sales invoices:
@@ -141,7 +142,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.status = 'POSTED'
-            AND coa.account_code = '1-10400'
+            AND coa.account_code = '1-10400'  -- Law 27: read filter, resolved via JOIN
             AND je.tenant_id = $1
             AND (
                 -- Original invoice journal
@@ -151,6 +152,13 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                     SELECT 1 FROM receive_payment_allocations rpa
                     WHERE rpa.invoice_id = $2 AND rpa.payment_id = je.source_id
                 ))
+                -- PAYMENT_RECEIVED orphan journals (description-based fallback)
+                OR (je.source_type = 'PAYMENT_RECEIVED'
+                    AND je.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $2) || '%%'
+                    AND NOT EXISTS(
+                        SELECT 1 FROM receive_payment_allocations rpa2
+                        WHERE rpa2.payment_id = je.source_id AND rpa2.tenant_id = $1
+                    ))
                 -- Credit note journals linked via allocations
                 OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
                     SELECT 1 FROM credit_note_applications cna
@@ -161,9 +169,16 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                     SELECT 1 FROM customer_deposit_applications cda
                     WHERE cda.invoice_id = $2 AND cda.deposit_id = je.source_id
                 ))
+                -- Invoice reversal (partial void)
+                OR (je.source_type = 'INVOICE_REVERSAL' AND je.source_id = $2)
+                -- Inline payments from sales_invoices.py
+                OR (je.id IN (
+                    SELECT sip.journal_id FROM sales_invoice_payments sip
+                    WHERE sip.invoice_id = $2
+                ))
             )
     """, tenant_id, invoice_id)
-    return float(result or 0)
+    return int(result or 0)
 
 # =============================================================================
 # LIST CREDIT NOTES
@@ -838,6 +853,9 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE:{credit_note_id}")
+
                 # Get credit note
                 cn = await conn.fetchrow("""
                     SELECT * FROM credit_notes
@@ -853,16 +871,18 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         detail=f"Cannot post credit note with status '{cn['status']}'"
                     )
 
-                # Get account IDs
-                ar_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], AR_ACCOUNT)
 
-                sales_return_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], SALES_RETURN_ACCOUNT)
+                # Law 5: Period lock check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], cn["credit_note_date"])
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
+                # Get account IDs
+                # Law 27: Resolve account IDs dynamically
+                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT_CODE)
+                sales_return_account_id = await resolve_account_id(conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE)
 
                 if not ar_account_id or not sales_return_account_id:
                     raise HTTPException(
@@ -894,7 +914,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE', $6, $7, 'POSTED', $8, $8, $9)
+                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE', $6, $7, 'DRAFT', $8, $8, $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -903,7 +923,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     f"Credit Note {cn['credit_note_number']} - {cn['customer_name']}",
                     credit_note_id,
                     str(trace_id),
-                    float(total_amount),
+                    total_amount,
                     ctx["user_id"]
                 )
 
@@ -920,17 +940,14 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     journal_id,
                     line_number,
                     sales_return_account_id,
-                    float(subtotal),
+                    subtotal,
                     f"Retur Penjualan - {cn['credit_note_number']}"
                 )
                 line_number += 1
 
                 # Dr. VAT Payable (if tax)
                 if tax_amount > 0:
-                    tax_account_id = await conn.fetchval("""
-                        SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1 AND account_code = $2
-                    """, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT)
+                    tax_account_id = await resolve_account_id(conn, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT_CODE)
 
                     if tax_account_id:
                         await conn.execute("""
@@ -942,7 +959,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                             journal_id,
                             line_number,
                             tax_account_id,
-                            float(tax_amount),
+                            tax_amount,
                             f"PPN Retur - {cn['credit_note_number']}"
                         )
                         line_number += 1
@@ -957,9 +974,12 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     journal_id,
                     line_number,
                     ar_account_id,
-                    float(total_amount),
+                    total_amount,
                     f"Pengurangan Piutang - {cn['credit_note_number']}"
                 )
+
+                # Law 20: Promote DRAFT -> POSTED after all lines inserted
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
                 # Update credit note status
                 await conn.execute("""
@@ -1010,6 +1030,9 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_APPLY:{credit_note_id}")
+
                 # Get credit note
                 cn = await conn.fetchrow("""
                     SELECT * FROM credit_notes
@@ -1171,6 +1194,9 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_REFUND:{credit_note_id}")
+
                 # Get credit note
                 cn = await conn.fetchrow("""
                     SELECT * FROM credit_notes
@@ -1209,7 +1235,14 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
 
-                # Create refund journal
+                                # Law 5: Period lock check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], body.refund_date)
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
+# Create refund journal
                 journal_number = await conn.fetchval(
                     "SELECT get_next_journal_number($1, 'RF')",
                     ctx["tenant_id"]
@@ -1220,7 +1253,7 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_REFUND', $6, $7, 'POSTED', $8, $8, $9)
+                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_REFUND', $6, $7, 'DRAFT', $8, $8, $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -1229,15 +1262,13 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
                     credit_note_id,
                     str(trace_id),
-                    float(body.amount),
+                    body.amount,
                     ctx["user_id"]
                 )
 
                 # Get AR account
-                ar_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], AR_ACCOUNT)
+                # Law 27: Resolve AR account dynamically
+                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT_CODE)
 
                 # Dr. AR (reverse the credit)
                 await conn.execute("""
@@ -1248,7 +1279,7 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     uuid_module.uuid4(),
                     journal_id,
                     ar_account_id,
-                    float(body.amount),
+                    body.amount,
                     f"Refund Piutang - {cn['credit_note_number']}"
                 )
 
@@ -1261,11 +1292,14 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     uuid_module.uuid4(),
                     journal_id,
                     UUID(body.account_id),
-                    float(body.amount),
+                    body.amount,
                     f"Pembayaran Refund - {cn['credit_note_number']}"
                 )
 
-                # Create refund record
+                                # Law 20: Promote DRAFT -> POSTED after all lines inserted
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+
+# Create refund record
                 await conn.execute("""
                     INSERT INTO credit_note_refunds (
                         id, tenant_id, credit_note_id, amount, refund_date,
@@ -1329,6 +1363,9 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_VOID:{credit_note_id}")
+
                 # Get credit note
                 cn = await conn.fetchrow("""
                     SELECT * FROM credit_notes
@@ -1366,7 +1403,14 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                         detail="Cannot void credit note with refunds. Reverse refunds first."
                     )
 
-                # Create reversal journal if original was posted
+                                # Law 5: Period lock check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], date.today())
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
+# Create reversal journal if original was posted
                 if cn["journal_id"]:
                     import uuid as uuid_module
                     reversal_journal_id = uuid_module.uuid4()
@@ -1387,7 +1431,7 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'CREDIT_NOTE', $5, $6, 'POSTED', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'CREDIT_NOTE', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1395,7 +1439,7 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                         f"Void {cn['credit_note_number']} - {cn['customer_name']}",
                         credit_note_id,
                         cn["journal_id"],
-                        float(cn["total_amount"]),
+                        cn["total_amount"],
                         ctx["user_id"]
                     )
 
@@ -1415,7 +1459,10 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                             f"Reversal - {line['memo'] or ''}"
                         )
 
-                    # Mark original journal as reversed
+                                        # Law 20: Promote DRAFT -> POSTED after all lines inserted
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)
+
+# Mark original journal as reversed
                     await conn.execute("""
                         UPDATE journal_entries
                         SET reversed_by_id = $2, status = 'VOID'

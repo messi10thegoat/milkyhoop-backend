@@ -1,0 +1,242 @@
+scenarios:
+- id: API-001
+  category: action_purchase_invoice
+  description: Direct complete purchase invoice with vendor, item, quantity, and price
+  messages:
+  - buat faktur pembelian dari PT Wave4 Regression, Kaos Oblong 24s 100 pcs harga 25000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4 Regression
+  - Kaos Oblong
+  tags:
+  - action
+  - purchase
+  - direct
+  timeout_seconds: 60
+- id: API-002
+  category: action_purchase_invoice
+  description: Natural language purchase with @ price notation
+  messages:
+  - beli 50 kemeja batik dari Test Vendor, @35000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Test Vendor
+  - Kemeja Batik
+  tags:
+  - action
+  - purchase
+  - natural
+  timeout_seconds: 60
+- id: API-003
+  category: action_purchase_invoice
+  description: Slang catat pembelian with abbreviated price 20rb
+  messages:
+  - catat pembelian dari Wave4, kaos 24s 200 pcs 20rb
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Wave4
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - slang
+  timeout_seconds: 60
+- id: API-004
+  category: action_purchase_invoice
+  description: Multi-item purchase invoice with two items and prices
+  messages:
+  - 'faktur beli dari PT Wave4: Kaos 24s 100 @25000, Kemeja Batik 50 @35000'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4
+  - Kaos
+  - Kemeja Batik
+  tags:
+  - action
+  - purchase
+  - multi-item
+  timeout_seconds: 60
+- id: API-005
+  category: action_purchase_invoice
+  description: Purchase invoice with percentage discount
+  messages:
+  - beli dari Test Vendor, Dryfit NFL 100 pcs @40000, diskon 5%
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Test Vendor
+  - Dryfit NFL
+  tags:
+  - action
+  - purchase
+  - discount
+  timeout_seconds: 60
+- id: API-006
+  category: action_purchase_invoice
+  description: Purchase invoice with 60-day due date
+  messages:
+  - faktur pembelian PT Wave4 Regression, Emas 24 Karat 5 pcs, jatuh tempo 60 hari
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4 Regression
+  - Emas 24 Karat
+  tags:
+  - action
+  - purchase
+  - due-date
+  timeout_seconds: 60
+- id: API-007
+  category: action_purchase_invoice
+  description: Abbreviated FPB with short vendor name
+  messages:
+  - FPB dari Wave4, kaos 200 pcs 20000
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Wave4
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - abbreviation
+  timeout_seconds: 60
+- id: API-008
+  category: action_purchase_invoice
+  description: English mixed language purchase invoice
+  messages:
+  - purchase invoice from PT Wave4 Regression, Kaos Oblong 100 pcs @25000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4 Regression
+  - Kaos Oblong
+  tags:
+  - action
+  - purchase
+  - english-mix
+  timeout_seconds: 60
+- id: API-009
+  category: action_purchase_invoice
+  description: Polite request with tolong catat
+  messages:
+  - tolong catat faktur pembelian dari Test Vendor, Kemeja Batik 30 pcs @35000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Test Vendor
+  - Kemeja Batik
+  tags:
+  - action
+  - purchase
+  - polite
+  timeout_seconds: 60
+- id: API-010
+  category: action_purchase_invoice
+  description: Purchase with delivery notes
+  messages:
+  - 'beli kaos 24s 100 dari Wave4, catatan: pengiriman minggu depan'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Wave4
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - notes
+  timeout_seconds: 60
+- id: API-011
+  category: action_purchase_invoice
+  description: Minimal terse purchase request
+  messages:
+  - beli kaos 100 dari Wave4 @25000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Wave4
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - minimal
+  timeout_seconds: 60
+- id: API-012
+  category: action_purchase_invoice
+  description: Formal polite request with mohon and Rp formatting
+  messages:
+  - mohon dibuatkan faktur pembelian kepada PT Wave4 Regression untuk pembelian Kaos Oblong Gramasi 24s 100 unit @Rp25.000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4 Regression
+  - Kaos Oblong Gramasi 24s
+  tags:
+  - action
+  - purchase
+  - formal
+  timeout_seconds: 60
+- id: API-013
+  category: action_purchase_invoice
+  description: Restock context for purchase
+  messages:
+  - restock kaos 24s 200 pcs dari PT Wave4 Regression @20000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - PT Wave4 Regression
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - restock
+  timeout_seconds: 60
+- id: API-014
+  category: action_purchase_invoice
+  description: Mixed invoice pembelian with abbreviated price 45rb
+  messages:
+  - buat invoice pembelian dari Test Vendor, beli Dryfit NFL 50 pcs 45rb
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Test Vendor
+  - Dryfit NFL
+  tags:
+  - action
+  - purchase
+  - mixed
+  timeout_seconds: 60
+- id: API-015
+  category: action_purchase_invoice
+  description: Typo tolerance in fktur pembelian
+  messages:
+  - buat fktur pembelian dari Wave4, kaos 24s 100 @25000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains:
+  - Wave4
+  - Kaos
+  tags:
+  - action
+  - purchase
+  - typo
+  timeout_seconds: 60

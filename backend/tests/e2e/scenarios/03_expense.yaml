@@ -1,0 +1,27 @@
+scenarios:
+  - id: "EX-001"
+    category: "happy_path"
+    description: "Record expense paid from cash"
+    messages:
+      - "catat biaya listrik bulan ini Rp 750000 dibayar dari kas"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_EXPENSE"
+    expect_contains: ["750"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: true
+    verify_journal:
+      balanced: true
+    preconditions: []
+    tags: ["expense", "happy_path"]
+
+  - id: "EX-002"
+    category: "happy_path"
+    description: "Record internet expense"
+    messages:
+      - "catat biaya internet bulan ini 500000 bayar dari bank"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_EXPENSE"
+    expect_contains: ["500"]
+    expect_confirm_success: true
+    preconditions: []
+    tags: ["expense", "happy_path"]

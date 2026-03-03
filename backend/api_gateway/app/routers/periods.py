@@ -26,6 +26,7 @@ from ..schemas.periods import (
     TrialBalanceSnapshotResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account, resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -523,6 +524,12 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
             )
 
 
+            # Law 13: Advisory lock for period close journal creation
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"PERIOD_CLOSE:{period_id}",
+            )
+
             # ── Create closing journal entries ──────────────────────────
             # DR all REVENUE accounts (zero them out)
             # CR all EXPENSE accounts (zero them out)
@@ -544,13 +551,7 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
 
             if income_accounts or expense_accounts:
                 # Get Retained Earnings account
-                retained_earnings = await conn.fetchrow(
-                    """
-                    SELECT id, account_code FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = '3-20000'
-                    """,
-                    ctx["tenant_id"],
-                )
+                retained_earnings = await resolve_account(conn, ctx["tenant_id"], '3-20000')
 
                 if retained_earnings:
                     total_income = sum(b for _, _, b in income_accounts)
@@ -573,7 +574,7 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                             description, source_type, status,
                             total_debit, total_credit,
                             created_by, period_id
-                        ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 'CLOSING', 'POSTED',
+                        ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 'CLOSING', 'DRAFT',  -- Law 20: DRAFT first
                                   $5, $5, $6, $7)
                         RETURNING id
                         """,
@@ -640,6 +641,15 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                             abs(net_income), "Net loss to Retained Earnings",
                         )
 
+                    # Law 20: Finalize DRAFT -> POSTED after all lines inserted
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries SET status = 'POSTED'
+                        WHERE id = $1
+                        """,
+                        closing_journal_id,
+                    )
+
                     logger.info(f"Created closing journal {clo_number} with {line_num} lines")
 
             # Close the period
@@ -667,8 +677,8 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     "trial_balance_snapshot": TrialBalanceSnapshotResponse(
                         id=str(snapshot_id),
                         as_of_date=period["end_date"],
-                        total_debit=float(total_debit),
-                        total_credit=float(total_credit),
+                        total_debit=total_debit,  # Law 25: numeric(18,2) — no float() conversion
+                        total_credit=total_credit,  # Law 25: numeric(18,2) — no float() conversion
                         is_balanced=is_balanced,
                         generated_at=datetime.now(),
                     ),

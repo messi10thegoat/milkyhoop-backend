@@ -1,0 +1,33 @@
+scenarios:
+  - id: "ERR-001"
+    category: "error"
+    description: "Non-existent customer should not crash"
+    messages:
+      - "buatkan faktur penjualan ke PT XYZ Tidak Ada Regression Test 99, kaos 10 pcs harga 50000"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["traceback", "500", "Internal Server Error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["error_handling"]
+
+  - id: "ERR-002"
+    category: "error"
+    description: "Invalid amount should be handled gracefully"
+    messages:
+      - "buatkan faktur penjualan ke Grapgrap, kaos 10 pcs harga minus 50000"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["traceback", "500"]
+    expect_confirm_success: null
+    preconditions: ["customer_exists:Grapgrap"]
+    tags: ["error_handling"]
+
+  - id: "ERR-003"
+    category: "error"
+    description: "Gibberish input should not crash"
+    messages:
+      - "asdfghjkl zxcvbnm 12345"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["traceback", "500", "Internal Server Error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["error_handling", "edge_case"]

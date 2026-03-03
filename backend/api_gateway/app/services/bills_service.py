@@ -22,6 +22,61 @@ import asyncpg
 from ..utils.sorting import build_order_by_clause
 from ..utils.money import cents_to_decimal_string
 
+# Law 16: Journal-derived amount_paid CTE (used by list_bills, get_outstanding_summary)
+# Computes per-bill paid amount from journal_lines via BOTH payment table paths
+BILL_JOURNAL_PAID_CTE = """
+    bill_journal_paid AS (
+        SELECT
+            bill_id,
+            COALESCE(SUM(paid), 0) AS journal_paid
+        FROM (
+            -- Path 1: Old bill_payments table
+            SELECT bp.bill_id, SUM(jl.debit) AS paid
+            FROM bill_payments bp
+            JOIN journal_entries je ON je.id = bp.journal_id
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE bp.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND coa.account_type = 'PAYABLE'
+              AND jl.debit > 0
+            GROUP BY bp.bill_id
+            UNION ALL
+            -- Path 2: New bill_payment_allocations + bill_payments_v2
+            SELECT bpa.bill_id, SUM(jl.debit) AS paid
+            FROM bill_payment_allocations bpa
+            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
+            JOIN journal_entries je ON je.id = bpv2.journal_id
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE bpv2.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND bpv2.journal_id IS NOT NULL
+              AND coa.account_type = 'PAYABLE'
+              AND jl.debit > 0
+            GROUP BY bpa.bill_id
+            UNION ALL
+            -- Path 3: Adjustments (source_type = ADJUSTMENT, source_id = bill_id)
+            SELECT je.source_id::uuid AS bill_id, SUM(jl.debit) AS paid
+            FROM journal_entries je
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE je.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND je.source_type = 'ADJUSTMENT'
+              AND coa.account_type = 'PAYABLE'
+              AND jl.debit > 0
+            GROUP BY je.source_id
+        ) combined
+        GROUP BY bill_id
+    )
+"""
+
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,7 +244,7 @@ class BillsService:
 
         async with self.pool.acquire() as conn:
             # Build WHERE clause
-            conditions = ["tenant_id = $1"]
+            conditions = ["b.tenant_id = $1"]
             params: List[Any] = [tenant_id]
             param_idx = 2
 
@@ -199,11 +254,11 @@ class BillsService:
             if status != "all":
                 computed_status_expr = """
                     CASE
-                        WHEN status = 'void' THEN 'void'
-                        WHEN amount_paid >= amount THEN 'paid'
-                        WHEN amount_paid > 0 AND due_date < CURRENT_DATE THEN 'overdue'
-                        WHEN amount_paid > 0 THEN 'partial'
-                        WHEN due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.status = 'void' THEN 'void'
+                        WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
+                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
                         ELSE 'unpaid'
                     END
                 """
@@ -214,25 +269,25 @@ class BillsService:
             # Search filter
             if search:
                 conditions.append(
-                    f"(invoice_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx})"
+                    f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
 
             # Date range filter
             if due_date_from:
-                conditions.append(f"due_date >= ${param_idx}")
+                conditions.append(f"b.due_date >= ${param_idx}")
                 params.append(due_date_from)
                 param_idx += 1
 
             if due_date_to:
-                conditions.append(f"due_date <= ${param_idx}")
+                conditions.append(f"b.due_date <= ${param_idx}")
                 params.append(due_date_to)
                 param_idx += 1
 
             # Vendor filter
             if vendor_id:
-                conditions.append(f"vendor_id = ${param_idx}")
+                conditions.append(f"b.vendor_id = ${param_idx}")
                 params.append(vendor_id)
                 param_idx += 1
 
@@ -240,59 +295,68 @@ class BillsService:
 
             # Build compound ORDER BY clause
             field_mapping = {
-                "created_at": "created_at",
-                "date": "issue_date",
-                "number": "invoice_number",
-                "supplier": "vendor_name",
-                "due_date": "due_date",
-                "amount": "COALESCE(grand_total, amount)",
-                "balance": "(COALESCE(amount, 0) - COALESCE(amount_paid, 0))",
-                "updated_at": "updated_at",
+                "created_at": "b.created_at",
+                "date": "b.issue_date",
+                "number": "b.invoice_number",
+                "supplier": "b.vendor_name",
+                "due_date": "b.due_date",
+                "amount": "COALESCE(b.grand_total, b.amount)",
+                "balance": "(COALESCE(b.amount, 0) - COALESCE(bjp.journal_paid, 0))",
+                "updated_at": "b.updated_at",
                 # Status ordering: overdue(1) > unpaid(2) > partial(3) > paid(4) > void(6)
+                # Law 16: uses journal-derived bjp.journal_paid
                 "status": """CASE
-                    WHEN status = 'void' THEN 6
-                    WHEN amount_paid >= amount THEN 4
-                    WHEN amount_paid > 0 AND due_date < CURRENT_DATE THEN 1
-                    WHEN amount_paid > 0 THEN 3
-                    WHEN due_date < CURRENT_DATE THEN 1
+                    WHEN b.status = 'void' THEN 6
+                    WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 4
+                    WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 1
+                    WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 3
+                    WHEN b.due_date < CURRENT_DATE THEN 1
                     ELSE 2
                 END""",
                 # Legacy aliases
-                "vendor_name": "vendor_name",
-                "invoice_number": "invoice_number",
+                "vendor_name": "b.vendor_name",
+                "invoice_number": "b.invoice_number",
             }
 
             order_by_clause = build_order_by_clause(sort_fields, field_mapping)
 
             # Get total count
-            count_query = f"SELECT COUNT(*) FROM bills WHERE {where_clause}"
+            count_query = f"""
+                WITH {BILL_JOURNAL_PAID_CTE}
+                SELECT COUNT(*) FROM bills b
+                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                WHERE {where_clause}
+            """
             total = await conn.fetchval(count_query, *params)
 
             # Get items with dynamic status calculation
+            # Law 16: Journal-derived amount_paid via CTE
             query = f"""
+                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
-                    id,
-                    invoice_number,
-                    vendor_id,
-                    vendor_name,
-                    amount,
-                    amount_paid,
-                    (amount - amount_paid) as amount_due,
+                    b.id,
+                    b.invoice_number,
+                    b.vendor_id,
+                    b.vendor_name,
+                    b.amount,
+                    COALESCE(bjp.journal_paid, 0) as amount_paid,
+                    (b.amount - COALESCE(bjp.journal_paid, 0)) as amount_due,
                     CASE
-                        WHEN status = 'void' THEN 'void'
-                        WHEN amount_paid >= amount THEN 'paid'
-                        WHEN amount_paid > 0 AND due_date < CURRENT_DATE THEN 'overdue'
-                        WHEN amount_paid > 0 THEN 'partial'
-                        WHEN due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.status = 'void' THEN 'void'
+                        WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
+                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
                         ELSE 'unpaid'
                     END as status,
-                    issue_date,
-                    due_date,
-                    created_at,
-                    updated_at,
-                    operational_status,
-                    accounting_status
-                FROM bills
+                    b.issue_date,
+                    b.due_date,
+                    b.created_at,
+                    b.updated_at,
+                    b.operational_status,
+                    b.accounting_status
+                FROM bills b
+                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
                 WHERE {where_clause}
                 ORDER BY {order_by_clause}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -351,20 +415,25 @@ class BillsService:
             Bill detail dict or None if not found
         """
         async with self.pool.acquire() as conn:
-            # Get bill
+            # Get bill -- Law 16: journal-derived amount_paid via compute_ap_outstanding()
             bill_query = """
                 SELECT
                     b.*,
-                    (b.amount - b.amount_paid) as amount_due,
+                    COALESCE(ap.paid_amount, 0) AS journal_paid,
+                    (b.amount - COALESCE(ap.paid_amount, 0)) as amount_due,
                     CASE
                         WHEN b.status = 'void' THEN 'void'
-                        WHEN b.amount_paid >= b.amount THEN 'paid'
-                        WHEN b.amount_paid > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
-                        WHEN b.amount_paid > 0 THEN 'partial'
+                        WHEN COALESCE(ap.paid_amount, 0) >= b.amount THEN 'paid'
+                        WHEN COALESCE(ap.paid_amount, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(ap.paid_amount, 0) > 0 THEN 'partial'
                         WHEN b.due_date < CURRENT_DATE THEN 'overdue'
                         ELSE 'unpaid'
                     END as calculated_status
                 FROM bills b
+                LEFT JOIN LATERAL (
+                    SELECT paid_amount FROM compute_ap_outstanding($2)
+                    WHERE bill_id = $1
+                ) ap ON true
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
             bill = await conn.fetchrow(bill_query, bill_id, tenant_id)
@@ -424,7 +493,7 @@ class BillsService:
                     "initials": initials,
                 },
                 "amount": self._money_str(bill["amount"]),
-                "amount_paid": self._money_str(bill["amount_paid"]),
+                "amount_paid": self._money_str(bill["journal_paid"]),  # Law 16: journal-derived
                 "amount_due": self._money_str(bill["amount_due"]),
                 "status": bill["calculated_status"],
                 "issue_date": bill["issue_date"].isoformat(),
@@ -1008,12 +1077,15 @@ class BillsService:
                 bank_account = None
 
                 if bank_account_id:
-                    # NEW FLOW: Use bank_account_id
+                    # NEW FLOW: Use bank_account_id (Law 21: journal-derived balance)
                     bank_account = await conn.fetchrow(
                         """
-                        SELECT id, coa_id, account_type, account_name, current_balance
-                        FROM bank_accounts
-                        WHERE id = $1 AND tenant_id = $2 AND is_active = true
+                        SELECT ba.id, ba.coa_id, ba.account_type, ba.account_name,
+                            (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0)
+                             FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                             WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance
+                        FROM bank_accounts ba
+                        WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.is_active = true
                     """,
                         bank_account_id,
                         tenant_id,
@@ -1248,206 +1320,308 @@ class BillsService:
         self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID
     ) -> Dict[str, Any]:
         """
-        Void a bill. Only allowed if no payments have been made.
+        Void a bill following Iron Laws:
+        - Law 2: Journal Immutability — creates REVERSAL journal, not delete
+        - Law 3: Append-Only — inventory reversed via new ledger entry
+        - Law 4: Double-Entry — reversal must balance
+        - Law 13: Advisory lock BILL_VOID:{bill_id} before any reads
+        - Law 20: DRAFT->POSTED for hash chain integrity
+        - Law 23: Single atomic transaction
 
-        For bills with payments, use refund flow instead:
-        1. Refund the payments first
-        2. Then void the bill
-
-        Returns:
-            {success: bool, message: str, data: {...}}
+        P4-fix: Rewrites D1-D7 defects.
+        D1: Advisory lock added
+        D2: Single transaction (no facade delegation)
+        D3: Journal failure raises exception (no silent swallow)
+        D4: WAC formula correct (snapshot, no recalc on outbound)
+        D5: inventory_ledger.journal_id -> reversal journal (not original)
+        D6: source_type = BILL_VOID (not BILL)
+        D7: TOCTOU fix (re-read after lock with FOR UPDATE)
         """
+        from .inventory_helpers import record_inventory_reversal
+
         async with self.pool.acquire() as conn:
-            # Get bill with amount_paid
-            bill = await conn.fetchrow(
-                """
-                SELECT id, status, journal_id, ap_id, amount_paid, invoice_number, issue_date, vendor_name
-                FROM bills
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bill_id,
-                tenant_id,
+            # Pre-check: fast fail before lock (non-authoritative)
+            bill_exists = await conn.fetchrow(
+                "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
+                bill_id, tenant_id,
             )
-
-            if not bill:
+            if not bill_exists:
                 return {"success": False, "message": "Bill not found", "data": None}
-
-            if bill["status"] == "void":
-                return {
-                    "success": False,
-                    "message": "Bill is already voided",
-                    "data": None,
-                }
-
-            # Block void if payments exist
-            if bill["amount_paid"] > 0:
-                return {
-                    "success": False,
-                    "message": "Cannot void bill with payments. Refund the payments first.",
-                    "data": None,
-                }
+            if bill_exists["status"] == "void":
+                return {"success": False, "message": "Bill is already voided", "data": None}
 
             async with conn.transaction():
+                # D1 FIX: Advisory lock FIRST — Law 13
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BILL_VOID:{str(bill_id)}",
+                )
+
+                # D7 FIX: Re-read after lock with FOR UPDATE (TOCTOU)
+                bill = await conn.fetchrow(
+                    """
+                    SELECT id, status, status_v2, journal_id, ap_id, amount,
+                           invoice_number, issue_date, vendor_name, vendor_id,
+                           warehouse_id
+                    FROM bills
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    bill_id, tenant_id,
+                )
+
+                if not bill:
+                    return {"success": False, "message": "Bill not found", "data": None}
+
+                if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
+                    return {
+                        "success": False,
+                        "message": "Bill is already voided",
+                        "data": None,
+                    }
+
+                # Check journal-derived payments (Law 16 — NOT amount_paid cache)
+                journal_paid = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(paid), 0) FROM (
+                        SELECT SUM(jl.debit) AS paid
+                        FROM bill_payments bp
+                        JOIN journal_entries je ON je.id = bp.journal_id
+                        JOIN journal_lines jl ON jl.journal_id = je.id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE bp.bill_id = $1 AND bp.tenant_id = $2
+                          AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
+                        UNION ALL
+                        SELECT SUM(jl.debit) AS paid
+                        FROM bill_payment_allocations bpa
+                        JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
+                        JOIN journal_entries je ON je.id = bpv2.journal_id
+                        JOIN journal_lines jl ON jl.journal_id = je.id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE bpa.bill_id = $1 AND bpv2.tenant_id = $2
+                          AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                          AND bpv2.journal_id IS NOT NULL
+                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
+                    ) combined
+                    """,
+                    bill_id, tenant_id,
+                )
+
+                if journal_paid and journal_paid > 0:
+                    return {
+                        "success": False,
+                        "message": "Cannot void bill with payments. Refund the payments first.",
+                        "data": None,
+                    }
+
                 reason = request.get("reason", "Voided")
+                reversal_journal_id = None
+                today = date.today()
 
-                # 1. Void AP and create reversal journal (REQUIRED - atomic)
-                # Must void AP before updating bill status
-                if not bill["ap_id"]:
-                    logger.warning(
-                        f"Bill {bill_id} has no AP record - data integrity issue"
-                    )
-                    # Allow void for data cleanup, but log warning
-                elif not self.accounting:
-                    raise ValueError(
-                        "Accounting kernel not available. Void requires AP integration."
-                    )
-                else:
-                    ap_result = await self.accounting.void_payable(
-                        tenant_id=tenant_id,
-                        ap_id=bill["ap_id"],
-                        void_reason=reason,
-                        voided_by=user_id,
+                # ============================================================
+                # 1. Create REVERSAL Journal (D2/D3 FIX: direct, not via facade)
+                # Law 2: Immutability — reversal, not delete
+                # Law 20: DRAFT->POSTED for hash chain
+                # ============================================================
+                if bill["journal_id"]:
+                    # Read original journal lines to create exact mirror
+                    original_lines = await conn.fetch(
+                        """
+                        SELECT account_id, debit, credit, memo, line_number
+                        FROM journal_lines
+                        WHERE journal_id = $1
+                        ORDER BY line_number
+                        """,
+                        bill["journal_id"],
                     )
 
-                    if not ap_result.get("success"):
-                        # Rollback by raising exception
+                    if not original_lines:
                         raise ValueError(
-                            f"AP void failed: {ap_result.get('error', 'Unknown error')}. "
-                            "Void rolled back."
+                            f"Bill {bill_id} has journal_id {bill['journal_id']} "
+                            "but no journal lines. Data integrity issue."
                         )
 
-                # 2. Reverse inventory_ledger entries (W1 FIX)
-                # Get bill items and reverse any inventory_ledger entries
-                bill_items = await conn.fetch(
-                    """
-                    SELECT bi.*, p.nama_produk, p.item_code, p.track_inventory, p.item_type
-                    FROM bill_items bi
-                    LEFT JOIN products p ON bi.product_id = p.id
-                    WHERE bi.bill_id = $1
-                    ORDER BY bi.line_number
-                    """,
-                    bill_id,
-                )
-
-                # Get default warehouse for tenant
-                default_warehouse = await conn.fetchrow(
-                    "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
-                    tenant_id
-                )
-                warehouse_id = default_warehouse["id"] if default_warehouse else None
-
-                for bi in bill_items:
-                    product_id = bi.get("product_id")
-                    if not product_id:
-                        continue
-
-                    if bi["item_type"] != "goods" or not bi.get("track_inventory", True):
-                        continue
-
-                    quantity = Decimal(str(bi["quantity"]))
-                    unit_cost = Decimal(str(bi["unit_price"]))
-                    total_cost = quantity * unit_cost
-
-                    # Reverse: original was quantity_in (purchase), so now quantity_out
-                    qty_in = Decimal("0")
-                    qty_out = quantity
-
-                    # Get current running balance
-                    balance_row = await conn.fetchrow(
-                        """
-                        SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                        FROM inventory_ledger
-                        WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                        tenant_id, product_id
-                    )
-                    current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
-                    new_balance = current_balance - quantity
-
-                    # Recalculate weighted average cost
-                    avg_cost_row = await conn.fetchrow(
-                        """
-                        SELECT
-                            COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
-                            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                        FROM inventory_ledger
-                        WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                        tenant_id, product_id
+                    total_amount = sum(
+                        Decimal(str(line["debit"])) for line in original_lines
                     )
 
-                    if avg_cost_row and avg_cost_row["total_qty"] > 0:
-                        old_value = Decimal(str(avg_cost_row["total_value"]))
-                        old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                        new_avg_cost = old_value / old_qty
-                    else:
-                        new_avg_cost = unit_cost
+                    # Get next reversal journal number
+                    year_month_str = today.strftime("%y%m")
+                    rev_seq = await conn.fetchval(
+                        """
+                        INSERT INTO journal_number_sequences
+                            (tenant_id, prefix, year, month, last_number)
+                        VALUES ($1, 'REV', $2, $3, 1)
+                        ON CONFLICT (tenant_id, prefix, year, month)
+                        DO UPDATE SET
+                            last_number = journal_number_sequences.last_number + 1,
+                            updated_at = NOW()
+                        RETURNING last_number
+                        """,
+                        tenant_id, today.year, today.month,
+                    )
+                    rev_journal_number = f"REV-{year_month_str}-{rev_seq:04d}"
 
-                    # INSERT reversal into inventory_ledger
+                    from uuid import uuid4 as _uuid4
+
+                    reversal_journal_id = _uuid4()
+                    trace_id = str(_uuid4())
+
+                    # Create reversal journal (DRAFT first — Law 20)
                     await conn.execute(
                         """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, created_by, notes
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, trace_id,
+                            total_debit, total_credit,
+                            status, created_by, reversal_of_id, reversal_reason
                         ) VALUES (
-                            $1, $2, $3, $4,
-                            'PURCHASE_RETURN', CURRENT_DATE, 'BILL', $5, $6,
-                            $7, $8, $9,
-                            $10, $11, $12,
-                            $13, $14, $15, $16
+                            $1, $2, $3, $4, $5, 'REVERSAL', $6, $7,
+                            $8, $8, 'DRAFT', $9, $10, $11
                         )
                         """,
-                        tenant_id,
-                        product_id,
-                        bi.get("product_code") or bi.get("item_code"),
-                        bi.get("product_name") or bi.get("nama_produk"),
-                        bill_id,
-                        bill["invoice_number"],
-                        float(qty_in),
-                        float(qty_out),
-                        float(new_balance),
-                        float(unit_cost),
-                        float(total_cost),
-                        float(new_avg_cost),
-                        warehouse_id,
-                        bill["journal_id"],
-                        user_id,
-                        f"Void bill {bill['invoice_number']} - inventory reversal"
+                        reversal_journal_id, tenant_id, rev_journal_number, today,
+                        f"VOID: Bill {bill['invoice_number']} - {bill['vendor_name']}",
+                        bill_id, trace_id,
+                        total_amount, user_id,
+                        bill["journal_id"],  # reversal_of_id
+                        reason,
+                    )
+
+                    # Mirror journal lines (swap debit <-> credit)
+                    for idx, line in enumerate(original_lines, 1):
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines
+                                (journal_id, account_id, debit, credit, memo, line_number)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            reversal_journal_id,
+                            line["account_id"],
+                            line["credit"],  # original credit -> reversal debit
+                            line["debit"],   # original debit -> reversal credit
+                            f"VOID: {line['memo'] or bill['invoice_number']}",
+                            idx,
+                        )
+
+                    # DRAFT -> POSTED (Law 20: triggers hash chain)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        reversal_journal_id,
+                    )
+
+                    # Mark original journal as reversed
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries
+                        SET reversed_by_id = $2, reversed_at = NOW()
+                        WHERE id = $1
+                        """,
+                        bill["journal_id"], reversal_journal_id,
                     )
 
                     logger.info(
-                        f"Inventory ledger reversal for void bill {bill_id}, "
-                        f"product {product_id}: qty_out={qty_out}, balance={new_balance}"
+                        f"Bill reversal journal created: {reversal_journal_id} "
+                        f"(reversal of {bill['journal_id']})"
                     )
 
-                    # Sync persediaan cache (subtract stock on void purchase reversal)
-                    await conn.execute("""
-                        UPDATE persediaan
-                        SET jumlah = jumlah - $3,
-                            total_nilai = GREATEST(0, (jumlah - $3)) * nilai_per_unit,
-                            last_movement_at = NOW(),
-                            updated_at = NOW()
-                        WHERE tenant_id = $1 AND product_id = $2
-                    """, tenant_id, product_id, float(quantity))
+                # ============================================================
+                # 2. Reverse Inventory Ledger (D4/D5/D6 FIX: shared helper)
+                # milkyhoop-inventory Rule 9: Atomic reversal of both layers
+                # ============================================================
+                reversed_items = await record_inventory_reversal(
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    source_type="BILL",
+                    source_id=bill_id,
+                    reversal_journal_id=reversal_journal_id or bill_id,
+                    created_by=user_id,
+                    reversal_date=today,
+                    notes_prefix=f"VOID bill {bill['invoice_number']}",
+                )
 
-                # 3. Update bill status
+                if reversed_items:
+                    logger.info(
+                        f"Inventory reversed for void bill {bill_id}: "
+                        f"{len(reversed_items)} products"
+                    )
+
+                # ============================================================
+                # 3. Mirror Bank Transactions (BankSync Rule 3)
+                # Bills are accrual — typically no bank_txn on posting journal.
+                # Check anyway for edge cases.
+                # ============================================================
+                if reversal_journal_id and bill["journal_id"]:
+                    bank_txns = await conn.fetch(
+                        """
+                        SELECT id, bank_account_id, amount, transaction_type,
+                               description
+                        FROM bank_transactions
+                        WHERE journal_id = $1 AND tenant_id = $2
+                        """,
+                        bill["journal_id"], tenant_id,
+                    )
+
+                    for bt in bank_txns:
+                        from uuid import uuid4 as _uuid4
+
+                        reversed_type = (
+                            "CREDIT" if bt["transaction_type"] == "DEBIT" else "DEBIT"
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO bank_transactions (
+                                id, tenant_id, bank_account_id, transaction_date,
+                                transaction_type, amount, running_balance,
+                                reference_type, reference_id, description,
+                                journal_id, created_by
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, $6, 0,
+                                'bill_void', $7, $8, $9, $10
+                            )
+                            """,
+                            _uuid4(), tenant_id, bt["bank_account_id"],
+                            today, reversed_type, -bt["amount"],
+                            bill_id,
+                            f"VOID: Reversal of {bt['description']}",
+                            reversal_journal_id,
+                            user_id,
+                        )
+                        logger.info(f"Bank transaction reversed for bill void: {bt['id']}")
+
+                # ============================================================
+                # 4. Update AP status (if exists)
+                # ============================================================
+                if bill.get("ap_id"):
+                    await conn.execute(
+                        """
+                        UPDATE accounts_payable
+                        SET status = 'VOID', updated_at = NOW()
+                        WHERE id = $1
+                        """,
+                        bill["ap_id"],
+                    )
+
+                # ============================================================
+                # 5. Update bill status LAST
+                # ============================================================
                 await conn.execute(
                     """
                     UPDATE bills
                     SET status = 'void',
+                        status_v2 = 'void',
                         operational_status = 'VOID',
                         accounting_status = 'REVERSED',
                         voided_at = NOW(),
                         voided_reason = $1,
                         updated_at = NOW()
                     WHERE id = $2
-                """,
-                    reason,
-                    bill_id,
+                    """,
+                    reason, bill_id,
                 )
+
+                logger.info(f"Bill voided: {bill_id}, reason: {reason}")
 
                 return {
                     "success": True,
@@ -1457,8 +1631,13 @@ class BillsService:
                         "status": "void",
                         "voided_at": datetime.now().isoformat(),
                         "voided_reason": reason,
+                        "reversal_journal_id": str(reversal_journal_id)
+                        if reversal_journal_id
+                        else None,
                     },
                 }
+
+
 
     # =========================================================================
     # GET SUMMARY
@@ -1512,31 +1691,33 @@ class BillsService:
                     end_date = today
                     period_label = today.strftime("%B %Y")
 
-            # Get summary statistics
+            # Get summary statistics -- Law 16: journal-derived amount_paid via CTE
             # NOTE: amount = sisa tagihan yang belum dibayar (remaining), bukan total faktur
-            query = """
+            query = f"""
+                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
                     COUNT(*) as total_count,
-                    COALESCE(SUM(amount), 0) as total_amount,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) as total_remaining,
-                    COUNT(DISTINCT vendor_name) as vendor_count,
+                    COALESCE(SUM(b.amount), 0) as total_amount,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)), 0) as total_remaining,
+                    COUNT(DISTINCT b.vendor_name) as vendor_count,
                     -- Paid: sudah lunas, sisa = 0
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) >= amount AND status != 'void') as paid_count,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status != 'void') as paid_count,
                     0 as paid_remaining,
-                    -- Partial: bayar sebagian, sisa = amount - amount_paid
-                    COUNT(*) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND status != 'void') as partial_count,
-                    COALESCE(SUM(amount - amount_paid) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND status != 'void'), 0) as partial_remaining,
+                    -- Partial: bayar sebagian, sisa = amount - journal_paid
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as partial_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void'), 0) as partial_remaining,
                     -- Unpaid: belum bayar sama sekali, sisa = amount (full)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void') as unpaid_count,
-                    COALESCE(SUM(amount) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void'), 0) as unpaid_remaining,
-                    -- Overdue: jatuh tempo dan belum lunas, sisa = amount - amount_paid
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void') as overdue_count,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_remaining
-                FROM bills
-                WHERE tenant_id = $1
-                    AND issue_date >= $2
-                    AND issue_date < $3
-                    AND status != 'void'
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void') as unpaid_count,
+                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as unpaid_remaining,
+                    -- Overdue: jatuh tempo dan belum lunas, sisa = amount - journal_paid
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void') as overdue_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_remaining
+                FROM bills b
+                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                WHERE b.tenant_id = $1
+                    AND b.issue_date >= $2
+                    AND b.issue_date < $3
+                    AND b.status != 'void'
             """
 
             row = await conn.fetchrow(query, tenant_id, start_date, end_date)
@@ -1605,39 +1786,39 @@ class BillsService:
         async with self.pool.acquire() as conn:
             today = date.today()
 
-            query = """
+            # Law 16: Journal-derived amount_paid via CTE
+            query = f"""
+                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
                     -- Total outstanding (all non-void, non-paid bills)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND status != 'void') as total_count,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND status != 'void'), 0) as total_outstanding,
-                    COUNT(DISTINCT vendor_name) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND status != 'void') as vendor_count,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as total_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void'), 0) as total_outstanding,
+                    COUNT(DISTINCT b.vendor_name) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as vendor_count,
 
                     -- Paid: lunas (sisa = 0)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) >= amount AND status != 'void') as paid_count,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status != 'void') as paid_count,
                     0 as paid_amount,
 
                     -- Partial: bayar sebagian, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND due_date >= CURRENT_DATE AND status != 'void') as partial_count,
-                    COALESCE(SUM(amount - amount_paid) FILTER (WHERE amount_paid > 0 AND amount_paid < amount AND due_date >= CURRENT_DATE AND status != 'void'), 0) as partial_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status != 'void') as partial_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as partial_amount,
 
                     -- Unpaid: belum bayar sama sekali, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void') as unpaid_count,
-                    COALESCE(SUM(amount) FILTER (WHERE COALESCE(amount_paid, 0) = 0 AND due_date >= CURRENT_DATE AND status != 'void'), 0) as unpaid_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void') as unpaid_count,
+                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as unpaid_amount,
 
                     -- Overdue: jatuh tempo dan belum lunas (includes partial + unpaid yang sudah lewat due_date)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void') as overdue_count,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void') as overdue_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_amount,
 
                     -- Urgency metrics
-                    -- Oldest overdue (days since due_date)
-                    COALESCE(MAX(CURRENT_DATE - due_date) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_oldest_days,
-                    -- Largest single overdue amount
-                    COALESCE(MAX(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date < CURRENT_DATE AND status != 'void'), 0) as overdue_largest,
-                    -- Due within 7 days (excluding overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date >= CURRENT_DATE AND due_date <= CURRENT_DATE + INTERVAL '7 days' AND status != 'void') as due_within_7_days_count,
-                    COALESCE(SUM(amount - COALESCE(amount_paid, 0)) FILTER (WHERE COALESCE(amount_paid, 0) < amount AND due_date >= CURRENT_DATE AND due_date <= CURRENT_DATE + INTERVAL '7 days' AND status != 'void'), 0) as due_within_7_days_amount
-                FROM bills
-                WHERE tenant_id = $1
+                    COALESCE(MAX(CURRENT_DATE - b.due_date) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_oldest_days,
+                    COALESCE(MAX(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_largest,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status != 'void') as due_within_7_days_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status != 'void'), 0) as due_within_7_days_amount
+                FROM bills b
+                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                WHERE b.tenant_id = $1
             """
 
             row = await conn.fetchrow(query, tenant_id)
@@ -2534,12 +2715,17 @@ class BillsService:
             Bill detail dict or None if not found
         """
         async with self.pool.acquire() as conn:
-            # Get bill with V2 fields
+            # Get bill with V2 fields -- Law 16: journal-derived amount_paid via compute_ap_outstanding()
             bill_query = """
                 SELECT
                     b.*,
-                    (b.amount - b.amount_paid) as amount_due
+                    COALESCE(ap.paid_amount, 0) AS journal_paid,
+                    (b.amount - COALESCE(ap.paid_amount, 0)) as amount_due
                 FROM bills b
+                LEFT JOIN LATERAL (
+                    SELECT paid_amount FROM compute_ap_outstanding($2)
+                    WHERE bill_id = $1
+                ) ap ON true
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
             bill = await conn.fetchrow(bill_query, bill_id, tenant_id)
@@ -2633,7 +2819,7 @@ class BillsService:
                     "grand_total": self._money_str(bill["grand_total"] or bill["amount"]),
                 },
                 "amount": self._money_str(bill["amount"]),
-                "amount_paid": self._money_str(bill["amount_paid"]),
+                "amount_paid": self._money_str(bill["journal_paid"]),  # Law 16: journal-derived
                 "amount_due": self._money_str(bill["amount_due"]),
                 "notes": bill["notes"],
                 "operational_status": bill.get("operational_status") or "DRAFT",

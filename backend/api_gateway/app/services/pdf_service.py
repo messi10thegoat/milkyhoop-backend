@@ -177,6 +177,136 @@ class PDFService:
         return pdf_bytes
 
 
+    def generate_income_statement_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+        """Generate PDF for Income Statement (Laba Rugi) from PSAK engine output."""
+        template = self.jinja_env.get_template("laba_rugi.html")
+
+        def _section(section: dict, label: str) -> dict:
+            return {
+                "label": label,
+                "items": [
+                    {"accountCode": a["account_code"], "accountName": a["account_name"], "amount": a["balance"]}
+                    for a in section.get("akun", [])
+                ],
+                "total": section.get("total", 0),
+            }
+
+        context = {
+            "company_name": company_name,
+            "period_start": data["period"]["start"],
+            "period_end": data["period"]["end"],
+            "basis": basis,
+            "revenue": _section(data["pendapatan"], "Pendapatan"),
+            "cost_of_goods_sold": _section(data["hpp"], "Harga Pokok Penjualan"),
+            "gross_profit": data["laba_kotor"],
+            "operating_expenses": _section(data["beban_usaha"], "Beban Usaha"),
+            "operating_income": data["laba_usaha"],
+            "other_income": _section(data["pendapatan_lain"], "Pendapatan Lain"),
+            "other_expenses": _section(data["beban_lain"], "Beban Lain"),
+            "income_before_tax": data["laba_sebelum_pajak"],
+            "tax_expense": data.get("beban_pajak", {}).get("total", 0),
+            "net_income": data["laba_bersih"],
+            "generated_at": datetime.now(),
+        }
+
+        html_content = template.render(**context)
+        css_path = TEMPLATE_DIR / "report.css"
+        stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+
+    def generate_balance_sheet_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+        """Generate PDF for Balance Sheet (Neraca) from PSAK engine output."""
+        template = self.jinja_env.get_template("neraca.html")
+
+        def _accounts(akun_list: list) -> list:
+            return [{"code": a["account_code"], "name": a["account_name"], "balance": a["balance"]} for a in akun_list]
+
+        # Build asset categories
+        al = data.get("aset_lancar", {})
+        current_accounts = []
+        for sub_key in ["kas_setara_kas", "piutang_usaha", "persediaan", "lainnya"]:
+            sub = al.get(sub_key, {})
+            current_accounts.extend(_accounts(sub.get("akun", [])))
+
+        asset_categories = [{"name": "Aset Lancar", "accounts": current_accounts, "total": al.get("total", 0)}]
+
+        atl = data.get("aset_tidak_lancar", {})
+        fa_accounts = _accounts(atl.get("aset_tetap", {}).get("akun", []))
+        if fa_accounts or atl.get("total", 0) != 0:
+            asset_categories.append({"name": "Aset Tidak Lancar", "accounts": fa_accounts, "total": atl.get("total", 0)})
+
+        # Build liability categories (PSAK: Jangka Pendek + Jangka Panjang)
+        liab = data.get("liabilitas", {})
+        liability_categories = []
+        jp = liab.get("jangka_pendek", {})
+        jp_accounts = []
+        ut = jp.get("utang_usaha", {})
+        if ut.get("akun"):
+            jp_accounts.extend(_accounts(ut["akun"]))
+        jp_lain = jp.get("lainnya", {})
+        if jp_lain.get("akun"):
+            jp_accounts.extend(_accounts(jp_lain["akun"]))
+        if jp_accounts or jp.get("total", 0) != 0:
+            liability_categories.append({"name": "Liabilitas Jangka Pendek", "accounts": jp_accounts, "total": jp.get("total", 0)})
+        jpp = liab.get("jangka_panjang", {})
+        jpp_accounts = _accounts(jpp.get("akun", []))
+        if jpp_accounts or jpp.get("total", 0) != 0:
+            liability_categories.append({"name": "Liabilitas Jangka Panjang", "accounts": jpp_accounts, "total": jpp.get("total", 0)})
+        if not liability_categories:
+            liability_categories.append({"name": "Liabilitas", "accounts": [], "total": 0})
+
+        # Build equity categories
+        ek = data.get("ekuitas", {})
+        equity_accounts = []
+        for sub_key in ["modal_disetor", "saldo_laba", "lainnya"]:
+            sub = ek.get(sub_key, {})
+            equity_accounts.extend(_accounts(sub.get("akun", [])))
+        laba_periode = ek.get("laba_periode", 0)
+        if laba_periode:
+            equity_accounts.append({"code": "", "name": "Laba Periode Berjalan", "balance": laba_periode})
+        equity_categories = [{"name": "Modal & Saldo Laba", "accounts": equity_accounts, "total": ek.get("total", 0)}]
+
+        context = {
+            "company_name": company_name,
+            "as_of_date": data.get("as_of", ""),
+            "basis": basis,
+            "assets": {"categories": asset_categories},
+            "total_assets": data.get("total_aset", 0),
+            "liabilities": {"categories": liability_categories, "total": liab.get("total", 0)},
+            "equity": {"categories": equity_categories, "total": ek.get("total", 0)},
+            "total_liabilities_and_equity": data.get("total_liabilitas_ekuitas", 0),
+            "generated_at": datetime.now(),
+        }
+
+        html_content = template.render(**context)
+        css_path = TEMPLATE_DIR / "report.css"
+        stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+
+    def generate_cash_flow_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+        """Generate PDF for Cash Flow Statement (Arus Kas) from PSAK engine output."""
+        template = self.jinja_env.get_template("arus_kas.html")
+
+        context = {
+            "company_name": company_name,
+            "period_start": data["period"]["start"],
+            "period_end": data["period"]["end"],
+            "basis": basis,
+            "opening_balance": data["kas_awal"],
+            "operating": {"label": "Aktivitas Operasi", "items": data["operasi"]["items"], "total": data["operasi"]["total"]},
+            "investing": {"label": "Aktivitas Investasi", "items": data["investasi"]["items"], "total": data["investasi"]["total"]},
+            "financing": {"label": "Aktivitas Pendanaan", "items": data["pendanaan"]["items"], "total": data["pendanaan"]["total"]},
+            "net_cash_change": data["kenaikan_kas_bersih"],
+            "closing_balance": data["kas_akhir"],
+            "generated_at": datetime.now(),
+        }
+
+        html_content = template.render(**context)
+        css_path = TEMPLATE_DIR / "report.css"
+        stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+
+
 # Singleton instance
 _pdf_service: Optional[PDFService] = None
 

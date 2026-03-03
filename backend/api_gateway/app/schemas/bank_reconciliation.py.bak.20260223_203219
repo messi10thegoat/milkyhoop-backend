@@ -1,0 +1,848 @@
+"""
+Pydantic schemas for Bank Reconciliation module.
+
+Bank reconciliation allows matching bank statement lines with system transactions
+to verify that recorded transactions match the actual bank statement.
+
+Flow: in_progress -> completed / cancelled
+
+Key concepts:
+- Session: A reconciliation session for a specific period
+- Statement Lines: Imported from bank statement (CSV/manual)
+- Transactions: System transactions (payments, receipts, transfers)
+- Match: Links statement lines to system transactions
+"""
+
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Literal
+from datetime import date
+
+
+# =============================================================================
+# REQUEST MODELS - Session
+# =============================================================================
+
+
+class CreateSessionRequest(BaseModel):
+    """Request body for starting a new reconciliation session."""
+
+    account_id: str = Field(..., description="Bank account UUID")
+    statement_date: date = Field(..., description="Statement date")
+    statement_start_date: date = Field(..., description="Statement period start date")
+    statement_end_date: date = Field(..., description="Statement period end date")
+    statement_beginning_balance: int = Field(
+        ..., description="Opening balance from bank statement (IDR)"
+    )
+    statement_ending_balance: int = Field(
+        ..., description="Closing balance from bank statement (IDR)"
+    )
+    mode: str = Field(
+        "import", description="Reconciliation mode: 'import' or 'manual'"
+    )
+
+    @field_validator("account_id")
+    @classmethod
+    def validate_account_id(cls, v):
+        if not v or not v.strip():
+            raise ValueError("account_id is required")
+        return v.strip()
+
+
+# =============================================================================
+# REQUEST MODELS - Import
+# =============================================================================
+
+
+class ImportConfigCSV(BaseModel):
+    """CSV import configuration for bank statement."""
+
+    format: Literal["csv"] = "csv"
+    date_column: str = Field(..., description="Column name for transaction date")
+    description_column: str = Field(..., description="Column name for description")
+    amount_column: Optional[str] = Field(
+        None,
+        description="Column name for single amount (credit positive, debit negative)",
+    )
+    debit_column: Optional[str] = Field(
+        None, description="Column name for debit amount"
+    )
+    credit_column: Optional[str] = Field(
+        None, description="Column name for credit amount"
+    )
+    reference_column: Optional[str] = Field(
+        None, description="Column name for reference number"
+    )
+    balance_column: Optional[str] = Field(
+        None, description="Column name for running balance"
+    )
+    date_format: str = Field("DD/MM/YYYY", description="Date format in CSV")
+    decimal_separator: str = Field(",", description="Decimal separator (, or .)")
+    skip_rows: int = Field(0, ge=0, description="Number of header rows to skip")
+
+
+# =============================================================================
+# REQUEST MODELS - Matching
+# =============================================================================
+
+
+class MatchRequest(BaseModel):
+    """Request body for matching a statement line to transactions."""
+
+    statement_line_id: str = Field(..., description="Statement line UUID to match")
+    transaction_ids: List[str] = Field(
+        ..., min_length=1, description="System transaction UUIDs to match with"
+    )
+    adjustment_account_id: Optional[str] = Field(
+        None, description="CoA account UUID for booking the adjustment difference"
+    )
+    adjustment_amount: Optional[float] = Field(
+        None, description="Signed difference (statement - transactions). Positive = bank received/paid more."
+    )
+    statement_line_type: Optional[str] = Field(
+        None, description="Statement line direction: credit (inflow) or debit (outflow)"
+    )
+
+
+class UnmatchByLineRequest(BaseModel):
+    """Request body for unmatching by statement line ID."""
+
+    statement_line_id: str = Field(..., description="Statement line UUID to unmatch")
+
+
+
+class AutoMatchRequest(BaseModel):
+    """Request body for auto-matching configuration."""
+
+    confidence_threshold: Literal["exact", "high", "medium", "low"] = Field(
+        "high", description="Minimum confidence level for auto-match"
+    )
+    date_tolerance_days: int = Field(
+        3, ge=0, le=30, description="Days tolerance for date matching (0-30)"
+    )
+
+
+# =============================================================================
+# REQUEST MODELS - Create Transaction
+# =============================================================================
+
+
+class CreateTransactionFromLineRequest(BaseModel):
+    """Request body for creating a transaction from an unmatched statement line."""
+
+    statement_line_id: str = Field(..., description="Statement line UUID")
+    type: Literal["expense", "income", "transfer"] = Field(
+        ..., description="Transaction type to create"
+    )
+    account_id: str = Field(
+        ..., description="Chart of Accounts UUID for categorization"
+    )
+    contact_id: Optional[str] = Field(None, description="Customer/Vendor UUID")
+    description: Optional[str] = Field(None, description="Transaction description")
+    auto_match: bool = Field(
+        True, description="Automatically match created transaction to statement line"
+    )
+
+
+# =============================================================================
+# REQUEST MODELS - Adjustments & Completion
+# =============================================================================
+
+
+class AdjustmentItem(BaseModel):
+    """Single adjustment entry for reconciliation."""
+
+    type: Literal["bank_fee", "interest", "correction", "other"] = Field(
+        ..., description="Type of adjustment"
+    )
+    amount: int = Field(..., description="Adjustment amount in IDR")
+    description: str = Field(
+        ..., min_length=1, max_length=500, description="Adjustment description"
+    )
+    account_id: str = Field(..., description="Chart of Accounts UUID for adjustment")
+
+
+class CompleteSessionRequest(BaseModel):
+    """Request body for completing a reconciliation session."""
+
+    adjustments: List[AdjustmentItem] = Field(
+        default_factory=list, description="Adjustment entries to create"
+    )
+
+
+# =============================================================================
+# RESPONSE MODELS - Nested Objects
+# =============================================================================
+
+
+class AccountSummary(BaseModel):
+    """Bank account with reconciliation status."""
+
+    id: str
+    name: str
+    account_number: Optional[str] = None
+    current_balance: int
+    ledger_balance: Optional[int] = None
+    last_reconciled_date: Optional[str] = None
+    last_reconciled_balance: Optional[int] = None
+    statement_balance: Optional[int] = None
+    statement_date: Optional[str] = None
+    unreconciled_difference: Optional[int] = None
+    needs_reconciliation: bool = True
+    days_since_reconciliation: Optional[int] = None
+    active_session_id: Optional[str] = None
+    active_session_status: Optional[str] = None
+
+
+class SessionStatistics(BaseModel):
+    """Statistics for a reconciliation session."""
+
+    total_statement_lines: int = 0
+    matched_lines: int = 0
+    unmatched_lines: int = 0
+    total_transactions: int = 0
+    matched_transactions: int = 0
+    unmatched_transactions: int = 0
+    statement_total: int = 0
+    matched_total: int = 0
+    difference: Optional[int] = 0
+    is_balanced: bool = False
+    # Fields returned by router
+    matched_count: int = 0
+    unmatched_count: int = 0
+    excluded_count: int = 0
+    total_cleared: int = 0
+    total_uncleared: int = 0
+
+
+class SessionListItem(BaseModel):
+    """Reconciliation session for list display."""
+
+    id: str
+    session_number: Optional[str] = None
+    account_id: str
+    account_name: str
+    statement_date: str
+    statement_start_date: str
+    statement_end_date: str
+    statement_beginning_balance: int
+    statement_ending_balance: int
+    status: Literal["in_progress", "completed", "cancelled"]
+    matched_count: int = 0
+    total_lines: int = 0
+    difference: Optional[int] = None
+    ledger_balance: Optional[int] = None
+    created_at: str
+    completed_at: Optional[str] = None
+    mode: str = "import"
+    opening_balance: Optional[int] = None
+
+
+class StatementLineItem(BaseModel):
+    """Bank statement line item."""
+
+    id: str
+    session_id: str = ""
+    date: str
+    description: str
+    reference: Optional[str] = None
+    amount: int
+    type: str  # 'debit' or 'credit'
+    running_balance: Optional[int] = None
+    match_status: str = "unmatched"  # 'unmatched' | 'matched' | 'excluded'
+    match_id: Optional[str] = None
+    matched_transaction_ids: List[str] = []
+    match_confidence: Optional[str] = None
+    match_difference: Optional[int] = None
+    raw_data: Optional[dict] = None
+    created_at: str
+
+
+class TransactionItem(BaseModel):
+    """System transaction available for matching."""
+
+    id: str
+    transaction_type: str
+    transaction_date: str
+    description: Optional[str] = None
+    reference: Optional[str] = None
+    amount: int
+    is_credit: bool
+    source_type: str
+    source_id: Optional[str] = None
+    source_number: Optional[str] = None
+    contact_name: Optional[str] = None
+    is_matched: bool = False
+    match_id: Optional[str] = None
+    cleared_in_session: bool = False
+
+
+class MatchSuggestion(BaseModel):
+    """Auto-match suggestion for a statement line."""
+
+    statement_line_id: str
+    suggested_transaction_ids: List[str]
+    confidence: Literal["exact", "high", "medium", "low"]
+    confidence_score: float
+    match_reasons: List[str] = []
+
+
+class CombinationSuggestionSchema(BaseModel):
+    """A combination match suggestion (one-to-many or many-to-one)."""
+
+    match_type: str  # 'one_to_many' or 'many_to_one'
+    target_id: str
+    target_amount: float
+    combined_ids: List[str]
+    combined_amounts: List[float]
+    combined_total: float
+    difference: float
+    confidence: Literal["exact", "high", "medium"]
+    item_count: int
+    description: str = ""
+
+
+class ImportError(BaseModel):
+    """Import error detail."""
+
+    row_number: int
+    column: Optional[str] = None
+    value: Optional[str] = None
+    error: str
+
+
+class HistoryItem(BaseModel):
+    """Reconciliation history entry."""
+
+    id: str
+    session_number: Optional[str] = None
+    statement_date: str
+    statement_start_date: str
+    statement_end_date: str
+    statement_beginning_balance: int
+    statement_ending_balance: int
+    system_balance: int
+    difference: Optional[int] = None
+    matched_count: int
+    adjustment_count: int
+    status: str
+    completed_at: Optional[str] = None
+    completed_by: Optional[str] = None
+    created_at: str
+
+
+class SessionDetail(BaseModel):
+    """Full reconciliation session detail."""
+
+    id: str
+    session_number: Optional[str] = None
+    account_id: str
+    account_name: str
+    account_number: Optional[str] = None
+    bank_name: Optional[str] = None
+
+    # Statement info
+    statement_date: str
+    statement_start_date: str
+    statement_end_date: str
+    statement_beginning_balance: int
+    statement_ending_balance: int
+
+    # System balances - optional to match router
+    system_beginning_balance: Optional[int] = None
+    system_ending_balance: Optional[int] = None
+    cleared_balance: Optional[int] = None
+    difference: Optional[int] = None
+    ledger_balance: Optional[int] = None
+
+    # Status
+    status: Literal["in_progress", "completed", "cancelled"]
+    statistics: SessionStatistics
+
+    # Adjustments
+    adjustments: List[AdjustmentItem] = []
+
+    # Audit
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    created_by: Optional[str] = None
+    completed_at: Optional[str] = None
+    completed_by: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    cancelled_by: Optional[str] = None
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Accounts
+# =============================================================================
+
+
+class AccountsListResponse(BaseModel):
+    """Response for bank accounts list with reconciliation status."""
+
+    data: List[AccountSummary]
+    total: int
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Sessions
+# =============================================================================
+
+
+class SessionsListResponse(BaseModel):
+    """Response for reconciliation sessions list."""
+
+    data: List[SessionListItem]
+    total: int
+    hasMore: bool = False
+
+
+class SessionCreateResponse(BaseModel):
+    """Response for session creation."""
+
+    id: str
+    status: str
+    created_at: str
+    opening_balance: Optional[int] = None
+    mode: str = "import"
+
+
+class SessionDetailResponse(BaseModel):
+    """Response for session detail."""
+
+    success: bool = True
+    data: SessionDetail
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Import
+# =============================================================================
+
+
+class ImportDateRange(BaseModel):
+    """Date range from imported statement."""
+
+    start_date: str
+    end_date: str
+
+
+class ImportResponse(BaseModel):
+    """Response for statement import."""
+
+    lines_imported: int
+    lines_skipped: int
+    total_credits: int
+    total_debits: int
+    date_range: ImportDateRange
+    errors: List[ImportError] = []
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Statement Lines & Transactions
+# =============================================================================
+
+
+class StatementLinesResponse(BaseModel):
+    """Response for statement lines list."""
+
+    data: List[StatementLineItem]
+    total: int
+    hasMore: bool = False
+
+
+class TransactionsResponse(BaseModel):
+    """Response for transactions list."""
+
+    data: List[TransactionItem]
+    total: int
+    hasMore: bool = False
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Matching
+# =============================================================================
+
+
+class MatchResponse(BaseModel):
+    """Response for match operation."""
+
+    match_id: str
+    match_type: Literal["one_to_one", "one_to_many", "many_to_one"]
+    confidence: str
+    cleared_amount: int
+    session_stats: SessionStatistics
+    adjustment_journal_id: Optional[str] = Field(
+        None, description="Journal entry ID if an adjustment journal was created"
+    )
+
+
+class UnmatchResponse(BaseModel):
+    """Response for unmatch operation."""
+
+    success: bool
+    session_stats: SessionStatistics
+
+
+class AutoMatchResponse(BaseModel):
+    """Response for auto-match operation."""
+
+    matches_created: int
+    suggestions: List[MatchSuggestion]
+    combination_suggestions: List[CombinationSuggestionSchema] = []
+    session_stats: SessionStatistics
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Create Transaction
+# =============================================================================
+
+
+class CreateTransactionResponse(BaseModel):
+    """Response for create transaction from statement line."""
+
+    transaction_id: str
+    match_id: Optional[str] = None
+    session_stats: SessionStatistics
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - Complete & Cancel
+# =============================================================================
+
+
+class FinalStats(BaseModel):
+    """Final reconciliation statistics."""
+
+    total_matched: int
+    total_adjustments: int
+    opening_difference: int
+    closing_difference: int
+    final_difference: int
+
+
+class CompleteResponse(BaseModel):
+    """Response for session completion."""
+
+    success: bool
+    completed_at: str
+    final_stats: FinalStats
+    journal_entries_created: int
+
+
+class CancelResponse(BaseModel):
+    """Response for session cancellation."""
+
+    success: bool
+    cleared_transactions_reset: int
+
+
+# =============================================================================
+# RESPONSE WRAPPERS - History
+# =============================================================================
+
+
+class HistoryResponse(BaseModel):
+    """Response for reconciliation history."""
+
+    data: List[HistoryItem]
+    total: int
+    hasMore: bool = False
+
+
+# =============================================================================
+# REQUEST/RESPONSE MODELS - Manual Reconciliation
+# =============================================================================
+
+
+class ClearTransactionsRequest(BaseModel):
+    """Request body for clearing/unclearing transactions in manual mode."""
+
+    transaction_ids: List[str] = Field(
+        ..., description="List of transaction UUIDs to mark as cleared"
+    )
+
+
+class ClearTransactionsResponse(BaseModel):
+    """Response for clear-transactions."""
+
+    success: bool = True
+    cleared_count: int
+    cleared_inflows: int
+    cleared_outflows: int
+    cleared_balance: int
+    statement_ending_balance: int
+    difference: int
+
+
+
+class AdjustmentLineItem(BaseModel):
+    """A single line in a multi-line adjustment."""
+    account_id: str = Field(..., description="COA account ID for this line")
+    amount: int = Field(..., description="Positive integer amount in IDR")
+
+class ManualAdjustmentRequest(BaseModel):
+    """Request for creating an adjustment journal to close a reconciliation."""
+
+    amount: int = Field(..., description="Adjustment amount (positive or negative)")
+    description: str = Field(
+        "Penyesuaian Rekonsiliasi",
+        description="Description for the adjustment journal"
+    )
+    adjustment_account_id: Optional[str] = Field(
+        None, description="COA account for the adjustment entry (default: misc expense)"
+    )
+    adjustment_lines: Optional[List[AdjustmentLineItem]] = Field(
+        None, description="Multi-line adjustment: list of account_id + amount pairs"
+    )
+
+
+class ManualAdjustmentResponse(BaseModel):
+    """Response for adjustment journal creation."""
+
+    success: bool = True
+    journal_id: str
+    journal_number: str
+    amount: int
+    session_completed: bool = True
+
+
+class ManualCompleteRequest(BaseModel):
+    """Request for completing a manual reconciliation session with diff=0."""
+
+    pass
+
+
+class ManualCompleteResponse(BaseModel):
+    """Response for manual session completion."""
+
+    success: bool = True
+    session_id: str
+    status: str = "completed"
+    cleared_count: int
+    statement_ending_balance: int
+    cleared_balance: int
+
+
+# =============================================================================
+# BANK MATCHING RULES
+# =============================================================================
+
+
+class RuleConditionSchema(BaseModel):
+    """A single condition within a bank matching rule."""
+    field: str  # description | amount | reference | date
+    operator: str  # contains | equals | starts_with | greater_than | between | etc
+    value: str
+    value2: Optional[str] = None  # For 'between' operator
+
+
+class CreateBankRuleRequest(BaseModel):
+    """Request to create a bank matching rule."""
+    name: str
+    description: Optional[str] = None
+    direction: str = "both"  # inflow | outflow | both
+    bank_account_id: Optional[str] = None
+    condition_logic: str = "ALL"  # ALL | ANY
+    conditions: List[RuleConditionSchema]
+    contact_id: Optional[str] = None
+    account_id: Optional[str] = None
+    tax_rate_id: Optional[str] = None
+    allocations: Optional[List[dict]] = None
+
+
+class UpdateBankRuleRequest(BaseModel):
+    """Request to update a bank matching rule."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+    direction: Optional[str] = None
+    bank_account_id: Optional[str] = None
+    condition_logic: Optional[str] = None
+    conditions: Optional[List[RuleConditionSchema]] = None
+    contact_id: Optional[str] = None
+    account_id: Optional[str] = None
+    tax_rate_id: Optional[str] = None
+    allocations: Optional[List[dict]] = None
+
+
+class ReorderRulesRequest(BaseModel):
+    """Request to reorder rules."""
+    rule_ids: List[str]  # Ordered list of rule IDs
+
+
+class BankRuleItem(BaseModel):
+    """A bank matching rule item for list display."""
+    id: str
+    name: str
+    description: Optional[str] = None
+    is_active: bool = True
+    sort_order: int = 0
+    rule_type: str = "user"
+    bank_account_id: Optional[str] = None
+    direction: str = "both"
+    condition_logic: str = "ALL"
+    conditions: List[RuleConditionSchema] = []
+    contact_id: Optional[str] = None
+    account_id: Optional[str] = None
+    tax_rate_id: Optional[str] = None
+    times_applied: int = 0
+    times_confirmed: int = 0
+    times_rejected: int = 0
+    last_applied_at: Optional[str] = None
+    created_at: str = ""
+
+
+class BankRulesListResponse(BaseModel):
+    """Response for bank rules list."""
+    data: List[BankRuleItem]
+    total: int
+
+
+class BankRuleCreateResponse(BaseModel):
+    """Response for creating a rule."""
+    success: bool
+    rule: BankRuleItem
+
+
+class BankRuleUpdateResponse(BaseModel):
+    """Response for updating a rule."""
+    success: bool
+    rule: BankRuleItem
+
+
+class BankRuleDeleteResponse(BaseModel):
+    """Response for deleting a rule."""
+    success: bool
+
+
+class ReorderRulesResponse(BaseModel):
+    """Response for reordering rules."""
+    success: bool
+
+
+
+# =============================================================================
+# MATCH HISTORY / AUTO-CREATE RULE
+# =============================================================================
+
+
+class CreateRuleFromMatchRequest(BaseModel):
+    """Request to auto-create a rule from a confirmed match."""
+    statement_line_id: str
+    transaction_id: str
+    session_id: str
+    rule_name: Optional[str] = None  # auto-generated if not provided
+
+
+class CreateRuleFromMatchResponse(BaseModel):
+    """Response for auto-creating a rule from match."""
+    success: bool
+    rule: Optional[BankRuleItem] = None
+    message: str = ""
+
+
+
+# =============================================================================
+# PHASE 5: AGENTIC RECONCILIATION CONTRACTS
+# =============================================================================
+
+
+class ReconAction(BaseModel):
+    """A single reconciliation action proposed by the LLM."""
+    action_type: str  # 'match' | 'categorize' | 'exclude' | 'create_rule'
+    statement_line_id: str
+    transaction_id: Optional[str] = None  # for 'match'
+    transaction_ids: Optional[List[str]] = None  # for multi-match
+    category_account_id: Optional[str] = None  # for 'categorize'
+    category_description: Optional[str] = None
+    reason: str = ""
+    confidence: str = "medium"
+
+
+class ReconActionPlan(BaseModel):
+    """LLM-generated action plan for unmatched items."""
+    actions: List[ReconAction]
+    summary: str = ""
+    total_actions: int = 0
+    estimated_resolution: int = 0  # how many items this resolves
+
+
+class AgenticReconcileRequest(BaseModel):
+    """Request for agentic reconciliation."""
+    max_actions: int = 20
+    include_categorize: bool = True
+    include_exclude: bool = True
+
+
+class AgenticReconcileResponse(BaseModel):
+    """Response from agentic reconciliation."""
+    action_plan: ReconActionPlan
+    session_stats: SessionStatistics
+
+
+class ConfirmBatchRequest(BaseModel):
+    """Request to confirm a batch of match actions."""
+    actions: List[ReconAction]
+
+
+class ConfirmBatchResponse(BaseModel):
+    """Response for batch confirmation."""
+    confirmed: int
+    failed: int
+    errors: List[str] = []
+    session_stats: SessionStatistics
+
+
+class CategorizeRequest(BaseModel):
+    """Request to categorize an unmatched statement line."""
+    statement_line_id: str
+    account_id: str
+    description: Optional[str] = None
+    contact_id: Optional[str] = None
+
+
+class CategorizeResponse(BaseModel):
+    """Response for categorization."""
+    success: bool
+    transaction_id: Optional[str] = None
+    match_id: Optional[str] = None
+    session_stats: SessionStatistics
+
+
+
+# =============================================================================
+# PHASE 6: RECONCILIATION SUMMARY
+# =============================================================================
+
+
+class BalanceProof(BaseModel):
+    """Balance proof for reconciliation completion."""
+    statement_ending_balance: float
+    ledger_balance: float
+    cleared_balance: float
+    uncleared_balance: float
+    difference: float
+    is_balanced: bool
+
+
+class ReconciliationSummaryResponse(BaseModel):
+    """Full reconciliation summary for completion."""
+    session_id: str
+    account_name: str
+    status: str
+
+    # Counts
+    total_statement_lines: int
+    matched_count: int
+    unmatched_count: int
+    excluded_count: int
+    categorized_count: int
+
+    # Balance proof
+    balance_proof: BalanceProof
+
+    # Match breakdown
+    match_methods: dict = {}  # {'manual': 5, 'auto': 10, 'rule': 3, 'history': 2}
+
+    # Ready to complete?
+    can_complete: bool
+    completion_blockers: List[str] = []

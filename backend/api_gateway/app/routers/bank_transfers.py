@@ -37,6 +37,7 @@ from ..schemas.bank_transfers import (
     BankTransferSummaryResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -265,9 +266,11 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
             query = """
                 SELECT bt.*,
                        fb.account_name as from_account_name, fb.account_number as from_account_number,
-                       fb.bank_name as from_bank_name, fb.current_balance as from_balance,
+                       fb.bank_name as from_bank_name,
+                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
                        tb.account_name as to_account_name, tb.account_number as to_account_number,
-                       tb.bank_name as to_bank_name, tb.current_balance as to_balance,
+                       tb.bank_name as to_bank_name,
+                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=tb.coa_id AND je.status='POSTED') as to_balance,
                        fa.account_code as fee_account_code, fa.name as fee_account_name,
                        je.journal_number
                 FROM bank_transfers bt
@@ -354,9 +357,11 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
             async with conn.transaction():
                 # Validate from bank
                 from_bank = await conn.fetchrow("""
-                    SELECT id, account_name, current_balance, coa_id, is_active
-                    FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2
+                    SELECT ba.id, ba.account_name,
+                        (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
+                        ba.coa_id, ba.is_active
+                    FROM bank_accounts ba
+                    WHERE ba.id = $1 AND ba.tenant_id = $2
                 """, UUID(body.from_bank_id), ctx["tenant_id"])
 
                 if not from_bank:
@@ -367,9 +372,11 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
 
                 # Validate to bank
                 to_bank = await conn.fetchrow("""
-                    SELECT id, account_name, current_balance, coa_id, is_active
-                    FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2
+                    SELECT ba.id, ba.account_name,
+                        (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
+                        ba.coa_id, ba.is_active
+                    FROM bank_accounts ba
+                    WHERE ba.id = $1 AND ba.tenant_id = $2
                 """, UUID(body.to_bank_id), ctx["tenant_id"])
 
                 if not to_bank:
@@ -614,6 +621,12 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
 
 async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     """Internal function to post a transfer. Returns journal info."""
+    # Law 13: Advisory lock for transfer posting
+    await conn.fetchval(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"BANK_TRANSFER_CREATE:{transfer_id}",
+    )
+
     # Lock source bank account row to prevent TOCTOU race condition
     from_bank_id = await conn.fetchval("""
         SELECT from_bank_id FROM bank_transfers
@@ -628,7 +641,8 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     # Get transfer with bank info
     bt = await conn.fetchrow("""
         SELECT bt.*,
-               fb.account_name as from_name, fb.coa_id as from_coa_id, fb.current_balance as from_balance,
+               fb.account_name as from_name, fb.coa_id as from_coa_id,
+               (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
                tb.account_name as to_name, tb.coa_id as to_coa_id
         FROM bank_transfers bt
         LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
@@ -655,10 +669,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     # Get fee account ID if fee > 0
     fee_account_id = None
     if bt["fee_amount"] and bt["fee_amount"] > 0:
-        fee_account_id = await conn.fetchval("""
-            SELECT id FROM chart_of_accounts
-            WHERE tenant_id = $1 AND account_code = $2
-        """, ctx["tenant_id"], BANK_FEE_ACCOUNT)
+        fee_account_id = await resolve_account_id(conn, ctx["tenant_id"], BANK_FEE_ACCOUNT)
 
     # Create journal entry
     journal_id = uuid_module.uuid4()
@@ -670,7 +681,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, trace_id,
             status, total_debit, total_credit, created_by
-        ) VALUES ($1, $2, $3, $4, $5, 'BANK_TRANSFER', $6, $7, 'POSTED', $8, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, 'BANK_TRANSFER', $6, $7, 'DRAFT', $8, $8, $9)
     """,
         journal_id,
         ctx["tenant_id"],
@@ -679,7 +690,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         f"Transfer {bt['transfer_number']} - {bt['from_name']} ke {bt['to_name']}",
         transfer_id,
         str(trace_id),
-        int(bt["total_amount"]),
+        bt["total_amount"],
         ctx["user_id"]
     )
 
@@ -695,7 +706,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         journal_id,
         line_number,
         bt["to_coa_id"],
-        int(bt["amount"]),
+        bt["amount"],
         f"Transfer masuk dari {bt['from_name']}"
     )
     line_number += 1
@@ -711,7 +722,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
             journal_id,
             line_number,
             fee_account_id,
-            int(bt["fee_amount"]),
+            bt["fee_amount"],
             f"Biaya transfer - {bt['transfer_number']}"
         )
         line_number += 1
@@ -726,8 +737,14 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         journal_id,
         line_number,
         bt["from_coa_id"],
-        int(bt["total_amount"]),
+        bt["total_amount"],
         f"Transfer keluar ke {bt['to_name']}"
+    )
+
+    # Law 20: DRAFT->POSTED for hash chain
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id,
     )
 
     # Create bank transactions
@@ -758,7 +775,11 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
 
     # Destination bank (incoming)
     to_balance = await conn.fetchval(
-        "SELECT current_balance FROM bank_accounts WHERE id = $1",
+        """SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id=jl.journal_id
+        WHERE jl.account_id=(SELECT coa_id FROM bank_accounts WHERE id=$1)
+        AND je.status='POSTED'""",
         bt["to_bank_id"]
     )
     to_new_balance = (to_balance or 0) + bt["amount"]
@@ -864,11 +885,19 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock for transfer void
+                await conn.fetchval(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TRANSFER_VOID:{transfer_id}",
+                )
+
                 # Get transfer
                 bt = await conn.fetchrow("""
                     SELECT bt.*,
-                           fb.account_name as from_name, fb.coa_id as from_coa_id, fb.current_balance as from_balance,
-                           tb.account_name as to_name, tb.coa_id as to_coa_id, tb.current_balance as to_balance
+                           fb.account_name as from_name, fb.coa_id as from_coa_id,
+                           (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
+                           tb.account_name as to_name, tb.coa_id as to_coa_id,
+                           (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=tb.coa_id AND je.status='POSTED') as to_balance
                     FROM bank_transfers bt
                     LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
                     LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id
@@ -893,6 +922,13 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                         "data": {"id": str(transfer_id)}
                     }
 
+                # Law 5: Period lock check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], bt["transfer_date"])
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
                 # Create reversal journal
                 reversal_journal_id = uuid_module.uuid4()
                 reversal_number = f"RV-{bt['transfer_number']}"
@@ -907,7 +943,7 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, reversal_of_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BANK_TRANSFER', $5, $6, 'POSTED', $7, $7, $8)
+                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BANK_TRANSFER', $5, $6, 'DRAFT', $7, $7, $8)
                 """,
                     reversal_journal_id,
                     ctx["tenant_id"],
@@ -915,7 +951,7 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     f"Void Transfer {bt['transfer_number']} - {body.reason}",
                     transfer_id,
                     bt["journal_id"],
-                    int(bt["total_amount"]),
+                    bt["total_amount"],
                     ctx["user_id"]
                 )
 
@@ -934,6 +970,12 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                         line["debit"],   # Swap
                         f"Reversal - {line['memo'] or ''}"
                     )
+
+                # Law 20: DRAFT->POSTED for hash chain
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    reversal_journal_id,
+                )
 
                 # Mark original journal as reversed
                 await conn.execute("""
@@ -983,6 +1025,20 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     f"Void transfer - {body.reason}",
                     reversal_journal_id,
                     ctx["user_id"]
+                )
+
+                # Mark original bank transactions as voided
+                await conn.execute(
+                    """
+                    UPDATE bank_transactions
+                    SET status = 'void', voided_at = NOW()
+                    WHERE reference_type = 'bank_transfer'
+                      AND reference_id = $1
+                      AND tenant_id = $2
+                      AND status != 'void'
+                    """,
+                    transfer_id,
+                    ctx["tenant_id"],
                 )
 
                 # Update transfer status
@@ -1097,15 +1153,15 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": float(line["debit"] or 0),
-                        "credit": float(line["credit"] or 0),
+                        "debit": int(line["debit"] or 0),
+                        "credit": int(line["credit"] or 0),
                         "memo": line["memo"] or ""
                     }
                     for line in lines
                 ]
 
-                journal_debit = float(journal["total_debit"] or 0)
-                journal_credit = float(journal["total_credit"] or 0)
+                journal_debit = int(journal["total_debit"] or 0)
+                journal_credit = int(journal["total_credit"] or 0)
                 total_debit += journal_debit
                 total_credit += journal_credit
 

@@ -11,7 +11,7 @@ Journal Entries:
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import date, timedelta
 import logging
 import asyncpg
@@ -36,6 +36,7 @@ from ..schemas.intercompany import (
     IntercompanyResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,6 +74,28 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": tenant_id,
         "user_id": UUID(user_id) if user_id else None
     }
+
+
+# Law 5: Period check helper
+async def _check_period_is_open(conn, tenant_id: str, journal_date: date):
+    """Validate that the fiscal period for the given date is open."""
+    period = await conn.fetchrow(
+        """
+        SELECT id, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
+        """,
+        tenant_id, journal_date
+    )
+    if not period:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada periode akuntansi untuk tanggal ini"
+        )
+    if period["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail="Periode akuntansi sudah ditutup"
+        )
 
 
 # =============================================================================
@@ -191,7 +214,17 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Law 23: All journal creation within transaction
             async with conn.transaction():
+                # Law 13: Advisory lock before any reads/writes
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"IC_CREATE:{ctx['tenant_id']}"
+                )
+
+                # Law 5: Period check before journal creation
+                await _check_period_is_open(conn, ctx["tenant_id"], body.transaction_date)
+
                 # Generate transaction number
                 tx_number = await conn.fetchval(
                     "SELECT generate_ic_transaction_number($1)",
@@ -248,63 +281,59 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
 
 
 async def create_from_entity_journal(conn, tenant_id, tx_id, tx_number, body, user_id):
-    """Create journal entry for the originating entity."""
-    try:
-        # Get IC accounts
-        ic_receivable = await conn.fetchrow(
-            "SELECT id, code FROM chart_of_accounts WHERE tenant_id = $1 AND code = '1-10900'",
-            tenant_id
-        )
-        ic_sales = await conn.fetchrow(
-            "SELECT id, code FROM chart_of_accounts WHERE tenant_id = $1 AND code = '4-10200'",
-            tenant_id
-        )
+    """Create journal entry for the originating entity (Law 20: DRAFT→lines→POSTED)."""
+    # Get IC accounts
+    ic_receivable_id = await resolve_account_id(conn, tenant_id, '1-10900')
+    ic_sales_id = await resolve_account_id(conn, tenant_id, '4-10200')
 
-        if not ic_receivable or not ic_sales:
-            logger.warning(f"IC accounts not found for tenant {tenant_id}")
-            return None
-
-        # Create journal entry
-        journal_number = f"JE-IC-{tx_number}"
-        journal_id = await conn.fetchval(
-            """
-            INSERT INTO journal_entries (
-                tenant_id, journal_number, entry_date, description,
-                source_type, source_id, status, created_by
-            ) VALUES ($1, $2, $3, $4, 'intercompany', $5, 'posted', $6)
-            RETURNING id
-            """,
-            tenant_id, journal_number, body.transaction_date,
-            f"IC Transaction: {body.description or body.transaction_type}",
-            tx_id, user_id
-        )
-
-        # Create journal lines
-        # Debit IC Receivable
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-            VALUES ($1, $2, $3, 0, $4)
-            """,
-            journal_id, ic_receivable["id"], body.amount,
-            f"IC Receivable from {body.to_entity_tenant_id}"
-        )
-
-        # Credit IC Sales/Revenue
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-            VALUES ($1, $2, 0, $3, $4)
-            """,
-            journal_id, ic_sales["id"], body.amount,
-            f"IC {body.transaction_type} to {body.to_entity_tenant_id}"
-        )
-
-        return journal_id
-
-    except Exception as e:
-        logger.error(f"Error creating from entity journal: {e}")
+    if not ic_receivable_id or not ic_sales_id:
+        logger.warning(f"IC accounts not found for tenant {tenant_id}")
         return None
+
+    # Law 20 Step 1: INSERT as DRAFT
+    journal_number = f"JE-IC-{tx_number}"
+    journal_id = await conn.fetchval(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date, description,
+            source_type, source_id, status, total_debit, total_credit,
+            created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'INTERCOMPANY', $6, 'DRAFT', $7, $7, $8)
+        RETURNING id
+        """,
+        uuid4(), tenant_id, journal_number, body.transaction_date,
+        f"IC Transaction: {body.description or body.transaction_type}",
+        tx_id, body.amount, user_id
+    )
+
+    # Law 20 Step 2: INSERT journal_lines
+    # Debit IC Receivable
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+        VALUES ($1, $2, $3, 1, $4, 0, $5)
+        """,
+        uuid4(), journal_id, ic_receivable_id, body.amount,
+        f"IC Receivable from {body.to_entity_tenant_id}"
+    )
+
+    # Credit IC Sales/Revenue
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+        VALUES ($1, $2, $3, 2, 0, $4, $5)
+        """,
+        uuid4(), journal_id, ic_sales_id, body.amount,
+        f"IC {body.transaction_type} to {body.to_entity_tenant_id}"
+    )
+
+    # Law 20 Step 3: UPDATE to POSTED
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id
+    )
+
+    return journal_id
 
 
 @router.get("/transactions/{transaction_id}", response_model=IntercompanyTransactionDetailResponse)
@@ -429,7 +458,14 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Law 23: All journal creation within transaction
             async with conn.transaction():
+                # Law 13: Advisory lock before any reads/writes
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"IC_CONFIRM:{transaction_id}"
+                )
+
                 # Get transaction
                 tx = await conn.fetchrow(
                     """
@@ -443,6 +479,9 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
 
                 if tx["to_status"] != "pending":
                     raise HTTPException(status_code=400, detail="Transaction already processed")
+
+                # Law 5: Period check before journal creation
+                await _check_period_is_open(conn, ctx["tenant_id"], tx["transaction_date"])
 
                 # Update status
                 update_fields = ["to_status = 'confirmed'", "updated_at = NOW()"]
@@ -494,62 +533,59 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
 
 
 async def create_to_entity_journal(conn, tenant_id, tx, user_id):
-    """Create journal entry for the receiving entity."""
-    try:
-        # Get IC accounts
-        ic_payable = await conn.fetchrow(
-            "SELECT id, code FROM chart_of_accounts WHERE tenant_id = $1 AND code = '2-10900'",
-            tenant_id
-        )
-        ic_purchases = await conn.fetchrow(
-            "SELECT id, code FROM chart_of_accounts WHERE tenant_id = $1 AND code = '5-10400'",
-            tenant_id
-        )
+    """Create journal entry for the receiving entity (Law 20: DRAFT→lines→POSTED)."""
+    # Get IC accounts
+    ic_payable_id = await resolve_account_id(conn, tenant_id, '2-10900')
+    ic_purchases_id = await resolve_account_id(conn, tenant_id, '5-10400')
 
-        if not ic_payable or not ic_purchases:
-            logger.warning(f"IC accounts not found for tenant {tenant_id}")
-            return None
-
-        # Create journal entry
-        journal_number = f"JE-IC-{tx['transaction_number']}-TO"
-        journal_id = await conn.fetchval(
-            """
-            INSERT INTO journal_entries (
-                tenant_id, journal_number, entry_date, description,
-                source_type, source_id, status, created_by
-            ) VALUES ($1, $2, $3, $4, 'intercompany', $5, 'posted', $6)
-            RETURNING id
-            """,
-            tenant_id, journal_number, tx["transaction_date"],
-            f"IC Transaction Receipt: {tx['description'] or tx['transaction_type']}",
-            tx["id"], user_id
-        )
-
-        # Debit IC Purchases/Expense
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-            VALUES ($1, $2, $3, 0, $4)
-            """,
-            journal_id, ic_purchases["id"], tx["amount"],
-            f"IC {tx['transaction_type']} from {tx['from_entity_tenant_id']}"
-        )
-
-        # Credit IC Payable
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-            VALUES ($1, $2, 0, $3, $4)
-            """,
-            journal_id, ic_payable["id"], tx["amount"],
-            f"IC Payable to {tx['from_entity_tenant_id']}"
-        )
-
-        return journal_id
-
-    except Exception as e:
-        logger.error(f"Error creating to entity journal: {e}")
+    if not ic_payable_id or not ic_purchases_id:
+        logger.warning(f"IC accounts not found for tenant {tenant_id}")
         return None
+
+    # Law 20 Step 1: INSERT as DRAFT
+    journal_number = f"JE-IC-{tx['transaction_number']}-TO"
+    journal_id = await conn.fetchval(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date, description,
+            source_type, source_id, status, total_debit, total_credit,
+            created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'INTERCOMPANY', $6, 'DRAFT', $7, $7, $8)
+        RETURNING id
+        """,
+        uuid4(), tenant_id, journal_number, tx["transaction_date"],
+        f"IC Transaction Receipt: {tx['description'] or tx['transaction_type']}",
+        tx["id"], tx["amount"], user_id
+    )
+
+    # Law 20 Step 2: INSERT journal_lines
+    # Debit IC Purchases/Expense
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+        VALUES ($1, $2, $3, 1, $4, 0, $5)
+        """,
+        uuid4(), journal_id, ic_purchases_id, tx["amount"],
+        f"IC {tx['transaction_type']} from {tx['from_entity_tenant_id']}"
+    )
+
+    # Credit IC Payable
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+        VALUES ($1, $2, $3, 2, 0, $4, $5)
+        """,
+        uuid4(), journal_id, ic_payable_id, tx["amount"],
+        f"IC Payable to {tx['from_entity_tenant_id']}"
+    )
+
+    # Law 20 Step 3: UPDATE to POSTED
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id
+    )
+
+    return journal_id
 
 
 @router.post("/transactions/{transaction_id}/reject", response_model=IntercompanyResponse)

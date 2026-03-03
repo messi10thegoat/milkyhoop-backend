@@ -7,6 +7,7 @@ Request and response models for /api/periods endpoints.
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import date, datetime
+from decimal import Decimal
 
 
 # =============================================================================
@@ -116,8 +117,8 @@ class TrialBalanceSnapshotResponse(BaseModel):
 
     id: str
     as_of_date: date
-    total_debit: float
-    total_credit: float
+    total_debit: Decimal  # Law 25: numeric(18,2)
+    total_credit: Decimal  # Law 25: numeric(18,2)
     is_balanced: bool
     generated_at: datetime
 

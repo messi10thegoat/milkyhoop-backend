@@ -1,0 +1,212 @@
+scenarios:
+- id: CM-001
+  category: cross_module
+  description: Query profit from sales to a specific customer this month
+  messages:
+  - berapa profit dari penjualan ke Grapgrap Clothing bulan ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - cross
+  - sales
+  - profit
+  timeout_seconds: 60
+- id: CM-002
+  category: cross_module
+  description: Compare total expenses vs revenue this month
+  messages:
+  - total pengeluaran vs pendapatan bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - cross
+  - expense
+  - revenue
+  timeout_seconds: 60
+- id: CM-003
+  category: cross_module
+  description: Identify customer with highest outstanding balance
+  messages:
+  - customer mana yang paling banyak outstanding-nya?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  - outstanding
+  tags:
+  - cross
+  - customer
+  - ar
+  timeout_seconds: 60
+- id: CM-004
+  category: cross_module
+  description: Query COGS for a specific item
+  messages:
+  - berapa HPP untuk Kaos Oblong Gramasi 24s?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - cross
+  - cogs
+  - item
+  timeout_seconds: 60
+- id: CM-005
+  category: cross_module
+  description: Summary of accounts receivable and payable
+  messages:
+  - ringkasan hutang piutang
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - hutang
+  - piutang
+  tags:
+  - cross
+  - ar
+  - ap
+  timeout_seconds: 60
+- id: CM-006
+  category: cross_module
+  description: Create sales invoice then show AR balance - action followed by insight
+  messages:
+  - buat faktur penjualan Grapgrap Clothing, Kaos 24s 10 pcs, lalu tunjukkan saldo
+    piutangnya
+  expect_behavior:
+  - propose_action
+  tags:
+  - cross
+  - action_then_insight
+  timeout_seconds: 60
+- id: CM-007
+  category: cross_module
+  description: Query total transactions with a specific customer this year
+  messages:
+  - berapa total transaksi dengan Grapgrap Clothing tahun ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Grapgrap
+  tags:
+  - cross
+  - customer
+  - history
+  timeout_seconds: 60
+- id: CM-008
+  category: cross_module
+  description: Rank top 5 best-selling items this month
+  messages:
+  - top 5 item terlaris bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - item
+  tags:
+  - cross
+  - item
+  - ranking
+  timeout_seconds: 60
+- id: CM-009
+  category: cross_module
+  description: Compare accounts payable vs accounts receivable
+  messages:
+  - bandingkan hutang vs piutang kita
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - cross
+  - ar_vs_ap
+  timeout_seconds: 60
+- id: CM-010
+  category: cross_module
+  description: Cash flow projection for next week
+  messages:
+  - cashflow projection minggu depan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  - kas
+  - Rp
+  tags:
+  - cross
+  - cashflow
+  - forecast
+  timeout_seconds: 60
+- id: CM-011
+  category: cross_module
+  description: Check remaining stock for a specific item
+  messages:
+  - berapa stok Kaos Oblong Gramasi 24s yang tersisa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - stok
+  - Kaos
+  tags:
+  - cross
+  - inventory
+  timeout_seconds: 60
+- id: CM-012
+  category: cross_module
+  description: Identify vendor with the most outstanding bills
+  messages:
+  - vendor dengan tagihan paling banyak
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - vendor
+  tags:
+  - cross
+  - vendor
+  - ap
+  timeout_seconds: 60
+- id: CM-013
+  category: cross_module
+  description: Revenue breakdown per customer
+  messages:
+  - revenue per customer breakdown
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - cross
+  - revenue
+  - customer
+  timeout_seconds: 60
+- id: CM-014
+  category: cross_module
+  description: Biggest expenses in the last 3 months
+  messages:
+  - beban terbesar 3 bulan terakhir
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  - Rp
+  tags:
+  - cross
+  - expense
+  - trend
+  timeout_seconds: 60
+- id: CM-015
+  category: cross_module
+  description: Check if there are invoices that need follow-up
+  messages:
+  - apakah ada faktur yang perlu difollow up?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - faktur
+  - faktur
+  tags:
+  - cross
+  - followup
+  timeout_seconds: 60

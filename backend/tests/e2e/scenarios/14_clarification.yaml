@@ -1,0 +1,10 @@
+scenarios:
+  - id: "CL-001"
+    category: "clarification"
+    description: "Ask ALL missing info in 1 turn, not multiple"
+    messages:
+      - "buat faktur penjualan"
+    expect_behavior: ["clarification"]
+    expect_contains: ["customer", "barang"]
+    expect_not_contains: ["error"]
+    tags: ["clarification", "efficiency", "v4"]

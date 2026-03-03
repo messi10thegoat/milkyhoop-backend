@@ -1,0 +1,9 @@
+scenarios:
+  - id: "PR-001"
+    category: "proactive"
+    description: "Auto-lookup price from master data, no price question"
+    messages:
+      - "buatkan faktur penjualan ke Grapgrap Clothing, kaos oblong gramasi 24s 5 pcs"
+    expect_behavior: ["propose_action"]
+    expect_not_contains: ["berapa harga", "harga satuan"]
+    tags: ["proactive", "price_lookup", "v4"]

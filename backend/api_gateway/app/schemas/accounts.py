@@ -12,7 +12,10 @@ from typing import Optional, List, Dict, Any, Literal
 # CONSTANTS
 # =============================================================================
 
-ACCOUNT_TYPES = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"]
+ACCOUNT_TYPES = [
+    "ASSET", "RECEIVABLE", "LIABILITY", "PAYABLE", "EQUITY",
+    "REVENUE", "COGS", "EXPENSE", "OTHER_INCOME", "OTHER_EXPENSE"
+]
 NORMAL_BALANCES = ["DEBIT", "CREDIT"]
 
 
@@ -24,7 +27,10 @@ class CreateAccountRequest(BaseModel):
     """Request body for creating an account."""
     code: str = Field(..., min_length=1, max_length=20, description="Account code (e.g., 1-10100)")
     name: str = Field(..., min_length=1, max_length=100, description="Account name")
-    type: Literal["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"] = Field(
+    type: Literal[
+        "ASSET", "RECEIVABLE", "LIABILITY", "PAYABLE", "EQUITY",
+        "REVENUE", "COGS", "EXPENSE", "OTHER_INCOME", "OTHER_EXPENSE"
+    ] = Field(
         ..., description="Account type"
     )
     normal_balance: Literal["DEBIT", "CREDIT"] = Field(

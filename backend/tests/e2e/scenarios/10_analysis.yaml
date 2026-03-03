@@ -1,0 +1,20 @@
+scenarios:
+  - id: "AN-001"
+    category: "analysis"
+    description: "Sales analysis should not crash"
+    messages:
+      - "apakah penjualan bulan ini bagus?"
+    expect_behavior: ["text_response"]
+    expect_contains: ["penjualan", "Rp"]
+    expect_not_contains: ["Invalid LLM", "error", "terjadi kesalahan"]
+    tags: ["analysis", "v4"]
+
+  - id: "AN-002"
+    category: "analysis"
+    description: "Margin analysis with recommendation"
+    messages:
+      - "bagaimana margin keuntungan kita?"
+    expect_behavior: ["text_response"]
+    expect_contains: ["margin"]
+    expect_not_contains: ["error"]
+    tags: ["analysis", "v4"]

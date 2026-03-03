@@ -25,6 +25,7 @@ from backend.api_gateway.app.utils.conversational_parser import (
     validate_parsed_input,
 )
 from backend.api_gateway.app.routers.products import get_db_connection
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,195 +35,211 @@ router = APIRouter()
 # ============================================
 # POS INVENTORY & JOURNAL HELPER
 # ============================================
-# DEPRECATED (Law 16): This helper reads from legacy POS tables (transaksi_harian, item_transaksi).
-# These tables are written by the orchestrator and read here for post-processing only.
-# TODO: Migrate orchestrator to write to sales_invoices/sales_invoice_items directly,
-# then replace these reads with sales_invoices/sales_invoice_items queries.
-# Once orchestrator migration is complete, this function should use:
-#   - sales_invoices.total_amount instead of transaksi_harian.total_nominal
-#   - sales_invoices.payment_method instead of transaksi_harian.metode_pembayaran
-#   - sales_invoice_items (joined with products) instead of item_transaksi
+# DEPRECATED: Legacy tables (transaksi_harian, item_transaksi) were DROPPED in V116 migration.
+# This function now reads from sales_receipts + sales_receipt_items instead.
+# POS flow should use sales_receipts.py directly (B5 sprint completed).
 async def _create_pos_inventory_and_journals(transaction_id: str, tenant_id: str, user_id: str):
     """
     After POS sale success, create inventory ledger entries and journal entries.
     Called after tenant_orchestrator confirms the sale.
 
-    DEPRECATED (Law 16): Reads from transaksi_harian/item_transaksi (legacy POS tables).
-    Cannot migrate to sales_invoices yet because orchestrator still writes to legacy tables.
-    Persediaan writes removed - inventory_ledger is now the sole source of truth.
+    NOTE: Legacy tables transaksi_harian/item_transaksi were DROPPED (V116).
+    This function now attempts to read from sales_receipts as fallback.
+    Primary POS flow should use sales_receipts.py endpoints directly.
     """
+    from decimal import Decimal
     logger.warning(
         f"[DEPRECATED] _create_pos_inventory_and_journals called for txn {transaction_id}. "
-        "Still reading from legacy transaksi_harian/item_transaksi tables. "
-        "Migrate orchestrator to sales_invoices to resolve Law 16 violation."
+        "Legacy tables dropped (V116). Attempting sales_receipts fallback."
     )
     try:
         conn = await get_db_connection()
         try:
-            # Set tenant context for RLS
-            await conn.execute("SELECT set_config('app.current_tenant_id', $1, false)", tenant_id)
+            # TX7 fix: correct RLS config key
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
 
-            # Get transaction items
-            # DEPRECATED: reads from item_transaksi (legacy POS table)
-            # TODO: Replace with sales_invoice_items once orchestrator migrated
-            items = await conn.fetch(
-                "SELECT it.*, p.purchase_price, p.item_code, p.nama_produk, p.track_inventory "
-                "FROM item_transaksi it "
-                "LEFT JOIN products p ON p.id::text = it.produk_id "
-                "WHERE it.transaksi_id = $1",
-                transaction_id
-            )
+            # Law 23: Wrap in transaction for atomicity
+            async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"POS_SALE:{transaction_id}")
 
-            if not items:
-                logger.warning(f"No items found for POS transaction {transaction_id}")
-                return
-
-            # Get transaction total
-            # DEPRECATED: reads from transaksi_harian (legacy POS table)
-            # TODO: Replace with sales_invoices once orchestrator migrated
-            txn = await conn.fetchrow(
-                "SELECT total_nominal, metode_pembayaran FROM transaksi_harian WHERE id = $1",
-                transaction_id
-            )
-            if not txn:
-                logger.warning(f"Transaction {transaction_id} not found")
-                return
-
-            total_amount = txn['total_nominal'] or 0
-            payment_method = txn['metode_pembayaran'] or 'tunai'
-
-            total_cogs = 0
-
-            for item in items:
-                product_id = item.get('produk_id')
-                if not product_id or not item.get('track_inventory', True):
-                    continue
-
-                qty = item['jumlah']
-                unit_cost = item.get('purchase_price') or item.get('hpp_per_unit') or 0
-                item_total_cost = qty * unit_cost
-
-                # Get current balance from inventory_ledger (Law 16 compliant)
-                current_balance = await conn.fetchval(
-                    "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) "
-                    "FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2::uuid",
-                    tenant_id, product_id
+                # TX13 fix: Try sales_receipts instead of dropped tables
+                # The transaction_id from orchestrator may map to a sales_receipt
+                txn = await conn.fetchrow(
+                    "SELECT id, receipt_number, receipt_date, total_amount, payment_method "
+                    "FROM sales_receipts WHERE tenant_id = $1 AND (id::text = $2 OR receipt_number = $2)",
+                    tenant_id, transaction_id
                 )
-                new_balance = float(current_balance) - qty
+                if not txn:
+                    logger.warning(f"Transaction {transaction_id} not found in sales_receipts (legacy tables dropped)")
+                    return
 
-                # INSERT inventory_ledger (Law 16 compliant)
-                await conn.execute("""
-                    INSERT INTO inventory_ledger (
-                        tenant_id, product_id, product_code, product_name,
-                        movement_type, movement_date, source_type, source_id,
-                        quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost, created_by, notes
-                    ) VALUES (
-                        $1, $2::uuid, $3, $4,
-                        'SALE', CURRENT_DATE, 'POS_SALE', NULL,
-                        0, $5, $6,
-                        $7, $8, $7, $9::uuid, $10
+                receipt_id = txn["id"]
+                total_amount = txn["total_amount"] or Decimal("0")
+                payment_method = txn["payment_method"] or "cash"
+                receipt_date = txn["receipt_date"]
+
+                items = await conn.fetch(
+                    "SELECT sri.*, p.purchase_price, p.item_code, p.nama_produk, p.track_inventory "
+                    "FROM sales_receipt_items sri "
+                    "LEFT JOIN products p ON p.id = sri.item_id "
+                    "WHERE sri.sales_receipt_id = $1",
+                    receipt_id
+                )
+
+                if not items:
+                    logger.warning(f"No items found for sales receipt {receipt_id}")
+                    return
+
+                # Law 5: Period check before journal creation
+                period = await conn.fetchrow(
+                    "SELECT id, period_name, status FROM fiscal_periods "
+                    "WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date "
+                    "ORDER BY start_date DESC LIMIT 1",
+                    tenant_id, receipt_date
+                )
+                if period and period["status"] in ("CLOSED", "LOCKED"):
+                    logger.error(f"Cannot post to {period['status']} period for txn {transaction_id}")
+                    return
+
+                total_cogs = Decimal("0")
+
+                for item in items:
+                    product_id = item.get("item_id")
+                    if not product_id or not item.get("track_inventory", True):
+                        continue
+
+                    qty = item["quantity"]
+                    # Law 25: Decimal instead of float
+                    unit_cost = Decimal(str(item.get("purchase_price") or item.get("unit_cost") or 0))
+                    item_total_cost = (Decimal(str(qty)) * unit_cost).quantize(Decimal("0.01"))
+
+                    # Get current balance from inventory_ledger
+                    current_balance = await conn.fetchval(
+                        "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) "
+                        "FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
+                        tenant_id, product_id
                     )
-                """,
-                    tenant_id, product_id,
-                    item.get('item_code') or '', item.get('nama_produk') or item['nama_produk'],
-                    qty, new_balance,
-                    unit_cost, item_total_cost, user_id,
-                    f"POS Sale: {transaction_id[:8]}"
-                )
+                    # Law 25: no float()
+                    new_balance = current_balance - qty
 
-                # NOTE: persediaan write removed (Law 16) - inventory_ledger is source of truth
-
-                total_cogs += item_total_cost
-
-            # Create journal entries if total > 0
-            if total_amount > 0:
-                # Determine cash/bank account
-                kas_account = '1-10100' if payment_method == 'tunai' else '1-10200'
-
-                # Sales Journal: Dr. Kas/Bank, Cr. Penjualan
-                sales_journal_id = str(uuid.uuid4())
-                await conn.execute("""
-                    INSERT INTO journal_entries (
-                        id, tenant_id, entry_number, posting_date, description,
-                        source_type, source_id, status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'POS_SALE', $5, 'POSTED', $6, $6, $7)
-                """,
-                    sales_journal_id, tenant_id, f"POS-{transaction_id[:8]}",
-                    f"POS Sale {transaction_id[:8]}", transaction_id,
-                    total_amount, user_id
-                )
-
-                # Dr. Kas/Bank
-                kas_acct_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                    tenant_id, kas_account
-                )
-                if kas_acct_id:
                     await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, $3, $4, 0, $5)
-                    """, str(uuid.uuid4()), sales_journal_id, str(kas_acct_id), total_amount,
-                        f"Kas masuk POS")
+                        INSERT INTO inventory_ledger (
+                            tenant_id, product_id, product_code, product_name,
+                            movement_type, movement_date, source_type, source_id,
+                            quantity_in, quantity_out, quantity_balance,
+                            unit_cost, total_cost, average_cost, created_by, notes
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            'SALE', $5, 'POS_SALE', $6,
+                            0, $7, $8,
+                            $9, $10, $9, $11, $12
+                        )
+                    """,
+                        tenant_id, product_id,
+                        item.get("item_code") or (item.get("nama_produk") or ""),
+                        item.get("nama_produk") or item.get("item_name") or "",
+                        receipt_date, receipt_id,
+                        qty, new_balance,
+                        unit_cost, item_total_cost, uuid.UUID(user_id) if user_id else None,
+                        f"POS Sale: {txn['receipt_number']}"
+                    )
 
-                # Cr. Penjualan
-                penjualan_acct_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
-                    tenant_id
-                )
-                if penjualan_acct_id:
+                    total_cogs += item_total_cost
+
+                # Create journal entries if total > 0
+                if total_amount > 0:
+                    # Law 27: Use resolve_account_id for all account lookups
+                    if payment_method in ("cash", "tunai"):
+                        kas_acct_id = await resolve_account_id(conn, tenant_id, '1-10100')
+                    else:
+                        kas_acct_id = await resolve_account_id(conn, tenant_id, '1-10200')
+
+                    # Sales Journal (Law 20: DRAFT→lines→POSTED)
+                    # TX14 fix: use journal_number, journal_date (not entry_number, posting_date)
+                    sales_journal_id = str(uuid.uuid4())
                     await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, $3, 0, $4, $5)
-                    """, str(uuid.uuid4()), sales_journal_id, str(penjualan_acct_id), total_amount,
-                        f"Penjualan POS")
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'POS_SALE', $6, 'DRAFT', $7, $7, $8)
+                    """,
+                        sales_journal_id, tenant_id, f"POS-{txn['receipt_number']}",
+                        receipt_date, f"POS Sale {txn['receipt_number']}", str(receipt_id),
+                        total_amount, user_id
+                    )
 
-            # COGS Journal if has cost
-            if total_cogs > 0:
-                cogs_journal_id = str(uuid.uuid4())
-                await conn.execute("""
-                    INSERT INTO journal_entries (
-                        id, tenant_id, entry_number, posting_date, description,
-                        source_type, source_id, status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'POS_COGS', $5, 'POSTED', $6, $6, $7)
-                """,
-                    cogs_journal_id, tenant_id, f"POS-COGS-{transaction_id[:8]}",
-                    f"COGS POS Sale {transaction_id[:8]}", transaction_id,
-                    total_cogs, user_id
-                )
+                    # Dr. Kas/Bank — journal_lines uses memo (not description)
+                    if kas_acct_id:
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, 1, $4, 0, $5)
+                        """, str(uuid.uuid4()), sales_journal_id, str(kas_acct_id), total_amount,
+                            "Kas masuk POS")
 
-                # Dr. HPP (5-10100)
-                hpp_acct_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '5-10100'",
-                    tenant_id
-                )
-                if hpp_acct_id:
+                    # Cr. Penjualan
+                    penjualan_acct_id = await resolve_account_id(conn, tenant_id, '4-10100')
+                    if penjualan_acct_id:
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, 2, 0, $4, $5)
+                        """, str(uuid.uuid4()), sales_journal_id, str(penjualan_acct_id), total_amount,
+                            "Penjualan POS")
+
+                    # Law 20: Promote to POSTED
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", sales_journal_id)
+
+                # COGS Journal if has cost
+                if total_cogs > 0:
+                    cogs_journal_id = str(uuid.uuid4())
+                    # TX14 fix: use journal_number, journal_date
                     await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, $3, $4, 0, $5)
-                    """, str(uuid.uuid4()), cogs_journal_id, str(hpp_acct_id), total_cogs,
-                        f"HPP POS Sale")
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'POS_COGS', $6, 'DRAFT', $7, $7, $8)
+                    """,
+                        cogs_journal_id, tenant_id, f"POS-COGS-{txn['receipt_number']}",
+                        receipt_date, f"COGS POS Sale {txn['receipt_number']}", str(receipt_id),
+                        total_cogs, user_id
+                    )
 
-                # Cr. Persediaan (1-10600)
-                inv_acct_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10600'",
-                    tenant_id
-                )
-                if inv_acct_id:
-                    await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, $3, 0, $4, $5)
-                    """, str(uuid.uuid4()), cogs_journal_id, str(inv_acct_id), total_cogs,
-                        f"Persediaan keluar POS")
+                    # Dr. HPP (5-10100)
+                    hpp_acct_id = await resolve_account_id(conn, tenant_id, '5-10100')
+                    if hpp_acct_id:
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, 1, $4, 0, $5)
+                        """, str(uuid.uuid4()), cogs_journal_id, str(hpp_acct_id), total_cogs,
+                            "HPP POS Sale")
 
-            logger.info(f"POS inventory+journals created for txn {transaction_id}: {len(items)} items, sales={total_amount}, cogs={total_cogs}")
+                    # Cr. Persediaan (1-10600)
+                    inv_acct_id = await resolve_account_id(conn, tenant_id, '1-10600')
+                    if inv_acct_id:
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, 2, 0, $4, $5)
+                        """, str(uuid.uuid4()), cogs_journal_id, str(inv_acct_id), total_cogs,
+                            "Persediaan keluar POS")
+
+                    # Law 20: Promote COGS to POSTED
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", cogs_journal_id)
+
+                    # Link inventory_ledger to COGS journal
+                    await conn.execute(
+                        "UPDATE inventory_ledger SET journal_id = $1 WHERE source_type = 'POS_SALE' AND source_id = $2 AND tenant_id = $3",
+                        uuid.UUID(cogs_journal_id), receipt_id, tenant_id
+                    )
+
+                logger.info(f"POS inventory+journals created for txn {transaction_id}: {len(items)} items, sales={total_amount}, cogs={total_cogs}")
 
         finally:
             await conn.close()
 
     except Exception as e:
-        # Don't fail the POS transaction if post-processing fails
+        # Law 23: Log error but don't silently swallow — re-raise for caller to handle
         logger.error(f"Error creating POS inventory/journals for {transaction_id}: {e}", exc_info=True)
+        raise
 
 
 # ============================================
@@ -825,8 +842,12 @@ async def create_sales_transaction(request: Request, body: SalesTransactionReque
             # This was causing duplicate messages in chat history
 
             # Post-processing: create inventory entries and journal entries
+            # Non-blocking: if post-processing fails, POS sale still succeeds
             if transaction_id:
-                await _create_pos_inventory_and_journals(transaction_id, tenant_id, user_id)
+                try:
+                    await _create_pos_inventory_and_journals(transaction_id, tenant_id, user_id)
+                except Exception as post_err:
+                    logger.error(f"POS post-processing failed (non-blocking): {post_err}", exc_info=True)
 
             return SalesTransactionResponse(
                 status="success",

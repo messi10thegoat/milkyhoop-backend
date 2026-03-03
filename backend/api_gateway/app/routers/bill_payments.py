@@ -11,6 +11,7 @@ import uuid as uuid_module
 import logging
 import asyncpg
 from datetime import date
+from decimal import Decimal
 
 from ..schemas.bill_payments import (
     CreateBillPaymentRequest,
@@ -26,6 +27,7 @@ from ..schemas.bill_payments import (
     OpenBillItem,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 # Account codes for bill payment journals
 AP_ACCOUNT = "2-10100"  # Hutang Usaha (Accounts Payable)
@@ -105,7 +107,7 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.tenant_id = $1
           AND je.status = 'POSTED'
-          AND coa.account_code = '2-10100'
+          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
           AND (
               -- Bill posting journal (source_id = bill_id)
               (je.source_type = 'BILL' AND je.source_id = $2::uuid)
@@ -125,6 +127,11 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
               OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
                   SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
                   WHERE vca.bill_id = $2::uuid
+              ))
+              -- Vendor deposit application journals
+              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
+                  SELECT vda.journal_id FROM vendor_deposit_applications vda
+                  WHERE vda.bill_id = $2::uuid
               ))
           )
     """, tenant_id, bill_id_str)
@@ -195,11 +202,7 @@ async def create_bill_payment_journal(
             bank_coa_id = bank["coa_id"]
 
     # Get AP account (Hutang Usaha)
-    ap_account_id = await conn.fetchval(
-        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-        ctx["tenant_id"],
-        AP_ACCOUNT,
-    )
+    ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
     if not ap_account_id:
         raise HTTPException(
             status_code=500, detail=f"AP account ({AP_ACCOUNT}) not found"
@@ -208,21 +211,12 @@ async def create_bill_payment_journal(
     # Get or default purchase discount account
     purchase_discount_account_id = discount_account_id
     if discount_amount > 0 and not purchase_discount_account_id:
-        purchase_discount_account_id = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-            ctx["tenant_id"],
-            PURCHASE_DISCOUNT_ACCOUNT,
-        )
+        purchase_discount_account_id = await resolve_account_id(conn, ctx["tenant_id"], PURCHASE_DISCOUNT_ACCOUNT)
 
     # Get vendor deposit account for unapplied amounts (overpayments to vendor)
     vendor_deposit_account_id = None
     if unapplied_amount > 0:
-        vendor_deposit_account_id = await conn.fetchval(
-            """SELECT id FROM chart_of_accounts
-               WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%')
-               LIMIT 1""",
-            ctx["tenant_id"],
-        )
+        vendor_deposit_account_id = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
 
     # Generate journal number using database function
     journal_number = await conn.fetchval(
@@ -236,7 +230,7 @@ async def create_bill_payment_journal(
     # Debit side: AP(allocated) + BankFee(bank_fee) + VendorDeposit(unapplied)
     # Credit side: Bank(total+bank_fee) + Discount(discount)
     # Both equal total_amount + discount + bank_fee (since unapplied = total + discount - allocated)
-    total_debit = float(total_amount + discount_amount + bank_fee_amount)
+    total_debit = total_amount + discount_amount + bank_fee_amount
 
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
@@ -248,7 +242,7 @@ async def create_bill_payment_journal(
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, trace_id,
             status, total_debit, total_credit, created_by
-        ) VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', $6, $7, 'POSTED', $8, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', $6, $7, 'DRAFT', $8, $8, $9)
         """,
         journal_id,
         ctx["tenant_id"],
@@ -275,7 +269,7 @@ async def create_bill_payment_journal(
             journal_id,
             line_number,
             ap_account_id,
-            float(allocated_amount),
+            allocated_amount,
             f"Pelunasan hutang usaha - {vendor_name}",
         )
 
@@ -293,7 +287,7 @@ async def create_bill_payment_journal(
             bank_fee_account_id
             if isinstance(bank_fee_account_id, UUID)
             else UUID(str(bank_fee_account_id)),
-            float(bank_fee_amount),
+            bank_fee_amount,
             "Biaya administrasi bank",
         )
 
@@ -309,7 +303,7 @@ async def create_bill_payment_journal(
             journal_id,
             line_number,
             vendor_deposit_account_id,
-            float(unapplied_amount),
+            unapplied_amount,
             f"Uang muka vendor - {vendor_name}",
         )
 
@@ -326,16 +320,11 @@ async def create_bill_payment_journal(
             journal_id,
             line_number,
             bank_coa_id,
-            float(cash_out),
+            cash_out,
             f"Pembayaran dari bank - {payment_number}",
         )
     elif cash_out > 0 and source_type == "deposit" and source_deposit_id:
-        deposit_coa = await conn.fetchval(
-            """SELECT id FROM chart_of_accounts
-               WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%')
-               LIMIT 1""",
-            ctx["tenant_id"],
-        )
+        deposit_coa = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
         if deposit_coa:
             line_number += 1
             await conn.execute(
@@ -347,7 +336,7 @@ async def create_bill_payment_journal(
                 journal_id,
                 line_number,
                 deposit_coa,
-                float(cash_out),
+                cash_out,
                 f"Aplikasi uang muka vendor - {payment_number}",
             )
 
@@ -365,10 +354,15 @@ async def create_bill_payment_journal(
             purchase_discount_account_id
             if isinstance(purchase_discount_account_id, UUID)
             else UUID(str(purchase_discount_account_id)),
-            float(discount_amount),
+            discount_amount,
             "Potongan pembelian",
         )
 
+    # Law 20: DRAFT->POSTED after all journal lines inserted
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id,
+    )
     logger.info(f"Bill payment journal created: {journal_id}, number: {journal_number}")
 
     return journal_id, journal_number
@@ -390,6 +384,10 @@ async def list_bill_payments(
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
+    """
+    List bill payments — journal-derived with LEFT JOIN to wrapper table (Rule 6).
+    Amounts from journal_lines (PAYABLE debit), metadata from bill_payments_v2.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -397,65 +395,111 @@ async def list_bill_payments(
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-            conditions = ["bp.tenant_id = $1"]
+            # Build dynamic filters for the outer query (applied on joined result)
+            outer_conditions = []
             params = [ctx["tenant_id"]]
             param_idx = 2
 
             if status and status != "all":
-                conditions.append(f"bp.status = ${param_idx}")
+                outer_conditions.append(f"q.status = ${param_idx}")
                 params.append(status)
                 param_idx += 1
 
             if vendor_id:
-                conditions.append(f"bp.vendor_id = ${param_idx}::uuid")
+                outer_conditions.append(f"q.vendor_id = ${param_idx}::uuid")
                 params.append(vendor_id)
                 param_idx += 1
 
             if payment_method:
-                conditions.append(f"bp.payment_method = ${param_idx}")
+                outer_conditions.append(f"q.payment_method = ${param_idx}")
                 params.append(payment_method)
                 param_idx += 1
 
             if search:
-                conditions.append(
-                    f"(bp.payment_number ILIKE ${param_idx} OR bp.vendor_name ILIKE ${param_idx})"
+                outer_conditions.append(
+                    f"(q.payment_number ILIKE ${param_idx} OR q.vendor_name ILIKE ${param_idx})"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
 
             if date_from:
-                conditions.append(f"bp.payment_date >= ${param_idx}")
+                outer_conditions.append(f"q.payment_date >= ${param_idx}")
                 params.append(date_from)
                 param_idx += 1
 
             if date_to:
-                conditions.append(f"bp.payment_date <= ${param_idx}")
+                outer_conditions.append(f"q.payment_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
 
-            where_clause = " AND ".join(conditions)
-            sort_column = {
-                "payment_date": "bp.payment_date",
-                "payment_number": "bp.payment_number",
-                "vendor_name": "bp.vendor_name",
-                "total_amount": "bp.total_amount",
-                "created_at": "bp.created_at",
-            }.get(sort_by, "bp.created_at")
+            outer_where = (" AND " + " AND ".join(outer_conditions)) if outer_conditions else ""
 
-            total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM bill_payments_v2 bp WHERE {where_clause}",
-                *params,
-            )
+            # Sort column mapping (on outer query aliases)
+            sort_col = {
+                "payment_date": "q.payment_date",
+                "payment_number": "q.payment_number",
+                "vendor_name": "q.vendor_name",
+                "total_amount": "q.total_amount",
+                "created_at": "q.created_at",
+            }.get(sort_by, "q.created_at")
+            order = "ASC" if sort_order == "asc" else "DESC"
 
+            limit_idx = param_idx
+            skip_idx = param_idx + 1
+
+            # Journal-derived settlements CTE + LEFT JOIN bill_payments_v2 (Rule 6)
+            base_cte = f"""
+                WITH settlements AS (
+                    SELECT je.id AS journal_id, je.journal_number, je.journal_date,
+                           je.source_id, je.source_type, je.created_at AS je_created_at,
+                           SUM(jl.debit) AS settlement_amount
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
+                      AND je.status = 'POSTED' AND je.tenant_id = $1
+                      AND je.reversed_by_id IS NULL
+                    GROUP BY je.id, je.journal_number, je.journal_date,
+                             je.source_id, je.source_type, je.created_at
+                ),
+                joined AS (
+                    SELECT
+                        COALESCE(bp.id, s.journal_id)::text AS id,
+                        COALESCE(bp.payment_number, s.journal_number) AS payment_number,
+                        bp.vendor_id,
+                        COALESCE(bp.vendor_name, 'Settlement') AS vendor_name,
+                        COALESCE(bp.payment_date, s.journal_date) AS payment_date,
+                        COALESCE(bp.payment_method, 'bank_transfer') AS payment_method,
+                        s.settlement_amount AS total_amount,
+                        COALESCE(bp.allocated_amount, s.settlement_amount) AS allocated_amount,
+                        COALESCE(bp.unapplied_amount, 0) AS unapplied_amount,
+                        COALESCE(bp.status, 'posted') AS status,
+                        COALESCE(bp.created_at, s.je_created_at) AS created_at,
+                        COALESCE(
+                            (SELECT COUNT(*) FROM bill_payment_allocations bpa WHERE bpa.payment_id = bp.id),
+                            0
+                        ) AS bill_count
+                    FROM settlements s
+                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
+                )
+            """
+
+            # Count with filters applied
+            count_query = f"""
+                {base_cte}
+                SELECT COUNT(*) FROM joined q WHERE 1=1{outer_where}
+            """
+            total = await conn.fetchval(count_query, *params)
+
+            # List with filters, sort, pagination
             list_query = f"""
-                SELECT bp.id, bp.payment_number, bp.vendor_id, bp.vendor_name, bp.payment_date,
-                       bp.payment_method, bp.total_amount, bp.allocated_amount, bp.unapplied_amount,
-                       bp.status, bp.created_at,
-                       (SELECT COUNT(*) FROM bill_payment_allocations bpa WHERE bpa.payment_id = bp.id) as bill_count
-                FROM bill_payments_v2 bp WHERE {where_clause}
-                ORDER BY {sort_column} {sort_order.upper()}
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}"""
-            params.extend([limit, skip])
+                {base_cte}
+                SELECT q.* FROM joined q WHERE 1=1{outer_where}
+                ORDER BY {sort_col} {order}
+                LIMIT ${limit_idx} OFFSET ${skip_idx}
+            """
+            params.append(limit)
+            params.append(skip)
             rows = await conn.fetch(list_query, *params)
 
             items = [
@@ -490,6 +534,10 @@ async def list_bill_payments(
 
 @router.get("/summary", response_model=BillPaymentSummaryResponse)
 async def get_bill_payments_summary(request: Request):
+    """
+    Summary — journal-derived with LEFT JOIN to wrapper table (Rule 6).
+    Amounts from journal_lines (PAYABLE debit), metadata from bill_payments_v2.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -497,25 +545,70 @@ async def get_bill_payments_summary(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+            # Journal-derived summary (Rule 6)
             summary = await conn.fetchrow(
                 """
-                SELECT COUNT(*) as total_count, COALESCE(SUM(total_amount), 0) as total_paid,
-                    COALESCE(SUM(CASE WHEN status = 'draft' THEN total_amount ELSE 0 END), 0) as draft_amount,
-                    COUNT(CASE WHEN status = 'draft' THEN 1 END) as draft_count,
-                    COALESCE(SUM(CASE WHEN status = 'posted' THEN total_amount ELSE 0 END), 0) as posted_amount,
-                    COUNT(CASE WHEN status = 'posted' THEN 1 END) as posted_count,
-                    COALESCE(SUM(CASE WHEN payment_date = CURRENT_DATE THEN total_amount ELSE 0 END), 0) as today_amount,
-                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('week', CURRENT_DATE) THEN total_amount ELSE 0 END), 0) as week_amount,
-                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('month', CURRENT_DATE) THEN total_amount ELSE 0 END), 0) as month_amount
-                FROM bill_payments_v2 WHERE tenant_id = $1 AND status != 'voided'""",
+                WITH settlements AS (
+                    SELECT je.id AS journal_id, je.journal_date,
+                           SUM(jl.debit) AS settlement_amount
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
+                      AND je.status = 'POSTED' AND je.tenant_id = $1
+                      AND je.reversed_by_id IS NULL
+                    GROUP BY je.id, je.journal_date
+                ),
+                joined AS (
+                    SELECT s.settlement_amount,
+                           COALESCE(bp.status, 'posted') AS status,
+                           COALESCE(bp.payment_date, s.journal_date) AS payment_date,
+                           COALESCE(bp.payment_method, 'bank_transfer') AS payment_method
+                    FROM settlements s
+                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
+                )
+                SELECT
+                    COUNT(*) AS total_count,
+                    COALESCE(SUM(settlement_amount), 0) AS total_paid,
+                    COALESCE(SUM(CASE WHEN status = 'draft' THEN settlement_amount ELSE 0 END), 0) AS draft_amount,
+                    COUNT(CASE WHEN status = 'draft' THEN 1 END) AS draft_count,
+                    COALESCE(SUM(CASE WHEN status = 'posted' THEN settlement_amount ELSE 0 END), 0) AS posted_amount,
+                    COUNT(CASE WHEN status = 'posted' THEN 1 END) AS posted_count,
+                    COALESCE(SUM(CASE WHEN payment_date = CURRENT_DATE THEN settlement_amount ELSE 0 END), 0) AS today_amount,
+                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('week', CURRENT_DATE) THEN settlement_amount ELSE 0 END), 0) AS week_amount,
+                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('month', CURRENT_DATE) THEN settlement_amount ELSE 0 END), 0) AS month_amount
+                FROM joined
+                WHERE status != 'voided'
+                """,
                 ctx["tenant_id"],
             )
 
+            # Journal-derived method breakdown (Rule 6)
             method_breakdown = await conn.fetch(
                 """
-                SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount
-                FROM bill_payments_v2 WHERE tenant_id = $1 AND status != 'voided'
-                GROUP BY payment_method""",
+                WITH settlements AS (
+                    SELECT je.id AS journal_id,
+                           SUM(jl.debit) AS settlement_amount
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
+                      AND je.status = 'POSTED' AND je.tenant_id = $1
+                      AND je.reversed_by_id IS NULL
+                    GROUP BY je.id
+                ),
+                joined AS (
+                    SELECT s.settlement_amount,
+                           COALESCE(bp.status, 'posted') AS status,
+                           COALESCE(bp.payment_method, 'bank_transfer') AS payment_method
+                    FROM settlements s
+                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
+                )
+                SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(settlement_amount), 0) AS amount
+                FROM joined
+                WHERE status != 'voided'
+                GROUP BY payment_method
+                """,
                 ctx["tenant_id"],
             )
 
@@ -573,7 +666,103 @@ async def get_bill_payment(request: Request, payment_id: str):
             )
 
             if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found")
+                # --- Law 29 fallback: try as journal_entries.id ---
+                journal_row = await conn.fetchrow(
+                    """
+                    SELECT je.id, je.journal_number, je.journal_date, je.description,
+                           je.source_type, je.source_id, je.status,
+                           je.created_at, je.created_by
+                    FROM journal_entries je
+                    WHERE je.id = $1::uuid AND je.tenant_id = $2
+                      AND je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL')
+                    """,
+                    payment_id, ctx["tenant_id"],
+                )
+
+                if not journal_row:
+                    raise HTTPException(status_code=404, detail="Payment not found")
+
+                # Try reverse lookup via source_id
+                if journal_row["source_id"]:
+                    payment = await conn.fetchrow(
+                        """
+                        SELECT bp.*, ba.account_name as bank_account_name_lookup
+                        FROM bill_payments_v2 bp
+                        LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+                        WHERE bp.id = $1::uuid AND bp.tenant_id = $2
+                        """,
+                        journal_row["source_id"], ctx["tenant_id"],
+                    )
+
+                if not payment:
+                    # Journal-only: construct response from journal data
+                    settlement_amount = await conn.fetchval(
+                        """
+                        SELECT COALESCE(SUM(jl.debit), 0)
+                        FROM journal_lines jl
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE jl.journal_id = $1
+                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
+                        """,
+                        journal_row["id"],
+                    )
+
+                    # Parse vendor name from description
+                    desc = journal_row["description"] or ""
+                    vendor_name = "Settlement"
+                    for prefix in ["Pembayaran ke ", "Payment to ", "Bill payment to ", "Pembayaran untuk "]:
+                        if desc.startswith(prefix):
+                            vendor_name = desc[len(prefix):]
+                            break
+
+                    je_status = (journal_row["status"] or "POSTED").upper()
+                    mapped_status = "posted" if je_status == "POSTED" else "draft" if je_status == "DRAFT" else "voided"
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "id": str(journal_row["id"]),
+                            "payment_number": journal_row["journal_number"],
+                            "vendor_id": "",
+                            "vendor_name": vendor_name,
+                            "payment_date": journal_row["journal_date"].isoformat() if journal_row["journal_date"] else None,
+                            "payment_method": "bank_transfer",
+                            "source_type": "cash",
+                            "bank_account_id": "",
+                            "bank_account_name": "",
+                            "total_amount": float(settlement_amount),
+                            "allocated_amount": float(settlement_amount),
+                            "unapplied_amount": 0,
+                            "discount_amount": 0,
+                            "discount_account_id": "",
+                            "status": mapped_status,
+                            "reference_number": "",
+                            "notes": desc or None,
+                            "journal_id": str(journal_row["id"]),
+                            "journal_number": journal_row["journal_number"],
+                            "void_journal_id": "",
+                            "allocations": [],
+                            "posted_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
+                            "posted_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "voided_at": None,
+                            "voided_by": None,
+                            "void_reason": None,
+                            "created_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
+                            "updated_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
+                            "created_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "is_journal_only": True,
+                            "currency_code": "IDR",
+                            "exchange_rate": 1,
+                            "amount_in_base_currency": float(settlement_amount),
+                            "bank_fee_amount": 0,
+                            "bank_fee_account_id": "",
+                            "check_number": "",
+                            "check_due_date": "",
+                            "check_bank_name": "",
+                            "attachments": [],
+                            "tags": [],
+                        },
+                    }
 
             allocations = await conn.fetch(
                 """
@@ -694,6 +883,13 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # Law 13: Advisory lock on bill payment creation
+                if payload.idempotency_key:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.idempotency_key}",
+                    )
+
                 # Idempotency check (Law 14)
                 if payload.idempotency_key:
                     existing = await conn.fetchrow(
@@ -802,7 +998,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     payload.bank_fee_account_id,
                     payload.currency_code,
                     payload.exchange_rate,
-                    int(payload.total_amount * payload.exchange_rate),
+                    int(Decimal(str(payload.total_amount)) * Decimal(str(payload.exchange_rate))),
                     payload.check_number,
                     payload.check_due_date,
                     payload.check_bank_name,
@@ -962,6 +1158,12 @@ async def post_bill_payment(request: Request, payment_id: str):
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # Law 13: Advisory lock on bill payment posting
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BILL_PAYMENT:{payment_id}",
+                )
+
                 payment = await conn.fetchrow(
                     "SELECT id, payment_number, payment_date, status FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
                     payment_id,
@@ -1059,6 +1261,19 @@ async def post_bill_payment(request: Request, payment_id: str):
 async def void_bill_payment(
     request: Request, payment_id: str, payload: VoidBillPaymentRequest
 ):
+    """
+    Void a posted bill payment.
+
+    Creates reversing journal entry by iterating ALL original journal lines.
+    Restores bill balances.
+    Creates mirror bank transaction for bank-paid payments.
+
+    IRON LAW 2: Immutability - reversal journal, not edit
+    IRON LAW 5: Period validation
+    IRON LAW 13: Advisory lock BILL_PAYMENT_VOID:{payment_id}
+    IRON LAW 20: DRAFT -> lines -> UPDATE POSTED
+    IRON LAW 26: Reversal linking (reversal_of_id + reversed_by_id)
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1067,13 +1282,20 @@ async def void_bill_payment(
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Get full payment details including account IDs
+                # Law 13: Advisory lock on bill payment void
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BILL_PAYMENT_VOID:{payment_id}",
+                )
+
+                # Get payment with FOR UPDATE to prevent TOCTOU
                 payment = await conn.fetchrow(
                     """
                     SELECT bp.*, ba.coa_id as bank_coa_id
                     FROM bill_payments_v2 bp
                     LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
                     WHERE bp.id = $1::uuid AND bp.tenant_id = $2
+                    FOR UPDATE OF bp
                     """,
                     payment_id,
                     ctx["tenant_id"],
@@ -1081,156 +1303,149 @@ async def void_bill_payment(
 
                 if not payment:
                     raise HTTPException(status_code=404, detail="Payment not found")
+
+                # C4: Idempotency guard AFTER lock
+                if payment["status"] == "voided":
+                    return BillPaymentResponse(
+                        success=True,
+                        message="Payment already voided",
+                        data={"id": payment_id, "status": "voided"},
+                    )
+
+                if payment["status"] == "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot void draft payment. Delete it instead.",
+                    )
+
                 if payment["status"] != "posted":
                     raise HTTPException(
                         status_code=400, detail="Only posted payments can be voided"
                     )
 
+                # C8: Period check
                 await check_period_is_open(
                     conn, ctx["tenant_id"], payment["payment_date"]
                 )
 
-                # Get AP account (Hutang Usaha)
-                ap_account_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '2-10100'",
-                    ctx["tenant_id"],
-                )
-                if not ap_account_id:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="AP account not found in chart of accounts",
-                    )
-
-                # Calculate amounts for journal
-                allocated_amount = payment["allocated_amount"] or 0
-                discount_amount = payment["discount_amount"] or 0
-                bank_fee_amount = payment["bank_fee_amount"] or 0
-                unapplied_amount = payment["unapplied_amount"] or 0
-                total_amount = payment["total_amount"] or 0
-                bank_coa_id = payment["bank_coa_id"]
-
-                # Generate void journal number
-                void_journal_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
-                )
-                if not void_journal_number:
-                    void_journal_number = f"VD-{payment['payment_number']}"
-
+                # C6: Create reversal journal by iterating ALL original lines
                 void_journal_id = uuid_module.uuid4()
 
-                # Calculate total for journal (must balance)
-                # Reversing entry is OPPOSITE of original payment journal:
-                # Original: Dr AP, Dr BankFee, Cr Bank, Cr Discount
-                # Reversal: Cr AP, Cr BankFee, Dr Bank, Dr Discount
-                # Law 4: void header = total + discount + bank_fee
-                # Same total as original journal (reversal mirrors the original)
-                # Debit side: Bank(total+bank_fee) + Discount(discount) 
-                # Credit side: AP(allocated) + BankFee(bank_fee) + VendorDeposit(unapplied)
-                journal_total = float(total_amount + discount_amount + bank_fee_amount)
-
-                # Create reversing journal entry header
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BILL_PAYMENT_VOID', $5::uuid, 'POSTED', $6, $6, $7)
-                    """,
-                    void_journal_id,
-                    ctx["tenant_id"],
-                    void_journal_number,
-                    f"Void {payment['payment_number']} - {payment['vendor_name']} - {payload.void_reason}",
-                    payment_id,
-                    journal_total,
-                    ctx["user_id"],
-                )
-
-                line_number = 0
-
-                # Dr. Bank/Cash (reverses the original credit to bank)
-                if bank_coa_id and (total_amount + bank_fee_amount) > 0:
-                    line_number += 1
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, $5, 0, $6)
-                        """,
-                        uuid_module.uuid4(),
-                        void_journal_id,
-                        line_number,
-                        bank_coa_id,
-                        float(total_amount + bank_fee_amount),
-                        f"Reversal - Bank {payment['bank_account_name'] or ''}",
+                if payment["journal_id"]:
+                    # Get original journal
+                    original_journal = await conn.fetchrow(
+                        "SELECT id, total_debit FROM journal_entries WHERE id = $1",
+                        payment["journal_id"],
                     )
 
-                # Dr. Potongan Pembelian / Purchase Discount (reverses the original credit)
-                if discount_amount > 0 and payment.get("discount_account_id"):
-                    line_number += 1
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, $5, 0, $6)
-                        """,
-                        uuid_module.uuid4(),
-                        void_journal_id,
-                        line_number,
-                        payment["discount_account_id"],
-                        float(discount_amount),
-                        "Reversal - Purchase Discount",
+                    # Get ALL original journal lines
+                    original_lines = await conn.fetch(
+                        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
+                        payment["journal_id"],
                     )
 
-                # Cr. Accounts Payable (reverses the original debit)
-                if allocated_amount > 0:
-                    line_number += 1
+                    if not original_lines:
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Original journal lines not found",
+                        )
+
+                    # Generate void journal number
+                    void_journal_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
+                    )
+                    if not void_journal_number:
+                        void_journal_number = f"VD-{payment['payment_number']}"
+
+                    # Law 20 Step 1: INSERT as DRAFT with reversal_of_id (Law 26)
                     await conn.execute(
                         """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BILL_PAYMENT', $5::uuid, $6, 'DRAFT', $7, $7, $8)
                         """,
-                        uuid_module.uuid4(),
                         void_journal_id,
-                        line_number,
-                        ap_account_id,
-                        float(allocated_amount),
-                        f"Reversal - AP {payment['vendor_name']}",
-                    )
-
-                # Cr. Biaya Bank / Bank Fee (reverses the original debit)
-                if bank_fee_amount > 0 and payment.get("bank_fee_account_id"):
-                    line_number += 1
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, 0, $5, $6)
-                        """,
-                        uuid_module.uuid4(),
-                        void_journal_id,
-                        line_number,
-                        payment["bank_fee_account_id"],
-                        float(bank_fee_amount),
-                        "Reversal - Bank Fee",
-                    )
-
-                # Cr. Vendor Deposit (reverses the original debit for unapplied/overpayment)
-                if unapplied_amount > 0:
-                    vendor_deposit_account_id = await conn.fetchval(
-                        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND (account_code = '1-10500' OR name ILIKE '%uang muka vendor%') LIMIT 1",
                         ctx["tenant_id"],
+                        void_journal_number,
+                        f"Void {payment['payment_number']} - {payment['vendor_name']} - {payload.void_reason}",
+                        payment_id,
+                        payment["journal_id"],
+                        original_journal["total_debit"],
+                        ctx["user_id"],
                     )
-                    if vendor_deposit_account_id:
-                        line_number += 1
+
+                    # Law 20 Step 2: INSERT reversed lines (swap debit/credit)
+                    for idx, line in enumerate(original_lines, 1):
                         await conn.execute(
                             """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                            VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                             """,
                             uuid_module.uuid4(),
                             void_journal_id,
-                            line_number,
-                            vendor_deposit_account_id,
-                            float(unapplied_amount),
-                            f"Reversal - Vendor Deposit {payment['vendor_name']}",
+                            idx,
+                            line["account_id"],
+                            line["credit"],  # Swap: original credit -> debit
+                            line["debit"],   # Swap: original debit -> credit
+                            f"Reversal - {line['memo'] or ''}",
+                        )
+
+                    # Law 20 Step 3: UPDATE to POSTED (triggers hash chain)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        void_journal_id,
+                    )
+
+                    # Law 26: Mark original journal as reversed
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries
+                        SET reversed_by_id = $2
+                        WHERE id = $1
+                        """,
+                        payment["journal_id"],
+                        void_journal_id,
+                    )
+
+                # C7: Bank mirror reversal (BankSync Rule 3)
+                if payment.get("bank_account_id"):
+                    original_btxn = await conn.fetchrow(
+                        """
+                        SELECT id, bank_account_id, amount, transaction_type
+                        FROM bank_transactions
+                        WHERE reference_type = 'bill_payment' AND reference_id = $1::uuid
+                          AND status != 'VOIDED'
+                        LIMIT 1
+                        """,
+                        payment_id,
+                    )
+                    if original_btxn:
+                        mirror_type = 'deposit' if original_btxn['transaction_type'] == 'withdrawal' else 'withdrawal'
+                        await conn.execute(
+                            """
+                            INSERT INTO bank_transactions (
+                                id, tenant_id, bank_account_id, transaction_date,
+                                transaction_type, amount, running_balance,
+                                reference_type, reference_id, reference_number,
+                                description, journal_id, status, origin_type, source_module,
+                                created_by, posted_by, posted_at
+                            ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, 0,
+                                'bill_payment_void', $6::uuid, $7, $8, $9,
+                                'POSTED', 'SYSTEM', 'bill_payment', $10, $10, NOW())
+                            """,
+                            uuid_module.uuid4(),
+                            ctx["tenant_id"],
+                            original_btxn["bank_account_id"],
+                            mirror_type,
+                            -original_btxn["amount"],
+                            payment_id,
+                            f"VOID-{payment['payment_number']}",
+                            f"Void payment - {payload.void_reason}",
+                            void_journal_id,
+                            ctx["user_id"],
                         )
 
                 # Reverse bill allocations (reduce paid_amount on bills)
@@ -1240,7 +1455,7 @@ async def void_bill_payment(
                 )
 
                 for alloc in allocations:
-                    # Law 13: Lock bill row before update to prevent concurrent modification
+                    # Law 13: Lock bill row before update
                     await conn.fetchrow(
                         "SELECT id FROM bills WHERE id = $1 FOR UPDATE",
                         alloc["bill_id"],
@@ -1318,7 +1533,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                         JOIN chart_of_accounts coa ON coa.id = jl.account_id
                         WHERE je.tenant_id = $1
                           AND je.status = 'POSTED'
-                          AND coa.account_code = '2-10100'
+                          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
                           AND (
                               (je.source_type = 'BILL' AND je.source_id = b.id)
                               OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
@@ -1517,13 +1732,21 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
             )
             
             if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found")
-            
-            journal_ids = []
-            if payment["journal_id"]:
-                journal_ids.append(payment["journal_id"])
-            if payment["void_journal_id"]:
-                journal_ids.append(payment["void_journal_id"])
+                # Law 29 fallback: check if payment_id IS a journal_entries.id
+                je_exists = await conn.fetchval(
+                    "SELECT id FROM journal_entries WHERE id = $1::uuid AND tenant_id = $2",
+                    payment_id, ctx["tenant_id"]
+                )
+                if not je_exists:
+                    raise HTTPException(status_code=404, detail="Payment not found")
+                # Use payment_id directly as journal_id
+                journal_ids = [je_exists]
+            else:
+                journal_ids = []
+                if payment["journal_id"]:
+                    journal_ids.append(payment["journal_id"])
+                if payment["void_journal_id"]:
+                    journal_ids.append(payment["void_journal_id"])
             
             if not journal_ids:
                 return {
@@ -1574,15 +1797,15 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": float(line["debit"] or 0),
-                        "credit": float(line["credit"] or 0),
+                        "debit": int(line["debit"] or 0),
+                        "credit": int(line["credit"] or 0),
                         "memo": line["memo"] or ""
                     }
                     for line in lines
                 ]
                 
-                journal_debit = float(journal["total_debit"] or 0)
-                journal_credit = float(journal["total_credit"] or 0)
+                journal_debit = int(journal["total_debit"] or 0)
+                journal_credit = int(journal["total_credit"] or 0)
                 total_debit += journal_debit
                 total_credit += journal_credit
                 

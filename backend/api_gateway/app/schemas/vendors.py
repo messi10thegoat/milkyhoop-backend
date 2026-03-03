@@ -161,6 +161,7 @@ class VendorListItem(BaseModel):
     payment_terms_days: int
     is_active: bool
     created_at: str
+    ap_balance: Optional[float] = 0
 
 
     """Vendor item for list responses."""
@@ -236,6 +237,9 @@ class VendorDetail(BaseModel):
 
     # Transaction check
     has_transactions: Optional[bool] = None
+
+    # Pure Ledger: AP balance from journals
+    ap_balance: Optional[float] = 0
 
     is_active: bool
     created_at: str

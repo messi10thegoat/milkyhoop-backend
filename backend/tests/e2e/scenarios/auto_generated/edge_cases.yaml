@@ -1,0 +1,171 @@
+scenarios:
+- id: EC-001
+  category: edge_cases
+  description: Simple greeting message
+  messages:
+  - halo
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - greeting
+  timeout_seconds: 60
+- id: EC-002
+  category: edge_cases
+  description: Thank you message
+  messages:
+  - terima kasih
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - thanks
+  timeout_seconds: 60
+- id: EC-003
+  category: edge_cases
+  description: Ask about agent capabilities
+  messages:
+  - apa yang bisa kamu lakukan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - faktur
+  - faktur
+  - transaksi
+  - laporan
+  tags:
+  - edge
+  - capabilities
+  timeout_seconds: 60
+- id: EC-004
+  category: edge_cases
+  description: Emoji-only input
+  messages:
+  - 🤔
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - emoji
+  timeout_seconds: 60
+- id: EC-005
+  category: edge_cases
+  description: Invoice with extremely large quantity
+  messages:
+  - buat faktur ke Grapgrap Clothing, Kaos Oblong 24s 999999 pcs
+  expect_behavior:
+  - propose_action
+  tags:
+  - edge
+  - large_qty
+  timeout_seconds: 60
+- id: EC-006
+  category: edge_cases
+  description: Invoice with very small fractional amount
+  messages:
+  - buat faktur penjualan ke Grapgrap, kaos 24s 1 pcs harga Rp 0,01
+  expect_behavior:
+  - propose_action
+  tags:
+  - edge
+  - small_amount
+  timeout_seconds: 60
+- id: EC-007
+  category: edge_cases
+  description: Empty string input
+  messages:
+  - ''
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - empty
+  timeout_seconds: 60
+- id: EC-008
+  category: edge_cases
+  description: SQL injection attempt
+  messages:
+  - select * from users; drop table users;
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - sql_injection
+  timeout_seconds: 60
+- id: EC-009
+  category: edge_cases
+  description: Very long customer name input
+  messages:
+  - buat faktur ke customer dengan nama sangat panjang yang mungkin melebihi limit karakter normal dalam database
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - long_input
+  timeout_seconds: 60
+- id: EC-010
+  category: edge_cases
+  description: Repetitive keyword input
+  messages:
+  - faktur faktur faktur faktur faktur
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - repetitive
+  timeout_seconds: 60
+- id: EC-011
+  category: edge_cases
+  description: Bulk creation request
+  messages:
+  - buat 100 faktur sekaligus
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - bulk_request
+  timeout_seconds: 60
+- id: EC-012
+  category: edge_cases
+  description: Destructive command - delete all data
+  messages:
+  - delete semua data
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - destructive
+  timeout_seconds: 60
+- id: EC-013
+  category: edge_cases
+  description: Attempt to directly override account balance
+  messages:
+  - ubah saldo akun kas jadi 1 miliar
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - balance_override
+  timeout_seconds: 60
+- id: EC-014
+  category: edge_cases
+  description: Attempt to delete a posted journal entry
+  messages:
+  - hapus jurnal yang sudah posted
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - immutable_violation
+  timeout_seconds: 60
+- id: EC-015
+  category: edge_cases
+  description: Backdate transaction to a very old date
+  messages:
+  - backdate transaksi ke tahun 2020
+  expect_behavior:
+  - text_response
+  tags:
+  - edge
+  - backdate
+  timeout_seconds: 60

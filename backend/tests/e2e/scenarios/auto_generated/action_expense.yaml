@@ -1,0 +1,220 @@
+scenarios:
+- id: AEX-001
+  category: action_expense
+  description: Direct expense recording for electricity bill
+  messages:
+  - catat beban listrik bulan ini Rp 2.500.000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Listrik
+  tags:
+  - action
+  - expense
+  - direct
+  timeout_seconds: 60
+- id: AEX-002
+  category: action_expense
+  description: Natural language office rent payment with juta shorthand
+  messages:
+  - bayar sewa kantor 5 juta
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - natural
+  timeout_seconds: 60
+- id: AEX-003
+  category: action_expense
+  description: Slang salary expense with jt abbreviation
+  messages:
+  - beban gaji karyawan 15jt
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - slang
+  timeout_seconds: 60
+- id: AEX-004
+  category: action_expense
+  description: Multi-line expense with three different categories
+  messages:
+  - 'catat beban: listrik 2.5jt, internet 500rb, perlengkapan 1jt'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Listrik
+  tags:
+  - action
+  - expense
+  - multi-line
+  timeout_seconds: 60
+- id: AEX-005
+  category: action_expense
+  description: Insurance expense with specific date
+  messages:
+  - bayar asuransi 3 juta tanggal 5 Februari
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Asuransi
+  tags:
+  - action
+  - expense
+  - dated
+  timeout_seconds: 60
+- id: AEX-006
+  category: action_expense
+  description: English language expense recording
+  messages:
+  - 'record expense: office rent 5000000'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Sewa Kantor
+  tags:
+  - action
+  - expense
+  - english
+  timeout_seconds: 60
+- id: AEX-007
+  category: action_expense
+  description: Transportation expense
+  messages:
+  - catat biaya transportasi 750000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Transportasi
+  tags:
+  - action
+  - expense
+  - transport
+  timeout_seconds: 60
+- id: AEX-008
+  category: action_expense
+  description: Marketing expense for Instagram ads
+  messages:
+  - biaya iklan Instagram bulan ini 2jt
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - marketing
+  timeout_seconds: 60
+- id: AEX-009
+  category: action_expense
+  description: Monthly tax payment
+  messages:
+  - bayar pajak bulanan 1.500.000
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Pajak
+  tags:
+  - action
+  - expense
+  - tax
+  timeout_seconds: 60
+- id: AEX-010
+  category: action_expense
+  description: Minimal terse expense with jt abbreviation
+  messages:
+  - beban listrik 2.5jt
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Listrik
+  tags:
+  - action
+  - expense
+  - minimal
+  timeout_seconds: 60
+- id: AEX-011
+  category: action_expense
+  description: Polite operational expense request with Rp formatting
+  messages:
+  - tolong catat beban operasional sebesar Rp 3.000.000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - polite
+  timeout_seconds: 60
+- id: AEX-012
+  category: action_expense
+  description: Internet expense with additional notes
+  messages:
+  - 'bayar internet 500rb, catatan: upgrade ke paket bisnis'
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Internet
+  tags:
+  - action
+  - expense
+  - notes
+  timeout_seconds: 60
+- id: AEX-013
+  category: action_expense
+  description: Office supplies purchase as expense
+  messages:
+  - beli perlengkapan kantor 1.2 juta
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - supplies
+  timeout_seconds: 60
+- id: AEX-014
+  category: action_expense
+  description: Monthly salary expense with full amount
+  messages:
+  - gaji karyawan bulan Januari 20000000
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_EXPENSE
+  expect_contains:
+  - Gaji Karyawan
+  tags:
+  - action
+  - expense
+  - salary
+  timeout_seconds: 60
+- id: AEX-015
+  category: action_expense
+  description: Abbreviated marketing expense with jt
+  messages:
+  - beban marketing 3jt
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_EXPENSE
+  expect_contains: []
+  tags:
+  - action
+  - expense
+  - abbreviated
+  timeout_seconds: 60

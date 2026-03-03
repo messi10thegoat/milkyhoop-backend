@@ -1,0 +1,214 @@
+scenarios:
+- id: IB-001
+  category: insight_balance
+  description: Tanya saldo kas saat ini
+  messages:
+  - berapa saldo kas saat ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  - saldo
+  tags:
+  - insight
+  - balance
+  - kas
+  timeout_seconds: 60
+- id: IB-002
+  category: insight_balance
+  description: Tanya total piutang usaha
+  messages:
+  - total piutang usaha berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  tags:
+  - insight
+  - balance
+  - piutang
+  timeout_seconds: 60
+- id: IB-003
+  category: insight_balance
+  description: Tanya hutang usaha
+  messages:
+  - berapa hutang usaha kita?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - hutang
+  tags:
+  - insight
+  - balance
+  - hutang
+  timeout_seconds: 60
+- id: IB-004
+  category: insight_balance
+  description: Tanya saldo bank
+  messages:
+  - saldo bank berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - bank
+  tags:
+  - insight
+  - balance
+  - bank
+  timeout_seconds: 60
+- id: IB-005
+  category: insight_balance
+  description: Tanya total aset lancar
+  messages:
+  - berapa total aset lancar?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - aset
+  tags:
+  - insight
+  - balance
+  - aset
+  timeout_seconds: 60
+- id: IB-006
+  category: insight_balance
+  description: Lihat saldo akun beban operasional
+  messages:
+  - lihat saldo akun beban operasional
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  tags:
+  - insight
+  - balance
+  - beban
+  timeout_seconds: 60
+- id: IB-007
+  category: insight_balance
+  description: Tanya total equity/modal
+  messages:
+  - berapa total equity?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - ekuitas
+  tags:
+  - insight
+  - balance
+  - equity
+  timeout_seconds: 60
+- id: IB-008
+  category: insight_balance
+  description: Cek saldo semua akun bank
+  messages:
+  - cek saldo semua akun bank
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - bank
+  tags:
+  - insight
+  - balance
+  - bank
+  timeout_seconds: 60
+- id: IB-009
+  category: insight_balance
+  description: Tanya saldo piutang customer spesifik
+  messages:
+  - saldo piutang Grapgrap Clothing berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Grapgrap
+  tags:
+  - insight
+  - balance
+  - piutang
+  - customer
+  timeout_seconds: 60
+- id: IB-010
+  category: insight_balance
+  description: Tanya hutang ke vendor spesifik
+  messages:
+  - hutang ke PT Wave4 Regression berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Wave4
+  tags:
+  - insight
+  - balance
+  - hutang
+  - vendor
+  timeout_seconds: 60
+- id: IB-011
+  category: insight_balance
+  description: Tanya kas di tangan
+  messages:
+  - berapa kas di tangan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  tags:
+  - insight
+  - balance
+  - kas
+  timeout_seconds: 60
+- id: IB-012
+  category: insight_balance
+  description: Tanya total liabilitas
+  messages:
+  - total liabilitas berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kewajiban
+  tags:
+  - insight
+  - balance
+  - liabilitas
+  timeout_seconds: 60
+- id: IB-013
+  category: insight_balance
+  description: Tanya posisi keuangan umum
+  messages:
+  - posisi keuangan saat ini gimana?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - balance
+  - overview
+  timeout_seconds: 60
+- id: IB-014
+  category: insight_balance
+  description: Tanya saldo akun pendapatan
+  messages:
+  - berapa saldo akun pendapatan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pendapatan
+  tags:
+  - insight
+  - balance
+  - pendapatan
+  timeout_seconds: 60
+- id: IB-015
+  category: insight_balance
+  description: Tanya total beban bulan ini
+  messages:
+  - total beban bulan ini berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  tags:
+  - insight
+  - balance
+  - beban
+  timeout_seconds: 60

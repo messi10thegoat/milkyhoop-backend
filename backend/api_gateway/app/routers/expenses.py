@@ -29,6 +29,7 @@ from ..schemas.expenses import (
     ExpenseAutocompleteResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -104,9 +105,10 @@ async def get_expenses_summary(
     ),
 ):
     """
-    Get expense summary statistics for dashboard.
+    Get expense summary statistics for dashboard (Iron Law 1 compliant).
 
-    Returns total amounts, counts, and top expense accounts.
+    All financial amounts derived from journal_lines.
+    Metadata (vendor_count, billable) from expenses table.
     """
     try:
         ctx = get_user_context(request)
@@ -115,52 +117,131 @@ async def get_expenses_summary(
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-            # Date filter based on period
-            date_filter = {
-                "week": "expense_date >= CURRENT_DATE - INTERVAL '7 days'",
-                "month": "expense_date >= DATE_TRUNC('month', CURRENT_DATE)",
-                "quarter": "expense_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
-                "year": "expense_date >= DATE_TRUNC('year', CURRENT_DATE)",
+            # Date filter based on period (applied to journal_date)
+            date_filter_journal = {
+                "week": "je.journal_date >= CURRENT_DATE - INTERVAL '7 days'",
+                "month": "je.journal_date >= DATE_TRUNC('month', CURRENT_DATE)",
+                "quarter": "je.journal_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
+                "year": "je.journal_date >= DATE_TRUNC('year', CURRENT_DATE)",
             }[period]
 
-            # Main summary query
-            summary = await conn.fetchrow(
+            # Same date filter for expenses table (metadata queries)
+            date_filter_expense = {
+                "week": "e.expense_date >= CURRENT_DATE - INTERVAL '7 days'",
+                "month": "e.expense_date >= DATE_TRUNC('month', CURRENT_DATE)",
+                "quarter": "e.expense_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
+                "year": "e.expense_date >= DATE_TRUNC('year', CURRENT_DATE)",
+            }[period]
+
+            # Iron Law 1: Financial amounts from journal_lines
+            journal_summary = await conn.fetchrow(
                 f"""
+                WITH expense_journals AS (
+                    SELECT je.id, je.source_id
+                    FROM journal_entries je
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND je.source_type = 'expense'
+                      AND je.reversal_of_id IS NULL
+                      AND je.reversed_by_id IS NULL
+                      AND {date_filter_journal}
+                )
                 SELECT
-                    COUNT(*) as total_count,
-                    COALESCE(SUM(total_amount), 0) as total_amount,
-                    COALESCE(SUM(tax_amount), 0) as total_tax,
-                    COUNT(DISTINCT vendor_id) as vendor_count,
-                    COUNT(CASE WHEN is_billable THEN 1 END) as billable_count,
-                    COALESCE(SUM(CASE WHEN is_billable THEN total_amount END), 0) as billable_amount
-                FROM expenses
-                WHERE tenant_id = $1 AND status = 'posted' AND {date_filter}
+                    COUNT(DISTINCT ej.source_id) as total_count,
+                    COALESCE(SUM(jl.debit), 0) as total_amount
+                FROM expense_journals ej
+                JOIN journal_lines jl ON jl.journal_id = ej.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE', 'COGS')
+                  AND jl.debit > 0
             """,
                 ctx["tenant_id"],
             )
 
-            # Top expense accounts
-            top_accounts = await conn.fetch(
+            # Tax total from journal_lines (PPN Masukan = account 1-10800, ASSET type)
+            total_tax = await conn.fetchval(
+                f"""
+                WITH expense_journals AS (
+                    SELECT je.id
+                    FROM journal_entries je
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND je.source_type = 'expense'
+                      AND je.reversal_of_id IS NULL
+                      AND je.reversed_by_id IS NULL
+                      AND {date_filter_journal}
+                )
+                SELECT COALESCE(SUM(jl.debit), 0)
+                FROM expense_journals ej
+                JOIN journal_lines jl ON jl.journal_id = ej.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE coa.account_code = '1-10800'
+                  AND jl.debit > 0
+            """,
+                ctx["tenant_id"],
+            ) or 0
+
+            # Metadata from expenses table (non-financial: counts only)
+            metadata = await conn.fetchrow(
                 f"""
                 SELECT
-                    account_id, account_name,
-                    SUM(amount) as total_amount,
-                    COUNT(*) as count
-                FROM (
-                    -- Non-itemized expenses
-                    SELECT account_id, account_name, total_amount as amount
-                    FROM expenses
-                    WHERE tenant_id = $1 AND status = 'posted'
-                      AND NOT is_itemized AND {date_filter}
-                    UNION ALL
-                    -- Itemized expense items
-                    SELECT ei.account_id, ei.account_name, ei.amount
-                    FROM expense_items ei
-                    JOIN expenses e ON ei.expense_id = e.id
-                    WHERE e.tenant_id = $1 AND e.status = 'posted' AND {date_filter}
-                ) combined
-                WHERE account_id IS NOT NULL
-                GROUP BY account_id, account_name
+                    COUNT(DISTINCT vendor_id) as vendor_count,
+                    COUNT(CASE WHEN is_billable THEN 1 END) as billable_count
+                FROM expenses e
+                WHERE e.tenant_id = $1 AND e.status = 'posted' AND {date_filter_expense}
+            """,
+                ctx["tenant_id"],
+            )
+
+            # Billable amount from journal_lines (only EXPENSE source_type, billable)
+            billable_amount = await conn.fetchval(
+                f"""
+                WITH billable_journals AS (
+                    SELECT je.id
+                    FROM journal_entries je
+                    JOIN expenses e ON e.journal_id = je.id AND e.tenant_id = $1
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND je.source_type = 'expense'
+                      AND je.reversal_of_id IS NULL
+                      AND je.reversed_by_id IS NULL
+                      AND e.is_billable = true
+                      AND {date_filter_journal}
+                )
+                SELECT COALESCE(SUM(jl.debit), 0)
+                FROM billable_journals bj
+                JOIN journal_lines jl ON jl.journal_id = bj.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE', 'COGS')
+                  AND jl.debit > 0
+            """,
+                ctx["tenant_id"],
+            ) or 0
+
+            # Top expense accounts from journal_lines
+            top_accounts = await conn.fetch(
+                f"""
+                WITH expense_journals AS (
+                    SELECT je.id
+                    FROM journal_entries je
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND je.source_type = 'expense'
+                      AND je.reversal_of_id IS NULL
+                      AND je.reversed_by_id IS NULL
+                      AND {date_filter_journal}
+                )
+                SELECT
+                    coa.id as account_id,
+                    coa.name as account_name,
+                    COALESCE(SUM(jl.debit), 0) as total_amount,
+                    COUNT(DISTINCT ej.id) as count
+                FROM expense_journals ej
+                JOIN journal_lines jl ON jl.journal_id = ej.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE', 'COGS')
+                  AND jl.debit > 0
+                GROUP BY coa.id, coa.name
                 ORDER BY total_amount DESC
                 LIMIT 5
             """,
@@ -171,12 +252,12 @@ async def get_expenses_summary(
                 "success": True,
                 "data": {
                     "period": period,
-                    "total_count": summary["total_count"],
-                    "total_amount": summary["total_amount"],
-                    "total_tax": summary["total_tax"],
-                    "vendor_count": summary["vendor_count"],
-                    "billable_count": summary["billable_count"],
-                    "billable_amount": summary["billable_amount"],
+                    "total_count": journal_summary["total_count"],
+                    "total_amount": journal_summary["total_amount"],
+                    "total_tax": total_tax,
+                    "vendor_count": metadata["vendor_count"],
+                    "billable_count": metadata["billable_count"],
+                    "billable_amount": billable_amount,
                     "top_accounts": [
                         {
                             "account_id": r["account_id"],
@@ -216,8 +297,8 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
             subtotal = body.amount or 0
 
         # Calculate tax and PPh
-        tax_amount = int(Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100"))
-        pph_amount = int(Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100"))
+        tax_amount = (Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+        pph_amount = (Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
         total_amount = subtotal + tax_amount - pph_amount
 
         return {
@@ -255,11 +336,14 @@ async def list_expenses(
     search: Optional[str] = Query(
         None, description="Search expense number, vendor, or notes"
     ),
-    sort_by: Literal["expense_date", "created_at", "total_amount"] = Query(
+    sort_by: Literal["expense_date", "created_at", "total_amount", "vendor_name"] = Query(
         "expense_date", description="Sort field"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
     is_billable: Optional[bool] = Query(None, description="Filter by billable status"),
+    billing_status: Optional[Literal["billable", "non_billable", "invoiced"]] = Query(
+        None, description="Filter by billing status: billable, non_billable, invoiced"
+    ),
 ):
     """
     List expenses with filtering, sorting, and pagination.
@@ -306,6 +390,14 @@ async def list_expenses(
                 params.append(is_billable)
                 param_idx += 1
 
+            if billing_status:
+                if billing_status == "billable":
+                    conditions.append("is_billable = true AND billed_invoice_id IS NULL")
+                elif billing_status == "non_billable":
+                    conditions.append("is_billable = false")
+                elif billing_status == "invoiced":
+                    conditions.append("billed_invoice_id IS NOT NULL")
+
             if search:
                 conditions.append(
                     f"""
@@ -324,6 +416,7 @@ async def list_expenses(
                 "expense_date": "expense_date",
                 "created_at": "created_at",
                 "total_amount": "total_amount",
+                "vendor_name": "vendor_name",
             }
             sort_column = valid_sort.get(sort_by, "expense_date")
 
@@ -340,6 +433,8 @@ async def list_expenses(
                     account_id, account_name,
                     subtotal, tax_amount, total_amount,
                     is_itemized, status, is_billable,
+                    billed_invoice_id, billed_to_customer_id,
+                    accounting_status,
                     reference, notes, has_receipt,
                     created_at
                 FROM expenses
@@ -370,6 +465,9 @@ async def list_expenses(
                         "status": row["status"],
                         "is_billable": row["is_billable"] or False,
                         "has_receipt": row["has_receipt"] or False,
+                        "billed_invoice_id": str(row["billed_invoice_id"]) if row["billed_invoice_id"] else None,
+                        "billed_to_customer_id": str(row["billed_to_customer_id"]) if row["billed_to_customer_id"] else None,
+                        "accounting_status": row["accounting_status"],
                         "reference": row["reference"],
                         "notes": row["notes"],
                         "created_at": row["created_at"],
@@ -435,6 +533,302 @@ async def autocomplete_expenses(
     except Exception as e:
         logger.error(f"Error in expense autocomplete: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search failed")
+
+
+# =============================================================================
+# LEDGER VIEW — All Expense-Account Debits (Law 16 Compliant)
+# =============================================================================
+@router.get("/ledger")
+async def list_expense_ledger(
+    request: Request,
+    skip: int = Query(0, ge=0, description="Offset for pagination"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    status: Optional[Literal["all", "posted", "void"]] = Query(
+        "all", description="Filter by effective status"
+    ),
+    date_from: Optional[date] = Query(None, description="Filter date from"),
+    date_to: Optional[date] = Query(None, description="Filter date to"),
+    search: Optional[str] = Query(None, description="Search description or expense number"),
+    sort_by: Literal["journal_date", "created_at", "amount"] = Query(
+        "journal_date", description="Sort field"
+    ),
+    sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
+    billing_status: Optional[Literal["billable", "non_billable", "invoiced"]] = Query(
+        None, description="Filter by billing status (expenses-table entries only)"
+    ),
+    has_receipt: Optional[bool] = Query(None, description="Filter by receipt status"),
+):
+    """
+    List ALL expense transactions from the journal ledger (Law 16 compliant).
+
+    Returns journal entries that debit expense accounts (EXPENSE, OTHER_EXPENSE),
+    enriched with metadata from the expenses table where available.
+
+    Captures ALL expense-type transactions regardless of source module:
+    - Expenses module (source_type = 'expense')
+    - Kas & Bank module (source_type = 'BANK_TRANSACTION')
+    - Reconciliation adjustments (source_type = 'RECONCILIATION_ADJUSTMENT')
+    - Manual journals (source_type = 'MANUAL')
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Build dynamic WHERE conditions
+            conditions = []
+            params: list = [ctx["tenant_id"]]
+            param_idx = 2
+
+            # Date filters on journal_date
+            if date_from:
+                conditions.append(f"el.journal_date >= ${param_idx}")
+                params.append(date_from)
+                param_idx += 1
+
+            if date_to:
+                conditions.append(f"el.journal_date <= ${param_idx}")
+                params.append(date_to)
+                param_idx += 1
+
+            # Status filter (posted vs void/reversed)
+            if status == "posted":
+                conditions.append("el.is_reversed = false")
+            elif status == "void":
+                conditions.append("(el.is_reversed = true OR e.status = 'void')")
+
+            # Billing status (only applies to expenses-table entries)
+            if billing_status:
+                if billing_status == "billable":
+                    conditions.append("e.is_billable = true AND e.billed_invoice_id IS NULL")
+                elif billing_status == "non_billable":
+                    conditions.append("e.is_billable = false")
+                elif billing_status == "invoiced":
+                    conditions.append("e.billed_invoice_id IS NOT NULL")
+
+            # Receipt filter (only applies to expenses-table entries)
+            if has_receipt is not None:
+                if has_receipt:
+                    conditions.append("e.has_receipt = true")
+                else:
+                    conditions.append("(e.has_receipt = false OR e.has_receipt IS NULL)")
+
+            # Search across expense number, vendor name, and journal description
+            if search:
+                conditions.append(
+                    f"""(
+                        e.expense_number ILIKE ${param_idx}
+                        OR e.vendor_name ILIKE ${param_idx}
+                        OR el.journal_description ILIKE ${param_idx}
+                    )"""
+                )
+                params.append(f"%{search}%")
+                param_idx += 1
+
+            where_clause = (" AND " + " AND ".join(conditions)) if conditions else ""
+
+            # Sort mapping
+            sort_map = {
+                "journal_date": "el.journal_date",
+                "created_at": "el.created_at",
+                "amount": "el.total_debit_amount",
+            }
+            sort_col = sort_map.get(sort_by, "el.journal_date")
+            sort_dir = sort_order.upper()
+
+            # Main query: journal-based expense ledger
+            query = f"""
+                WITH expense_ledger AS (
+                    SELECT
+                        je.id as journal_id,
+                        je.journal_number,
+                        je.journal_date,
+                        je.source_type,
+                        je.source_id,
+                        je.description as journal_description,
+                        je.created_at,
+                        -- Sum all expense-account debit lines
+                        SUM(jl.debit) as total_debit_amount,
+                        -- First account info (for display)
+                        MIN(coa.name) as first_account_name,
+                        MIN(coa.account_code) as first_account_code,
+                        COUNT(DISTINCT jl.account_id) as account_count,
+                        -- Check if reversed (voided)
+                        EXISTS (
+                            SELECT 1 FROM journal_entries rev
+                            WHERE rev.reversal_of_id = je.id
+                              AND rev.status = 'POSTED'
+                        ) as is_reversed
+                    FROM journal_entries je
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE')
+                      AND jl.debit > 0
+                      AND je.reversal_of_id IS NULL
+                    GROUP BY je.id, je.journal_number, je.journal_date,
+                             je.source_type, je.source_id, je.description,
+                             je.created_at
+                )
+                SELECT
+                    el.*,
+                    -- Expenses table metadata (if exists)
+                    e.id as expense_id,
+                    e.expense_number,
+                    e.vendor_id,
+                    e.vendor_name,
+                    e.paid_through_id,
+                    e.paid_through_name,
+                    e.account_name as expense_account_name,
+                    e.is_billable,
+                    e.has_receipt,
+                    e.notes,
+                    e.billed_invoice_id,
+                    e.billed_to_customer_id,
+                    e.status as expense_status,
+                    e.accounting_status as expense_accounting_status,
+                    e.tax_amount,
+                    e.total_amount as expense_total_amount,
+                    e.subtotal,
+                    -- Credit-side account (paid through) for journal-only entries
+                    credit_acct.paid_through_name as journal_paid_through
+                FROM expense_ledger el
+                LEFT JOIN expenses e
+                    ON e.journal_id = el.journal_id AND e.tenant_id = $1
+                LEFT JOIN LATERAL (
+                    SELECT coa2.name as paid_through_name
+                    FROM journal_lines jl2
+                    JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
+                    WHERE jl2.journal_id = el.journal_id
+                      AND jl2.credit > 0
+                      AND coa2.account_type = 'ASSET'
+                    ORDER BY jl2.credit DESC
+                    LIMIT 1
+                ) credit_acct ON true
+                WHERE 1=1 {where_clause}
+                ORDER BY {sort_col} {sort_dir}, el.created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([limit, skip])
+
+            rows = await conn.fetch(query, *params)
+
+            # Count query (same CTE, just count)
+            count_query = f"""
+                WITH expense_ledger AS (
+                    SELECT
+                        je.id as journal_id,
+                        je.journal_date,
+                        je.source_type,
+                        je.description as journal_description,
+                        je.created_at,
+                        EXISTS (
+                            SELECT 1 FROM journal_entries rev
+                            WHERE rev.reversal_of_id = je.id
+                              AND rev.status = 'POSTED'
+                        ) as is_reversed
+                    FROM journal_entries je
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE')
+                      AND jl.debit > 0
+                      AND je.reversal_of_id IS NULL
+                    GROUP BY je.id, je.journal_date, je.source_type,
+                             je.description, je.created_at
+                )
+                SELECT COUNT(*) FROM expense_ledger el
+                LEFT JOIN expenses e
+                    ON e.journal_id = el.journal_id AND e.tenant_id = $1
+                WHERE 1=1 {where_clause}
+            """
+            # Count uses same params minus limit/offset
+            count_params = params[:-2]
+            total = await conn.fetchval(count_query, *count_params)
+
+            # Transform rows to response
+            items = []
+            for row in rows:
+                has_expense_record = row["expense_id"] is not None
+
+                # Determine effective status
+                if row["is_reversed"] or (has_expense_record and row["expense_status"] == "void"):
+                    effective_status = "void"
+                else:
+                    effective_status = "posted"
+
+                # Build display title
+                if has_expense_record and row["expense_number"]:
+                    title = row["expense_number"]
+                else:
+                    title = row["journal_description"] or row["journal_number"]
+
+                # Build account name
+                account_name = (
+                    row["expense_account_name"]
+                    if has_expense_record and row["expense_account_name"]
+                    else row["first_account_name"]
+                )
+
+                # Paid through info
+                paid_through = (
+                    row["paid_through_name"]
+                    if has_expense_record and row["paid_through_name"]
+                    else row["journal_paid_through"]
+                )
+
+                # Amount: from journal (Law 16)
+                amount = float(row["total_debit_amount"])
+
+                items.append({
+                    "id": str(row["expense_id"]) if has_expense_record else str(row["journal_id"]),
+                    "expense_number": row["expense_number"] if has_expense_record else None,
+                    "journal_number": row["journal_number"],
+                    "expense_date": row["journal_date"],
+                    "source_type": row["source_type"],
+                    "paid_through_name": paid_through,
+                    "vendor": {
+                        "id": str(row["vendor_id"]),
+                        "name": row["vendor_name"],
+                    } if has_expense_record and row["vendor_id"] else None,
+                    "vendor_name": row["vendor_name"] if has_expense_record else None,
+                    "account_name": account_name,
+                    "account_code": row["first_account_code"],
+                    "account_count": row["account_count"],
+                    "subtotal": float(row["subtotal"]) if has_expense_record and row["subtotal"] else amount,
+                    "tax_amount": float(row["tax_amount"]) if has_expense_record and row["tax_amount"] else 0,
+                    "total_amount": amount,
+                    "is_itemized": False,
+                    "status": effective_status,
+                    "is_billable": row["is_billable"] if has_expense_record else False,
+                    "has_receipt": row["has_receipt"] if has_expense_record else False,
+                    "billed_invoice_id": str(row["billed_invoice_id"]) if has_expense_record and row["billed_invoice_id"] else None,
+                    "billed_to_customer_id": str(row["billed_to_customer_id"]) if has_expense_record and row["billed_to_customer_id"] else None,
+                    "accounting_status": row["expense_accounting_status"] if has_expense_record else effective_status,
+                    "reference": None,
+                    "notes": row["notes"] if has_expense_record else row["journal_description"],
+                    "description": row["journal_description"],
+                    "has_expense_record": has_expense_record,
+                    "created_at": row["created_at"],
+                })
+
+            return {
+                "items": items,
+                "total": total,
+                "has_more": (skip + limit) < total,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing expense ledger: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list expense ledger")
+
+
 
 
 # =============================================================================
@@ -529,6 +923,12 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
+                # Law 13: Advisory lock to prevent concurrent expense creation
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"EXPENSE_CREATE:{ctx['tenant_id']}:{body.expense_date}"
+                )
+
                 # Law 5: Check accounting period is open
                 await check_period_is_open(conn, ctx["tenant_id"], body.expense_date)
 
@@ -549,8 +949,8 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                         status_code=400, detail="Expense amount must be greater than 0"
                     )
 
-                tax_amount = int(Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100"))
-                pph_amount = int(Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100"))
+                tax_amount = (Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+                pph_amount = (Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
                 total_amount = subtotal + tax_amount - pph_amount
 
                 # Get paid_through account info
@@ -796,7 +1196,7 @@ async def create_expense_journal(
             tenant_id, journal_number, journal_date, description,
             source_type, source_id, status,
             total_debit, total_credit
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'POSTED', $7, $8)
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT', $7, $8)
         RETURNING id
     """,
         tenant_id,
@@ -845,13 +1245,7 @@ async def create_expense_journal(
 
     # DEBIT: PPN Masukan (if tax)
     if tax_amount > 0:
-        ppn_masukan_id = await conn.fetchval(
-            """
-            SELECT id FROM chart_of_accounts
-            WHERE tenant_id = $1 AND account_code = '1-10800'
-        """,
-            tenant_id,
-        )
+        ppn_masukan_id = await resolve_account_id(conn, tenant_id, '1-10800')
 
         if ppn_masukan_id:
             await conn.execute(
@@ -886,13 +1280,7 @@ async def create_expense_journal(
 
     # CREDIT: Hutang PPh (if pph withheld)
     if pph_amount > 0:
-        hutang_pph_id = await conn.fetchval(
-            """
-            SELECT id FROM chart_of_accounts
-            WHERE tenant_id = $1 AND account_code = '2-10500'
-        """,
-            tenant_id,
-        )
+        hutang_pph_id = await resolve_account_id(conn, tenant_id, '2-10500')
 
         if hutang_pph_id:
             await conn.execute(
@@ -907,6 +1295,12 @@ async def create_expense_journal(
                 pph_amount,
                 "PPh dipotong",
             )
+
+    # Law 20: DRAFT->POSTED after all lines inserted
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id,
+    )
 
     return journal_id
 
@@ -1079,6 +1473,12 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
+                # Law 13: Advisory lock to prevent concurrent void
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"EXPENSE_VOID:{expense_id}"
+                )
+
                 # Get expense
                 expense = await conn.fetchrow(
                     """
@@ -1102,15 +1502,6 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
 
                 # Void original journal + create reversal (Law 2)
                 if expense["journal_id"]:
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET status = 'VOID'
-                        WHERE id = $1
-                    """,
-                        expense["journal_id"],
-                    )
-
                     # Create reversal journal entry
                     import uuid as uuid_mod
                     original_lines = await conn.fetch(
@@ -1129,8 +1520,8 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                             INSERT INTO journal_entries (
                                 tenant_id, journal_number, journal_date, description,
                                 source_type, source_id, status,
-                                total_debit, total_credit
-                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'expense_reversal', $4, 'POSTED', $5, $6)
+                                total_debit, total_credit, reversal_of_id
+                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'expense_reversal', $4, 'DRAFT', $5, $6, $7)
                             RETURNING id
                             """,
                             ctx["tenant_id"],
@@ -1139,6 +1530,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                             str(expense_id),
                             reversal_total,
                             reversal_total,
+                            expense["journal_id"],
                         )
 
                         for line_idx, line in enumerate(original_lines, 1):
@@ -1154,6 +1546,69 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 line["credit"] or 0,   # swap: original credit -> debit
                                 line["debit"] or 0,     # swap: original debit -> credit
                                 ("Reversal: " + (line["memo"] or "")),
+                            )
+
+                        # Law 20: DRAFT->POSTED after all reversal lines
+                        await conn.execute(
+                            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                            reversal_journal_id,
+                        )
+
+                        # Law 26: Link original journal to reversal
+                        await conn.execute(
+                            """
+                            UPDATE journal_entries
+                            SET reversed_by_id = $2, status = 'VOID'
+                            WHERE id = $1
+                            """,
+                            expense["journal_id"],
+                            reversal_journal_id,
+                        )
+
+                        # BankSync Rule 3: Create mirror bank transaction for void
+                        original_btxn = await conn.fetchrow(
+                            """
+                            SELECT * FROM bank_transactions
+                            WHERE reference_type = 'expense'
+                              AND reference_id = $1
+                              AND tenant_id = $2
+                              AND status != 'void'
+                            """,
+                            expense_id,
+                            ctx["tenant_id"],
+                        )
+                        if original_btxn:
+                            mirror_type = (
+                                "deposit" if original_btxn["transaction_type"] == "withdrawal" else "withdrawal"
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO bank_transactions (
+                                    id, tenant_id, bank_account_id, transaction_date,
+                                    transaction_type, amount, description,
+                                    reference_type, reference_id, journal_id,
+                                    status, origin_type, source_module,
+                                    created_by, created_at
+                                ) VALUES (
+                                    gen_random_uuid(), $1, $2, CURRENT_DATE,
+                                    $3, $4, $5,
+                                    'expense', $6, $7,
+                                    'posted', 'system', 'expense',
+                                    $8, NOW()
+                                )
+                                """,
+                                ctx["tenant_id"],
+                                original_btxn["bank_account_id"],
+                                mirror_type,
+                                abs(original_btxn["amount"]),
+                                f"[VOID] {original_btxn['description'] or ''}",
+                                expense_id,
+                                reversal_journal_id,
+                                ctx.get("user_id"),
+                            )
+                            await conn.execute(
+                                "UPDATE bank_transactions SET status = 'void', voided_at = NOW() WHERE id = $1",
+                                original_btxn["id"],
                             )
 
                 # Update expense status
@@ -1506,8 +1961,8 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                     for line in lines
                 ]
 
-                journal_debit = float(journal["total_debit"] or 0)  # display-only
-                journal_credit = float(journal["total_credit"] or 0)  # display-only
+                journal_debit = int(journal["total_debit"] or 0)  # Law 25: read path
+                journal_credit = int(journal["total_credit"] or 0)  # Law 25: read path
                 total_debit += journal_debit
                 total_credit += journal_credit
 

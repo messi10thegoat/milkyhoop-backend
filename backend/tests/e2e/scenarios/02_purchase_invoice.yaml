@@ -1,0 +1,26 @@
+scenarios:
+  - id: "PI-001"
+    category: "happy_path"
+    description: "Create purchase invoice with all info"
+    messages:
+      - "buatkan faktur pembelian dari PT Wave4 untuk Kaos Oblong Gramasi 24s, 5 unit harga 55000"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_PURCHASE_INVOICE"
+    expect_contains: ["Wave4"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: true
+    verify_journal:
+      balanced: true
+    preconditions: ["vendor_exists:Wave4"]
+    tags: ["purchase", "happy_path"]
+
+  - id: "PI-002"
+    category: "edge_case"
+    description: "Purchase invoice with different phrasing - tagihan"
+    messages:
+      - "catat tagihan dari PT Wave4 untuk 3 unit Kaos Oblong harga @55000"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_PURCHASE_INVOICE"
+    expect_confirm_success: true
+    preconditions: ["vendor_exists:Wave4"]
+    tags: ["purchase", "intent_detection"]

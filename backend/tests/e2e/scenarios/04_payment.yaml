@@ -1,0 +1,26 @@
+scenarios:
+  - id: "PAY-001"
+    category: "happy_path"
+    description: "Receive payment from customer"
+    messages:
+      - "terima pembayaran dari Grapgrap Clothing senilai Rp 850000 ke rekening bank"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "RECEIVE_PAYMENT"
+    expect_contains: ["Grapgrap"]
+    expect_confirm_success: true
+    verify_journal:
+      balanced: true
+    preconditions: ["customer_exists:Grapgrap"]
+    tags: ["payment", "happy_path"]
+
+  - id: "PAY-002"
+    category: "edge_case"
+    description: "Make payment to vendor"
+    messages:
+      - "bayar tagihan PT Wave4 senilai Rp 275000 dari kas"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "MAKE_PAYMENT"
+    expect_contains: ["Wave4"]
+    expect_confirm_success: true
+    preconditions: ["vendor_exists:Wave4"]
+    tags: ["payment", "happy_path"]

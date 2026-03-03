@@ -1,0 +1,51 @@
+scenarios:
+  - id: "SI-001"
+    category: "happy_path"
+    description: "Create sales invoice with all info"
+    messages:
+      - "buatkan faktur penjualan ke Grapgrap Clothing, Kaos Oblong Gramasi 24s 10 pcs harga 85000"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_SALES_INVOICE"
+    expect_contains: ["Grapgrap"]
+    expect_not_contains: ["error", "tidak ditemukan"]
+    expect_confirm_success: true
+    verify_journal:
+      balanced: true
+    preconditions: ["customer_exists:Grapgrap", "item_exists:Kaos"]
+    tags: ["sales", "happy_path"]
+
+  - id: "SI-002"
+    category: "edge_case"
+    description: "Sales invoice - agent should lookup item price from master data"
+    messages:
+      - "buatkan faktur penjualan Emas 24 Karat 1 gram ke Grapgrap Clothing"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_SALES_INVOICE"
+    expect_contains: ["Grapgrap", "Emas"]
+    expect_not_contains: ["berapa harga"]
+    expect_confirm_success: true
+    preconditions: ["customer_exists:Grapgrap", "item_exists:Emas"]
+    tags: ["sales", "price_lookup"]
+
+  - id: "SI-003"
+    category: "clarification"
+    description: "Incomplete sales invoice request triggers clarification"
+    messages:
+      - "bikinkan faktur penjualan"
+    expect_behavior: ["clarification"]
+    expect_contains: []
+    expect_not_contains: ["error", "Invalid", "traceback"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["sales", "clarification"]
+
+  - id: "SI-004"
+    category: "edge_case"
+    description: "Intent detection - polite request should still trigger action"
+    messages:
+      - "bisa bantu bikinkan faktur penjualan ke Grapgrap, Kaos Oblong 5 pcs harga 85000"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_SALES_INVOICE"
+    expect_confirm_success: true
+    preconditions: ["customer_exists:Grapgrap", "item_exists:Kaos"]
+    tags: ["sales", "intent_detection"]

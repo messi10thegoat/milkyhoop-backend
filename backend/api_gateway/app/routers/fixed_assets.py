@@ -3,10 +3,19 @@ Fixed Assets Router
 ===================
 Fixed asset management with depreciation tracking.
 Creates journal entries on activate, depreciation, disposal, and sale.
+
+Iron Laws compliance:
+- Law 5:  Period checks before journal creation
+- Law 13: Advisory locks on all journal-creating paths
+- Law 20: DRAFT→lines→UPDATE POSTED pattern
+- Law 25: Decimal precision (no float truncation)
+- Law 27: resolve_account_id for account resolution
 """
 from datetime import date
+from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
+import uuid as uuid_module
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -50,6 +59,7 @@ from ..schemas.fixed_assets import (
     DisposalMethod,
     DepreciationStatus,
 )
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 router = APIRouter()
 
@@ -71,6 +81,25 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": request.state.user["tenant_id"],
         "user_id": request.state.user.get("user_id"),
     }
+
+
+# Law 5: Period check helper
+async def check_period_is_open(conn, tenant_id: str, journal_date) -> None:
+    """Check if the accounting period for the given date is open."""
+    period = await conn.fetchrow(
+        """
+        SELECT id, period_name, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+        ORDER BY start_date DESC LIMIT 1
+        """,
+        tenant_id,
+        journal_date,
+    )
+    if period and period["status"] in ("CLOSED", "LOCKED"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+        )
 
 
 # ============================================================================
@@ -502,14 +531,17 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
         if fa["status"] != "draft":
             raise HTTPException(status_code=400, detail="Asset is already activated")
 
-        # Get accounts
-        asset_account = fa["asset_account_id"] or await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20100'",
-            ctx["tenant_id"]
-        )
+        # Law 27: resolve accounts via helper
+        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
 
         async with conn.transaction():
-            # Generate journal
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"FIXED_ASSET:{asset_id}")
+
+            # Law 5: Period check
+            await check_period_is_open(conn, ctx["tenant_id"], fa["purchase_date"])
+
+            # Generate journal number
             seq = await conn.fetchrow(
                 """
                 INSERT INTO journal_sequences (tenant_id, last_number)
@@ -521,39 +553,45 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 ctx["tenant_id"]
             )
             journal_number = f"JV-{fa['purchase_date'].year}-{seq['last_number']:05d}"
+            journal_id = uuid_module.uuid4()
+            purchase_price = Decimal(str(fa["purchase_price"]))
 
-            journal = await conn.fetchrow(
+            # Law 20: Step 1 — INSERT as DRAFT
+            await conn.execute(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, source_id, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'FIXED_ASSET', $6, 'POSTED', $7)
-                RETURNING id, journal_number
+                    id, tenant_id, journal_number, journal_date, description,
+                    source_type, source_id, status, total_debit, total_credit, created_by
+                ) VALUES ($1, $2, $3, $4, $5, 'FIXED_ASSET', $6, 'DRAFT', $7, $7, $8)
                 """,
-                ctx["tenant_id"], journal_number, fa["purchase_date"],
-                fa["asset_number"], f"Asset Purchase - {fa['name']}",
-                asset_id, ctx.get("user_id")
+                journal_id, ctx["tenant_id"], journal_number, fa["purchase_date"],
+                f"Asset Purchase - {fa['name']} ({fa['asset_number']})",
+                asset_id, purchase_price, ctx.get("user_id")
             )
 
+            # Law 20: Step 2 — INSERT journal_lines
             # Dr. Aset Tetap
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                VALUES ($1, $2, $3, 0, $4)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, 1, $3, $4, 0, $5)
                 """,
-                journal["id"], asset_account, fa["purchase_price"],
+                uuid_module.uuid4(), journal_id, asset_account, purchase_price,
                 f"Asset Purchase - {fa['asset_number']}"
             )
 
             # Cr. Payment account
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                VALUES ($1, $2, 0, $3, $4)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, 2, $3, 0, $4, $5)
                 """,
-                journal["id"], data.payment_account_id, fa["purchase_price"],
+                uuid_module.uuid4(), journal_id, data.payment_account_id, purchase_price,
                 f"Asset Purchase - {fa['asset_number']}"
             )
+
+            # Law 20: Step 3 — UPDATE to POSTED
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
             # Update asset status
             await conn.execute(
@@ -574,8 +612,8 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 asset_id=asset_id,
                 asset_number=fa["asset_number"],
                 status=AssetStatus.active,
-                journal_id=journal["id"],
-                journal_number=journal["journal_number"],
+                journal_id=journal_id,
+                journal_number=journal_number,
                 depreciation_schedule_count=schedule_count,
             )
 
@@ -611,7 +649,7 @@ async def get_depreciation_schedule(request: Request, asset_id: UUID):
         )
 
         scheduled = [s for s in schedule if s["status"] == "scheduled"]
-        total_dep = sum(s["depreciation_amount"] for s in schedule)
+        total_dep = sum(Decimal(str(s["depreciation_amount"])) for s in schedule)
 
         return DepreciationScheduleResponse(
             asset=FixedAssetResponse(**dict(fa)),
@@ -652,7 +690,7 @@ async def get_depreciation_due(
             year=year,
             month=month,
             items=items,
-            total_depreciation=sum(i.depreciation_amount for i in items),
+            total_depreciation=sum(Decimal(str(i.depreciation_amount)) for i in items),
             asset_count=len(items),
         )
 
@@ -691,29 +729,29 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                 month=data.month,
                 posted=0,
                 failed=0,
-                total_depreciation=0,
+                total_depreciation=Decimal("0"),
                 results=[],
             )
 
-        # Get default accounts
-        depreciation_expense = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '5-30100'",
-            ctx["tenant_id"]
-        )
-        accumulated_dep = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20200'",
-            ctx["tenant_id"]
-        )
+        # Law 27: resolve default accounts via helper
+        depreciation_expense = await resolve_account_id(conn, ctx["tenant_id"], '5-30100')
+        accumulated_dep = await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
 
         results = []
         posted = 0
         failed = 0
-        total_depreciation = 0
+        total_depreciation = Decimal("0")
 
         for dep in depreciations:
             try:
                 async with conn.transaction():
-                    # Generate journal
+                    # Law 13: Advisory lock
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPRECIATION:{dep['asset_id']}")
+
+                    # Law 5: Period check
+                    await check_period_is_open(conn, ctx["tenant_id"], dep["depreciation_date"])
+
+                    # Generate journal number
                     seq = await conn.fetchrow(
                         """
                         INSERT INTO journal_sequences (tenant_id, last_number)
@@ -725,42 +763,48 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         ctx["tenant_id"]
                     )
                     journal_number = f"JV-{data.year}-{seq['last_number']:05d}"
-
-                    journal = await conn.fetchrow(
-                        """
-                        INSERT INTO journal_entries (
-                            tenant_id, journal_number, entry_date, reference, description,
-                            source_type, source_id, status, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'DEPRECIATION', $6, 'POSTED', $7)
-                        RETURNING id
-                        """,
-                        ctx["tenant_id"], journal_number, dep["depreciation_date"],
-                        dep["asset_number"], f"Depreciation - {dep['asset_name']} ({data.year}/{data.month})",
-                        dep["id"], ctx.get("user_id")
-                    )
+                    journal_id = uuid_module.uuid4()
+                    dep_amount = Decimal(str(dep["depreciation_amount"]))
 
                     dep_account = dep["depreciation_account_id"] or depreciation_expense
                     accum_account = dep["accumulated_depreciation_account_id"] or accumulated_dep
 
+                    # Law 20: Step 1 — INSERT as DRAFT
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'DEPRECIATION', $6, 'DRAFT', $7, $7, $8)
+                        """,
+                        journal_id, ctx["tenant_id"], journal_number, dep["depreciation_date"],
+                        f"Depreciation - {dep['asset_name']} ({data.year}/{data.month})",
+                        dep["id"], dep_amount, ctx.get("user_id")
+                    )
+
+                    # Law 20: Step 2 — INSERT journal_lines
                     # Dr. Beban Penyusutan
                     await conn.execute(
                         """
-                        INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, $3, 0, $4)
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        journal["id"], dep_account, dep["depreciation_amount"],
+                        uuid_module.uuid4(), journal_id, dep_account, dep_amount,
                         f"Depreciation - {dep['asset_number']}"
                     )
 
                     # Cr. Akumulasi Penyusutan
                     await conn.execute(
                         """
-                        INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                        VALUES ($1, $2, 0, $3, $4)
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        journal["id"], accum_account, dep["depreciation_amount"],
+                        uuid_module.uuid4(), journal_id, accum_account, dep_amount,
                         f"Accumulated Depreciation - {dep['asset_number']}"
                     )
+
+                    # Law 20: Step 3 — UPDATE to POSTED
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
                     # Update depreciation record
                     await conn.execute(
@@ -768,18 +812,18 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         UPDATE asset_depreciations SET status = 'posted', journal_id = $2, posted_at = NOW()
                         WHERE id = $1
                         """,
-                        dep["id"], journal["id"]
+                        dep["id"], journal_id
                     )
 
                     results.append(PostDepreciationResult(
                         asset_id=dep["asset_id"],
                         asset_number=dep["asset_number"],
-                        depreciation_amount=dep["depreciation_amount"],
-                        journal_id=journal["id"],
+                        depreciation_amount=dep_amount,
+                        journal_id=journal_id,
                         success=True,
                     ))
                     posted += 1
-                    total_depreciation += dep["depreciation_amount"]
+                    total_depreciation += dep_amount
 
             except Exception as e:
                 results.append(PostDepreciationResult(
@@ -829,24 +873,23 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
         if fa["status"] not in ("active", "fully_depreciated"):
             raise HTTPException(status_code=400, detail="Asset cannot be disposed in current status")
 
-        # Get accounts
-        asset_account = fa["asset_account_id"] or await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20100'",
-            ctx["tenant_id"]
-        )
-        accumulated_dep = fa["accumulated_depreciation_account_id"] or await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20200'",
-            ctx["tenant_id"]
-        )
-        loss_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '8-20200'",
-            ctx["tenant_id"]
-        )
+        # Law 27: resolve accounts via helper
+        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
+        accumulated_dep = fa["accumulated_depreciation_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
+        loss_account = await resolve_account_id(conn, ctx["tenant_id"], '8-20200')
 
-        book_value = fa["current_value"]
+        book_value = Decimal(str(fa["current_value"]))
+        purchase_price = Decimal(str(fa["purchase_price"]))
+        accum_dep_amount = Decimal(str(fa["accumulated_depreciation"]))
 
         async with conn.transaction():
-            # Generate journal
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ASSET_DISPOSAL:{asset_id}")
+
+            # Law 5: Period check
+            await check_period_is_open(conn, ctx["tenant_id"], data.disposal_date)
+
+            # Generate journal number
             seq = await conn.fetchrow(
                 """
                 INSERT INTO journal_sequences (tenant_id, last_number)
@@ -858,51 +901,60 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                 ctx["tenant_id"]
             )
             journal_number = f"JV-{data.disposal_date.year}-{seq['last_number']:05d}"
+            journal_id = uuid_module.uuid4()
 
-            journal = await conn.fetchrow(
+            # Law 20: Step 1 — INSERT as DRAFT
+            await conn.execute(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, source_id, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'ASSET_DISPOSAL', $6, 'POSTED', $7)
-                RETURNING id
+                    id, tenant_id, journal_number, journal_date, description,
+                    source_type, source_id, status, total_debit, total_credit, created_by
+                ) VALUES ($1, $2, $3, $4, $5, 'ASSET_DISPOSAL', $6, 'DRAFT', $7, $7, $8)
                 """,
-                ctx["tenant_id"], journal_number, data.disposal_date,
-                fa["asset_number"], f"Asset Disposal - {fa['name']}",
-                asset_id, ctx.get("user_id")
+                journal_id, ctx["tenant_id"], journal_number, data.disposal_date,
+                f"Asset Disposal - {fa['name']} ({fa['asset_number']})",
+                asset_id, purchase_price, ctx.get("user_id")
             )
 
+            # Law 20: Step 2 — INSERT journal_lines
+            line_number = 1
+
             # Dr. Akumulasi Penyusutan
-            if fa["accumulated_depreciation"] > 0:
+            if accum_dep_amount > 0:
                 await conn.execute(
                     """
-                    INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                    VALUES ($1, $2, $3, 0, $4)
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    journal["id"], accumulated_dep, fa["accumulated_depreciation"],
+                    uuid_module.uuid4(), journal_id, line_number, accumulated_dep, accum_dep_amount,
                     f"Accumulated Depreciation - {fa['asset_number']}"
                 )
+                line_number += 1
 
             # Dr. Rugi (book value)
             if book_value > 0:
                 await conn.execute(
                     """
-                    INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                    VALUES ($1, $2, $3, 0, $4)
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    journal["id"], loss_account, book_value,
+                    uuid_module.uuid4(), journal_id, line_number, loss_account, book_value,
                     f"Loss on Disposal - {fa['asset_number']}"
                 )
+                line_number += 1
 
             # Cr. Aset Tetap
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                VALUES ($1, $2, 0, $3, $4)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, 0, $5, $6)
                 """,
-                journal["id"], asset_account, fa["purchase_price"],
+                uuid_module.uuid4(), journal_id, line_number, asset_account, purchase_price,
                 f"Asset Disposal - {fa['asset_number']}"
             )
+
+            # Law 20: Step 3 — UPDATE to POSTED
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
             # Update asset
             await conn.execute(
@@ -917,7 +969,7 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                 WHERE id = $1
                 """,
                 asset_id, data.disposal_date, data.disposal_method.value,
-                journal["id"], -book_value
+                journal_id, -book_value
             )
 
             return DisposeAssetResponse(
@@ -927,7 +979,7 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                 disposal_method=data.disposal_method,
                 book_value_at_disposal=book_value,
                 loss_amount=book_value,
-                journal_id=journal["id"],
+                journal_id=journal_id,
             )
 
 
@@ -958,29 +1010,31 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
         if fa["status"] not in ("active", "fully_depreciated"):
             raise HTTPException(status_code=400, detail="Asset cannot be sold in current status")
 
-        book_value = fa["current_value"]
-        gain_loss = data.sale_price - book_value
+        book_value = Decimal(str(fa["current_value"]))
+        sale_price = Decimal(str(data.sale_price))
+        gain_loss = sale_price - book_value
+        purchase_price = Decimal(str(fa["purchase_price"]))
+        accum_dep_amount = Decimal(str(fa["accumulated_depreciation"]))
 
-        # Get accounts
-        asset_account = fa["asset_account_id"] or await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20100'",
-            ctx["tenant_id"]
-        )
-        accumulated_dep = fa["accumulated_depreciation_account_id"] or await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-20200'",
-            ctx["tenant_id"]
-        )
-        gain_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '8-10200'",
-            ctx["tenant_id"]
-        )
-        loss_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '8-20200'",
-            ctx["tenant_id"]
-        )
+        # Law 27: resolve accounts via helper
+        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
+        accumulated_dep = fa["accumulated_depreciation_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
+        gain_account = await resolve_account_id(conn, ctx["tenant_id"], '8-10200')
+        loss_account = await resolve_account_id(conn, ctx["tenant_id"], '8-20200')
+
+        # Calculate total_debit for balanced entry
+        total_debit = sale_price + accum_dep_amount
+        if gain_loss < 0:
+            total_debit += abs(gain_loss)
 
         async with conn.transaction():
-            # Generate journal
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ASSET_SALE:{asset_id}")
+
+            # Law 5: Period check
+            await check_period_is_open(conn, ctx["tenant_id"], data.sale_date)
+
+            # Generate journal number
             seq = await conn.fetchrow(
                 """
                 INSERT INTO journal_sequences (tenant_id, last_number)
@@ -992,72 +1046,88 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                 ctx["tenant_id"]
             )
             journal_number = f"JV-{data.sale_date.year}-{seq['last_number']:05d}"
+            journal_id = uuid_module.uuid4()
 
-            journal = await conn.fetchrow(
+            # total_credit = purchase_price + gain (if any)
+            total_credit = purchase_price
+            if gain_loss > 0:
+                total_credit += gain_loss
+
+            # Law 20: Step 1 — INSERT as DRAFT
+            await conn.execute(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, source_id, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'ASSET_SALE', $6, 'POSTED', $7)
-                RETURNING id
+                    id, tenant_id, journal_number, journal_date, description,
+                    source_type, source_id, status, total_debit, total_credit, created_by
+                ) VALUES ($1, $2, $3, $4, $5, 'ASSET_SALE', $6, 'DRAFT', $7, $8, $9)
                 """,
-                ctx["tenant_id"], journal_number, data.sale_date,
-                fa["asset_number"], f"Asset Sale - {fa['name']}",
-                asset_id, ctx.get("user_id")
+                journal_id, ctx["tenant_id"], journal_number, data.sale_date,
+                f"Asset Sale - {fa['name']} ({fa['asset_number']})",
+                asset_id, total_debit, total_credit, ctx.get("user_id")
             )
+
+            # Law 20: Step 2 — INSERT journal_lines
+            line_number = 1
 
             # Dr. Receivable/Cash
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                VALUES ($1, $2, $3, 0, $4)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, 0, $6)
                 """,
-                journal["id"], data.receivable_account_id, data.sale_price,
+                uuid_module.uuid4(), journal_id, line_number, data.receivable_account_id, sale_price,
                 f"Asset Sale - {fa['asset_number']}"
             )
+            line_number += 1
 
             # Dr. Akumulasi Penyusutan
-            if fa["accumulated_depreciation"] > 0:
+            if accum_dep_amount > 0:
                 await conn.execute(
                     """
-                    INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                    VALUES ($1, $2, $3, 0, $4)
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    journal["id"], accumulated_dep, fa["accumulated_depreciation"],
+                    uuid_module.uuid4(), journal_id, line_number, accumulated_dep, accum_dep_amount,
                     f"Accumulated Depreciation - {fa['asset_number']}"
                 )
+                line_number += 1
 
             # Dr. Loss (if loss)
             if gain_loss < 0:
                 await conn.execute(
                     """
-                    INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                    VALUES ($1, $2, $3, 0, $4)
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    journal["id"], loss_account, abs(gain_loss),
+                    uuid_module.uuid4(), journal_id, line_number, loss_account, abs(gain_loss),
                     f"Loss on Sale - {fa['asset_number']}"
                 )
+                line_number += 1
 
             # Cr. Aset Tetap
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                VALUES ($1, $2, 0, $3, $4)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, 0, $5, $6)
                 """,
-                journal["id"], asset_account, fa["purchase_price"],
+                uuid_module.uuid4(), journal_id, line_number, asset_account, purchase_price,
                 f"Asset Sale - {fa['asset_number']}"
             )
+            line_number += 1
 
             # Cr. Gain (if gain)
             if gain_loss > 0:
                 await conn.execute(
                     """
-                    INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
-                    VALUES ($1, $2, 0, $3, $4)
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    journal["id"], gain_account, gain_loss,
+                    uuid_module.uuid4(), journal_id, line_number, gain_account, gain_loss,
                     f"Gain on Sale - {fa['asset_number']}"
                 )
+
+            # Law 20: Step 3 — UPDATE to POSTED
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
             # Update asset
             await conn.execute(
@@ -1072,17 +1142,17 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     updated_at = NOW()
                 WHERE id = $1
                 """,
-                asset_id, data.sale_date, data.sale_price, journal["id"], gain_loss
+                asset_id, data.sale_date, sale_price, journal_id, gain_loss
             )
 
             return SellAssetResponse(
                 asset_id=asset_id,
                 asset_number=fa["asset_number"],
                 status=AssetStatus.sold,
-                sale_price=data.sale_price,
+                sale_price=sale_price,
                 book_value_at_sale=book_value,
                 gain_loss_amount=gain_loss,
-                journal_id=journal["id"],
+                journal_id=journal_id,
             )
 
 
@@ -1108,9 +1178,9 @@ async def get_asset_register(request: Request, status: Optional[AssetStatus] = N
 
         return AssetRegisterResponse(
             items=items,
-            total_purchase_price=sum(i.purchase_price for i in items),
-            total_current_value=sum(i.current_value for i in items),
-            total_accumulated_depreciation=sum(i.accumulated_depreciation for i in items),
+            total_purchase_price=sum(Decimal(str(i.purchase_price)) for i in items),
+            total_current_value=sum(Decimal(str(i.current_value)) for i in items),
+            total_accumulated_depreciation=sum(Decimal(str(i.accumulated_depreciation)) for i in items),
             asset_count=len(items),
         )
 

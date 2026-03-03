@@ -201,11 +201,13 @@ async def get_ledger_summary(
 
             by_type = {}
             totals = {
-                "ASSET": 0,
-                "LIABILITY": 0,
+                "ASSET": 0, "RECEIVABLE": 0,
+                "LIABILITY": 0, "PAYABLE": 0,
                 "EQUITY": 0,
+                "REVENUE": 0, "OTHER_INCOME": 0,
                 "INCOME": 0,
-                "EXPENSE": 0,
+                "COGS": 0,
+                "EXPENSE": 0, "OTHER_EXPENSE": 0,
             }
 
             for row in rows:
@@ -214,7 +216,7 @@ async def get_ledger_summary(
                 total_credit = row["total_credit"] or Decimal("0")
 
                 # Calculate balance based on normal balance
-                if account_type in ("ASSET", "EXPENSE"):
+                if account_type in ("ASSET", "RECEIVABLE", "EXPENSE", "COGS", "OTHER_EXPENSE"):
                     balance = total_debit - total_credit
                 else:
                     balance = total_credit - total_debit
@@ -225,24 +227,29 @@ async def get_ledger_summary(
                     balance=balance,
                     account_count=row["account_count"],
                 )
-                totals[account_type] = balance
+                if account_type in totals:
+                    totals[account_type] = balance
 
             # Accounting equation check: Assets = Liabilities + Equity
-            is_balanced = totals["ASSET"] == (
-                totals["LIABILITY"]
+            total_assets = totals["ASSET"] + totals["RECEIVABLE"]
+            total_liabilities = totals["LIABILITY"] + totals["PAYABLE"]
+            total_revenue = totals.get("REVENUE", 0) + totals.get("OTHER_INCOME", 0) + totals.get("INCOME", 0)
+            total_expenses = totals.get("EXPENSE", 0) + totals.get("COGS", 0) + totals.get("OTHER_EXPENSE", 0)
+            is_balanced = total_assets == (
+                total_liabilities
                 + totals["EQUITY"]
-                + totals["INCOME"]
-                - totals["EXPENSE"]
+                + total_revenue
+                - total_expenses
             )
 
             return LedgerSummaryResponse(
                 data={
                     "by_type": by_type,
-                    "total_assets": totals["ASSET"],
-                    "total_liabilities": totals["LIABILITY"],
+                    "total_assets": total_assets,
+                    "total_liabilities": total_liabilities,
                     "total_equity": totals["EQUITY"],
-                    "total_revenue": totals["INCOME"],
-                    "total_expenses": totals["EXPENSE"],
+                    "total_revenue": total_revenue,
+                    "total_expenses": total_expenses,
                     "is_balanced": is_balanced,
                 }
             )

@@ -24,6 +24,7 @@ import json
 import uuid
 from uuid import UUID
 from datetime import date as dateclass
+from decimal import Decimal
 
 from ..schemas.items import (
     CreateItemRequest,
@@ -61,6 +62,7 @@ from ..schemas.items import (
     PURCHASE_ACCOUNTS,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -227,11 +229,24 @@ async def list_items(
             param_idx += 1
 
         if search:
-            query_parts.append(
-                f"AND (p.nama_produk ILIKE ${param_idx} OR p.barcode ILIKE ${param_idx})"
-            )
-            params.append(f"%{search}%")
-            param_idx += 1
+            # Split search into words — each word must match name or barcode
+            # "kaos oblong 24s" matches "Kaos Oblong + Sablon, Lengan Pendek 24s"
+            words = search.strip().split()
+            if len(words) == 1:
+                query_parts.append(
+                    f"AND (p.nama_produk ILIKE ${param_idx} OR p.barcode ILIKE ${param_idx})"
+                )
+                params.append(f"%{words[0]}%")
+                param_idx += 1
+            else:
+                word_conditions = []
+                for word in words:
+                    word_conditions.append(
+                        f"(p.nama_produk ILIKE ${param_idx} OR p.barcode ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{word}%")
+                    param_idx += 1
+                query_parts.append(f"AND ({' AND '.join(word_conditions)})")
 
         if stock_status:
             query_parts.append("AND p.item_type = 'goods' AND p.track_inventory = true")
@@ -296,7 +311,7 @@ async def list_items(
                     sales_price=row.get("sales_price") or row.get("harga_jual"),
                     purchase_price=row.get("purchase_price"),
                     image_url=row.get("image_url"),
-                    reorder_level=float(row["reorder_level"])
+                    reorder_level=row["reorder_level"]
                     if row.get("reorder_level")
                     else None,
                     reorder_point=int(row["reorder_level"])
@@ -534,8 +549,8 @@ async def create_item(request: Request, body: CreateItemRequest):
             # Create initial stock entry (if track_inventory)
             if body.track_inventory and body.item_type == "goods":
                 # Determine opening stock values
-                initial_qty = float(body.opening_stock) if body.opening_stock else 0.0
-                initial_rate = float(body.opening_stock_rate) if body.opening_stock_rate else (float(body.purchase_price) if body.purchase_price else 0.0)
+                initial_qty = Decimal(str(body.opening_stock)) if body.opening_stock else Decimal('0')
+                initial_rate = Decimal(str(body.opening_stock_rate)) if body.opening_stock_rate else (Decimal(str(body.purchase_price)) if body.purchase_price else Decimal('0'))
                 initial_value = initial_qty * initial_rate
 
                 # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
@@ -837,11 +852,11 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                         def normalize_val(v):
                             if v is None:
                                 return None
-                            if isinstance(v, (int, float)):
-                                return float(v)
+                            if isinstance(v, (int, float, Decimal)):
+                                return Decimal(str(v))
                             try:
-                                return float(v)
-                            except (ValueError, TypeError):
+                                return Decimal(str(v))
+                            except (ValueError, TypeError, ArithmeticError):
                                 return str(v)
                         
                         old_norm = normalize_val(old_val)
@@ -1678,6 +1693,7 @@ async def bulk_import_items(request: Request):
         errors = []
 
         async with pool.acquire() as conn:
+          async with conn.transaction():
             for idx, item in enumerate(items_data):
                 try:
                     code = item.get("code")
@@ -1958,12 +1974,12 @@ async def get_item_history(
                 "source_type": row["source_type"],
                 "source_id": str(row["source_id"]) if row["source_id"] else None,
                 "source_number": row["source_number"],
-                "quantity_in": float(row["quantity_in"] or 0),
-                "quantity_out": float(row["quantity_out"] or 0),
-                "quantity_balance": float(row["quantity_balance"] or 0),
-                "unit_cost": float(row["unit_cost"] or 0),
-                "total_cost": float(row["total_cost"] or 0),
-                "average_cost": float(row["average_cost"] or 0) if row["average_cost"] else None,
+                "quantity_in": row["quantity_in"] or 0,
+                "quantity_out": row["quantity_out"] or 0,
+                "quantity_balance": row["quantity_balance"] or 0,
+                "unit_cost": int(row["unit_cost"] or 0),
+                "total_cost": int(row["total_cost"] or 0),
+                "average_cost": int(row["average_cost"] or 0) if row["average_cost"] else None,
                 "warehouse_id": str(row["warehouse_id"]) if row["warehouse_id"] else None,
                 "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
                 "notes": row["notes"],
@@ -2077,7 +2093,7 @@ async def get_item(request: Request, item_id: UUID):
                 "deskripsi": row.get("deskripsi"),
                 "is_returnable": row.get("is_returnable", True),
                 "image_url": row.get("image_url"),
-                "reorder_level": float(row["reorder_level"])
+                "reorder_level": row["reorder_level"]
                 if row.get("reorder_level")
                 else None,
                 "reorder_point": int(row["reorder_level"])
@@ -2103,10 +2119,10 @@ async def get_item(request: Request, item_id: UUID):
                 "item_code": row.get("item_code"),
                 "sku": row.get("sku"),
                 "costing_method": row.get("costing_method", "weighted_average"),
-                "opening_stock": float(row["opening_stock"])
+                "opening_stock": row["opening_stock"]
                 if row.get("opening_stock")
                 else None,
-                "opening_stock_rate": float(row["opening_stock_rate"])
+                "opening_stock_rate": int(row["opening_stock_rate"])
                 if row.get("opening_stock_rate")
                 else None,
                 "opening_stock_date": str(row["opening_stock_date"])
@@ -2187,11 +2203,11 @@ async def get_item_transactions(
                 END as transaction_type,
                 COALESCE(il.source_number, il.source_id::text) as document_number,
                 CASE
-                    WHEN il.quantity_in > 0 THEN il.quantity_in::float
-                    ELSE -il.quantity_out::float
+                    WHEN il.quantity_in > 0 THEN il.quantity_in
+                    ELSE -il.quantity_out
                 END as qty_change,
-                il.unit_cost::float as unit_price,
-                il.total_cost::float as total,
+                il.unit_cost as unit_price,
+                il.total_cost as total,
                 il.notes
             FROM inventory_ledger il
             WHERE il.product_id = $1::uuid AND il.tenant_id = $2
@@ -2214,9 +2230,9 @@ async def get_item_transactions(
                 date=row["date"] or "",
                 transaction_type=row.get("transaction_type", "unknown"),
                 document_number=row.get("document_number"),
-                qty_change=float(row.get("qty_change", 0)),
-                unit_price=float(row["unit_price"]) if row.get("unit_price") else None,
-                total=float(row["total"]) if row.get("total") else None,
+                qty_change=row.get("qty_change") or 0,
+                unit_price=int(row["unit_price"]) if row.get("unit_price") else None,
+                total=int(row["total"]) if row.get("total") else None,
                 notes=row.get("notes"),
             )
             for row in rows
@@ -2289,11 +2305,11 @@ async def get_item_related(request: Request, item_id: UUID):
                     document_number=row.get("document_number"),
                     date=row.get("date"),
                     counterparty=row.get("counterparty"),
-                    qty=float(row["qty"]) if row.get("qty") else None,
-                    unit_price=float(row["unit_price"])
+                    qty=row["qty"] if row.get("qty") else None,
+                    unit_price=int(row["unit_price"])
                     if row.get("unit_price")
                     else None,
-                    total=float(row["total"]) if row.get("total") else None,
+                    total=int(row["total"]) if row.get("total") else None,
                     status=row.get("status"),
                 )
                 for row in inv_rows
@@ -2328,11 +2344,11 @@ async def get_item_related(request: Request, item_id: UUID):
                     document_number=row.get("document_number"),
                     date=row.get("date"),
                     counterparty=row.get("counterparty"),
-                    qty=float(row["qty"]) if row.get("qty") else None,
-                    unit_price=float(row["unit_price"])
+                    qty=row["qty"] if row.get("qty") else None,
+                    unit_price=int(row["unit_price"])
                     if row.get("unit_price")
                     else None,
-                    total=float(row["total"]) if row.get("total") else None,
+                    total=int(row["total"]) if row.get("total") else None,
                     status=row.get("status"),
                 )
                 for row in bill_rows
@@ -2433,7 +2449,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                 item_row.get("sales_price"),
                 item_row.get("purchase_price"),
                 item_row.get("sales_price"),  # harga_jual
-                float(item_row["reorder_level"])
+                item_row["reorder_level"]
                 if item_row.get("reorder_level")
                 else None,
                 str(item_row["preferred_vendor_id"])
@@ -2528,7 +2544,7 @@ async def list_cogs_accounts(request: Request):
                   OR name ILIKE '%%harga pokok%%'
                   OR name ILIKE '%%cost of goods%%'
                   OR name ILIKE '%%cogs%%'
-                  OR account_code LIKE '5-1%%'
+                  OR account_code LIKE '5-1%%'  -- Law 27: read filter
               )
             ORDER BY account_code ASC
         """
@@ -2555,206 +2571,252 @@ async def list_cogs_accounts(request: Request):
 
 @router.post("/items/{item_id}/stock-adjustment")
 async def create_stock_adjustment(request: Request, item_id: str):
-    """Create a stock adjustment for an item."""
+    """
+    Create a stock adjustment for an item.
+    Iron Law compliant: Law 13 (advisory lock), Law 20 (DRAFT→POSTED),
+    Law 23 (atomic transaction), Law 25 (Decimal precision),
+    Inventory Rule 3 (WAC recalculation).
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         body = await request.json()
 
+        from decimal import Decimal, ROUND_HALF_UP
+        import uuid as uuid_module
+        from datetime import date as date_type
+
         # Read adjustment_type (support both "adjustment_type" and legacy "type" key)
         adjustment_type = body.get("adjustment_type") or body.get("type", "set")
         quantity = body.get("quantity")
         reason = body.get("reason")
-        reference = body.get("reference")
-        
+
         # Normalize legacy values: increase->add, decrease->subtract
         type_map = {"increase": "add", "decrease": "subtract"}
         adjustment_type = type_map.get(adjustment_type, adjustment_type)
 
-        # Validate adjustment_type
+        # Validate
         if adjustment_type not in ("set", "add", "subtract"):
-            raise HTTPException(
-                status_code=422,
-                detail="Invalid adjustment_type. Must be: set, add, subtract",
-            )
-
-        # Validate quantity
+            raise HTTPException(status_code=422, detail="Invalid adjustment_type. Must be: set, add, subtract")
         if quantity is None:
             raise HTTPException(status_code=422, detail="quantity is required")
-
-        # Validate reason
+        try:
+            qty_check = Decimal(str(quantity))
+        except (TypeError, ValueError, ArithmeticError):
+            raise HTTPException(status_code=422, detail="quantity must be a number")
+        if qty_check <= 0:
+            raise HTTPException(status_code=422, detail="quantity must be greater than 0")
         if not reason:
             raise HTTPException(status_code=422, detail="reason is required")
 
-        import uuid as _uuid
         try:
-            product_uuid = _uuid.UUID(item_id)
+            product_uuid = uuid_module.UUID(item_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid item ID format")
 
+        quantity_dec = Decimal(str(quantity))
+
         async with pool.acquire() as conn:
-            # Get product info
-            item = await conn.fetchrow(
-                "SELECT id, nama_produk FROM products WHERE id = $1 AND tenant_id = $2",
-                product_uuid,
-                ctx["tenant_id"],
-            )
-            if not item:
-                raise HTTPException(status_code=404, detail="Item not found")
-
-            # Get current stock from inventory_ledger (Law 16 compliance)
-            old_stock = await conn.fetchval(
-                "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
-                product_uuid,
-                ctx["tenant_id"],
-            ) or 0
-
-            # Calculate new stock based on adjustment type
-            if adjustment_type == "set":
-                new_stock = quantity
-            elif adjustment_type == "add":
-                new_stock = old_stock + abs(quantity)
-            elif adjustment_type == "subtract":
-                new_stock = old_stock - abs(quantity)
-
-            # Prevent negative stock
-            if new_stock < 0:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Stock cannot be negative. Current: {old_stock}, adjusting by -{abs(quantity)} would result in {new_stock}",
+            # Law 23: Explicit transaction block — all operations atomic
+            async with conn.transaction():
+                # Law 13: Advisory lock BEFORE any reads/writes
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"STOCK_ADJ_CREATE:{item_id}"
                 )
 
-
-            # Stock adjustment is recorded via inventory_ledger entry below (Law 16).
-            # No persediaan write needed - stock is derived from ledger movements.
-
-            # --- Journal creation for accounting compliance (Iron Law 8) ---
-            import uuid as uuid_module
-            from datetime import date as date_type
-
-            journal_id = None
-            adjustment_qty = abs(new_stock - old_stock)
-
-            # Get unit cost with fallbacks: inventory_ledger.average_cost -> products.purchase_price -> products.sales_price
-            cost_row = await conn.fetchrow("""
-                SELECT
-                    COALESCE(il.average_cost, 0) as ledger_cost,
-                    COALESCE(p.purchase_price, 0) as purchase_price,
-                    COALESCE(p.sales_price, 0) as sales_price
-                FROM products p
-                LEFT JOIN LATERAL (
-                    SELECT average_cost FROM inventory_ledger
-                    WHERE product_id = p.id AND tenant_id = CAST(p.tenant_id AS TEXT)
-                    ORDER BY movement_date DESC, created_at DESC LIMIT 1
-                ) il ON true
-                WHERE p.id = $1 AND p.tenant_id = $2
-            """, product_uuid, ctx["tenant_id"])
-
-            unit_cost = 0
-            cost_source = None
-            if cost_row:
-                if float(cost_row["ledger_cost"] or 0) > 0:
-                    unit_cost = float(cost_row["ledger_cost"])
-                    cost_source = "inventory_ledger"
-                elif float(cost_row["purchase_price"] or 0) > 0:
-                    unit_cost = float(cost_row["purchase_price"])
-                    cost_source = "purchase_price"
-                elif float(cost_row["sales_price"] or 0) > 0:
-                    unit_cost = float(cost_row["sales_price"])
-                    cost_source = "sales_price"
-
-            total_value = int(adjustment_qty * unit_cost)
-            journal_note = None
-
-            if total_value == 0:
-                journal_note = "Jurnal tidak dibuat karena item belum memiliki harga beli/jual"
-                logger.info(f"Stock adjustment on {item_id}: no journal created (unit_cost=0, no fallback price found)")
-
-            if total_value > 0 and new_stock != old_stock:
-                # Look up inventory account (1-10600)
-                inv_account_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE account_code = '1-10600' AND tenant_id = $1",
-                    ctx["tenant_id"]
+                # Get product info
+                item = await conn.fetchrow(
+                    "SELECT id, nama_produk, item_code FROM products WHERE id = $1 AND tenant_id = $2",
+                    product_uuid, ctx["tenant_id"],
                 )
-                # Look up adjustment expense account (5-50100)
-                adj_account_id = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE account_code = '5-50100' AND tenant_id = $1",
-                    ctx["tenant_id"]
+                if not item:
+                    raise HTTPException(status_code=404, detail="Item not found")
+
+                item_name = item["nama_produk"] or "Unknown"
+                item_code = item["item_code"] or ""
+
+                # Get current stock from inventory_ledger (Law 16)
+                old_stock_row = await conn.fetchval(
+                    "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
+                    product_uuid, ctx["tenant_id"],
                 )
+                old_stock = Decimal(str(old_stock_row or 0))
 
-                if inv_account_id and adj_account_id:
-                    journal_id = uuid_module.uuid4()
-                    trace_id = uuid_module.uuid4()
-                    today = date_type.today()
-                    date_str = today.isoformat()
+                # Calculate new stock (Law 25: Decimal)
+                if adjustment_type == "set":
+                    new_stock = quantity_dec
+                elif adjustment_type == "add":
+                    new_stock = old_stock + abs(quantity_dec)
+                elif adjustment_type == "subtract":
+                    new_stock = old_stock - abs(quantity_dec)
 
-                    # Generate journal number QSA-YYMM-NNNN
-                    prefix = f"QSA-{date_str[2:4]}{date_str[5:7]}-"
-                    seq_row = await conn.fetchrow(
-                        "SELECT COUNT(*) + 1 as next_num FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
-                        ctx["tenant_id"], f"{prefix}%"
+                if new_stock < 0:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Stock cannot be negative. Current: {old_stock}, would result in {new_stock}",
                     )
-                    next_num = seq_row["next_num"] if seq_row else 1
-                    journal_number = f"{prefix}{next_num:04d}"
 
-                    item_name = item["nama_produk"] or "Unknown"
-                    description = f"Penyesuaian Stok: {item_name} ({old_stock} -> {new_stock}) - {reason}"
-
-                    # Parse user_id as UUID for created_by
-                    user_id_val = ctx.get("user_id")
-                    created_by_uuid = None
-                    if user_id_val:
-                        try:
-                            created_by_uuid = uuid_module.UUID(str(user_id_val))
-                        except (ValueError, AttributeError):
-                            pass
-
-                    await conn.execute("""
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date, description,
-                            source_type, source_id, trace_id, status,
-                            total_debit, total_credit, created_by, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'POSTED', $8, $8, $9, NOW(), NOW())
-                    """, journal_id, ctx["tenant_id"], journal_number, today, description,
-                         product_uuid, str(trace_id), total_value, created_by_uuid)
-
-                    # Determine debit/credit accounts
-                    if new_stock > old_stock:
-                        # Increase: Dr Persediaan, Cr Biaya Penyesuaian
-                        debit_account = inv_account_id
-                        credit_account = adj_account_id
-                    else:
-                        # Decrease: Dr Biaya Penyesuaian, Cr Persediaan
-                        debit_account = adj_account_id
-                        credit_account = inv_account_id
-
-                    # Debit line
-                    await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
-                        VALUES ($1, $2, $3, $4, $5, 0, $6, $7)
-                    """, uuid_module.uuid4(), journal_id, 1, debit_account, total_value, description, product_uuid)
-
-                    # Credit line
-                    await conn.execute("""
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
-                        VALUES ($1, $2, $3, $4, 0, $5, $6, $7)
-                    """, uuid_module.uuid4(), journal_id, 2, credit_account, total_value, description, product_uuid)
-
-                    logger.info(f"Journal {journal_number} created for stock adjustment on {item_id}")
-
-            # --- Record inventory_ledger movement for the adjustment (Law 16) ---
-            if new_stock != old_stock:
                 adj_diff = new_stock - old_stock
-                qty_in = float(adj_diff) if adj_diff > 0 else 0
-                qty_out = float(abs(adj_diff)) if adj_diff < 0 else 0
-                # Get product details for ledger entry
-                prod_info = await conn.fetchrow(
-                    "SELECT item_code, nama_produk FROM products WHERE id = $1 AND tenant_id = $2",
-                    product_uuid, ctx["tenant_id"]
+                if adj_diff == 0:
+                    return {"success": True, "message": "Stock unchanged", "old_stock": str(old_stock), "new_stock": str(new_stock), "adjustment": 0}
+
+                adjustment_qty = abs(adj_diff)
+
+                # Get unit cost with fallbacks: WAC → purchase_price → sales_price
+                cost_row = await conn.fetchrow("""
+                    SELECT
+                        COALESCE(il.average_cost, 0) as ledger_cost,
+                        COALESCE(p.purchase_price, 0) as purchase_price,
+                        COALESCE(p.sales_price, 0) as sales_price
+                    FROM products p
+                    LEFT JOIN LATERAL (
+                        SELECT average_cost FROM inventory_ledger
+                        WHERE product_id = p.id AND tenant_id = CAST(p.tenant_id AS TEXT)
+                          AND average_cost IS NOT NULL AND average_cost > 0
+                        ORDER BY movement_date DESC, created_at DESC LIMIT 1
+                    ) il ON true
+                    WHERE p.id = $1 AND p.tenant_id = $2
+                """, product_uuid, ctx["tenant_id"])
+
+                unit_cost = Decimal("0")
+                cost_source = None
+                if cost_row:
+                    ledger_cost = Decimal(str(cost_row["ledger_cost"] or 0))
+                    purchase_price = Decimal(str(cost_row["purchase_price"] or 0))
+                    sales_price = Decimal(str(cost_row["sales_price"] or 0))
+                    if ledger_cost > 0:
+                        unit_cost = ledger_cost
+                        cost_source = "inventory_ledger"
+                    elif purchase_price > 0:
+                        unit_cost = purchase_price
+                        cost_source = "purchase_price"
+                    elif sales_price > 0:
+                        unit_cost = sales_price
+                        cost_source = "sales_price"
+
+                total_value = (adjustment_qty * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                journal_id = None
+                journal_note = None
+
+                if total_value == 0:
+                    journal_note = "Jurnal tidak dibuat karena item belum memiliki harga beli/jual"
+                    logger.info(f"Stock adjustment on {item_id}: no journal created (unit_cost=0)")
+
+                # --- GL Journal (Law 20: DRAFT→POSTED) ---
+                if total_value > 0:
+                    inv_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10600')
+                    adj_account_id = await resolve_account_id(conn, ctx["tenant_id"], '5-50100')
+
+                    if inv_account_id and adj_account_id:
+                        journal_id = uuid_module.uuid4()
+                        trace_id = uuid_module.uuid4()
+                        today = date_type.today()
+
+                        # Law 5: Period lock check
+                        period_row = await conn.fetchrow(
+                            """SELECT id, period_name, status FROM fiscal_periods
+                               WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                               ORDER BY start_date DESC LIMIT 1""",
+                            ctx["tenant_id"], today,
+                        )
+                        if period_row and period_row["status"] in ("CLOSED", "LOCKED"):
+                            raise HTTPException(
+                                status_code=403,
+                                detail=f"Cannot post to {period_row['status'].lower()} period ({period_row['period_name']})",
+                            )
+
+                        date_str = today.isoformat()
+
+                        prefix = f"QSA-{date_str[2:4]}{date_str[5:7]}-"
+                        seq_row = await conn.fetchrow(
+                            "SELECT COUNT(*) + 1 as next_num FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
+                            ctx["tenant_id"], f"{prefix}%"
+                        )
+                        next_num = seq_row["next_num"] if seq_row else 1
+                        journal_number = f"{prefix}{next_num:04d}"
+
+                        description = f"Penyesuaian Stok: {item_name} ({old_stock} -> {new_stock}) - {reason}"
+
+                        created_by_uuid = None
+                        user_id_val = ctx.get("user_id")
+                        if user_id_val:
+                            try:
+                                created_by_uuid = uuid_module.UUID(str(user_id_val))
+                            except (ValueError, AttributeError):
+                                pass
+
+                        # Law 20: INSERT as DRAFT first
+                        await conn.execute("""
+                            INSERT INTO journal_entries (
+                                id, tenant_id, journal_number, journal_date, description,
+                                source_type, source_id, trace_id, status,
+                                total_debit, total_credit, created_by, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7,
+                                'DRAFT', $8, $8, $9, NOW(), NOW())
+                        """, journal_id, ctx["tenant_id"], journal_number, today, description,
+                             product_uuid, str(trace_id), total_value, created_by_uuid)
+
+                        # Determine debit/credit accounts
+                        if adj_diff > 0:
+                            debit_account = inv_account_id
+                            credit_account = adj_account_id
+                        else:
+                            debit_account = adj_account_id
+                            credit_account = inv_account_id
+
+                        # Journal lines
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
+                            VALUES ($1, $2, 1, $3, $4, 0, $5, $6)
+                        """, uuid_module.uuid4(), journal_id, debit_account, total_value, description, product_uuid)
+
+                        await conn.execute("""
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
+                            VALUES ($1, $2, 2, $3, 0, $4, $5, $6)
+                        """, uuid_module.uuid4(), journal_id, credit_account, total_value, description, product_uuid)
+
+                        # Law 20: UPDATE to POSTED (triggers hash chain)
+                        await conn.execute(
+                            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                            journal_id
+                        )
+
+                        logger.info(f"Journal {journal_number} created for stock adjustment on {item_id}")
+
+                # --- Inventory Ledger (Inventory Rule 1: Dual Ledger Sync) ---
+                qty_in = adj_diff if adj_diff > 0 else Decimal("0")
+                qty_out = abs(adj_diff) if adj_diff < 0 else Decimal("0")
+
+                # Inventory Rule 3: WAC recalculation (identical to bills_service.py + inventory_helpers.py)
+                avg_cost_row = await conn.fetchrow("""
+                    SELECT
+                        COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+                        COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                    FROM inventory_ledger
+                    WHERE tenant_id = $1 AND product_id = $2
+                """, ctx["tenant_id"], product_uuid)
+
+                if adj_diff > 0 and avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
+                    # Inbound: recalculate WAC
+                    old_value = Decimal(str(avg_cost_row["total_value"]))
+                    old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                    new_avg_cost = (old_value + (adjustment_qty * unit_cost)) / (old_qty + adjustment_qty)
+                elif avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
+                    # Outbound: WAC stays the same
+                    old_value = Decimal(str(avg_cost_row["total_value"]))
+                    old_qty = Decimal(str(avg_cost_row["total_qty"]))
+                    new_avg_cost = old_value / old_qty
+                else:
+                    new_avg_cost = unit_cost
+
+                adj_total_cost = (adjustment_qty * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+                # Resolve default warehouse for warehouse_stock trigger
+                warehouse_id = await conn.fetchval(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at ASC LIMIT 1",
+                    ctx["tenant_id"]
                 )
-                prod_code = prod_info["item_code"] if prod_info else ""
-                prod_name = prod_info["nama_produk"] if prod_info else ""
-                adj_total_cost = float(adjustment_qty) * unit_cost
 
                 await conn.execute("""
                     INSERT INTO inventory_ledger (
@@ -2763,65 +2825,65 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         source_type, source_id, source_number,
                         quantity_in, quantity_out, quantity_balance,
                         unit_cost, total_cost, average_cost,
-                        journal_id, notes, created_at
+                        warehouse_id, journal_id, notes, created_at
                     ) VALUES (
                         gen_random_uuid(), $1, $2, $3, $4,
                         'ADJUSTMENT', CURRENT_DATE,
                         'STOCK_ADJUSTMENT', $5, $6,
                         $7, $8, $9,
-                        $10, $11, $10,
-                        $12, $13, NOW()
+                        $10, $11, $12,
+                        $13, $14, $15, NOW()
                     )
                 """,
                     ctx["tenant_id"],
                     product_uuid,
-                    prod_code,
-                    prod_name,
-                    product_uuid,  # source_id
-                    f"QSA-{item_id[:8]}",  # source_number
+                    item_code,
+                    item_name,
+                    product_uuid,
+                    f"QSA-{item_id[:8]}",
                     qty_in,
                     qty_out,
-                    float(new_stock),
+                    new_stock,
                     unit_cost,
                     adj_total_cost,
-                    journal_id,  # may be None
+                    new_avg_cost,
+                    warehouse_id,
+                    journal_id,
                     f"Penyesuaian stok: {reason}",
                 )
 
-            # --- Audit trail (Fix 3) ---
-            item_name = item["nama_produk"] or "Unknown"
-            reference_number = body.get("reference_number", body.get("reference", ""))
-            audit_metadata = json.dumps({
-                "item_id": str(product_uuid),
-                "item_name": item_name,
-                "adjustment_type": adjustment_type,
-                "old_stock": float(old_stock),
-                "new_stock": float(new_stock),
-                "reason": reason,
-                "reference_number": reference_number,
-                "journal_id": str(journal_id) if journal_id else None,
-                "unit_cost": unit_cost,
-                "cost_source": cost_source,
-                "journal_note": journal_note,
-            })
-            await conn.execute("""
-                INSERT INTO audit_logs (id, "userId", "eventType", "ipAddress", "userAgent", metadata, success, "createdAt")
-                VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
-            """, str(uuid_module.uuid4()), str(ctx.get("user_id") or "system"), "STOCK_ADJUSTMENT",
-                 "", "", audit_metadata)
+                # --- Audit trail ---
+                reference_number = body.get("reference_number", body.get("reference", ""))
+                audit_metadata = json.dumps({
+                    "item_id": str(product_uuid),
+                    "item_name": item_name,
+                    "adjustment_type": adjustment_type,
+                    "old_stock": str(old_stock),
+                    "new_stock": str(new_stock),
+                    "reason": reason,
+                    "reference_number": reference_number,
+                    "journal_id": str(journal_id) if journal_id else None,
+                    "unit_cost": str(unit_cost),
+                    "cost_source": cost_source,
+                    "journal_note": journal_note,
+                })
+                await conn.execute("""
+                    INSERT INTO audit_logs (id, "userId", "eventType", "ipAddress", "userAgent", metadata, success, "createdAt")
+                    VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+                """, str(uuid_module.uuid4()), str(ctx.get("user_id") or "system"), "STOCK_ADJUSTMENT",
+                     "", "", audit_metadata)
 
-            logger.info(
-                f"Stock adjusted for {item_id}: {old_stock} -> {new_stock}, reason: {reason}"
-            )
+            # Response (outside transaction — already committed)
+            logger.info(f"Stock adjusted for {item_id}: {old_stock} -> {new_stock}, reason: {reason}")
 
             response = {
                 "success": True,
                 "message": "Stock adjusted",
-                "old_stock": old_stock,
-                "new_stock": new_stock,
-                "adjustment": new_stock - old_stock,
+                "old_stock": str(old_stock),
+                "new_stock": str(new_stock),
+                "adjustment": str(new_stock - old_stock),
                 "journal_id": str(journal_id) if journal_id else None,
-                "unit_cost": unit_cost,
+                "unit_cost": str(unit_cost),
                 "cost_source": cost_source,
             }
             if journal_note:
@@ -2973,8 +3035,8 @@ async def get_item_journal_entries(
                     "lines": [
                         {
                             "accountName": f"{line['account_code']} - {line['account_name']}",
-                            "debit": float(line["debit"]),
-                            "credit": float(line["credit"]),
+                            "debit": int(line["debit"]),
+                            "credit": int(line["credit"]),
                         }
                         for line in lines
                     ],
@@ -3046,8 +3108,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                 # 1. Validate item exists and get details
                 item = await conn.fetchrow(
                     """
-                    SELECT id, kode_produk as item_code, nama_produk as item_name,
-                           satuan_dasar as base_unit, track_inventory,
+                    SELECT id, item_code, nama_produk as item_name,
+                           base_unit, track_inventory,
                            COALESCE(purchase_price, 0) as unit_cost
                     FROM products
                     WHERE id = $1 AND tenant_id = $2
@@ -3092,8 +3154,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     ctx["tenant_id"], UUID(from_warehouse_id), UUID(item_id)
                 )
 
-                available_stock = float(stock_row["available_quantity"]) if stock_row else 0
-                if available_stock < quantity:
+                available_stock = Decimal(str(stock_row["available_quantity"])) if stock_row else Decimal("0")
+                if available_stock < Decimal(str(quantity)):
                     raise HTTPException(
                         status_code=400,
                         detail=f"Insufficient stock. Available: {available_stock}, Requested: {quantity}"
@@ -3130,8 +3192,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     UUID(to_warehouse_id),
                     notes,
                     ctx.get("user_id"),
-                    quantity,
-                    int(quantity * item["unit_cost"])
+                    Decimal(str(quantity)),
+                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"]))
                 )
                 transfer_id = transfer_row["id"]
 
@@ -3148,10 +3210,10 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     UUID(item_id),
                     item["item_code"],
                     item["item_name"],
-                    quantity,
+                    Decimal(str(quantity)),
                     item["base_unit"],
-                    int(item["unit_cost"]),
-                    int(quantity * item["unit_cost"]),
+                    Decimal(str(item["unit_cost"])),
+                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                     notes
                 )
 
@@ -3188,10 +3250,10 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     transfer_date,
                     transfer_id,
                     transfer_number,
-                    quantity,
+                    Decimal(str(quantity)),
                     UUID(from_warehouse_id),
-                    int(item["unit_cost"]),
-                    int(quantity * item["unit_cost"]),
+                    Decimal(str(item["unit_cost"])),
+                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                     ctx.get("user_id"),
                     f"Transfer to {to_warehouse['name']}" + (f": {notes}" if notes else "")
                 )
@@ -3228,10 +3290,10 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     transfer_date,
                     transfer_id,
                     transfer_number,
-                    quantity,
+                    Decimal(str(quantity)),
                     UUID(to_warehouse_id),
-                    int(item["unit_cost"]),
-                    int(quantity * item["unit_cost"]),
+                    Decimal(str(item["unit_cost"])),
+                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                     ctx.get("user_id"),
                     f"Transfer from {from_warehouse['name']}" + (f": {notes}" if notes else "")
                 )

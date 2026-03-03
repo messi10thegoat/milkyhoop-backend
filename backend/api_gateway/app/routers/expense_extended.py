@@ -1144,12 +1144,17 @@ async def get_insight(
                 ctx["tenant_id"],
             )
 
-            # Cash balance
+            # Cash balance (Law 21: journal-derived)
             cash_balance = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(current_balance), 0)
-                FROM bank_accounts
-                WHERE tenant_id = $1 AND is_active = true
+                SELECT COALESCE(SUM(bal.balance), 0)
+                FROM bank_accounts ba
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) AS balance
+                    FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                    WHERE jl.account_id=ba.coa_id AND je.status='POSTED'
+                ) bal
+                WHERE ba.tenant_id = $1 AND ba.is_active = true
             """,
                 ctx["tenant_id"],
             )

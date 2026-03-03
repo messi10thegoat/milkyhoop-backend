@@ -197,7 +197,7 @@ async def list_production_orders(
             for row in rows:
                 completion_pct = 0
                 if row["planned_quantity"] > 0:
-                    completion_pct = round(float(row["completed_quantity"]) / float(row["planned_quantity"]) * 100, 2)
+                    completion_pct = round(Decimal(str(row["completed_quantity"])) / Decimal(str(row["planned_quantity"])) * 100, 2)
 
                 items.append({
                     "id": str(row["id"]),
@@ -254,10 +254,10 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                 )
 
                 # Calculate planned costs based on BOM
-                multiplier = float(body.planned_quantity) / float(bom["output_quantity"])
-                planned_material = int(bom["standard_cost"] * multiplier)
-                planned_labor = int(bom["labor_cost"] * multiplier)
-                planned_overhead = int(bom["overhead_cost"] * multiplier)
+                multiplier = Decimal(str(body.planned_quantity)) / Decimal(str(bom["output_quantity"]))
+                planned_material = int(Decimal(str(bom["standard_cost"])) * multiplier)
+                planned_labor = int(Decimal(str(bom["labor_cost"])) * multiplier)
+                planned_overhead = int(Decimal(str(bom["overhead_cost"])) * multiplier)
 
                 # Create production order
                 order_id = await conn.fetchval(
@@ -291,8 +291,8 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                 )
 
                 for comp in components:
-                    planned_qty = float(comp["quantity"]) * multiplier * (1 + float(comp["wastage_percent"] or 0) / 100)
-                    planned_cost = int(planned_qty * comp["unit_cost"])
+                    planned_qty = Decimal(str(comp["quantity"])) * multiplier * (1 + Decimal(str(comp["wastage_percent"] or 0)) / 100)
+                    planned_cost = int(planned_qty * Decimal(str(comp["unit_cost"])))
 
                     await conn.execute(
                         """
@@ -736,7 +736,7 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         mat.product_id
                     )
                     unit_cost = product["purchase_price"] if product else 0
-                    issue_cost = int(float(mat.quantity) * unit_cost)
+                    issue_cost = int(Decimal(str(mat.quantity)) * Decimal(str(unit_cost)))
 
                     if planned:
                         await conn.execute(
@@ -813,7 +813,7 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
             if order["status"] not in ("released", "in_progress"):
                 raise HTTPException(status_code=400, detail="Order must be released or in progress")
 
-            labor_cost = int(float(body.actual_hours) * body.hourly_rate)
+            labor_cost = int(Decimal(str(body.actual_hours)) * Decimal(str(body.hourly_rate)))
 
             labor_id = await conn.fetchval(
                 """
@@ -876,9 +876,9 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
 
                 # Calculate unit cost
                 total_actual = order["actual_material_cost"] + order["actual_labor_cost"] + order["actual_overhead_cost"]
-                total_qty = float(order["completed_quantity"]) + float(body.good_quantity)
+                total_qty = Decimal(str(order["completed_quantity"])) + Decimal(str(body.good_quantity))
                 unit_cost = int(total_actual / total_qty) if total_qty > 0 else 0
-                total_cost = int(unit_cost * float(body.good_quantity))
+                total_cost = int(unit_cost * Decimal(str(body.good_quantity)))
 
                 # Record completion
                 completion_id = await conn.fetchval(
@@ -989,7 +989,7 @@ async def get_cost_analysis(request: Request, order_id: UUID):
 
             total_planned = mat_planned + lab_planned + oh_planned
             total_actual = mat_actual + lab_actual + oh_actual
-            unit_cost = int(total_actual / float(order["completed_quantity"])) if order["completed_quantity"] else 0
+            unit_cost = int(total_actual / Decimal(str(order["completed_quantity"]))) if order["completed_quantity"] else 0
 
             return {
                 "success": True,

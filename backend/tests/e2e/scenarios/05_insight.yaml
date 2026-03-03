@@ -1,0 +1,47 @@
+scenarios:
+  - id: "INS-001"
+    category: "happy_path"
+    description: "Ask total piutang - read only"
+    messages:
+      - "berapa total piutang usaha saat ini?"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Rp"]
+    expect_not_contains: ["error", "terjadi kesalahan"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["insight", "read_only"]
+
+  - id: "INS-002"
+    category: "happy_path"
+    description: "Ask profit loss report"
+    messages:
+      - "tampilkan laba rugi bulan ini"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Rp"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["insight", "report"]
+
+  - id: "INS-003"
+    category: "edge_case"
+    description: "Analytical question should not trigger action"
+    messages:
+      - "apakah penjualan bulan ini meningkat dibanding bulan lalu?"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["Invalid LLM response", "terjadi kesalahan"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["insight", "analytical"]
+
+  - id: "INS-004"
+    category: "happy_path"
+    description: "Ask about hutang - AP aging"
+    messages:
+      - "berapa total hutang usaha ke vendor?"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Rp"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["insight", "read_only"]

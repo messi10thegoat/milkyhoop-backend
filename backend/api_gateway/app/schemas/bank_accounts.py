@@ -106,6 +106,7 @@ class BankAccountListItem(BaseModel):
     coa_code: Optional[str] = None
     coa_name: Optional[str] = None
     current_balance: int
+    ledger_balance: Optional[float] = None
     is_active: bool
     is_default: bool
     created_at: str
@@ -131,6 +132,7 @@ class BankAccountDetail(BaseModel):
     # Balances
     opening_balance: int
     current_balance: int
+    ledger_balance: Optional[float] = None
     last_reconciled_balance: int = 0
     last_reconciled_date: Optional[str] = None
 
@@ -161,6 +163,11 @@ class BankTransactionListItem(BaseModel):
     reference_number: Optional[str] = None
     is_reconciled: bool
     created_at: str
+    source_module: Optional[str] = None
+    customer_name: Optional[str] = None
+    vendor_name: Optional[str] = None
+    related_invoice_number: Optional[str] = None
+    related_bill_number: Optional[str] = None
 
 
 class BankAccountBalanceInfo(BaseModel):
@@ -170,6 +177,7 @@ class BankAccountBalanceInfo(BaseModel):
     account_name: str
     opening_balance: int
     current_balance: int
+    ledger_balance: Optional[float] = None
     total_deposits: int
     total_withdrawals: int
     transaction_count: int

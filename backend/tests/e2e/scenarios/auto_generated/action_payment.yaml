@@ -1,0 +1,199 @@
+scenarios:
+- id: APM-001
+  category: action_payment
+  description: Receive payment with explicit command and amount
+  messages:
+  - terima pembayaran dari Grapgrap Clothing 5.000.000
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - explicit
+  timeout_seconds: 60
+- id: APM-002
+  category: action_payment
+  description: Make bill payment with explicit command and amount
+  messages:
+  - bayar hutang ke PT Wave4 Regression 10.000.000
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - explicit
+  timeout_seconds: 60
+- id: APM-003
+  category: action_payment
+  description: Natural language receive payment with abbreviated amount
+  messages:
+  - Grapgrap Clothing bayar 3jt
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - natural
+  - abbreviation
+  timeout_seconds: 60
+- id: APM-004
+  category: action_payment
+  description: Natural language bill payment with abbreviated amount
+  messages:
+  - kirim pembayaran ke Test Vendor 5jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - natural
+  - abbreviation
+  timeout_seconds: 60
+- id: APM-005
+  category: action_payment
+  description: Partial receive payment with Rp prefix
+  messages:
+  - terima sebagian pembayaran dari E2E Wave2 Test Corp Rp 2.000.000
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - partial
+  timeout_seconds: 60
+- id: APM-006
+  category: action_payment
+  description: Partial bill payment with abbreviated vendor and amount
+  messages:
+  - bayar sebagian hutang ke Wave4 8jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - partial
+  - abbreviation
+  timeout_seconds: 60
+- id: APM-007
+  category: action_payment
+  description: Slang receive payment - duit masuk
+  messages:
+  - duit masuk dari Grapgrap 4jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - slang
+  timeout_seconds: 60
+- id: APM-008
+  category: action_payment
+  description: Slang bill payment - transfer untuk bayar tagihan
+  messages:
+  - transfer ke Wave4 untuk bayar tagihan 6jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - slang
+  timeout_seconds: 60
+- id: APM-009
+  category: action_payment
+  description: English receive payment command
+  messages:
+  - receive payment from Grapgrap Clothing 5000000
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - english
+  timeout_seconds: 60
+- id: APM-010
+  category: action_payment
+  description: English bill payment command
+  messages:
+  - pay vendor PT Wave4 Regression 10000000
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - english
+  timeout_seconds: 60
+- id: APM-011
+  category: action_payment
+  description: Polite receive payment with tolong prefix
+  messages:
+  - tolong catat pembayaran masuk dari Grapgrap Clothing sebesar Rp 7.500.000
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - polite
+  timeout_seconds: 60
+- id: APM-012
+  category: action_payment
+  description: Bill payment with reference number
+  messages:
+  - bayar Wave4 15jt, nomor referensi TRF-20260215
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - reference
+  timeout_seconds: 60
+- id: APM-013
+  category: action_payment
+  description: Full bill payment using lunasi keyword
+  messages:
+  - lunasi tagihan ke Test Vendor 3.000.000
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - bill
+  - full-payment
+  timeout_seconds: 60
+- id: APM-014
+  category: action_payment
+  description: Cash receive payment
+  messages:
+  - terima cash dari E2E Wave2 Test Corp 1jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - cash
+  timeout_seconds: 60
+- id: APM-015
+  category: action_payment
+  description: Abbreviated receive payment command
+  messages:
+  - terima bayar Grapgrap 2jt
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - payment
+  - receive
+  - abbreviated
+  timeout_seconds: 60

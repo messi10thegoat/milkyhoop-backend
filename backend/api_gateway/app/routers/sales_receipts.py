@@ -28,6 +28,7 @@ from ..schemas.sales_receipts import (
     VoidSalesReceiptRequest,
     VoidSalesReceiptResponse,
 )
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 router = APIRouter()
 
@@ -57,14 +58,14 @@ def get_user_context(request: Request) -> dict:
 
 def calculate_line_totals(item: dict) -> dict:
     quantity = Decimal(str(item["quantity"]))
-    unit_price = item["unit_price"]
+    unit_price = Decimal(str(item["unit_price"]))
     discount_percent = Decimal(str(item.get("discount_percent", 0)))
     tax_rate = Decimal(str(item.get("tax_rate", 0)))
 
-    subtotal = int(quantity * unit_price)
-    discount_amount = int(subtotal * discount_percent / 100)
+    subtotal = (quantity * unit_price).quantize(Decimal("0.01"))
+    discount_amount = (subtotal * discount_percent / Decimal("100")).quantize(Decimal("0.01"))
     after_discount = subtotal - discount_amount
-    tax_amount = int(after_discount * tax_rate / 100)
+    tax_amount = (after_discount * tax_rate / Decimal("100")).quantize(Decimal("0.01"))
     line_total = after_discount + tax_amount
 
     return {
@@ -223,6 +224,10 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
 
+            # Law 13: Advisory lock
+            receipt_lock_key = f"SALES_RECEIPT:{uuid4()}"
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", receipt_lock_key)
+
             # Generate receipt number
             receipt_number = await conn.fetchval(
                 "SELECT generate_sales_receipt_number($1)",
@@ -251,8 +256,8 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     "SELECT purchase_price, item_code, nama_produk, item_type, track_inventory FROM products WHERE id = $1",
                     item.item_id
                 )
-                unit_cost = int(prod_row["purchase_price"]) if prod_row and prod_row["purchase_price"] else 0
-                item_total_cost = int(item.quantity * unit_cost)
+                unit_cost = Decimal(str(prod_row["purchase_price"])) if prod_row and prod_row["purchase_price"] else Decimal("0")
+                item_total_cost = (Decimal(str(item.quantity)) * unit_cost).quantize(Decimal("0.01"))
                 item_code_from_db = prod_row["item_code"] if prod_row else None
                 item_name_from_db = prod_row["nama_produk"] if prod_row else None
                 track_inventory = prod_row["track_inventory"] if prod_row else True
@@ -272,10 +277,10 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                 tax_amount += line_calc["tax_amount"]
                 total_cost += item_total_cost
 
-            # Apply header discount
-            discount_amount = body.discount_amount
+            # Apply header discount (Law 25: Decimal precision)
+            discount_amount = Decimal(str(body.discount_amount))
             if body.discount_percent > 0:
-                discount_amount = int(subtotal * body.discount_percent / 100)
+                discount_amount = (Decimal(str(subtotal)) * Decimal(str(body.discount_percent)) / Decimal("100")).quantize(Decimal("0.01"))
 
             total_amount = subtotal - discount_amount + tax_amount
             change_amount = body.amount_received - total_amount
@@ -371,73 +376,85 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     )
 
 
+            # Law 5: Period check before journal creation
+            period = await conn.fetchrow(
+                "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+                ctx["tenant_id"], body.receipt_date
+            )
+            if period and period["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(status_code=403, detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})")
+
             # Create journal entries
-            # 1. Sales Journal
+            # 1. Sales Journal (Law 20: DRAFT→lines→POSTED)
             journal_id = uuid4()
             journal_number = f"SR-JE-{receipt_number}"
 
-            # Determine cash/bank account
+            # Law 27: Determine cash/bank account via resolve_account_id
             if body.payment_method == "cash":
-                cash_account = "1-10100"  # Kas
+                cash_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10100")  # Kas
             else:
-                cash_account = "1-10200"  # Bank
+                # Try bank_account CoA first, fall back to resolve
+                cash_acct = None
+                if body.bank_account_id:
+                    cash_acct = await conn.fetchval(
+                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        body.bank_account_id, ctx["tenant_id"]
+                    )
+                if not cash_acct:
+                    cash_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10200")  # Bank
 
             await conn.execute(
                 """
                 INSERT INTO journal_entries (
                     id, tenant_id, journal_number, journal_date, description,
                     source_type, source_id, status, total_debit, total_credit, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT', $6, 'POSTED', $7, $7, $8)
+                ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT', $6, 'DRAFT', $7, $7, $8)
                 """,
                 journal_id, ctx["tenant_id"], journal_number, body.receipt_date,
                 f"Sales Receipt {receipt_number}", receipt_id, total_amount, ctx.get("user_id")
             )
 
             # Journal lines
+            line_num = 1
             # DR Cash/Bank
-            cash_acct = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                ctx["tenant_id"], cash_account
-            )
             if cash_acct:
                 await conn.execute(
                     """
                     INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
-                    VALUES ($1, $2, $3, 1, $4, 0, $5)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid4(), journal_id, cash_acct, total_amount, f"Receipt {receipt_number}"
+                    uuid4(), journal_id, cash_acct, line_num, total_amount, f"Receipt {receipt_number}"
                 )
+                line_num += 1
 
             # CR Sales
-            sales_acct = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '4-10100'",
-                ctx["tenant_id"]
-            )
+            sales_acct = await resolve_account_id(conn, ctx["tenant_id"], '4-10100')
             if sales_acct:
                 await conn.execute(
                     """
                     INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
-                    VALUES ($1, $2, $3, 2, 0, $4, $5)
+                    VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid4(), journal_id, sales_acct, subtotal - discount_amount, "Sales"
+                    uuid4(), journal_id, sales_acct, line_num, subtotal - discount_amount, "Sales"
                 )
+                line_num += 1
 
             # CR Tax (if any)
             if tax_amount > 0:
-                tax_acct = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '2-10300'",
-                    ctx["tenant_id"]
-                )
+                tax_acct = await resolve_account_id(conn, ctx["tenant_id"], '2-10300')
                 if tax_acct:
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
-                        VALUES ($1, $2, $3, 3, 0, $4, $5)
+                        VALUES ($1, $2, $3, $4, 0, $5, $6)
                         """,
-                        uuid4(), journal_id, tax_acct, tax_amount, "PPN Keluaran"
+                        uuid4(), journal_id, tax_acct, line_num, tax_amount, "PPN Keluaran"
                     )
 
-            # 2. COGS Journal (if has cost)
+            # Law 20: Promote to POSTED after all lines inserted
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+
+            # 2. COGS Journal (if has cost) — Law 20: DRAFT→lines→POSTED
             cogs_journal_id = None
             if total_cost > 0:
                 cogs_journal_id = uuid4()
@@ -448,17 +465,14 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date, description,
                         source_type, source_id, status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT_COGS', $6, 'POSTED', $7, $7, $8)
+                    ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT_COGS', $6, 'DRAFT', $7, $7, $8)
                     """,
                     cogs_journal_id, ctx["tenant_id"], cogs_journal_number, body.receipt_date,
                     f"COGS for {receipt_number}", receipt_id, total_cost, ctx.get("user_id")
                 )
 
                 # DR HPP
-                hpp_acct = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '5-10100'",
-                    ctx["tenant_id"]
-                )
+                hpp_acct = await resolve_account_id(conn, ctx["tenant_id"], '5-10100')
                 if hpp_acct:
                     await conn.execute(
                         """
@@ -469,10 +483,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     )
 
                 # CR Inventory
-                inv_acct = await conn.fetchval(
-                    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10600'",
-                    ctx["tenant_id"]
-                )
+                inv_acct = await resolve_account_id(conn, ctx["tenant_id"], '1-10600')
                 if inv_acct:
                     await conn.execute(
                         """
@@ -482,11 +493,21 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         uuid4(), cogs_journal_id, inv_acct, total_cost, "Inventory reduction"
                     )
 
+                # Law 20: Promote COGS journal to POSTED
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", cogs_journal_id)
+
             # Update receipt with journal IDs
             await conn.execute(
                 "UPDATE sales_receipts SET journal_id = $1, cogs_journal_id = $2 WHERE id = $3",
                 journal_id, cogs_journal_id, receipt_id
             )
+
+            # Link inventory_ledger entries to COGS journal
+            if cogs_journal_id:
+                await conn.execute(
+                    "UPDATE inventory_ledger SET journal_id = $1 WHERE source_type = 'POS_SALE' AND source_id = $2 AND tenant_id = $3",
+                    cogs_journal_id, receipt_id, ctx["tenant_id"]
+                )
 
             # Fetch final receipt
             final_row = await conn.fetchrow(
@@ -510,13 +531,16 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
 @router.post("/{receipt_id}/void", response_model=VoidSalesReceiptResponse)
 async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSalesReceiptRequest):
-    """Void a sales receipt - creates reversing journal entries"""
+    """Void a sales receipt - creates reversing journal entries (SR8 compliant)"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+
+            # Law 13: Advisory lock for void
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"SALES_RECEIPT_VOID:{receipt_id}")
 
             existing = await conn.fetchrow(
                 "SELECT * FROM sales_receipts WHERE id = $1 AND tenant_id = $2",
@@ -529,28 +553,106 @@ async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSales
             if existing["status"] == "void":
                 raise HTTPException(status_code=400, detail="Receipt already voided")
 
-            # Void the original journals (create reversing entries)
+            # Law 5: Period check for void date
+            void_date = date.today()
+            period = await conn.fetchrow(
+                "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+                ctx["tenant_id"], void_date
+            )
+            if period and period["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(status_code=403, detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})")
+
+            # SR8: Create proper reversal journals (not just mark as VOID)
+            # 1. Reverse the sales journal
             if existing["journal_id"]:
-                await conn.execute(
-                    """
-                    UPDATE journal_entries
-                    SET status = 'VOID', voided_by = $2, void_reason = $3, updated_at = NOW()
-                    WHERE id = $1
-                    """,
-                    existing["journal_id"], ctx.get("user_id"), body.reason
+                original_je = await conn.fetchrow(
+                    "SELECT * FROM journal_entries WHERE id = $1 AND status = 'POSTED' AND tenant_id = $2",
+                    existing["journal_id"], ctx["tenant_id"]
                 )
+                if original_je:
+                    original_lines = await conn.fetch(
+                        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
+                        existing["journal_id"]
+                    )
+                    # Create reversal journal (Law 20: DRAFT→lines→POSTED)
+                    rev_sales_id = uuid4()
+                    rev_sales_number = f"SR-REV-{existing['receipt_number']}"
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit,
+                            reversal_of_id, reversal_reason, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT', $6, 'DRAFT', $7, $7, $8, $9, $10)
+                        """,
+                        rev_sales_id, ctx["tenant_id"], rev_sales_number, void_date,
+                        f"Reversal: Sales Receipt {existing['receipt_number']}",
+                        receipt_id, original_je["total_debit"],
+                        existing["journal_id"], body.reason, ctx.get("user_id")
+                    )
+                    # Swap debits and credits
+                    for idx, line in enumerate(original_lines, 1):
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            """,
+                            uuid4(), rev_sales_id, line["account_id"], idx,
+                            line["credit"], line["debit"],  # Swapped
+                            f"Reversal: {line['memo'] or ''}"
+                        )
+                    # Law 20: Promote to POSTED
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rev_sales_id)
+                    # Link reversal
+                    await conn.execute(
+                        "UPDATE journal_entries SET reversed_by_id = $1, reversed_at = NOW() WHERE id = $2",
+                        rev_sales_id, existing["journal_id"]
+                    )
 
+            # 2. Reverse the COGS journal
+            rev_cogs_id = None
             if existing["cogs_journal_id"]:
-                await conn.execute(
-                    """
-                    UPDATE journal_entries
-                    SET status = 'VOID', voided_by = $2, void_reason = $3, updated_at = NOW()
-                    WHERE id = $1
-                    """,
-                    existing["cogs_journal_id"], ctx.get("user_id"), body.reason
+                cogs_je = await conn.fetchrow(
+                    "SELECT * FROM journal_entries WHERE id = $1 AND status = 'POSTED' AND tenant_id = $2",
+                    existing["cogs_journal_id"], ctx["tenant_id"]
                 )
+                if cogs_je:
+                    cogs_lines = await conn.fetch(
+                        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
+                        existing["cogs_journal_id"]
+                    )
+                    rev_cogs_id = uuid4()
+                    rev_cogs_number = f"SR-COGS-REV-{existing['receipt_number']}"
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit,
+                            reversal_of_id, reversal_reason, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'SALES_RECEIPT_COGS', $6, 'DRAFT', $7, $7, $8, $9, $10)
+                        """,
+                        rev_cogs_id, ctx["tenant_id"], rev_cogs_number, void_date,
+                        f"Reversal: COGS {existing['receipt_number']}",
+                        receipt_id, cogs_je["total_debit"],
+                        existing["cogs_journal_id"], body.reason, ctx.get("user_id")
+                    )
+                    for idx, line in enumerate(cogs_lines, 1):
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            """,
+                            uuid4(), rev_cogs_id, line["account_id"], idx,
+                            line["credit"], line["debit"],
+                            f"Reversal: {line['memo'] or ''}"
+                        )
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rev_cogs_id)
+                    await conn.execute(
+                        "UPDATE journal_entries SET reversed_by_id = $1, reversed_at = NOW() WHERE id = $2",
+                        rev_cogs_id, existing["cogs_journal_id"]
+                    )
 
-            # Reverse inventory
+            # 3. Reverse inventory with journal linking
             items = await conn.fetch(
                 "SELECT * FROM sales_receipt_items WHERE sales_receipt_id = $1",
                 receipt_id
@@ -558,12 +660,12 @@ async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSales
 
             for item in items:
                 if existing["warehouse_id"]:
-                    # Get product info for ledger
                     prod_info = await conn.fetchrow(
-                        "SELECT item_code, nama_produk FROM products WHERE id = $1",
+                        "SELECT item_code, nama_produk, track_inventory FROM products WHERE id = $1",
                         item["item_id"]
                     )
-                    # Get current balance
+                    if not prod_info or not prod_info.get("track_inventory", True):
+                        continue
                     current_balance = await conn.fetchval(
                         "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
                         ctx["tenant_id"], item["item_id"]
@@ -576,25 +678,25 @@ async def void_sales_receipt(request: Request, receipt_id: UUID, body: VoidSales
                             movement_type, movement_date, source_type, source_id,
                             quantity_in, quantity_out, quantity_balance,
                             unit_cost, total_cost, average_cost,
-                            warehouse_id, created_by, notes
+                            warehouse_id, journal_id, created_by, notes
                         ) VALUES (
                             $1, $2, $3, $4,
-                            'SALE_VOID', CURRENT_DATE, 'POS_SALE_VOID', $5,
-                            $6, 0, $7,
-                            $8, $9, $8,
-                            $10, $11, $12
+                            'SALE_VOID', $5, 'POS_SALE_VOID', $6,
+                            $7, 0, $8,
+                            $9, $10, $9,
+                            $11, $12, $13, $14
                         )
                         """,
                         ctx["tenant_id"], item["item_id"],
                         prod_info["item_code"] if prod_info else None,
                         prod_info["nama_produk"] if prod_info else item["item_name"],
-                        receipt_id,
+                        void_date, receipt_id,
                         item["quantity"], new_balance,
                         item["unit_cost"], item["total_cost"],
-                        existing["warehouse_id"], ctx.get("user_id"),
+                        existing["warehouse_id"], rev_cogs_id,
+                        ctx.get("user_id"),
                         f"Void Sales Receipt {existing['receipt_number']}"
                     )
-
 
             # Update receipt status
             row = await conn.fetchrow(

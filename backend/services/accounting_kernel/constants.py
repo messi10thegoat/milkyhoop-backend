@@ -7,10 +7,15 @@ from enum import Enum
 class AccountType(str, Enum):
     """Chart of Accounts types"""
     ASSET = "ASSET"
+    RECEIVABLE = "RECEIVABLE"      # subtipe ASSET (debit normal)
     LIABILITY = "LIABILITY"
+    PAYABLE = "PAYABLE"            # subtipe LIABILITY (credit normal)
     EQUITY = "EQUITY"
-    INCOME = "INCOME"
+    REVENUE = "REVENUE"
+    COGS = "COGS"
     EXPENSE = "EXPENSE"
+    OTHER_INCOME = "OTHER_INCOME"
+    OTHER_EXPENSE = "OTHER_EXPENSE"
 
 
 class NormalBalance(str, Enum):
@@ -71,11 +76,29 @@ class AgingBucket(str, Enum):
 # Account type to normal balance mapping
 ACCOUNT_TYPE_NORMAL_BALANCE = {
     AccountType.ASSET: NormalBalance.DEBIT,
+    AccountType.RECEIVABLE: NormalBalance.DEBIT,
     AccountType.LIABILITY: NormalBalance.CREDIT,
+    AccountType.PAYABLE: NormalBalance.CREDIT,
     AccountType.EQUITY: NormalBalance.CREDIT,
-    AccountType.INCOME: NormalBalance.CREDIT,
+    AccountType.REVENUE: NormalBalance.CREDIT,
+    AccountType.COGS: NormalBalance.DEBIT,
     AccountType.EXPENSE: NormalBalance.DEBIT,
+    AccountType.OTHER_INCOME: NormalBalance.CREDIT,
+    AccountType.OTHER_EXPENSE: NormalBalance.DEBIT,
 }
+
+# =============================================================================
+# TYPE GROUP CONSTANTS — Single source of truth for account grouping
+# All report/balance sheet/grouping logic MUST use these, not scattered if-else
+# =============================================================================
+
+BALANCE_SHEET_ASSET_TYPES = {'ASSET', 'RECEIVABLE'}
+BALANCE_SHEET_LIABILITY_TYPES = {'LIABILITY', 'PAYABLE'}
+INCOME_STATEMENT_REVENUE_TYPES = {'REVENUE', 'OTHER_INCOME'}
+INCOME_STATEMENT_EXPENSE_TYPES = {'EXPENSE', 'COGS', 'OTHER_EXPENSE'}
+
+DEBIT_NORMAL_TYPES = BALANCE_SHEET_ASSET_TYPES | INCOME_STATEMENT_EXPENSE_TYPES
+CREDIT_NORMAL_TYPES = BALANCE_SHEET_LIABILITY_TYPES | {'EQUITY'} | INCOME_STATEMENT_REVENUE_TYPES
 
 
 # Contra accounts (opposite normal balance)

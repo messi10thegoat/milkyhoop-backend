@@ -44,6 +44,7 @@ import logging
 import asyncpg
 from datetime import date
 import uuid as uuid_module
+from decimal import Decimal
 
 from ..schemas.cheques import (
     ReceiveChequeRequest,
@@ -62,6 +63,7 @@ from ..schemas.cheques import (
     ChequeResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id  # Law 27
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,7 +71,7 @@ router = APIRouter()
 # Connection pool
 _pool: Optional[asyncpg.Pool] = None
 
-# Account codes
+# Account codes — resolved via resolve_account_id (Law 27)
 CHEQUES_RECEIVABLE = "1-10600"  # Giro Diterima
 CHEQUES_PAYABLE = "2-10500"    # Giro Diberikan
 AR_ACCOUNT = "1-10300"          # Piutang Usaha
@@ -109,34 +111,40 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-async def get_account_id(conn, tenant_id: str, account_code: str) -> UUID:
-    """Get account ID from chart of accounts."""
-    account = await conn.fetchrow("""
-        SELECT id FROM chart_of_accounts
-        WHERE tenant_id = $1 AND account_code = $2
-    """, tenant_id, account_code)
-
-    if not account:
-        raise HTTPException(status_code=400, detail=f"Account {account_code} not found. Run seed_cheque_accounts first.")
-
-    return account["id"]
+async def check_period_is_open(conn, tenant_id: str, journal_date: date):
+    """Law 5: Validate fiscal period is open before journal creation."""
+    period = await conn.fetchrow("""
+        SELECT id, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
+    """, tenant_id, journal_date)
+    if not period:
+        raise HTTPException(status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini")
+    if period["status"] != "OPEN":
+        raise HTTPException(status_code=400, detail="Periode akuntansi sudah ditutup")
 
 
 async def create_journal_entry(
     conn,
     tenant_id: str,
     journal_date: date,
-    description: str,
+    memo: str,
     source_type: str,
     source_id: UUID,
     lines: list,
-    created_by: UUID
+    created_by: UUID,
+    reversal_of_id: UUID = None
 ) -> UUID:
-    """Create a journal entry with lines."""
+    """
+    Create a journal entry with lines using DRAFT->POSTED pattern (Law 20).
+    Column names: journal_number, journal_date, memo (Law 20 compliance).
+    """
+    # Law 5: Check period is open
+    await check_period_is_open(conn, tenant_id, journal_date)
+
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
 
-    total_amount = sum(line["debit"] for line in lines)
+    total_amount = sum(Decimal(str(line["debit"])) for line in lines)
 
     # Generate journal number
     journal_number = await conn.fetchval("""
@@ -148,26 +156,48 @@ async def create_journal_entry(
                )::TEXT, 4, '0')
     """, journal_date, tenant_id)
 
-    await conn.execute("""
-        INSERT INTO journal_entries (
-            id, tenant_id, journal_number, journal_date, description,
-            source_type, source_id, trace_id,
-            total_debit, total_credit, status, posted_at, posted_by, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'POSTED', NOW(), $10, $10)
-    """,
-        journal_id,
-        tenant_id,
-        journal_number,
-        journal_date,
-        description,
-        source_type,
-        source_id,
-        str(trace_id),
-        total_amount,
-        created_by
-    )
+    # Step 1: INSERT as DRAFT (Law 20)
+    if reversal_of_id:
+        await conn.execute("""
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date, memo,
+                source_type, source_id, trace_id,
+                total_debit, total_credit, status, reversal_of_id, created_by, updated_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'DRAFT', $10, $11, $11)
+        """,
+            journal_id,
+            tenant_id,
+            journal_number,
+            journal_date,
+            memo,
+            source_type,
+            source_id,
+            str(trace_id),
+            total_amount,
+            reversal_of_id,
+            created_by
+        )
+    else:
+        await conn.execute("""
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date, memo,
+                source_type, source_id, trace_id,
+                total_debit, total_credit, status, created_by, updated_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'DRAFT', $10, $10)
+        """,
+            journal_id,
+            tenant_id,
+            journal_number,
+            journal_date,
+            memo,
+            source_type,
+            source_id,
+            str(trace_id),
+            total_amount,
+            created_by
+        )
 
-    # Insert journal lines
+    # Step 2: INSERT journal_lines
     for idx, line in enumerate(lines, 1):
         await conn.execute("""
             INSERT INTO journal_lines (
@@ -178,12 +208,71 @@ async def create_journal_entry(
             journal_id,
             idx,
             line["account_id"],
-            line["debit"],
-            line["credit"],
+            Decimal(str(line["debit"])),
+            Decimal(str(line["credit"])),
             line.get("memo", "")
         )
 
+    # Step 3: UPDATE to POSTED (Law 20)
+    await conn.execute("""
+        UPDATE journal_entries SET status = 'POSTED', posted_at = NOW(), posted_by = $1 WHERE id = $2
+    """, created_by, journal_id)
+
     return journal_id
+
+
+async def create_reversal_journal(
+    conn,
+    tenant_id: str,
+    original_journal_id: UUID,
+    reversal_date: date,
+    memo: str,
+    source_type: str,
+    source_id: UUID,
+    created_by: UUID
+) -> UUID:
+    """
+    Law 2: Create a reversal journal instead of DELETE.
+    Swaps debit/credit from original lines.
+    """
+    # Get original journal lines
+    original_lines = await conn.fetch("""
+        SELECT account_id, debit, credit, memo FROM journal_lines
+        WHERE journal_id = $1
+    """, original_journal_id)
+
+    if not original_lines:
+        raise HTTPException(status_code=400, detail="Original journal has no lines to reverse")
+
+    # Swap debit/credit for reversal
+    reversed_lines = [
+        {
+            "account_id": line["account_id"],
+            "debit": line["credit"],
+            "credit": line["debit"],
+            "memo": f"Reversal: {line['memo']}" if line["memo"] else "Reversal"
+        }
+        for line in original_lines
+    ]
+
+    reversal_journal_id = await create_journal_entry(
+        conn,
+        tenant_id,
+        reversal_date,
+        memo,
+        source_type,
+        source_id,
+        reversed_lines,
+        created_by,
+        reversal_of_id=original_journal_id
+    )
+
+    # Link the original journal to its reversal
+    await conn.execute("""
+        UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2
+    """, reversal_journal_id, original_journal_id)
+
+    return reversal_journal_id
 
 
 # =============================================================================
@@ -656,12 +745,18 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHEQUE_RECEIVE:{body.cheque_number}:{ctx['tenant_id']}"
+                )
+
                 # Ensure cheque accounts exist
                 await conn.execute("SELECT seed_cheque_accounts($1)", ctx["tenant_id"])
 
-                # Get account IDs
-                cheques_receivable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
-                ar_account_id = await get_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
+                # Law 27: resolve_account_id
+                cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
+                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
 
                 # Create cheque
                 cheque_id = uuid_module.uuid4()
@@ -691,7 +786,7 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                     ctx["user_id"]
                 )
 
-                # Create journal entry
+                # Create journal entry (Law 5 + Law 20 enforced inside helper)
                 # Dr. Giro Diterima, Cr. Piutang Usaha
                 journal_id = await create_journal_entry(
                     conn,
@@ -751,12 +846,18 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHEQUE_ISSUE:{body.cheque_number}:{ctx['tenant_id']}"
+                )
+
                 # Ensure cheque accounts exist
                 await conn.execute("SELECT seed_cheque_accounts($1)", ctx["tenant_id"])
 
-                # Get account IDs
-                cheques_payable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_PAYABLE)
-                ap_account_id = await get_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
+                # Law 27: resolve_account_id
+                cheques_payable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_PAYABLE)
+                ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
 
                 # Create cheque
                 cheque_id = uuid_module.uuid4()
@@ -787,7 +888,7 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
                     ctx["user_id"]
                 )
 
-                # Create journal entry
+                # Create journal entry (Law 5 + Law 20 enforced inside helper)
                 # Dr. Hutang Usaha, Cr. Giro Diberikan
                 journal_id = await create_journal_entry(
                     conn,
@@ -838,8 +939,10 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
     Deposit a received cheque to bank.
 
     Journal Entry:
-    Dr. Bank (1-10200)                   amount
+    Dr. Bank (from bank_accounts.coa_id)  amount
         Cr. Giro Diterima (1-10600)          amount
+
+    BankSync Rule 1: Journal + bank_transaction created atomically.
     """
     try:
         ctx = get_user_context(request)
@@ -847,6 +950,12 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHEQUE_DEPOSIT:{cheque_id}"
+                )
+
                 # Get cheque
                 cheque = await conn.fetchrow("""
                     SELECT * FROM cheques
@@ -856,17 +965,18 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
                 if not cheque:
                     raise HTTPException(status_code=404, detail="Pending received cheque not found")
 
-                # Get bank account's COA
+                # Get bank account's COA (BankSync Rule 1: use bank_accounts.coa_id)
                 bank_account = await conn.fetchrow("""
-                    SELECT coa_id FROM bank_accounts WHERE id = $1
-                """, body.bank_account_id)
+                    SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2
+                """, body.bank_account_id, ctx["tenant_id"])
 
                 if not bank_account:
                     raise HTTPException(status_code=400, detail="Bank account not found")
 
-                cheques_receivable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
+                # Law 27: resolve_account_id
+                cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
 
-                # Create journal entry
+                # Create journal entry (Law 5 + Law 20 enforced inside helper)
                 # Dr. Bank, Cr. Giro Diterima
                 journal_id = await create_journal_entry(
                     conn,
@@ -879,6 +989,27 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
                         {"account_id": bank_account["coa_id"], "debit": cheque["amount"], "credit": 0, "memo": f"Setoran Giro {cheque['cheque_number']}"},
                         {"account_id": cheques_receivable_id, "debit": 0, "credit": cheque["amount"], "memo": f"Giro {cheque['cheque_number']}"}
                     ],
+                    ctx["user_id"]
+                )
+
+                # BankSync Rule 1: Create bank_transaction atomically with journal
+                bank_tx_id = uuid_module.uuid4()
+                await conn.execute("""
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date, amount,
+                        transaction_type, description, reference_number,
+                        journal_id, source_type, source_id, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'deposit', $6, $7, $8, 'CHEQUE_DEPOSIT', $9, $10)
+                """,
+                    bank_tx_id,
+                    ctx["tenant_id"],
+                    body.bank_account_id,
+                    body.deposited_date,
+                    cheque["amount"],
+                    f"Setoran Giro {cheque['cheque_number']}",
+                    cheque["cheque_number"],
+                    journal_id,
+                    cheque_id,
                     ctx["user_id"]
                 )
 
@@ -976,6 +1107,12 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHEQUE_BOUNCE:{cheque_id}"
+                )
+
                 # Get cheque
                 cheque = await conn.fetchrow("""
                     SELECT c.*, ba.coa_id as bank_coa_id
@@ -990,8 +1127,9 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                 journal_ids = []
 
                 if cheque["cheque_type"] == "received":
-                    cheques_receivable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
-                    ar_account_id = await get_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
+                    # Law 27: resolve_account_id
+                    cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
+                    ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
 
                     # If deposited, reverse the deposit first
                     if cheque["status"] == "deposited" and cheque["bank_coa_id"]:
@@ -1027,8 +1165,8 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                     journal_ids.append(journal_id)
 
                     # Bounce charges
-                    if body.bounce_charges > 0:
-                        other_income_id = await get_account_id(conn, ctx["tenant_id"], OTHER_INCOME)
+                    if body.bounce_charges and body.bounce_charges > 0:
+                        other_income_id = await resolve_account_id(conn, ctx["tenant_id"], OTHER_INCOME)
                         journal_id = await create_journal_entry(
                             conn,
                             ctx["tenant_id"],
@@ -1074,13 +1212,23 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
 
 @router.post("/{cheque_id}/cancel", response_model=ChequeActionResponse)
 async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeRequest):
-    """Cancel a pending cheque (reverses initial journal)."""
+    """
+    Cancel a pending cheque.
+
+    Law 2: Creates reversal journal instead of DELETE. Posted journals are IMMUTABLE.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHEQUE_CANCEL:{cheque_id}"
+                )
+
                 cheque = await conn.fetchrow("""
                     SELECT * FROM cheques
                     WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
@@ -1089,41 +1237,16 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
                 if not cheque:
                     raise HTTPException(status_code=404, detail="Pending cheque not found")
 
-                # Reverse the initial journal entry
-                if cheque["cheque_type"] == "received":
-                    cheques_receivable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
-                    ar_account_id = await get_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
-
-                    # Reverse: Dr. AR, Cr. Giro Diterima
-                    await create_journal_entry(
+                # Law 2: Create reversal journal instead of DELETE
+                if cheque["receipt_journal_id"]:
+                    await create_reversal_journal(
                         conn,
                         ctx["tenant_id"],
+                        cheque["receipt_journal_id"],
                         date.today(),
                         f"Pembatalan Giro - {cheque['cheque_number']}",
                         "CHEQUE_CANCEL",
                         cheque_id,
-                        [
-                            {"account_id": ar_account_id, "debit": cheque["amount"], "credit": 0, "memo": f"Pembatalan giro {cheque['cheque_number']}"},
-                            {"account_id": cheques_receivable_id, "debit": 0, "credit": cheque["amount"], "memo": f"Pembatalan giro {cheque['cheque_number']}"}
-                        ],
-                        ctx["user_id"]
-                    )
-                else:
-                    cheques_payable_id = await get_account_id(conn, ctx["tenant_id"], CHEQUES_PAYABLE)
-                    ap_account_id = await get_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
-
-                    # Reverse: Dr. Giro Diberikan, Cr. AP
-                    await create_journal_entry(
-                        conn,
-                        ctx["tenant_id"],
-                        date.today(),
-                        f"Pembatalan Giro - {cheque['cheque_number']}",
-                        "CHEQUE_CANCEL",
-                        cheque_id,
-                        [
-                            {"account_id": cheques_payable_id, "debit": cheque["amount"], "credit": 0, "memo": f"Pembatalan giro {cheque['cheque_number']}"},
-                            {"account_id": ap_account_id, "debit": 0, "credit": cheque["amount"], "memo": f"Pembatalan giro {cheque['cheque_number']}"}
-                        ],
                         ctx["user_id"]
                     )
 
@@ -1323,7 +1446,12 @@ async def update_cheque(request: Request, cheque_id: UUID, body: UpdateChequeReq
 
 @router.delete("/{cheque_id}", response_model=ChequeResponse)
 async def delete_cheque(request: Request, cheque_id: UUID):
-    """Delete a pending cheque (hard delete, reverses journal)."""
+    """
+    Delete a pending cheque.
+
+    Law 2: Creates reversal journal instead of deleting journal entries.
+    Posted journals are IMMUTABLE — no DELETE allowed.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1338,13 +1466,25 @@ async def delete_cheque(request: Request, cheque_id: UUID):
                 if not cheque:
                     raise HTTPException(status_code=404, detail="Pending cheque not found")
 
-                # Delete associated journal entries
+                # Law 2: Create reversal journal instead of DELETE
                 if cheque["receipt_journal_id"]:
-                    await conn.execute("DELETE FROM journal_lines WHERE journal_id = $1", cheque["receipt_journal_id"])
-                    await conn.execute("DELETE FROM journal_entries WHERE id = $1", cheque["receipt_journal_id"])
+                    await create_reversal_journal(
+                        conn,
+                        ctx["tenant_id"],
+                        cheque["receipt_journal_id"],
+                        date.today(),
+                        f"Reversal - Hapus Giro {cheque['cheque_number']}",
+                        "CHEQUE_DELETE",
+                        cheque_id,
+                        ctx["user_id"]
+                    )
 
-                # Delete cheque
-                await conn.execute("DELETE FROM cheques WHERE id = $1", cheque_id)
+                # Soft-delete cheque (mark as cancelled instead of hard DELETE)
+                await conn.execute("""
+                    UPDATE cheques
+                    SET status = 'cancelled', notes = COALESCE(notes, '') || ' | Deleted', updated_at = NOW()
+                    WHERE id = $1
+                """, cheque_id)
 
                 return {
                     "success": True,

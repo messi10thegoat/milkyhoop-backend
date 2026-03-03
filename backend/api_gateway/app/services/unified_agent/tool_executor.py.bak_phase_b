@@ -1,0 +1,799 @@
+"""
+Unified Tool Executor for MilkyHoop Agent.
+
+Handles two types of tools:
+1. READ tools - httpx GET to kernel API endpoints
+2. ACTION tools - gRPC to validator + executor
+
+Pattern: extended from ragllm/tool_executor.py with action tool support.
+"""
+
+import json
+import re
+import hashlib
+import logging
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
+from uuid import uuid4
+
+import httpx
+
+from .tool_registry import (
+    get_endpoint_for_tool,
+    is_action_tool,
+    is_valid_tool,
+    get_action_type_enum,
+    ACTION_TYPE_MAP,
+    AUTO_EXECUTE_ACTIONS,
+)
+
+logger = logging.getLogger("unified_agent.tool_executor")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_handler)
+
+# --- Constants ---
+
+MAX_TOOL_CALLS_PER_REQUEST = 12
+READ_TOOL_TIMEOUT = 5.0
+ACTION_TOOL_TIMEOUT = 10.0
+MAX_RESPONSE_SIZE = 8000
+MAX_LIST_ITEMS = 15
+MAX_STRING_LENGTH = 500
+MAX_AMOUNT = 999_999_999_999
+UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+KERNEL_BASE_URL = "http://localhost:8000"
+
+# Map action_type to category string (for gRPC clients)
+ACTION_CATEGORY_MAP = {
+    "CREATE_CUSTOMER": "MASTER_DATA",
+    "CREATE_VENDOR": "MASTER_DATA",
+    "CREATE_PRODUCT": "MASTER_DATA",
+    "CREATE_SALES_INVOICE": "DOCUMENT",
+    "CREATE_PURCHASE_INVOICE": "DOCUMENT",
+    "CREATE_EXPENSE": "DOCUMENT",
+    "CREATE_CREDIT_NOTE": "DOCUMENT",
+    "CREATE_PURCHASE_ORDER": "DOCUMENT",
+    "RECEIVE_PAYMENT": "PAYMENT",
+    "MAKE_PAYMENT": "PAYMENT",
+    "BANK_TRANSFER": "PAYMENT",
+    "POST_GENERAL_JOURNAL": "ACCOUNTING",
+    "REVERSE_JOURNAL": "ACCOUNTING",
+    "CLOSE_PERIOD": "ACCOUNTING",
+    "REOPEN_PERIOD": "ACCOUNTING",
+}
+
+# --- Enrichment Registry ---
+# Maps action_type -> method name for enrichment.
+# None = no enrichment needed (master data, simple actions).
+ACTION_ENRICHMENT = {
+    "CREATE_SALES_INVOICE": "_enrich_sales_invoice",
+    "CREATE_PURCHASE_INVOICE": "_enrich_purchase_invoice",
+    "CREATE_EXPENSE": "_enrich_expense",
+    "CREATE_PURCHASE_ORDER": "_enrich_purchase_order",
+    "CREATE_CREDIT_NOTE": "_enrich_credit_note",
+    "RECEIVE_PAYMENT": "_enrich_receive_payment",
+    "MAKE_PAYMENT": "_enrich_make_payment",
+    "BANK_TRANSFER": "_enrich_transfer",
+    "POST_GENERAL_JOURNAL": "_enrich_journal",
+    # Master data / simple actions — no enrichment
+    "CREATE_CUSTOMER": None,
+    "CREATE_VENDOR": None,
+    "CREATE_PRODUCT": None,
+    "REVERSE_JOURNAL": None,
+    "CLOSE_PERIOD": None,
+    "REOPEN_PERIOD": None,
+}
+
+
+class TenantContext:
+    """Tenant context passed to tool executor."""
+    def __init__(self, tenant_id: str, user_id: str, auth_token: str, tenant_name: str = ""):
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+        self.auth_token = auth_token
+        self.tenant_name = tenant_name
+
+
+class ToolExecutor:
+    """
+    Executes tools called by the unified agent.
+    Routes: read tools -> httpx, action tools -> gRPC.
+    """
+
+    def __init__(self, context: TenantContext):
+        self.context = context
+        self.call_count = 0
+        self.propose_count = 0
+        self._validator_client = None
+        self._executor_client = None
+
+    @property
+    def validator_client(self):
+        if self._validator_client is None:
+            from ..action_validator_client import get_action_validator_client
+            self._validator_client = get_action_validator_client()
+        return self._validator_client
+
+    @property
+    def executor_client(self):
+        if self._executor_client is None:
+            from ..action_executor_client import get_action_executor_client
+            self._executor_client = get_action_executor_client()
+        return self._executor_client
+
+    async def execute(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a tool call. Routes to appropriate handler."""
+        self.call_count += 1
+        if self.call_count > MAX_TOOL_CALLS_PER_REQUEST:
+            return _error("BUDGET_EXCEEDED", "Batas tool call tercapai.")
+
+        if not is_valid_tool(tool_name):
+            return _error("UNKNOWN_TOOL", f"Tool {tool_name!r} tidak ditemukan.")
+
+        try:
+            if tool_name == "propose_action":
+                return await self._execute_propose(params)
+            elif tool_name == "simulate_action":
+                return await self._execute_simulate(params)
+            else:
+                return await self._execute_read(tool_name, params)
+        except httpx.TimeoutException:
+            return _error("TIMEOUT", f"Tool {tool_name!r} timeout.")
+        except Exception as e:
+            logger.exception(f"Tool execution error: {tool_name}")
+            return _error("INTERNAL_ERROR", f"Error: {str(e)[:200]}")
+
+    # --- Read Tool Execution ---
+
+    async def _execute_read(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a read tool via httpx GET to kernel API."""
+        endpoint = get_endpoint_for_tool(tool_name)
+        if not endpoint:
+            return _error("NO_ENDPOINT", f"No endpoint for {tool_name!r}.")
+
+        if endpoint["method"] != "GET":
+            logger.error(f"BLOCKED: Non-GET tool: {tool_name}")
+            return _error("METHOD_BLOCKED", "Hanya GET yang diizinkan.")
+
+        path = endpoint["path"]
+        query_params = {}
+        for key, value in params.items():
+            if value is None:
+                continue
+            placeholder = "{" + key + "}"
+            if placeholder in path:
+                # Only validate UUID for ID-type params, not dates/periods
+                if key.endswith("_id") or key == "id":
+                    if not _is_valid_uuid(str(value)):
+                        return _error("INVALID_UUID", f"Parameter {key!r} bukan UUID valid.")
+                path = path.replace(placeholder, str(value))
+            else:
+                if isinstance(value, str) and len(value) > MAX_STRING_LENGTH:
+                    value = value[:MAX_STRING_LENGTH]
+                query_params[key] = value
+
+        url = f"{KERNEL_BASE_URL}{path}"
+        headers = self._build_headers()
+
+        async with httpx.AsyncClient(timeout=READ_TOOL_TIMEOUT) as client:
+            resp = await client.get(url, params=query_params, headers=headers)
+            if resp.status_code >= 400:
+                return _error("API_ERROR", f"API returned {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+
+        result = data
+        if isinstance(data, dict) and "data" in data:
+            result = data["data"]
+
+        result = _truncate_result(result)
+        return {"success": True, "data": result}
+
+    # =========================================================
+    # ENRICHMENT LAYER
+    #
+    # Architecture (Law 0 compliant):
+    #   LLM  = resolve intent (WHO, WHAT, HOW MUCH)
+    #   HERE = translate to kernel schema (names, defaults, descriptions)
+    #   Kernel = validate + execute
+    #
+    # 3 Enrichment Laws:
+    #   1. Never override LLM intent (backfill only)
+    #   2. Data completion only (no tax calc, no validation)
+    #   3. Registry-based dispatch (no scattered if/else)
+    # =========================================================
+
+    def _build_headers(self) -> Dict[str, str]:
+        """Build auth headers for kernel API calls."""
+        return {
+            "Authorization": f"Bearer {self.context.auth_token}",
+            "X-Tenant-ID": self.context.tenant_id,
+            "Content-Type": "application/json",
+        }
+
+    async def _fetch_entity(
+        self, client: httpx.AsyncClient, path: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a single entity from kernel API.
+        Returns the entity dict or None on failure.
+        """
+        try:
+            resp = await client.get(
+                f"{KERNEL_BASE_URL}{path}",
+                headers=self._build_headers(),
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                # Handle wrapped response: {"data": {...}} or flat {...}
+                if isinstance(data, dict):
+                    return data.get("data", data)
+        except Exception as e:
+            logger.warning(f"Entity lookup failed for {path}: {e}")
+        return None
+
+    async def _enrich_payload(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Dispatch to action-specific enrichment.
+        Registry-based: add new action types by adding a method + registry entry.
+        Includes structured logging for observability (zero side effects).
+        """
+        import time as _time
+        _t0 = _time.monotonic()
+
+        # Snapshot before enrichment
+        _before_keys = set(payload.keys())
+        _before_vals = {k: repr(v)[:80] for k, v in payload.items()}
+        _before_item_keys = []
+        _before_item_vals = []
+        for it in payload.get("items", []):
+            if isinstance(it, dict):
+                _before_item_keys.append(set(it.keys()))
+                _before_item_vals.append({k: repr(v)[:80] for k, v in it.items()})
+
+        enricher_name = ACTION_ENRICHMENT.get(action_type)
+
+        if enricher_name is None:
+            elapsed_ms = int((_time.monotonic() - _t0) * 1000)
+            logger.info(
+                "[ENRICH] %s | no enrichment needed (not in registry) | %dms",
+                action_type, elapsed_ms,
+            )
+            return payload
+
+        if not hasattr(self, enricher_name):
+            logger.warning(
+                "[ENRICH] WARNING: %s maps to %s but method not found",
+                action_type, enricher_name,
+            )
+            return payload
+
+        enricher = getattr(self, enricher_name)
+        result = await enricher(payload)
+
+        # --- Diff before vs after for structured log ---
+        elapsed_ms = int((_time.monotonic() - _t0) * 1000)
+        _after_keys = set(result.keys())
+
+        backfilled = []
+        skipped = []
+        renamed = []
+
+        # Top-level: new keys = backfilled
+        top_new = _after_keys - _before_keys
+        top_gone = _before_keys - _after_keys
+        for k in sorted(top_new):
+            backfilled.append(k)
+        # Top-level: removed keys = renamed (find target)
+        for k in sorted(top_gone):
+            old_val = _before_vals.get(k)
+            found = False
+            for nk in sorted(top_new):
+                if repr(result.get(nk))[:80] == old_val:
+                    renamed.append(k + " -> " + nk)
+                    if nk in backfilled:
+                        backfilled.remove(nk)
+                    found = True
+                    break
+            if not found:
+                renamed.append(k + " -> (removed)")
+        # Top-level: unchanged keys = skipped (LLM provided)
+        for k in sorted(_before_keys & _after_keys):
+            if k != "items" and _before_vals.get(k) == repr(result.get(k))[:80]:
+                skipped.append(k)
+
+        # Item-level field changes (value-based rename detection)
+        _after_item_keys = []
+        _after_item_vals = []
+        for it in result.get("items", []):
+            if isinstance(it, dict):
+                _after_item_keys.append(set(it.keys()))
+                _after_item_vals.append({k: repr(v)[:80] for k, v in it.items()})
+        for idx in range(min(len(_before_item_keys), len(_after_item_keys))):
+            bef = _before_item_keys[idx]
+            aft = _after_item_keys[idx]
+            bef_v = _before_item_vals[idx] if idx < len(_before_item_vals) else {}
+            aft_v = _after_item_vals[idx] if idx < len(_after_item_vals) else {}
+            item_new = sorted(aft - bef)
+            item_gone = sorted(bef - aft)
+            # Pair renames by matching values (gone key value == new key value)
+            used_new = set()
+            for gk in item_gone:
+                old_val = bef_v.get(gk)
+                found_rename = False
+                if old_val is not None:
+                    for nk in item_new:
+                        if nk not in used_new and aft_v.get(nk) == old_val:
+                            renamed.append("items[%d].%s -> %s" % (idx, gk, nk))
+                            used_new.add(nk)
+                            found_rename = True
+                            break
+                if not found_rename:
+                    renamed.append("items[%d].%s -> (removed)" % (idx, gk))
+            # Remaining new keys = backfilled
+            for nk in item_new:
+                if nk not in used_new:
+                    backfilled.append("items[%d].%s" % (idx, nk))
+
+        bf_str = ", ".join(backfilled) if backfilled else "none"
+        sk_str = ", ".join(skipped) if skipped else "none"
+        rn_str = ", ".join(renamed) if renamed else "none"
+
+        logger.info(
+            "[ENRICH] %s | backfilled: %s | skipped: %s | renamed: %s | %dms",
+            action_type, bf_str, sk_str, rn_str, elapsed_ms,
+        )
+
+        return result
+
+    # --- Shared enrichment helpers ---
+
+    async def _enrich_items(
+        self, payload: Dict[str, Any], client: httpx.AsyncClient
+    ) -> Dict[str, Any]:
+        """Shared: enrich item descriptions from item master data."""
+        items = payload.get("items", [])
+        if not items or not isinstance(items, list):
+            return payload
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("item_id")
+            if not item_id:
+                continue
+            # Only fetch if we need description
+            if "description" not in item:
+                detail = await self._fetch_entity(client, f"/api/items/{item_id}")
+                if detail:
+                    item["description"] = detail.get("name", "Item")
+                    # Backfill unit_price ONLY if LLM didn't provide (Law 1)
+                    if "unit_price" not in item:
+                        item["unit_price"] = detail.get("selling_price", 0)
+
+        return payload
+
+    def _add_due_date(self, payload: Dict[str, Any], days: int = 30) -> Dict[str, Any]:
+        """Add due_date = invoice_date + N days if not already set."""
+        if "due_date" not in payload and "invoice_date" in payload:
+            try:
+                inv_date = datetime.strptime(payload["invoice_date"], "%Y-%m-%d")
+                payload["due_date"] = (inv_date + timedelta(days=days)).strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                payload["due_date"] = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        return payload
+
+    # --- Per-action enrichment methods ---
+
+    async def _enrich_sales_invoice(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_SALES_INVOICE: customer_name, due_date, item descriptions."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("invoice_date", today)
+        self._add_due_date(payload)
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Customer name lookup
+            cid = payload.get("customer_id")
+            if cid and "customer_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
+                if entity:
+                    payload["customer_name"] = entity.get("name", "")
+
+            # Item descriptions + backfill unit_price
+            payload = await self._enrich_items(payload, client)
+
+        return payload
+
+    async def _enrich_purchase_invoice(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enrich CREATE_PURCHASE_INVOICE: vendor_name, due_date, item fields.
+
+        IMPORTANT: bills/v2 kernel API uses different field names than sales invoices:
+          - product_name (not description)
+          - qty (not quantity)
+          - price (not unit_price)
+        This method translates the LLM's generic field names to bills/v2 schema.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("invoice_date", today)
+        self._add_due_date(payload)
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Vendor name lookup
+            vid = payload.get("vendor_id")
+            if vid and "vendor_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/vendors/{vid}")
+                if entity:
+                    payload["vendor_name"] = entity.get("name", "")
+
+            # Enrich items + translate to bills/v2 field names
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = item.get("item_id")
+
+                    # Lookup item name if needed
+                    if item_id and "product_name" not in item and "description" not in item:
+                        detail = await self._fetch_entity(client, f"/api/items/{item_id}")
+                        if detail:
+                            item["product_name"] = detail.get("name", "Item")
+                            if "unit_price" not in item and "price" not in item:
+                                item["price"] = detail.get("purchase_price", detail.get("selling_price", 0))
+
+                    # Translate generic field names → bills/v2 schema
+                    # description → product_name
+                    if "description" in item and "product_name" not in item:
+                        item["product_name"] = item.pop("description")
+                    # quantity → qty
+                    if "quantity" in item and "qty" not in item:
+                        item["qty"] = item.pop("quantity")
+                    # unit_price → price
+                    if "unit_price" in item and "price" not in item:
+                        item["price"] = item.pop("unit_price")
+                    # item_id → product_id (bills/v2 uses product_id)
+                    if "item_id" in item and "product_id" not in item:
+                        item["product_id"] = item.pop("item_id")
+
+        return payload
+
+    async def _enrich_purchase_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_PURCHASE_ORDER: vendor_name, due_date, item descriptions."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("order_date", today)
+        if "due_date" not in payload and "order_date" in payload:
+            try:
+                od = datetime.strptime(payload["order_date"], "%Y-%m-%d")
+                payload["due_date"] = (od + timedelta(days=30)).strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            vid = payload.get("vendor_id")
+            if vid and "vendor_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/vendors/{vid}")
+                if entity:
+                    payload["vendor_name"] = entity.get("name", "")
+
+            payload = await self._enrich_items(payload, client)
+
+        return payload
+
+    async def _enrich_expense(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_EXPENSE: field translation, CoA→bank_account lookup, date default."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("expense_date", today)
+        # Translate LLM field names → kernel field names
+        if "payment_account_id" in payload and "paid_through_id" not in payload:
+            payload["paid_through_id"] = payload.pop("payment_account_id")
+        if "deposit_account_id" in payload and "paid_through_id" not in payload:
+            payload["paid_through_id"] = payload.pop("deposit_account_id")
+        if "bank_account_id" in payload and "paid_through_id" not in payload:
+            payload["paid_through_id"] = payload.pop("bank_account_id")
+
+        # paid_through_id MUST be a bank_accounts.id, not a CoA ID.
+        # If LLM gave a CoA ID (from search_accounts), resolve to bank_account_id.
+        pt_id = payload.get("paid_through_id")
+        if pt_id:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Try to find bank account matching this ID or coa_id
+                banks_resp = await self._fetch_entity(client, "/api/bank-accounts")
+                banks = banks_resp if isinstance(banks_resp, list) else (banks_resp.get("items") or banks_resp.get("data") or []) if isinstance(banks_resp, dict) else []
+                if banks:
+                    # Direct match (already a bank account ID)
+                    direct = next((b for b in banks if str(b.get("id")) == str(pt_id)), None)
+                    if direct:
+                        pass  # Already correct bank_account_id
+                    else:
+                        # Try matching coa_id (LLM gave CoA ID instead of bank account ID)
+                        coa_match = next((b for b in banks if str(b.get("coa_id")) == str(pt_id)), None)
+                        if coa_match:
+                            payload["paid_through_id"] = str(coa_match["id"])
+                            logger.info(f"Expense enrich: CoA {pt_id} -> bank_account {coa_match['id']}")
+                        else:
+                            # No match — use first bank account as fallback
+                            if banks:
+                                payload["paid_through_id"] = str(banks[0]["id"])
+                                logger.warning(f"Expense enrich: No bank match for {pt_id}, using default {banks[0]['id']}")
+        return payload
+
+    async def _enrich_credit_note(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_CREDIT_NOTE: customer_name, date, item descriptions."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("credit_note_date", today)
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            cid = payload.get("customer_id")
+            if cid and "customer_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
+                if entity:
+                    payload["customer_name"] = entity.get("name", "")
+
+            payload = await self._enrich_items(payload, client)
+
+        return payload
+
+    async def _enrich_receive_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich RECEIVE_PAYMENT: customer lookup from invoice, field translations, defaults."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("payment_date", today)
+        payload.setdefault("payment_method", "bank_transfer")
+
+        # Translate LLM field names → kernel field names
+        if "deposit_account_id" in payload and "bank_account_id" not in payload:
+            payload["bank_account_id"] = payload.pop("deposit_account_id")
+        if "payment_account_id" in payload and "bank_account_id" not in payload:
+            payload["bank_account_id"] = payload.pop("payment_account_id")
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # If invoice_id provided but no customer_id, look up from invoice
+            inv_id = payload.get("invoice_id")
+            if inv_id and "customer_id" not in payload:
+                inv = await self._fetch_entity(client, f"/api/sales-invoices/{inv_id}")
+                if inv:
+                    payload["customer_id"] = inv.get("customer_id", "")
+                    if "customer_name" not in payload:
+                        payload["customer_name"] = inv.get("customer_name", "")
+
+            # If customer_id provided, look up name
+            cid = payload.get("customer_id")
+            if cid and "customer_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
+                if entity:
+                    payload["customer_name"] = entity.get("name", "")
+
+        return payload
+
+    async def _enrich_make_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich MAKE_PAYMENT: payment_date default, vendor_name."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("payment_date", today)
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            vid = payload.get("vendor_id")
+            if vid and "vendor_name" not in payload:
+                entity = await self._fetch_entity(client, f"/api/vendors/{vid}")
+                if entity:
+                    payload["vendor_name"] = entity.get("name", "")
+
+        return payload
+
+    async def _enrich_transfer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich BANK_TRANSFER: transfer_date default."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("transfer_date", today)
+        # from_bank_id, to_bank_id, amount must come from LLM
+        return payload
+
+    async def _enrich_journal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich POST_GENERAL_JOURNAL: posting_date default."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        payload.setdefault("posting_date", today)
+        return payload
+
+    # --- Propose Action Execution ---
+
+    async def _execute_propose(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate -> prepare pending action. Does NOT execute."""
+        action_type = params.get("action_type")
+        assumptions = params.get("assumptions", [])
+
+        # Collect all non-meta fields as payload (flat schema design)
+        _meta_keys = {"action_type", "assumptions"}
+        payload = {k: v for k, v in params.items() if k not in _meta_keys and v is not None}
+
+        # === ENRICHMENT STEP ===
+        # LLM provides intent (IDs, qty, price).
+        # Enrichment adds kernel-required fields (names, defaults, descriptions).
+        payload = await self._enrich_payload(action_type, payload)
+        logger.info(f"propose_action: type={action_type}, payload_keys={list(payload.keys())}")
+
+        if action_type not in ACTION_TYPE_MAP:
+            return _error("INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid.")
+
+        amount_error = _validate_amounts(payload)
+        if amount_error:
+            return _error("INVALID_AMOUNT", amount_error)
+
+        category = ACTION_CATEGORY_MAP.get(action_type, "DOCUMENT")
+        idempotency_key = _generate_idempotency_key(
+            self.context.tenant_id, action_type, payload
+        )
+
+        # Step 1: Validate via gRPC (individual params)
+        validation = await self.validator_client.validate_action(
+            tenant_id=self.context.tenant_id,
+            user_id=self.context.user_id,
+            action_id=action_type,
+            action_type=action_type,
+            category=category,
+            draft_payload=payload,
+            idempotency_key=idempotency_key,
+            confidence=0.9,
+        )
+
+        if not validation.get("valid"):
+            errors = validation.get("errors", [])
+            return {
+                "success": False,
+                "data": {
+                    "status": "VALIDATION_FAILED",
+                    "errors": [
+                        {"layer": e.get("layer", ""), "code": e.get("code", ""), "message": e.get("message", "")}
+                        for e in errors
+                    ],
+                },
+            }
+
+        # Step 2: Prepare pending action via gRPC
+        prepare_result = await self.executor_client.prepare_action(
+            tenant_id=self.context.tenant_id,
+            user_id=self.context.user_id,
+            action_type=action_type,
+            category=category,
+            draft_payload=payload,
+            idempotency_key=idempotency_key,
+            confidence=0.9,
+            assumptions=assumptions,
+        )
+
+        if not prepare_result.get("success", False) and not prepare_result.get("pending_action_id"):
+            return _error("PREPARE_FAILED", "Gagal membuat pending action.")
+
+        dry_run = validation.get("dry_run", {})
+        journal_lines = dry_run.get("journal_entries", [])
+
+        return {
+            "success": True,
+            "data": {
+                "status": "ACTION_PREVIEW",
+                "pending_action_id": prepare_result.get("pending_action_id"),
+                "confirmation_token": prepare_result.get("confirmation_token"),
+                "preview": {
+                    "action_type": action_type,
+                    "payload": payload,
+                    "assumptions": assumptions,
+                    "journal_lines": [
+                        {
+                            "account": l.get("account_name", l.get("account_code", "")),
+                            "debit": l.get("debit", 0),
+                            "credit": l.get("credit", 0),
+                            "description": l.get("description", ""),
+                        }
+                        for l in journal_lines
+                    ],
+                    "total_debit": dry_run.get("total_debit", 0),
+                    "total_credit": dry_run.get("total_credit", 0),
+                    "balanced": dry_run.get("balanced", False),
+                    "impact_summary": dry_run.get("impact_summary", ""),
+                    "confirmation_message": validation.get("confirmation_message", ""),
+                    "risk_level": validation.get("risk_level", 0),
+                },
+                "expires_at": prepare_result.get("expires_at"),
+            },
+        }
+
+    # --- Simulate Action Execution ---
+
+    async def _execute_simulate(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate only, no pending action. For what-if analysis."""
+        action_type = params.get("action_type")
+
+        # Flat payload extraction (same as propose)
+        _meta_keys = {"action_type", "assumptions"}
+        payload = {k: v for k, v in params.items() if k not in _meta_keys and v is not None}
+
+        if action_type not in ACTION_TYPE_MAP:
+            return _error("INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid.")
+
+        # === SAME ENRICHMENT ===
+        payload = await self._enrich_payload(action_type, payload)
+
+        # dry_run_action expects individual params
+        dry_run_result = await self.validator_client.dry_run_action(
+            tenant_id=self.context.tenant_id,
+            user_id=self.context.user_id,
+            action_type=action_type,
+            draft_payload=payload,
+        )
+
+        if dry_run_result is None:
+            return {
+                "success": False,
+                "data": {
+                    "status": "SIMULATION_FAILED",
+                    "errors": [{"layer": "DRY_RUN", "code": "FAILED", "message": "Simulasi gagal"}],
+                },
+            }
+
+        result = dry_run_result
+        return {
+            "success": True,
+            "data": {
+                "status": "SIMULATION_OK",
+                "journal_lines": [
+                    {"account": l.get("account_name", ""), "debit": l.get("debit", 0), "credit": l.get("credit", 0)}
+                    for l in result.get("journal_entries", [])
+                ],
+                "total_debit": result.get("total_debit", 0),
+                "total_credit": result.get("total_credit", 0),
+                "balanced": result.get("balanced", False),
+            },
+        }
+
+
+# --- Helpers ---
+
+def _error(code: str, message: str) -> Dict[str, Any]:
+    return {"success": False, "error": {"code": code, "message": message}}
+
+def _is_valid_uuid(value: str) -> bool:
+    return bool(UUID_PATTERN.match(value))
+
+def _validate_amounts(payload: Dict[str, Any]) -> Optional[str]:
+    amount_fields = ["amount", "unit_price", "total"]
+    for key, value in payload.items():
+        if key in amount_fields:
+            if not isinstance(value, (int, float)) or value < 0:
+                return f"Field {key!r} harus bilangan positif."
+            if value > MAX_AMOUNT:
+                return f"Field {key!r} melebihi batas maksimum."
+        if key == "items" and isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    for f in amount_fields:
+                        if f in item:
+                            v = item[f]
+                            if not isinstance(v, (int, float)) or v < 0:
+                                return f"Item [{i}].{f} harus bilangan positif."
+                            if v > MAX_AMOUNT:
+                                return f"Item [{i}].{f} melebihi batas maksimum."
+                    if "quantity" in item:
+                        q = item["quantity"]
+                        if not isinstance(q, (int, float)) or q <= 0:
+                            return f"Item [{i}].quantity harus > 0."
+    return None
+
+def _generate_idempotency_key(tenant_id: str, action_type: str, payload: Dict[str, Any]) -> str:
+    normalized = json.dumps(payload, sort_keys=True, default=str)
+    raw = f"{tenant_id}:{action_type}:{normalized}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+def _truncate_result(data: Any) -> Any:
+    serialized = json.dumps(data, default=str)
+    if len(serialized) <= MAX_RESPONSE_SIZE:
+        return data
+    if isinstance(data, list) and len(data) > MAX_LIST_ITEMS:
+        return data[:MAX_LIST_ITEMS] + [{"_truncated": True, "_total": len(data), "_showing": MAX_LIST_ITEMS}]
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, list) and len(value) > MAX_LIST_ITEMS:
+                data[key] = value[:MAX_LIST_ITEMS] + [{"_truncated": True, "_total": len(value), "_showing": MAX_LIST_ITEMS}]
+    return data

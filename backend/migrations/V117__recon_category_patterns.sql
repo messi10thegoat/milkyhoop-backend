@@ -26,8 +26,16 @@ CREATE INDEX IF NOT EXISTS idx_recon_cat_patterns_system
 -- If tenant's CoA doesn't have these codes, pattern match is silently skipped with warning log
 INSERT INTO recon_category_patterns (tenant_id, pattern_regex, account_code, description, priority, is_system_default)
 VALUES
-    (NULL, 'BIAYA ADM|ADMIN FEE|ADM BANK|BIAYA ADMINISTRASI', '6-60100', 'Biaya Admin Bank', 100, true),
-    (NULL, 'BUNGA|INTEREST|JASA GIRO|BUNGA BANK', '4-40200', 'Pendapatan Bunga Bank', 90, true),
-    (NULL, 'PAJAK|TAX|PPH|PPN|WITHHOLDING', '2-20100', 'Pajak', 80, true),
-    (NULL, 'BIAYA TRANSFER|TRF FEE|TRANSFER FEE|BIAYA TRF', '6-60101', 'Biaya Transfer Bank', 70, true)
+    (NULL, 'BIAYA ADM|ADMIN FEE|ADM BANK|BIAYA ADMINISTRASI', '5-20800', 'Biaya Admin Bank', 100, true),
+    (NULL, 'BUNGA|INTEREST|JASA GIRO|BUNGA BANK', '4-90100', 'Pendapatan Bunga Bank', 90, true),
+    (NULL, 'PAJAK|TAX|PPH|PPN|WITHHOLDING', '5-80000', 'Pajak', 80, true),
+    (NULL, 'BIAYA TRANSFER|TRF FEE|TRANSFER FEE|BIAYA TRF', '5-20800', 'Biaya Transfer Bank', 70, true)
 ON CONFLICT DO NOTHING;
+
+-- RLS policy: include system defaults (tenant_id IS NULL) alongside tenant-specific patterns
+-- Standard RLS was blocking system defaults because it only matched tenant_id = current_setting('app.tenant_id')
+ALTER TABLE recon_category_patterns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recon_category_patterns FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS rls_tenant_recon_category_patterns ON recon_category_patterns;
+CREATE POLICY rls_tenant_recon_category_patterns ON recon_category_patterns
+    USING (tenant_id = current_setting('app.tenant_id') OR tenant_id IS NULL);

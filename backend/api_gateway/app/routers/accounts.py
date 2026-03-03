@@ -110,7 +110,7 @@ async def get_account_dropdown(
 
             if type:
                 conditions.append(f"account_type = ${param_idx}")
-                params.append(type)
+                params.append(type.upper())
                 param_idx += 1
 
             if search:
@@ -178,7 +178,7 @@ async def get_accounts_tree(
 
             if type:
                 conditions.append(f"account_type = ${param_idx}")
-                params.append(type)
+                params.append(type.upper())
 
             where_clause = " AND ".join(conditions)
 
@@ -256,7 +256,7 @@ async def list_accounts(
 
             if type:
                 conditions.append(f"account_type = ${param_idx}")
-                params.append(type)
+                params.append(type.upper())
                 param_idx += 1
 
             if is_active is not None:
@@ -555,8 +555,8 @@ async def get_account_journal_entries(
                         {
                             "account_code": line["account_code"],
                             "account_name": f"{line['account_code']} - {line['account_name']}",
-                            "debit": float(line["debit"]),
-                            "credit": float(line["credit"]),
+                            "debit": str(line["debit"]),  # Law 25: numeric(18,2) — serialize as string
+                            "credit": str(line["credit"]),  # Law 25: numeric(18,2) — serialize as string
                         }
                         for line in lines
                     ],

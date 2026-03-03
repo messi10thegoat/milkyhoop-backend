@@ -1,0 +1,118 @@
+scenarios:
+- id: EH-001
+  category: error_handling
+  description: Create invoice for non-existent customer
+  messages:
+  - buat faktur ke customer yang tidak ada di sistem
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - belum
+  tags:
+  - error
+  - customer_not_found
+  timeout_seconds: 60
+- id: EH-002
+  category: error_handling
+  description: Purchase non-existent item
+  messages:
+  - beli item XYZ123 yang tidak ada
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - error
+  - item_not_found
+  timeout_seconds: 60
+- id: EH-003
+  category: error_handling
+  description: Record expense with negative amount
+  messages:
+  - catat beban -5000000
+  expect_behavior:
+  - text_response
+  tags:
+  - error
+  - negative_amount
+  timeout_seconds: 60
+- id: EH-004
+  category: error_handling
+  description: Create invoice without specifying customer
+  messages:
+  - buat faktur tanpa menyebut customer
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - siapa
+  tags:
+  - error
+  - missing_customer
+  timeout_seconds: 60
+- id: EH-005
+  category: error_handling
+  description: Create invoice without specifying items
+  messages:
+  - buat faktur tanpa item
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - error
+  - missing_item
+  timeout_seconds: 60
+- id: EH-006
+  category: error_handling
+  description: Minimal input - just says sales invoice without details
+  messages:
+  - faktur penjualan
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - error
+  - minimal_input
+  timeout_seconds: 60
+- id: EH-007
+  category: error_handling
+  description: Too vague command - just says pay
+  messages:
+  - bayar
+  expect_behavior:
+  - text_response
+  tags:
+  - error
+  - too_vague
+  timeout_seconds: 60
+- id: EH-008
+  category: error_handling
+  description: Create invoice with valid customer but invalid item name
+  messages:
+  - buat faktur ke Grapgrap Clothing item asdfghjkl 10 pcs
+  expect_behavior:
+  - text_response
+  tags:
+  - error
+  - invalid_item
+  timeout_seconds: 60
+- id: EH-009
+  category: error_handling
+  description: Create invoice with zero quantity
+  messages:
+  - jual 0 kaos 24s ke Grapgrap
+  expect_behavior:
+  - text_response
+  tags:
+  - error
+  - zero_qty
+  timeout_seconds: 60
+- id: EH-010
+  category: error_handling
+  description: Create backdated invoice in a closed period
+  messages:
+  - buat faktur penjualan ke tanggal kemarin tapi periode sudah ditutup
+  expect_behavior:
+  - text_response
+  tags:
+  - error
+  - period_closed
+  timeout_seconds: 60

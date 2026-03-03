@@ -1,0 +1,4781 @@
+"""
+Bank Reconciliation Router
+
+Enables matching of bank statement transactions with system transactions.
+
+Database Tables:
+- reconciliation_sessions: Session tracking
+- bank_statement_lines_v2: Imported statement data
+- reconciliation_matches: Match records
+- reconciliation_adjustments: Fee/interest adjustments
+- bank_transactions: Extended with reconciliation columns
+
+Endpoints:
+- GET  /accounts - List bank accounts with reconciliation status
+- GET  /sessions - List reconciliation sessions
+- POST /sessions - Start new session
+- GET  /sessions/:id - Get session detail
+- POST /sessions/:id/cancel - Cancel session
+- GET  /history/:accountId - Get reconciliation history
+- POST /sessions/:id/import - Import bank statement file (CSV/XLSX/OFX)
+- GET  /sessions/:id/statements - List statement lines
+- GET  /sessions/:id/transactions - List system transactions for matching
+- POST /sessions/:id/match - Create match between statement line and transactions
+- DELETE /sessions/:id/match/:matchId - Remove match
+- POST /sessions/:id/auto-match - Run auto-matching algorithm
+- POST /sessions/:id/transactions - Create transaction from unmatched statement line
+- POST /sessions/:id/complete - Complete reconciliation session
+"""
+
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Form
+from typing import Optional, Literal
+from uuid import UUID
+import logging
+import asyncpg
+from datetime import date, datetime
+import uuid
+import json
+import io
+
+from ..schemas.bank_reconciliation import (
+    CreateSessionRequest,
+    AccountsListResponse,
+    SessionsListResponse,
+    SessionCreateResponse,
+    SessionDetailResponse,
+    CancelResponse,
+    HistoryResponse,
+    MatchRequest,
+    UnmatchByLineRequest,
+    AutoMatchRequest,
+    CreateTransactionFromLineRequest,
+    CompleteSessionRequest,
+    ImportResponse,
+    ImportDateRange,
+    ImportError as ImportErrorSchema,
+    StatementLinesResponse,
+    TransactionsResponse,
+    MatchResponse,
+    UnmatchResponse,
+    AutoMatchResponse,
+    CreateTransactionResponse,
+    CompleteResponse,
+    SessionStatistics,
+    FinalStats,
+    StatementLineItem,
+    TransactionItem,
+    MatchSuggestion,
+    CombinationSuggestionSchema,
+    CreateRuleFromMatchRequest,
+    CreateRuleFromMatchResponse,
+    ReconciliationSummaryResponse,
+    BalanceProof,
+    CategorizeResponse,
+    CategorizeRequest,
+    ConfirmBatchResponse,
+    ConfirmBatchRequest,
+    AgenticReconcileResponse,
+    AgenticReconcileRequest,
+    ReconActionPlan,
+    ReconAction,
+    # Bank Rules
+    RuleConditionSchema,
+    CreateBankRuleRequest,
+    UpdateBankRuleRequest,
+    ReorderRulesRequest,
+    BankRuleItem,
+    BankRulesListResponse,
+    BankRuleCreateResponse,
+    BankRuleUpdateResponse,
+    BankRuleDeleteResponse,
+    ReorderRulesResponse,
+    ClearTransactionsRequest,
+    ManualAdjustmentRequest,
+    AdjustmentLineItem,
+)
+from ..config import settings
+from ..services.bank_sync import create_bank_transaction_for_journal, get_ledger_balance
+
+# Phase 1 - Bank Match Scorer
+from services.bank_match_scorer import compute_match_score
+from services.bank_rule_engine import evaluate_rules, BankRule
+from services.bank_combination_matcher import find_combination_matches, CombinationItem
+from services.bank_text_normalizer import normalize_bank_text
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+_pool: Optional[asyncpg.Pool] = None
+
+
+async def get_pool() -> asyncpg.Pool:
+    """Get or create database connection pool."""
+    global _pool
+    if _pool is None:
+        db_config = settings.get_db_config()
+        _pool = await asyncpg.create_pool(
+            **db_config, min_size=2, max_size=10, command_timeout=30
+        )
+    return _pool
+
+
+def get_user_context(request: Request) -> dict:
+    """Extract and validate user context from request."""
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    user = request.state.user
+    tenant_id = user.get("tenant_id")
+    user_id = user.get("user_id") or user.get("id")
+
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Invalid user context")
+
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
+
+
+
+
+async def _get_ledger_balance(conn, account_id):
+    """Thin wrapper -> shared get_ledger_balance in bank_sync.py (Law 1)."""
+    return await get_ledger_balance(conn, account_id)
+
+
+# =============================================================================
+# ACCOUNTS ENDPOINTS
+# =============================================================================
+
+
+@router.get("/accounts", response_model=AccountsListResponse)
+async def list_accounts(
+    request: Request,
+    needs_reconciliation: Optional[bool] = Query(None),
+):
+    """List bank accounts with reconciliation status."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            rows = await conn.fetch(
+                """
+                SELECT
+                    ba.id,
+                    ba.account_name,
+                    ba.account_number as name,
+                    ba.account_number,
+                    COALESCE(ba.current_balance, 0) as current_balance,
+                    (
+                        SELECT rs.statement_date
+                        FROM reconciliation_sessions rs
+                        WHERE rs.account_id = ba.id
+                          AND rs.status = 'completed'
+                          AND rs.tenant_id = $1
+                        ORDER BY rs.statement_date DESC
+                        LIMIT 1
+                    ) as last_reconciled_date,
+                    (
+                        SELECT rs.statement_ending_balance
+                        FROM reconciliation_sessions rs
+                        WHERE rs.account_id = ba.id
+                          AND rs.status = 'completed'
+                          AND rs.tenant_id = $1
+                        ORDER BY rs.statement_date DESC
+                        LIMIT 1
+                    ) as last_reconciled_balance,
+                    (
+                        SELECT rs.id
+                        FROM reconciliation_sessions rs
+                        WHERE rs.account_id = ba.id
+                          AND rs.status = 'in_progress'
+                          AND rs.tenant_id = $1
+                        LIMIT 1
+                    ) as active_session_id,
+                    (
+                        SELECT rs.status
+                        FROM reconciliation_sessions rs
+                        WHERE rs.account_id = ba.id
+                          AND rs.status = 'in_progress'
+                          AND rs.tenant_id = $1
+                        LIMIT 1
+                    ) as active_session_status
+                FROM bank_accounts ba
+                WHERE ba.tenant_id = $1
+                  AND ba.is_active = true
+                ORDER BY ba.account_name
+                """,
+                ctx["tenant_id"],
+            )
+
+            accounts = []
+            today = date.today()
+
+            for row in rows:
+                last_recon = row["last_reconciled_date"]
+                days_since = (today - last_recon).days if last_recon else None
+                needs_recon = days_since is None or days_since > 7
+
+                if (
+                    needs_reconciliation is not None
+                    and needs_recon != needs_reconciliation
+                ):
+                    continue
+
+                ledger_balance = await _get_ledger_balance(
+                    conn, row["id"]
+                )
+
+                accounts.append(
+                    {
+                        "id": str(row["id"]),
+                        "name": row["name"],
+                        "account_number": row["account_number"],
+                        "current_balance": row["current_balance"] or 0,
+                        "ledger_balance": ledger_balance,
+                        "last_reconciled_date": str(last_recon) if last_recon else None,
+                        "last_reconciled_balance": row["last_reconciled_balance"],
+                        "statement_balance": None,
+                        "statement_date": None,
+                        "unreconciled_difference": None,
+                        "needs_reconciliation": needs_recon,
+                        "days_since_reconciliation": days_since,
+                        "active_session_id": str(row["active_session_id"])
+                        if row["active_session_id"]
+                        else None,
+                        "active_session_status": row["active_session_status"],
+                    }
+                )
+
+            return {"data": accounts, "total": len(accounts)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing accounts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list accounts")
+
+
+# =============================================================================
+# SESSIONS ENDPOINTS
+# =============================================================================
+
+
+@router.get("/sessions", response_model=SessionsListResponse)
+async def list_sessions(
+    request: Request,
+    account_id: Optional[str] = Query(None),
+    status: Optional[
+        Literal["not_started", "in_progress", "completed", "cancelled"]
+    ] = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """List reconciliation sessions with filters."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            conditions = ["rs.tenant_id = $1"]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            if account_id:
+                conditions.append(f"rs.account_id = ${param_idx}")
+                params.append(UUID(account_id))
+                param_idx += 1
+
+            if status:
+                conditions.append(f"rs.status = ${param_idx}")
+                params.append(status)
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM reconciliation_sessions rs WHERE {where_clause}",
+                *params,
+            )
+
+            params.extend([limit, offset])
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    rs.*,
+                    ba.account_name,
+                    ba.account_number,
+                    ba.account_number,
+                    (SELECT COUNT(*) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = rs.id) as total_lines,
+                    (SELECT COUNT(*) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = rs.id AND bsl.match_status = 'matched') as matched_count,
+                    (SELECT COUNT(*) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = rs.id AND bsl.match_status = 'unmatched') as unmatched_count,
+                    (SELECT COUNT(*) FROM reconciliation_adjustments ra WHERE ra.session_id = rs.id) as adjustments_count
+                FROM reconciliation_sessions rs
+                JOIN bank_accounts ba ON ba.id = rs.account_id
+                WHERE {where_clause}
+                ORDER BY rs.created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """,
+                *params,
+            )
+
+            sessions = []
+            for row in rows:
+                ledger_balance = await _get_ledger_balance(
+                    conn, row["account_id"]
+                )
+                sessions.append({
+                    "id": str(row["id"]),
+                    "account_id": str(row["account_id"]),
+                    "account_name": row["account_name"],
+                    "account_number": row.get("account_number", ""),
+                    "account_number": row["account_number"],
+                    "statement_date": str(row["statement_date"]),
+                    "statement_start_date": str(row["statement_start_date"]),
+                    "statement_end_date": str(row["statement_end_date"]),
+                    "statement_beginning_balance": row["statement_beginning_balance"],
+                    "statement_ending_balance": row["statement_ending_balance"],
+                    "status": row["status"],
+                    "cleared_balance": row["cleared_balance"],
+                    "cleared_count": row["matched_count"] or 0,
+                    "uncleared_count": row["unmatched_count"] or 0,
+                    "difference": row["difference"],
+                    "ledger_balance": ledger_balance,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "completed_at": row["completed_at"].isoformat()
+                    if row["completed_at"]
+                    else None,
+                    "total_statement_lines": row["total_lines"] or 0,
+                    "matched_count": row["matched_count"] or 0,
+                    "unmatched_count": row["unmatched_count"] or 0,
+                    "adjustments_count": row["adjustments_count"] or 0,
+                })
+
+            return {
+                "data": sessions,
+                "total": total,
+                "hasMore": (offset + limit) < total,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list sessions")
+
+
+@router.post("/sessions", response_model=SessionCreateResponse)
+async def create_session(request: Request, body: CreateSessionRequest):
+    """Start a new reconciliation session."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Validate account exists
+            account = await conn.fetchrow(
+                "SELECT id, is_active FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                UUID(body.account_id),
+                ctx["tenant_id"],
+            )
+
+            if not account:
+                raise HTTPException(status_code=404, detail="Bank account not found")
+
+            if not account["is_active"]:
+                raise HTTPException(status_code=400, detail="Bank account is inactive")
+
+            # Check no in-progress session exists
+            existing = await conn.fetchval(
+                """
+                SELECT id FROM reconciliation_sessions
+                WHERE account_id = $1 AND tenant_id = $2 AND status = 'in_progress'
+                """,
+                UUID(body.account_id),
+                ctx["tenant_id"],
+            )
+
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="An in-progress reconciliation session already exists for this account",
+                )
+
+            # Create session
+            session_id = uuid.uuid4()
+            now = datetime.utcnow()
+            session_mode = getattr(body, 'mode', 'import') or 'import'
+
+            # Compute opening_balance for manual reconciliation
+            opening_balance = None
+            if session_mode == 'manual':
+                # Option A: from last completed session
+                opening_balance = await conn.fetchval(
+                    """
+                    SELECT statement_ending_balance
+                    FROM reconciliation_sessions
+                    WHERE account_id = $1 AND tenant_id = $2 AND status = 'completed'
+                    ORDER BY statement_end_date DESC LIMIT 1
+                    """,
+                    UUID(body.account_id),
+                    ctx["tenant_id"],
+                )
+
+                if opening_balance is None:
+                    # First reconciliation ever: start from 0
+                    # All transactions will appear, user checks them all
+                    opening_balance = 0
+
+            await conn.execute(
+                """
+                INSERT INTO reconciliation_sessions (
+                    id, tenant_id, account_id, statement_date,
+                    statement_start_date, statement_end_date,
+                    statement_beginning_balance, statement_ending_balance,
+                    status, created_by, created_at, updated_at,
+                    mode, opening_balance
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12, $13)
+                """,
+                session_id,
+                ctx["tenant_id"],
+                UUID(body.account_id),
+                body.statement_date,
+                body.statement_start_date,
+                body.statement_end_date,
+                body.statement_beginning_balance,
+                body.statement_ending_balance,
+                "in_progress",
+                ctx["user_id"],
+                now,
+                session_mode,
+                opening_balance,
+            )
+
+            return {
+                "id": str(session_id),
+                "status": "in_progress",
+                "created_at": now.isoformat(),
+                "opening_balance": opening_balance,
+                "mode": session_mode,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create session")
+
+
+@router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
+async def get_session(request: Request, session_id: UUID):
+    """Get session details with statistics."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    rs.*,
+                    ba.account_name,
+                    ba.account_number
+                FROM reconciliation_sessions rs
+                JOIN bank_accounts ba ON ba.id = rs.account_id
+                WHERE rs.id = $1 AND rs.tenant_id = $2
+                """,
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            # Get statistics
+            stats = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) as total_lines,
+                    COUNT(*) FILTER (WHERE match_status = 'matched') as matched_count,
+                    COUNT(*) FILTER (WHERE match_status = 'unmatched') as unmatched_count,
+                    COUNT(*) FILTER (WHERE match_status = 'excluded') as excluded_count,
+                    COALESCE(SUM(CASE WHEN match_status = 'matched' THEN
+                        CASE WHEN type = 'credit' THEN amount ELSE -amount END
+                    ELSE 0 END), 0) as total_cleared,
+                    COALESCE(SUM(CASE WHEN match_status = 'unmatched' THEN
+                        CASE WHEN type = 'credit' THEN amount ELSE -amount END
+                    ELSE 0 END), 0) as total_uncleared
+                FROM bank_statement_lines_v2
+                WHERE session_id = $1
+                """,
+                session_id,
+            )
+
+            ledger_balance = await _get_ledger_balance(
+                conn, row["account_id"]
+            )
+
+            return {
+                "success": True,
+                "data": {
+                    "id": str(row["id"]),
+                    "account_id": str(row["account_id"]),
+                    "account_name": row["account_name"],
+                    "account_number": row.get("account_number", ""),
+                    "statement_date": str(row["statement_date"]),
+                    "statement_start_date": str(row["statement_start_date"]),
+                    "statement_end_date": str(row["statement_end_date"]),
+                    "statement_beginning_balance": row["statement_beginning_balance"],
+                    "statement_ending_balance": row["statement_ending_balance"],
+                    "status": row["status"],
+                    "cleared_balance": row["cleared_balance"],
+                    "difference": row["difference"],
+                    "ledger_balance": ledger_balance,
+                    "statistics": {
+                        "total_statement_lines": stats["total_lines"] or 0,
+                        "matched_count": stats["matched_count"] or 0,
+                        "unmatched_count": stats["unmatched_count"] or 0,
+                        "excluded_count": stats["excluded_count"] or 0,
+                        "total_cleared": stats["total_cleared"] or 0,
+                        "total_uncleared": stats["total_uncleared"] or 0,
+                    },
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "updated_at": row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else None,
+                    "completed_at": row["completed_at"].isoformat()
+                    if row.get("completed_at")
+                    else None,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get session")
+
+
+@router.post("/sessions/{session_id}/cancel", response_model=CancelResponse)
+async def cancel_session(request: Request, session_id: UUID):
+    """Cancel an in-progress reconciliation session."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session exists and is in_progress
+            session = await conn.fetchrow(
+                "SELECT status FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400, detail="Can only cancel in-progress sessions"
+                )
+
+            # Reset cleared transactions
+            result = await conn.execute(
+                """
+                UPDATE bank_transactions
+                SET is_cleared = false,
+                    cleared_at = NULL,
+                    matched_statement_line_id = NULL
+                WHERE tenant_id = $1
+                  AND matched_statement_line_id IN (
+                      SELECT id FROM bank_statement_lines_v2 WHERE session_id = $2
+                  )
+                """,
+                ctx["tenant_id"],
+                session_id,
+            )
+
+            # Parse the result to get count
+            reset_count = 0
+            if result:
+                parts = result.split()
+                if len(parts) >= 2:
+                    try:
+                        reset_count = int(parts[1])
+                    except ValueError:
+                        pass
+
+            # Update session status
+            await conn.execute(
+                "UPDATE reconciliation_sessions SET status = 'cancelled', updated_at = NOW() WHERE id = $1",
+                session_id,
+            )
+
+            return {"success": True, "cleared_transactions_reset": reset_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to cancel session")
+
+
+# =============================================================================
+# HISTORY ENDPOINT
+# =============================================================================
+
+
+@router.get("/history/{account_id}", response_model=HistoryResponse)
+async def get_history(
+    request: Request,
+    account_id: UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Get reconciliation history for an account."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            total = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM reconciliation_sessions
+                WHERE account_id = $1 AND tenant_id = $2 AND status = 'completed'
+                """,
+                account_id,
+                ctx["tenant_id"],
+            )
+
+            rows = await conn.fetch(
+                """
+                SELECT
+                    rs.id,
+                    rs.statement_date,
+                    rs.statement_ending_balance,
+                    rs.completed_at,
+                    u.name as completed_by,
+                    (SELECT COUNT(*) FROM bank_statement_lines_v2 bsl
+                     WHERE bsl.session_id = rs.id AND bsl.match_status = 'matched') as matched_count,
+                    (SELECT COUNT(*) FROM reconciliation_adjustments ra
+                     WHERE ra.session_id = rs.id) as adjustments_count
+                FROM reconciliation_sessions rs
+                LEFT JOIN users u ON u.id = rs.created_by
+                WHERE rs.account_id = $1 AND rs.tenant_id = $2 AND rs.status = 'completed'
+                ORDER BY rs.statement_date DESC
+                LIMIT $3 OFFSET $4
+                """,
+                account_id,
+                ctx["tenant_id"],
+                limit,
+                offset,
+            )
+
+            history = [
+                {
+                    "id": str(row["id"]),
+                    "statement_date": str(row["statement_date"]),
+                    "statement_ending_balance": row["statement_ending_balance"],
+                    "matched_count": row["matched_count"] or 0,
+                    "adjustments_count": row["adjustments_count"] or 0,
+                    "completed_at": row["completed_at"].isoformat()
+                    if row["completed_at"]
+                    else None,
+                    "completed_by": row["completed_by"] or "Unknown",
+                }
+                for row in rows
+            ]
+
+            return {
+                "data": history,
+                "total": total,
+                "hasMore": (offset + limit) < total,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get history")
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+
+async def get_session_statistics(conn, session_id: UUID) -> SessionStatistics:
+    """Calculate session statistics."""
+    stats = await conn.fetchrow(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE match_status IS NOT NULL) as total_statement_lines,
+            COUNT(*) FILTER (WHERE match_status = 'matched') as matched_lines,
+            COUNT(*) FILTER (WHERE match_status = 'unmatched') as unmatched_lines,
+            COALESCE(SUM(amount), 0) as statement_total,
+            COALESCE(SUM(CASE WHEN match_status = 'matched' THEN
+                CASE WHEN type = 'credit' THEN amount ELSE -amount END
+            ELSE 0 END), 0) as matched_total
+        FROM bank_statement_lines_v2
+        WHERE session_id = $1
+        """,
+        session_id,
+    )
+
+    tx_stats = await conn.fetchrow(
+        """
+        SELECT
+            COUNT(*) as total_transactions,
+            COUNT(*) FILTER (WHERE is_cleared = true) as matched_transactions,
+            COUNT(*) FILTER (WHERE is_cleared = false) as unmatched_transactions
+        FROM bank_transactions bt
+        JOIN reconciliation_sessions rs ON bt.bank_account_id = rs.account_id
+        WHERE rs.id = $1
+          AND bt.transaction_date BETWEEN rs.statement_start_date AND GREATEST(rs.statement_end_date::date, COALESCE(
+            (SELECT MAX(bsl.date::date) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = rs.id),
+            rs.statement_end_date::date
+          ))
+          AND bt.status = 'POSTED'
+          AND (bt.is_reconciled = false OR bt.is_reconciled IS NULL OR bt.reconciled_session_id = $1)
+        """,
+        session_id,
+    )
+
+    session = await conn.fetchrow(
+        "SELECT statement_ending_balance FROM reconciliation_sessions WHERE id = $1",
+        session_id,
+    )
+
+    matched_total = stats["matched_total"] or 0
+    statement_ending = session["statement_ending_balance"] if session else 0
+    difference = statement_ending - matched_total
+
+    return SessionStatistics(
+        total_statement_lines=stats["total_statement_lines"] or 0,
+        matched_lines=stats["matched_lines"] or 0,
+        unmatched_lines=stats["unmatched_lines"] or 0,
+        total_transactions=tx_stats["total_transactions"] or 0,
+        matched_transactions=tx_stats["matched_transactions"] or 0,
+        unmatched_transactions=tx_stats["unmatched_transactions"] or 0,
+        statement_total=stats["statement_total"] or 0,
+        matched_total=matched_total,
+        difference=difference,
+        is_balanced=(difference == 0),
+    )
+
+
+async def update_reconciliation_session_stats(conn, session_id: UUID):
+    """Update session statistics after match operations."""
+    stats = await conn.fetchrow(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN match_status = 'matched' THEN
+                CASE WHEN type = 'credit' THEN amount ELSE -amount END
+            ELSE 0 END), 0) as cleared_balance,
+            COUNT(*) FILTER (WHERE match_status = 'matched') as cleared_count
+        FROM bank_statement_lines_v2
+        WHERE session_id = $1
+        """,
+        session_id,
+    )
+
+    session = await conn.fetchrow(
+        "SELECT statement_ending_balance FROM reconciliation_sessions WHERE id = $1",
+        session_id,
+    )
+
+    cleared_balance = stats["cleared_balance"] or 0
+    statement_ending = session["statement_ending_balance"] if session else 0
+    difference = statement_ending - cleared_balance
+
+    await conn.execute(
+        """
+        UPDATE reconciliation_sessions
+        SET cleared_balance = $2,
+            cleared_count = $3,
+            difference = $4,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        session_id,
+        cleared_balance,
+        stats["cleared_count"] or 0,
+        difference,
+    )
+
+
+# =============================================================================
+# IMPORT & STATEMENT LINES ENDPOINTS
+# =============================================================================
+
+
+@router.post("/sessions/{session_id}/import", response_model=ImportResponse)
+async def import_statement(
+    request: Request,
+    session_id: UUID,
+    file: UploadFile = File(...),
+    config: str = Form(...),
+):
+    """
+    Import bank statement file (CSV, XLSX, or OFX).
+
+    Max file size: 10MB.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        # Check file size (10MB max)
+        content = await file.read()
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
+
+        # Parse config JSON
+        try:
+            import_config = json.loads(config)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid config JSON")
+
+        file_format = import_config.get("format", "csv").lower()
+        filename = file.filename.lower() if file.filename else ""
+
+        # Detect format from filename if not specified
+        if not file_format or file_format == "auto":
+            if filename.endswith(".csv"):
+                file_format = "csv"
+            elif filename.endswith((".xlsx", ".xls")):
+                file_format = "xlsx"
+            elif filename.endswith(".ofx"):
+                file_format = "ofx"
+            else:
+                file_format = "csv"
+
+        lines_imported = 0
+        lines_skipped = 0
+        total_credits = 0
+        total_debits = 0
+        errors: list = []
+        dates: list = []
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session exists and is in_progress
+            session = await conn.fetchrow(
+                "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400, detail="Can only import to in-progress sessions"
+                )
+
+            # Parse file based on format
+            if file_format == "csv":
+                import pandas as pd
+
+                date_column = import_config.get("date_column", "date")
+                description_column = import_config.get(
+                    "description_column", "description"
+                )
+                amount_column = import_config.get("amount_column")
+                debit_column = import_config.get("debit_column")
+                credit_column = import_config.get("credit_column")
+                reference_column = import_config.get("reference_column")
+                balance_column = import_config.get("balance_column")
+                date_format = import_config.get("date_format", "%d/%m/%Y")
+                skip_rows = import_config.get("skip_rows", 0)
+
+                # Convert date format from DD/MM/YYYY to Python strptime format
+                py_date_format = (
+                    date_format.replace("DD", "%d")
+                    .replace("MM", "%m")
+                    .replace("YYYY", "%Y")
+                    .replace("YY", "%y")
+                )
+
+                try:
+                    # skip_rows from frontend means "header is at row skip_rows-1"
+                    header_row = max(skip_rows - 1, 0)
+                    df = pd.read_csv(io.BytesIO(content), header=header_row)
+                    logger.info(f"CSV parsed: {len(df)} rows, columns: {list(df.columns)}, date_column='{date_column}', desc_column='{description_column}'")
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400, detail=f"Failed to parse CSV: {str(e)}"
+                    )
+
+                line_number = 0
+                for idx, row in df.iterrows():
+                    line_number += 1
+                    try:
+                        # Parse date
+                        date_str = str(row.get(date_column, "")).strip()
+                        try:
+                            tx_date = datetime.strptime(date_str, py_date_format).date()
+                            dates.append(tx_date)
+                        except ValueError:
+                            errors.append(
+                                ImportErrorSchema(
+                                    row_number=line_number,
+                                    column=date_column,
+                                    value=date_str,
+                                    error="Invalid date format",
+                                )
+                            )
+                            lines_skipped += 1
+                            continue
+
+                        # Parse description
+                        description = str(row.get(description_column, "")).strip()
+                        if not description:
+                            description = "No description"
+
+                        # Parse amount
+                        amount = 0
+                        is_credit = False
+
+                        if amount_column:
+                            amount_str = str(row.get(amount_column, "0"))
+                            amount_str = amount_str.replace(",", "").replace(" ", "")
+                            try:
+                                amount_float = float(amount_str)
+                                amount = int(abs(amount_float))
+                                is_credit = amount_float > 0
+                            except ValueError:
+                                errors.append(
+                                    ImportErrorSchema(
+                                        row_number=line_number,
+                                        column=amount_column,
+                                        value=amount_str,
+                                        error="Invalid amount",
+                                    )
+                                )
+                                lines_skipped += 1
+                                continue
+                        elif debit_column and credit_column:
+                            debit_str = (
+                                str(row.get(debit_column, "0"))
+                                .replace(",", "")
+                                .replace(" ", "")
+                            )
+                            credit_str = (
+                                str(row.get(credit_column, "0"))
+                                .replace(",", "")
+                                .replace(" ", "")
+                            )
+                            try:
+                                debit = (
+                                    abs(float(debit_str))
+                                    if debit_str and debit_str != "nan"
+                                    else 0
+                                )
+                                credit = (
+                                    abs(float(credit_str))
+                                    if credit_str and credit_str != "nan"
+                                    else 0
+                                )
+                                if credit > 0:
+                                    amount = int(credit)
+                                    is_credit = True
+                                else:
+                                    amount = int(debit)
+                                    is_credit = False
+                            except ValueError:
+                                lines_skipped += 1
+                                continue
+
+                        # Parse reference
+                        reference = None
+                        if reference_column:
+                            ref_val = row.get(reference_column)
+                            if pd.notna(ref_val):
+                                reference = str(ref_val).strip()
+
+                        # Parse running balance
+                        running_balance = None
+                        if balance_column:
+                            bal_val = row.get(balance_column)
+                            if pd.notna(bal_val):
+                                bal_str = str(bal_val).replace(",", "").replace(" ", "")
+                                try:
+                                    running_balance = int(float(bal_str))
+                                except ValueError:
+                                    pass
+
+                        # Skip non-transaction rows (e.g., SALDO AWAL with amount = 0)
+                        if amount is None or amount == 0:
+                            lines_skipped += 1
+                            continue
+
+                        # Insert line
+                        line_id = uuid.uuid4()
+                        await conn.execute(
+                            """
+                            INSERT INTO bank_statement_lines_v2 (
+                                id, tenant_id, session_id, date,
+                                description, reference, amount, type, running_balance,
+                                match_status, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'unmatched', NOW(), NOW())
+                            """,
+                            line_id,
+                            ctx["tenant_id"],
+                            session_id,
+                            tx_date,
+                            description,
+                            reference,
+                            amount,
+                            "credit" if is_credit else "debit",
+                            running_balance,
+                        )
+
+                        lines_imported += 1
+                        if is_credit:
+                            total_credits += amount
+                        else:
+                            total_debits += amount
+
+                    except Exception as e:
+                        logger.error(f"Import row {line_number} error: {e}", exc_info=True)
+                        errors.append(
+                            ImportErrorSchema(row_number=line_number, error=str(e))
+                        )
+                        lines_skipped += 1
+
+            elif file_format == "xlsx":
+                import pandas as pd
+
+                date_column = import_config.get("date_column", "date")
+                description_column = import_config.get(
+                    "description_column", "description"
+                )
+                amount_column = import_config.get("amount_column")
+                debit_column = import_config.get("debit_column")
+                credit_column = import_config.get("credit_column")
+                reference_column = import_config.get("reference_column")
+                balance_column = import_config.get("balance_column")
+                skip_rows = import_config.get("skip_rows", 0)
+
+                try:
+                    # skip_rows from frontend means "header is at row skip_rows-1"
+                    header_row = max(skip_rows - 1, 0)
+                    df = pd.read_excel(io.BytesIO(content), header=header_row)
+                    logger.info(f"XLSX parsed: {len(df)} rows, columns: {list(df.columns)}, date_column='{date_column}', desc_column='{description_column}'")
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400, detail=f"Failed to parse Excel: {str(e)}"
+                    )
+
+                line_number = 0
+                for idx, row in df.iterrows():
+                    line_number += 1
+                    try:
+                        # Parse date
+                        date_val = row.get(date_column)
+                        if pd.isna(date_val):
+                            lines_skipped += 1
+                            continue
+
+                        if isinstance(date_val, datetime):
+                            tx_date = date_val.date()
+                        elif isinstance(date_val, date):
+                            tx_date = date_val
+                        else:
+                            tx_date = pd.to_datetime(date_val).date()
+                        dates.append(tx_date)
+
+                        # Parse description
+                        description = (
+                            str(row.get(description_column, "")).strip()
+                            or "No description"
+                        )
+
+                        # Parse amount
+                        amount = 0
+                        is_credit = False
+
+                        if amount_column:
+                            amount_val = row.get(amount_column, 0)
+                            if pd.notna(amount_val):
+                                amount = int(abs(float(amount_val)))
+                                is_credit = float(amount_val) > 0
+                        elif debit_column and credit_column:
+                            debit = row.get(debit_column, 0)
+                            credit = row.get(credit_column, 0)
+                            debit = float(debit) if pd.notna(debit) else 0
+                            credit = float(credit) if pd.notna(credit) else 0
+                            if credit > 0:
+                                amount = int(credit)
+                                is_credit = True
+                            else:
+                                amount = int(abs(debit))
+                                is_credit = False
+
+                        # Parse reference
+                        reference = None
+                        if reference_column:
+                            ref_val = row.get(reference_column)
+                            if pd.notna(ref_val):
+                                reference = str(ref_val).strip()
+
+                        # Parse running balance
+                        running_balance = None
+                        if balance_column:
+                            bal_val = row.get(balance_column)
+                            if pd.notna(bal_val):
+                                running_balance = int(float(bal_val))
+
+                        # Skip non-transaction rows (e.g., SALDO AWAL with amount = 0)
+                        if amount is None or amount == 0:
+                            lines_skipped += 1
+                            continue
+
+                        # Insert line
+                        line_id = uuid.uuid4()
+                        await conn.execute(
+                            """
+                            INSERT INTO bank_statement_lines_v2 (
+                                id, tenant_id, session_id, date,
+                                description, reference, amount, type, running_balance,
+                                match_status, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'unmatched', NOW(), NOW())
+                            """,
+                            line_id,
+                            ctx["tenant_id"],
+                            session_id,
+                            tx_date,
+                            description,
+                            reference,
+                            amount,
+                            "credit" if is_credit else "debit",
+                            running_balance,
+                        )
+
+                        lines_imported += 1
+                        if is_credit:
+                            total_credits += amount
+                        else:
+                            total_debits += amount
+
+                    except Exception as e:
+                        logger.error(f"Import XLSX row {line_number} error: {e}", exc_info=True)
+                        errors.append(
+                            ImportErrorSchema(row_number=line_number, error=str(e))
+                        )
+                        lines_skipped += 1
+
+            elif file_format == "ofx":
+                try:
+                    from ofxparse import OfxParser
+                except ImportError:
+                    raise HTTPException(
+                        status_code=500, detail="OFX parsing not available"
+                    )
+
+                try:
+                    ofx = OfxParser.parse(io.BytesIO(content))
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400, detail=f"Failed to parse OFX: {str(e)}"
+                    )
+
+                line_number = 0
+                for account in ofx.accounts:
+                    for tx in account.statement.transactions:
+                        line_number += 1
+                        try:
+                            tx_date = (
+                                tx.date.date() if hasattr(tx.date, "date") else tx.date
+                            )
+                            dates.append(tx_date)
+
+                            description = tx.memo or tx.payee or "No description"
+                            amount = int(abs(float(tx.amount)))
+                            is_credit = float(tx.amount) > 0
+                            reference = tx.id if hasattr(tx, "id") else None
+
+                            # Skip non-transaction rows (e.g., SALDO AWAL with amount = 0)
+                            if amount is None or amount == 0:
+                                lines_skipped += 1
+                                continue
+
+                            line_id = uuid.uuid4()
+                            await conn.execute(
+                                """
+                                INSERT INTO bank_statement_lines_v2 (
+                                    id, tenant_id, session_id, date,
+                                    description, reference, amount, type, running_balance,
+                                    match_status, created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, 'unmatched', NOW(), NOW())
+                                """,
+                                line_id,
+                                ctx["tenant_id"],
+                                session_id,
+                                tx_date,
+                                description,
+                                reference,
+                                amount,
+                                "credit" if is_credit else "debit",
+                            )
+
+                            lines_imported += 1
+                            if is_credit:
+                                total_credits += amount
+                            else:
+                                total_debits += amount
+
+                        except Exception as e:
+                            errors.append(
+                                ImportErrorSchema(row_number=line_number, error=str(e))
+                            )
+                            lines_skipped += 1
+
+            else:
+                raise HTTPException(
+                    status_code=400, detail=f"Unsupported format: {file_format}"
+                )
+
+            # Update session stats
+            await update_reconciliation_session_stats(conn, session_id)
+
+        # Calculate date range
+        if dates:
+            start_date = str(min(dates))
+            end_date = str(max(dates))
+        else:
+            start_date = ""
+            end_date = ""
+
+        return ImportResponse(
+            lines_imported=lines_imported,
+            lines_skipped=lines_skipped,
+            total_credits=total_credits,
+            total_debits=total_debits,
+            date_range=ImportDateRange(start_date=start_date, end_date=end_date),
+            errors=errors[:50],  # Limit errors returned
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error importing statement: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to import statement")
+
+
+@router.get("/sessions/{session_id}/statements", response_model=StatementLinesResponse)
+async def list_statement_lines(
+    request: Request,
+    session_id: UUID,
+    match_status: Optional[Literal["unmatched", "matched", "excluded"]] = Query(None),
+    search: Optional[str] = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List statement lines for a reconciliation session."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session access
+            session = await conn.fetchrow(
+                "SELECT id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            conditions = ["bsl.session_id = $1", "bsl.tenant_id = $2"]
+            params = [session_id, ctx["tenant_id"]]
+            param_idx = 3
+
+            if match_status:
+                conditions.append(f"bsl.match_status = ${param_idx}")
+                params.append(match_status)
+                param_idx += 1
+
+            if search:
+                conditions.append(
+                    f"(bsl.description ILIKE ${param_idx} OR bsl.reference ILIKE ${param_idx})"
+                )
+                params.append(f"%{search}%")
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM bank_statement_lines_v2 bsl WHERE {where_clause}",
+                *params,
+            )
+
+            params.extend([limit, offset])
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    bsl.id,
+                    bsl.session_id,
+                    bsl.date,
+                    bsl.description,
+                    bsl.reference,
+                    bsl.amount,
+                    bsl.type,
+                    bsl.running_balance,
+                    bsl.match_status,
+                    bsl.created_at,
+                    bsl.match_confidence,
+                    bsl.match_difference,
+                    rm.id as match_id,
+                    rm.confidence
+                FROM bank_statement_lines_v2 bsl
+                LEFT JOIN reconciliation_matches rm ON rm.statement_line_id = bsl.id
+                WHERE {where_clause}
+                ORDER BY bsl.date
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """,
+                *params,
+            )
+
+            lines = []
+            for row in rows:
+                # Get matched transaction IDs
+                matched_tx_ids = []
+                if row["match_id"]:
+                    tx_rows = await conn.fetch(
+                        """
+                        SELECT bt.id FROM bank_transactions bt
+                        WHERE bt.matched_statement_line_id = $1
+                        """,
+                        row["id"],
+                    )
+                    matched_tx_ids = [str(tx["id"]) for tx in tx_rows]
+
+                lines.append(
+                    StatementLineItem(
+                        id=str(row["id"]),
+                        session_id=str(row["session_id"]),
+                        date=str(row["date"]),
+                        description=row["description"] or "",
+                        reference=row["reference"],
+                        amount=row["amount"],
+                        type=row["type"],
+                        running_balance=row["running_balance"],
+                        match_status=row["match_status"],
+                        match_id=str(row["match_id"]) if row["match_id"] else None,
+                        matched_transaction_ids=matched_tx_ids,
+                        match_confidence=row["match_confidence"] if row["match_confidence"] is not None else row["confidence"],
+                        match_difference=row["match_difference"],
+                        raw_data=None,
+                        created_at=row["created_at"].isoformat()
+                        if row["created_at"]
+                        else "",
+                    )
+                )
+
+            return StatementLinesResponse(
+                data=lines, total=total, hasMore=(offset + limit) < total
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing statement lines: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list statement lines")
+
+
+# =============================================================================
+# TRANSACTIONS & MATCHING ENDPOINTS
+# =============================================================================
+
+
+@router.get("/sessions/{session_id}/transactions", response_model=TransactionsResponse)
+async def list_transactions(
+    request: Request,
+    session_id: UUID,
+    is_cleared: Optional[bool] = Query(None),
+    type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List system transactions for matching within session date range."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Get session details
+            session = await conn.fetchrow(
+                """
+                SELECT account_id, statement_start_date, statement_end_date
+                FROM reconciliation_sessions
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            conditions = [
+                "bt.bank_account_id = $1",
+                "bt.tenant_id = $2",
+                "bt.transaction_date >= $3",
+                "bt.transaction_date <= GREATEST($4::date, COALESCE((SELECT MAX(bsl.date::date) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = $5::uuid), $4::date))",
+                "bt.status = 'POSTED'",
+                "(bt.is_reconciled = false OR bt.is_reconciled IS NULL OR bt.reconciled_session_id = $6::uuid)",
+            ]
+            params = [
+                session["account_id"],
+                ctx["tenant_id"],
+                session["statement_start_date"],
+                session["statement_end_date"],
+                str(session_id),
+                session_id,
+            ]
+            param_idx = 7
+
+            if is_cleared is not None:
+                conditions.append(f"bt.is_cleared = ${param_idx}")
+                params.append(is_cleared)
+                param_idx += 1
+
+            if type:
+                conditions.append(f"bt.transaction_type = ${param_idx}")
+                params.append(type)
+                param_idx += 1
+
+            if search:
+                conditions.append(
+                    f"(bt.description ILIKE ${param_idx} OR bt.reference_number ILIKE ${param_idx})"
+                )
+                params.append(f"%{search}%")
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM bank_transactions bt WHERE {where_clause}",
+                *params,
+            )
+
+            params.extend([limit, offset])
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    bt.id,
+                    bt.transaction_type,
+                    bt.transaction_date,
+                    bt.description,
+                    bt.reference_number,
+                    bt.amount,
+                    CASE WHEN bt.amount >= 0 THEN true ELSE false END as is_credit,
+                    bt.reference_type as source_type,
+                    bt.reference_id as source_id,
+                    bt.reference_number as source_number,
+                    bt.is_cleared,
+                    bt.matched_statement_line_id,
+                    bt.payee_payer as contact_name,
+                    bt.reconciled_session_id
+                FROM bank_transactions bt
+                WHERE {where_clause}
+                ORDER BY bt.transaction_date DESC, bt.created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """,
+                *params,
+            )
+
+            transactions = []
+            for row in rows:
+                # Get match ID if matched
+                match_id = None
+                if row["matched_statement_line_id"]:
+                    match_row = await conn.fetchval(
+                        "SELECT id FROM reconciliation_matches WHERE statement_line_id = $1",
+                        row["matched_statement_line_id"],
+                    )
+                    if match_row:
+                        match_id = str(match_row)
+
+                transactions.append(
+                    TransactionItem(
+                        id=str(row["id"]),
+                        transaction_type=row["transaction_type"] or "other",
+                        transaction_date=str(row["transaction_date"]),
+                        description=row["description"],
+                        reference=row['reference_number'],
+                        amount=row["amount"],
+                        is_credit=row["is_credit"],
+                        source_type=row["source_type"] or "manual",
+                        source_id=str(row["source_id"]) if row["source_id"] else None,
+                        source_number=row["source_number"],
+                        contact_name=row["contact_name"],
+                        is_matched=row["is_cleared"] or False,
+                        match_id=match_id,
+                        cleared_in_session=(str(row["reconciled_session_id"]) == str(session_id)) if row["reconciled_session_id"] else False,
+                    )
+                )
+
+            return TransactionsResponse(
+                data=transactions, total=total, hasMore=(offset + limit) < total
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list transactions")
+
+
+
+
+# =============================================================================
+# HELPER: Adjustment Journal Line Direction Logic
+# =============================================================================
+
+def compute_adjustment_journal_lines(
+    difference: float,
+    statement_line_type: str,
+    adjustment_account_id: str,
+    bank_coa_id: str,
+) -> list:
+    """
+    Compute debit/credit lines for a reconciliation adjustment journal.
+
+    INFLOW (statement credit):
+      difference > 0 -> bank received MORE -> Debit: Bank, Credit: Adjustment
+      difference < 0 -> bank received LESS -> Debit: Adjustment, Credit: Bank
+    OUTFLOW (statement debit):
+      difference > 0 -> bank paid MORE -> Debit: Adjustment, Credit: Bank
+      difference < 0 -> bank paid LESS -> Debit: Bank, Credit: Adjustment
+    """
+    is_inflow = statement_line_type == "credit"
+    abs_diff = abs(difference)
+
+    if difference > 0:
+        debit_account = bank_coa_id if is_inflow else adjustment_account_id
+        credit_account = adjustment_account_id if is_inflow else bank_coa_id
+    else:
+        debit_account = adjustment_account_id if is_inflow else bank_coa_id
+        credit_account = bank_coa_id if is_inflow else adjustment_account_id
+
+    return [
+        {"account_id": debit_account, "debit": abs_diff, "credit": 0},
+        {"account_id": credit_account, "debit": 0, "credit": abs_diff},
+    ]
+
+
+@router.post("/sessions/{session_id}/match", response_model=MatchResponse)
+async def create_match(
+    request: Request,
+    session_id: UUID,
+    body: MatchRequest,
+):
+    """Create a match between a statement line and one or more transactions."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                if session["status"] != "in_progress":
+                    raise HTTPException(
+                        status_code=400, detail="Can only match in in-progress sessions"
+                    )
+
+                # Verify statement line
+                statement_line = await conn.fetchrow(
+                    "SELECT id, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2 FOR UPDATE",
+                    UUID(body.statement_line_id),
+                    session_id,
+                )
+
+                if not statement_line:
+                    raise HTTPException(status_code=404, detail="Statement line not found")
+
+                if statement_line["match_status"] == "matched":
+                    raise HTTPException(
+                        status_code=400, detail="Statement line is already matched"
+                    )
+
+                # Verify transactions
+                tx_ids = [UUID(tx_id) for tx_id in body.transaction_ids]
+                transactions = await conn.fetch(
+                    """
+                    SELECT id, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit, is_cleared
+                    FROM bank_transactions
+                    WHERE id = ANY($1) AND bank_account_id = $2 AND tenant_id = $3
+                    """,
+                    tx_ids,
+                    session["account_id"],
+                    ctx["tenant_id"],
+                )
+
+                if len(transactions) != len(tx_ids):
+                    raise HTTPException(
+                        status_code=404, detail="One or more transactions not found"
+                    )
+
+                # Check no transaction is already cleared
+                for tx in transactions:
+                    if tx["is_cleared"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Transaction {tx['id']} is already matched",
+                        )
+
+                # Validate amount and type match
+                line_amount = statement_line["amount"]
+                line_is_credit = statement_line["is_credit"]
+                total_tx_amount = sum(tx["amount"] for tx in transactions)
+
+                # For proper matching, types should be compatible
+                # Credits in statement = receipts/income, Debits = payments/expenses
+
+                # Determine match type
+                if len(tx_ids) == 1:
+                    match_type = "one_to_one"
+                else:
+                    match_type = "one_to_many"
+
+                # Create match record - one row per transaction_id
+                for txn_id in tx_ids:
+                    match_id = uuid.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO reconciliation_matches (
+                            id, tenant_id, session_id, statement_line_id, transaction_id,
+                            match_type, confidence, created_by, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'manual', $7, NOW())
+                        """,
+                        match_id,
+                        ctx["tenant_id"],
+                        session_id,
+                        UUID(body.statement_line_id),
+                        txn_id,
+                        match_type,
+                        ctx["user_id"],
+                    )
+
+                # Update transactions
+                now = datetime.utcnow()
+                for tx_id in tx_ids:
+                    await conn.execute(
+                        """
+                        UPDATE bank_transactions
+                        SET is_cleared = true,
+                            cleared_at = $2,
+                            matched_statement_line_id = $3
+                        WHERE id = $1
+                        """,
+                        tx_id,
+                        now,
+                        UUID(body.statement_line_id),
+                    )
+
+                # Update statement line status
+                await conn.execute(
+                    """
+                    UPDATE bank_statement_lines_v2
+                    SET match_status = 'matched'
+                    WHERE id = $1
+                    """,
+                    UUID(body.statement_line_id),
+                )
+
+                # Update session stats
+                await update_reconciliation_session_stats(conn, session_id)
+
+                # Get updated stats
+                stats = await get_session_statistics(conn, session_id)
+
+                # Record match history for learning loop
+                for tx_id in tx_ids:
+                    await record_match_history(
+                        conn=conn,
+                        tenant_id=ctx["tenant_id"],
+                        session_id=session_id,
+                        statement_line_id=UUID(body.statement_line_id),
+                        transaction_id=tx_id,
+                        match_confidence="manual",
+                        match_method="manual",
+                        user_id=ctx["user_id"],
+                    )
+
+                # --- Adjustment journal (if difference exists) ---
+                adjustment_journal_id = None
+                if (
+                    body.adjustment_amount is not None
+                    and body.adjustment_amount != 0
+                    and body.adjustment_account_id is not None
+                ):
+                    stmt_line_type = body.statement_line_type
+                    if not stmt_line_type:
+                        # Derive from the statement line if not provided
+                        stmt_line_type = "credit" if statement_line["is_credit"] else "debit"
+
+                    # Get bank CoA account ID from the session's bank account
+                    bank_account = await conn.fetchrow(
+                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        session["account_id"],
+                        ctx["tenant_id"],
+                    )
+                    if not bank_account:
+                        raise HTTPException(status_code=404, detail="Bank account not found")
+
+                    bank_coa_id = str(bank_account["coa_id"])
+
+                    # Compute journal lines using direction logic
+                    journal_lines_data = compute_adjustment_journal_lines(
+                        difference=body.adjustment_amount,
+                        statement_line_type=stmt_line_type,
+                        adjustment_account_id=body.adjustment_account_id,
+                        bank_coa_id=bank_coa_id,
+                    )
+
+                    abs_amount = abs(body.adjustment_amount)
+
+                    # Get the statement line date for posting
+                    stmt_date_row = await conn.fetchrow(
+                        "SELECT date FROM bank_statement_lines_v2 WHERE id = $1",
+                        UUID(body.statement_line_id),
+                    )
+                    posting_date = stmt_date_row["date"] if stmt_date_row else datetime.utcnow().date()
+
+                    # Generate journal number
+                    journal_number = f"RECON-MATCH-ADJ-{posting_date.strftime('%Y%m%d')}-{str(match_id)[:8].upper()}"
+
+                    # Create journal entry (Law 4: Double-entry, Law 23: Atomic)
+                    adjustment_journal_id = uuid.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date, description,
+                            source_type, source_id, status, total_debit, total_credit,
+                            created_by, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'POSTED', $8, $8, $9, NOW(), NOW())
+                        """,
+                        adjustment_journal_id,
+                        ctx["tenant_id"],
+                        journal_number,
+                        posting_date,
+                        f"Penyesuaian rekonsiliasi: selisih Rp {abs_amount:,.0f}",
+                        "RECONCILIATION_ADJUSTMENT",
+                        UUID(body.statement_line_id),
+                        abs_amount,
+                        ctx["user_id"],
+                    )
+
+                    # Insert journal lines
+                    for line_num, jl in enumerate(journal_lines_data, start=1):
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id,
+                                debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            """,
+                            uuid.uuid4(),
+                            adjustment_journal_id,
+                            line_num,
+                            UUID(jl["account_id"]),
+                            jl["debit"],
+                            jl["credit"],
+                            f"Penyesuaian rekonsiliasi: selisih Rp {abs_amount:,.0f}",
+                        )
+
+                    logger.info(
+                        f"Created adjustment journal {journal_number} for match {match_id}, "
+                        f"amount={body.adjustment_amount}, type={stmt_line_type}"
+                    )
+
+                    # Iron Law 23: Create bank_transaction for adjustment journal
+                    # Determine sign: if bank_coa is debited → inflow (positive), credited → outflow (negative)
+                    adj_bank_amount = 0
+                    for jl in journal_lines_data:
+                        if str(jl["account_id"]) == str(bank_coa_id):
+                            adj_bank_amount = int(jl["debit"]) - int(jl["credit"])
+                            break
+                    if adj_bank_amount != 0:
+                        await create_bank_transaction_for_journal(
+                            conn,
+                            tenant_id=ctx["tenant_id"],
+                            bank_account_id=session["account_id"],
+                            journal_id=adjustment_journal_id,
+                            transaction_date=posting_date,
+                            transaction_type="adjustment",
+                            amount=adj_bank_amount,
+                            reference_type="reconciliation_adjustment",
+                            reference_id=UUID(body.statement_line_id),
+                            description=f"Penyesuaian rekonsiliasi: selisih Rp {abs_amount:,.0f}",
+                            created_by=ctx["user_id"],
+                        )
+
+                return MatchResponse(
+                    match_id=str(match_id),
+                    match_type=match_type,
+                    confidence="manual",
+                    cleared_amount=line_amount,
+                    session_stats=stats,
+                    adjustment_journal_id=str(adjustment_journal_id) if adjustment_journal_id else None,
+                )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating match: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create match")
+
+
+@router.delete(
+    "/sessions/{session_id}/match/{match_id}", response_model=UnmatchResponse
+)
+async def remove_match(
+    request: Request,
+    session_id: UUID,
+    match_id: UUID,
+):
+    """Remove a match and reset transaction cleared status."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session
+            session = await conn.fetchrow(
+                "SELECT status FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400, detail="Can only unmatch in in-progress sessions"
+                )
+
+            # Get match
+            match = await conn.fetchrow(
+                "SELECT statement_line_id FROM reconciliation_matches WHERE id = $1 AND session_id = $2",
+                match_id,
+                session_id,
+            )
+
+            if not match:
+                raise HTTPException(status_code=404, detail="Match not found")
+
+            # Reset transactions
+            await conn.execute(
+                """
+                UPDATE bank_transactions
+                SET is_cleared = false,
+                    cleared_at = NULL,
+                    matched_statement_line_id = NULL
+                WHERE matched_statement_line_id = $1 AND tenant_id = $2
+                """,
+                match["statement_line_id"],
+                ctx["tenant_id"],
+            )
+
+            # Reset statement line
+            await conn.execute(
+                """
+                UPDATE bank_statement_lines_v2
+                SET match_status = 'unmatched'
+                WHERE id = $1
+                """,
+                match["statement_line_id"],
+            )
+
+            # Delete match
+            await conn.execute(
+                "DELETE FROM reconciliation_matches WHERE id = $1", match_id
+            )
+
+            # Update session stats
+            await update_reconciliation_session_stats(conn, session_id)
+
+            # Get updated stats
+            stats = await get_session_statistics(conn, session_id)
+
+            return UnmatchResponse(success=True, session_stats=stats)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing match: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to remove match")
+
+
+
+
+@router.delete("/sessions/{session_id}/match", response_model=UnmatchResponse)
+async def unmatch_by_statement_line(
+    request: Request,
+    session_id: UUID,
+    body: UnmatchByLineRequest,
+):
+    """Remove all matches for a statement line and reset transaction cleared status.
+
+    This endpoint is called by the frontend with { statement_line_id } in the body,
+    as opposed to remove_match which requires a specific match_id in the URL.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            async with conn.transaction():
+                # Verify session
+                session = await conn.fetchrow(
+                    "SELECT status FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                if session["status"] != "in_progress":
+                    raise HTTPException(
+                        status_code=400, detail="Can only unmatch in in-progress sessions"
+                    )
+
+                stmt_line_id = UUID(body.statement_line_id)
+
+                # Verify statement line belongs to session and is matched
+                statement_line = await conn.fetchrow(
+                    "SELECT id, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
+                    stmt_line_id,
+                    session_id,
+                )
+
+                if not statement_line:
+                    raise HTTPException(status_code=404, detail="Statement line not found")
+
+                if statement_line["match_status"] != "matched":
+                    raise HTTPException(
+                        status_code=400, detail="Statement line is not matched"
+                    )
+
+                # Reset transactions linked to this statement line
+                await conn.execute(
+                    """
+                    UPDATE bank_transactions
+                    SET is_cleared = false,
+                        cleared_at = NULL,
+                        matched_statement_line_id = NULL
+                    WHERE matched_statement_line_id = $1 AND tenant_id = $2
+                    """,
+                    stmt_line_id,
+                    ctx["tenant_id"],
+                )
+
+                # Reset statement line status
+                await conn.execute(
+                    """
+                    UPDATE bank_statement_lines_v2
+                    SET match_status = 'unmatched', match_confidence = NULL
+                    WHERE id = $1
+                    """,
+                    stmt_line_id,
+                )
+
+                # Delete all match records for this statement line in this session
+                await conn.execute(
+                    "DELETE FROM reconciliation_matches WHERE statement_line_id = $1 AND session_id = $2",
+                    stmt_line_id,
+                    session_id,
+                )
+
+                # Update session stats
+                await update_reconciliation_session_stats(conn, session_id)
+
+                # Get updated stats
+                stats = await get_session_statistics(conn, session_id)
+
+                return UnmatchResponse(success=True, session_stats=stats)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unmatching by statement line: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to unmatch statement line")
+
+
+# =============================================================================
+# AUTO-MATCH & CREATE TRANSACTION ENDPOINTS
+# =============================================================================
+
+
+@router.post("/sessions/{session_id}/auto-match", response_model=AutoMatchResponse)
+async def auto_match(
+    request: Request,
+    session_id: UUID,
+    body: Optional[AutoMatchRequest] = None,
+):
+    """
+    Run auto-matching algorithm on unmatched statement lines.
+
+    Matching rules:
+    - exact: Same date and amount
+    - high: Amount matches, date within 3 days
+    - medium: Amount matches within 5%, date within 7 days
+    - low: Partial match on description/reference
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        if body is None:
+            body = AutoMatchRequest()
+
+        date_tolerance = body.date_tolerance_days
+        confidence_threshold = body.confidence_threshold
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session
+            session = await conn.fetchrow(
+                """
+                SELECT status, account_id, statement_start_date, statement_end_date
+                FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2
+                """,
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Can only auto-match in in-progress sessions",
+                )
+
+            # Get unmatched statement lines
+            unmatched_lines = await conn.fetch(
+                """
+                SELECT id, date as transaction_date, description, reference, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit
+                FROM bank_statement_lines_v2
+                WHERE session_id = $1 AND match_status = 'unmatched'
+                ORDER BY transaction_date
+                """,
+                session_id,
+            )
+
+            # Get uncleared transactions
+            uncleared_txs = await conn.fetch(
+                """
+                SELECT id, transaction_date, description, reference_number as reference, amount, CASE WHEN amount >= 0 THEN true ELSE false END as is_credit
+                FROM bank_transactions
+                WHERE bank_account_id = $1
+                  AND tenant_id = $2
+                  AND transaction_date BETWEEN $3 AND GREATEST($4::date, COALESCE(
+                    (SELECT MAX(bsl.date::date) FROM bank_statement_lines_v2 bsl WHERE bsl.session_id = $5::uuid),
+                    $4::date
+                  ))
+                  AND is_cleared = false
+                ORDER BY transaction_date
+                """,
+                session["account_id"],
+                ctx["tenant_id"],
+                session["statement_start_date"],
+                session["statement_end_date"],
+                str(session_id),
+            )
+
+            matches_created = 0
+            suggestions: list = []
+            now = datetime.utcnow()
+
+            # =============================================
+            # STAGE 2: Bank Rules Engine
+            # =============================================
+            # Load active rules for this tenant
+            rule_rows = await conn.fetch(
+                """
+                SELECT id, tenant_id, name, description, is_active, sort_order, rule_type,
+                       bank_account_id, direction, condition_logic, conditions,
+                       contact_id, account_id, tax_rate_id, allocations,
+                       times_applied
+                FROM bank_matching_rules
+                WHERE tenant_id = $1 AND is_active = true
+                ORDER BY sort_order
+                """,
+                ctx["tenant_id"],
+            )
+
+            rules = [BankRule.from_row(dict(r)) for r in rule_rows]
+            rule_matched_line_ids = set()
+
+            if rules:
+                for line in unmatched_lines:
+                    stmt_dict = {
+                        "description": line["description"] or "",
+                        "amount": float(line["amount"]),
+                        "date": str(line["transaction_date"]),
+                        "reference": line["reference"] or "",
+                        "type": "credit" if line["is_credit"] else "debit",
+                    }
+
+                    result = evaluate_rules(rules, stmt_dict, str(session["account_id"]))
+
+                    if result.matched and result.action:
+                        # Try to find a matching transaction based on rule action
+                        matched_tx = None
+                        for tx in uncleared_txs:
+                            # Compare absolute amounts and verify direction
+                            line_amount = abs(float(line["amount"]))
+                            tx_amount = abs(float(tx["amount"]))
+                            if line_amount == tx_amount:
+                                # Verify direction: debit line = outflow (negative tx), credit line = inflow (positive tx)
+                                tx_is_outflow = float(tx["amount"]) < 0
+                                line_is_outflow = not line["is_credit"]
+                                if tx_is_outflow == line_is_outflow:
+                                    matched_tx = tx
+                                    break
+
+                        if matched_tx:
+                            match_id = uuid.uuid4()
+                            await conn.execute(
+                                """
+                                INSERT INTO reconciliation_matches (
+                                    id, tenant_id, session_id, statement_line_id, transaction_id,
+                                    match_type, confidence, created_by, created_at
+                                ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'high', $6, NOW())
+                                """,
+                                match_id, ctx["tenant_id"], session_id,
+                                line["id"], matched_tx["id"], ctx["user_id"],
+                            )
+
+                            await conn.execute(
+                                """
+                                UPDATE bank_transactions
+                                SET is_cleared = true, cleared_at = $2, matched_statement_line_id = $3
+                                WHERE id = $1
+                                """,
+                                matched_tx["id"], now, line["id"],
+                            )
+
+                            await conn.execute(
+                                """
+                                UPDATE bank_statement_lines_v2
+                                SET match_status = 'matched'
+                                WHERE id = $1
+                                """,
+                                line["id"],
+                            )
+
+                            # Update rule stats
+                            await conn.execute(
+                                """
+                                UPDATE bank_matching_rules
+                                SET times_applied = times_applied + 1, last_applied_at = NOW()
+                                WHERE id = $1
+                                """,
+                                uuid.UUID(result.rule_id),
+                            )
+
+                            matches_created += 1
+                            await record_match_history(conn, ctx["tenant_id"], session_id, line["id"], matched_tx["id"], "high", "rule", ctx["user_id"])
+                            rule_matched_line_ids.add(line["id"])
+                            uncleared_txs = [tx for tx in uncleared_txs if tx["id"] != matched_tx["id"]]
+
+                # Filter out rule-matched lines from the scoring loop
+                unmatched_lines = [l for l in unmatched_lines if l["id"] not in rule_matched_line_ids]
+
+            # =============================================
+            # STAGE 3: Fuzzy Scoring
+            # =============================================
+            for line in unmatched_lines:
+                best_match = None
+                best_confidence = None
+                best_score = 0.0
+                match_reasons = []
+
+                # Build statement line dict for scorer
+                stmt_dict = {
+                    "description": line["description"] or "",
+                    "amount": float(line["amount"]),
+                    "date": str(line["transaction_date"]),
+                    "reference": line["reference"] or "",
+                }
+
+                for tx in uncleared_txs:
+                    # Build transaction dict for scorer
+                    txn_dict = {
+                        "description": tx["description"] or "",
+                        "amount": float(tx["amount"]),
+                        "date": str(tx["transaction_date"]),
+                        "reference": tx["reference"] or "",
+                        "source_number": tx.get("source_number") or "",
+                        "contact_name": tx.get("contact_name") or "",
+                    }
+
+                    # Use new multi-factor scorer
+                    score_result = compute_match_score(stmt_dict, txn_dict)
+
+                    # Build human-readable reasons from score breakdown
+                    reasons = []
+                    if score_result.amount_score >= 0.9:
+                        reasons.append("Exact amount match")
+                    elif score_result.amount_score >= 0.7:
+                        reasons.append("Amount within 5%")
+                    elif score_result.amount_score >= 0.4:
+                        reasons.append("Amount within 10%")
+
+                    if score_result.reference_score >= 0.9:
+                        reasons.append("Reference match")
+                    elif score_result.reference_score >= 0.5:
+                        reasons.append("Partial reference match")
+
+                    if score_result.text_score >= 0.7:
+                        reasons.append("Description/contact match")
+                    elif score_result.text_score >= 0.4:
+                        reasons.append("Partial text match")
+
+                    if score_result.date_score >= 0.9:
+                        reasons.append("Exact date match")
+                    elif score_result.date_score >= 0.5:
+                        reasons.append("Date within 3 days")
+                    elif score_result.date_score > 0:
+                        reasons.append("Date within 7 days")
+
+                    if score_result.total_score > best_score:
+                        best_score = score_result.total_score
+                        best_match = tx
+                        best_confidence = score_result.confidence
+                        match_reasons = reasons
+
+                if best_match and best_confidence and best_confidence != "low":
+                    # Check if we should auto-match or suggest
+                    confidence_order = ["exact", "high", "medium", "low"]
+                    threshold_idx = confidence_order.index(confidence_threshold)
+                    match_idx = confidence_order.index(best_confidence)
+
+                    if match_idx <= threshold_idx:
+                        # Auto-match
+                        match_id = uuid.uuid4()
+                        await conn.execute(
+                            """
+                            INSERT INTO reconciliation_matches (
+                                id, tenant_id, session_id, statement_line_id, transaction_id,
+                                match_type, confidence, created_by, created_at
+                            ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', $6, $7, NOW())
+                            """,
+                            match_id,
+                            ctx["tenant_id"],
+                            session_id,
+                            line["id"],
+                            best_match["id"],
+                            best_confidence,
+                            ctx["user_id"],
+                        )
+
+                        await conn.execute(
+                            """
+                            UPDATE bank_transactions
+                            SET is_cleared = true,
+                                cleared_at = $2,
+                                matched_statement_line_id = $3
+                            WHERE id = $1
+                            """,
+                            best_match["id"],
+                            now,
+                            line["id"],
+                        )
+
+                        await conn.execute(
+                            """
+                            UPDATE bank_statement_lines_v2
+                            SET match_status = 'matched'
+                            WHERE id = $1
+                            """,
+                            line["id"],
+                        )
+
+                        matches_created += 1
+                        await record_match_history(conn, ctx["tenant_id"], session_id, line["id"], best_match["id"], best_confidence, "auto", ctx["user_id"])
+
+                        # Remove from available transactions
+                        uncleared_txs = [
+                            tx for tx in uncleared_txs if tx["id"] != best_match["id"]
+                        ]
+                    else:
+                        # Add suggestion
+                        suggestions.append(
+                            MatchSuggestion(
+                                statement_line_id=str(line["id"]),
+                                suggested_transaction_ids=[str(best_match["id"])],
+                                confidence=best_confidence,
+                                confidence_score=best_score,
+                                match_reasons=match_reasons,
+                            )
+                        )
+
+            # =============================================
+            # STAGE 4: History Learning
+            # =============================================
+            # Query past match_history to suggest matches for remaining unmatched lines
+            history_matched_line_ids = set()
+
+            if unmatched_lines and uncleared_txs:
+                for line in unmatched_lines:
+                    stmt_desc = line["description"] or ""
+                    stmt_normalized = normalize_bank_text(stmt_desc)
+                    stmt_amount = float(line["amount"])
+
+                    if not stmt_normalized:
+                        continue
+
+                    # Find past matches with similar description
+                    history_rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT ON (transaction_contact_id, transaction_account_id)
+                               transaction_description, transaction_amount,
+                               transaction_source_type, transaction_contact_name,
+                               transaction_contact_id, transaction_account_id,
+                               match_confidence, COUNT(*) as match_count
+                        FROM match_history
+                        WHERE tenant_id = $1
+                          AND statement_description_normalized = $2
+                        GROUP BY transaction_description, transaction_amount,
+                                 transaction_source_type, transaction_contact_name,
+                                 transaction_contact_id, transaction_account_id,
+                                 match_confidence
+                        ORDER BY transaction_contact_id, transaction_account_id, match_count DESC
+                        LIMIT 5
+                        """,
+                        ctx["tenant_id"],
+                        stmt_normalized,
+                    )
+
+                    if not history_rows:
+                        continue
+
+                    # Try to find a matching transaction from history pattern
+                    for hist in history_rows:
+                        best_tx = None
+                        best_score = 0.0
+
+                        for tx in uncleared_txs:
+                            score = 0.0
+                            # Amount match (use abs to handle sign differences)
+                            if abs(float(tx["amount"])) == abs(stmt_amount):
+                                score += 0.5
+                            elif abs(abs(float(tx["amount"])) - abs(stmt_amount)) / max(abs(stmt_amount), 1) < 0.05:
+                                score += 0.3
+
+                            # Contact match
+                            if hist["transaction_contact_id"] and tx.get("contact_id") == hist["transaction_contact_id"]:
+                                score += 0.3
+
+                            # Source type match
+                            if hist["transaction_source_type"] and tx.get("source_type") == hist["transaction_source_type"]:
+                                score += 0.2
+
+                            if score > best_score and score >= 0.5:
+                                best_score = score
+                                best_tx = tx
+
+                        if best_tx:
+                            # High confidence if seen 3+ times, medium otherwise
+                            confidence = "high" if int(hist["match_count"]) >= 3 else "medium"
+
+                            # Auto-match if high confidence
+                            if confidence == "high":
+                                match_id = uuid.uuid4()
+                                await conn.execute(
+                                    """
+                                    INSERT INTO reconciliation_matches (
+                                        id, tenant_id, session_id, statement_line_id, transaction_id,
+                                        match_type, confidence, created_by, created_at
+                                    ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', $6, $7, NOW())
+                                    """,
+                                    match_id, ctx["tenant_id"], session_id,
+                                    line["id"], best_tx["id"], confidence, ctx["user_id"],
+                                )
+
+                                await conn.execute(
+                                    """
+                                    UPDATE bank_transactions
+                                    SET is_cleared = true, cleared_at = $2, matched_statement_line_id = $3
+                                    WHERE id = $1
+                                    """,
+                                    best_tx["id"], now, line["id"],
+                                )
+
+                                await conn.execute(
+                                    """
+                                    UPDATE bank_statement_lines_v2
+                                    SET match_status = 'matched'
+                                    WHERE id = $1
+                                    """,
+                                    line["id"],
+                                )
+
+                                matches_created += 1
+                                await record_match_history(conn, ctx["tenant_id"], session_id, line["id"], best_tx["id"], confidence, "history", ctx["user_id"])
+                                history_matched_line_ids.add(line["id"])
+                                uncleared_txs = [tx for tx in uncleared_txs if tx["id"] != best_tx["id"]]
+                                break
+                            else:
+                                # Add as suggestion
+                                suggestions.append(
+                                    MatchSuggestion(
+                                        statement_line_id=str(line["id"]),
+                                        suggested_transaction_ids=[str(best_tx["id"])],
+                                        confidence=confidence,
+                                        confidence_score=best_score,
+                                        match_reasons=[f"History: similar to {int(hist['match_count'])} past matches"],
+                                    )
+                                )
+                                break
+
+                # Filter out history-matched lines
+                unmatched_lines = [l for l in unmatched_lines if l["id"] not in history_matched_line_ids]
+
+                if history_matched_line_ids:
+                    logger.info(f"Stage 4: History learning matched {len(history_matched_line_ids)} lines")
+
+            # =============================================
+            # STAGE 5: Combination Match (one-to-many / many-to-one)
+            # =============================================
+            combo_suggestions = []
+
+            # Re-fetch unmatched lines after fuzzy scoring
+            remaining_lines = [l for l in unmatched_lines if l["id"] not in {
+                uuid.UUID(s.statement_line_id) if isinstance(s.statement_line_id, str) else s.statement_line_id
+                for s in suggestions
+            }]
+
+            if remaining_lines and uncleared_txs:
+                combo_stmt_items = [
+                    CombinationItem(
+                        id=str(l["id"]),
+                        amount=float(l["amount"]),
+                        description=l["description"] or "",
+                        date=str(l["transaction_date"]),
+                    )
+                    for l in remaining_lines
+                ]
+                combo_txn_items = [
+                    CombinationItem(
+                        id=str(t["id"]),
+                        amount=float(t["amount"]),
+                        description=t["description"] or "",
+                        date=str(t["transaction_date"]),
+                    )
+                    for t in uncleared_txs
+                ]
+
+                combo_results = find_combination_matches(combo_stmt_items, combo_txn_items)
+
+                for cr in combo_results:
+                    combo_suggestions.append(CombinationSuggestionSchema(
+                        match_type=cr.match_type,
+                        target_id=cr.target_id,
+                        target_amount=cr.target_amount,
+                        combined_ids=cr.combined_ids,
+                        combined_amounts=cr.combined_amounts,
+                        combined_total=cr.combined_total,
+                        difference=cr.difference,
+                        confidence=cr.confidence,
+                        item_count=cr.item_count,
+                        description=cr.description,
+                    ))
+
+                logger.info(f"Stage 5: Found {len(combo_suggestions)} combination suggestions")
+
+            # Update session stats
+            await update_reconciliation_session_stats(conn, session_id)
+
+            # Get updated stats
+            stats = await get_session_statistics(conn, session_id)
+
+            return AutoMatchResponse(
+                matches_created=matches_created,
+                suggestions=suggestions,
+                combination_suggestions=combo_suggestions,
+                session_stats=stats,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error auto-matching: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to auto-match")
+
+
+@router.post(
+    "/sessions/{session_id}/transactions", response_model=CreateTransactionResponse
+)
+async def create_transaction_from_line(
+    request: Request,
+    session_id: UUID,
+    body: CreateTransactionFromLineRequest,
+):
+    """Create a bank transaction from an unmatched statement line."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session
+            session = await conn.fetchrow(
+                "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Can only create transactions in in-progress sessions",
+                )
+
+            # Get statement line
+            statement_line = await conn.fetchrow(
+                """
+                SELECT id, date as transaction_date, description, reference, amount, CASE WHEN type = 'credit' THEN true ELSE false END as is_credit, match_status
+                FROM bank_statement_lines_v2
+                WHERE id = $1 AND session_id = $2
+                """,
+                UUID(body.statement_line_id),
+                session_id,
+            )
+
+            if not statement_line:
+                raise HTTPException(status_code=404, detail="Statement line not found")
+
+            if statement_line["match_status"] == "matched":
+                raise HTTPException(
+                    status_code=400, detail="Statement line is already matched"
+                )
+
+            # Verify account exists
+            account = await conn.fetchrow(
+                "SELECT id FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                UUID(body.account_id),
+                ctx["tenant_id"],
+            )
+
+            if not account:
+                raise HTTPException(
+                    status_code=404, detail="Chart of accounts entry not found"
+                )
+
+            # Create transaction with proper journal (Iron Law 23: Atomic)
+            tx_id = uuid.uuid4()
+            now = datetime.utcnow()
+            is_credit = statement_line["is_credit"]
+
+            # Get bank CoA from bank_account
+            bank_acct = await conn.fetchrow(
+                "SELECT coa_id, name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                session["account_id"], ctx["tenant_id"],
+            )
+            if not bank_acct or not bank_acct["coa_id"]:
+                raise HTTPException(status_code=400, detail="Bank account has no linked COA")
+
+            bank_coa_id = bank_acct["coa_id"]
+            contra_account_id = UUID(body.account_id)
+            stmt_amount = abs(statement_line["amount"])
+
+            # Create journal entry
+            journal_id = uuid.uuid4()
+            posting_date = statement_line["transaction_date"]
+            journal_number = f"RECON-TX-{posting_date.strftime('%Y%m%d') if hasattr(posting_date, 'strftime') else posting_date}-{str(tx_id)[:8].upper()}"
+
+            await conn.execute(
+                """
+                INSERT INTO journal_entries (
+                    id, tenant_id, journal_number, journal_date, description,
+                    source_type, source_id, status, total_debit, total_credit,
+                    created_by, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, 'RECONCILIATION_TRANSACTION', $6, 'POSTED', $7, $7, $8, NOW(), NOW())
+                """,
+                journal_id, ctx["tenant_id"], journal_number, posting_date,
+                body.description or statement_line["description"],
+                UUID(body.statement_line_id), stmt_amount, ctx["user_id"],
+            )
+
+            # Journal lines: inflow (credit stmt) = Dr Bank, Cr Contra
+            #                outflow (debit stmt) = Dr Contra, Cr Bank
+            if is_credit:
+                debit_acct, credit_acct = bank_coa_id, contra_account_id
+            else:
+                debit_acct, credit_acct = contra_account_id, bank_coa_id
+
+            await conn.execute(
+                """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                   VALUES ($1, $2, 1, $3, $4, 0, $5)""",
+                uuid.uuid4(), journal_id, debit_acct, stmt_amount,
+                body.description or statement_line["description"],
+            )
+            await conn.execute(
+                """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                   VALUES ($1, $2, 2, $3, 0, $4, $5)""",
+                uuid.uuid4(), journal_id, credit_acct, stmt_amount,
+                body.description or statement_line["description"],
+            )
+
+            # Create bank_transaction with journal linkage
+            # Sign convention: positive = inflow (credit), negative = outflow (debit)
+            bank_amount = int(stmt_amount) if is_credit else -int(stmt_amount)
+            tx_type = "deposit" if is_credit else "withdrawal"
+
+            tx_id = await create_bank_transaction_for_journal(
+                conn,
+                tenant_id=ctx["tenant_id"],
+                bank_account_id=session["account_id"],
+                journal_id=journal_id,
+                transaction_date=posting_date,
+                transaction_type=tx_type,
+                amount=bank_amount,
+                reference_type="reconciliation",
+                reference_id=UUID(body.statement_line_id),
+                description=body.description or statement_line["description"],
+                payee_payer=None,
+                created_by=ctx["user_id"],
+            )
+
+            match_id = None
+            if body.auto_match:
+                # Auto-match the created transaction
+                match_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO reconciliation_matches (
+                        id, tenant_id, session_id, statement_line_id, transaction_id,
+                        match_type, confidence, created_by, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'manual', $6, NOW())
+                    """,
+                    match_id,
+                    ctx["tenant_id"],
+                    session_id,
+                    UUID(body.statement_line_id),
+                    tx_id,
+                    ctx["user_id"],
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE bank_transactions
+                    SET is_cleared = true,
+                        cleared_at = $2,
+                        matched_statement_line_id = $3
+                    WHERE id = $1
+                    """,
+                    tx_id,
+                    now,
+                    UUID(body.statement_line_id),
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE bank_statement_lines_v2
+                    SET match_status = 'matched'
+                    WHERE id = $1
+                    """,
+                    UUID(body.statement_line_id),
+                )
+
+            # Update session stats
+            await update_reconciliation_session_stats(conn, session_id)
+
+            # Get updated stats
+            stats = await get_session_statistics(conn, session_id)
+
+            return CreateTransactionResponse(
+                transaction_id=str(tx_id),
+                match_id=str(match_id) if match_id else None,
+                session_stats=stats,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating transaction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create transaction")
+
+
+# =============================================================================
+# COMPLETE SESSION ENDPOINT
+# =============================================================================
+
+
+
+
+# =============================================================================
+# MANUAL RECONCILIATION ENDPOINTS
+# =============================================================================
+
+
+@router.post("/sessions/{session_id}/clear-transactions")
+async def clear_transactions(
+    request: Request,
+    session_id: UUID,
+    body: ClearTransactionsRequest,
+):
+    """
+    Set which transactions are cleared in a manual reconciliation session.
+    Uses SERIALIZABLE isolation and diff-based updates (Law 13, 23).
+    Only changes what changed — no full wipe-and-rewrite.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            async with conn.transaction(isolation="serializable"):
+                # 1. Lock session FOR UPDATE
+                session = await conn.fetchrow(
+                    """
+                    SELECT id, status, account_id, statement_ending_balance, opening_balance, mode
+                    FROM reconciliation_sessions
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                if session["status"] != "in_progress":
+                    raise HTTPException(
+                        status_code=409, detail="Session sudah selesai"
+                    )
+
+                # 2. Diff-based: only change what changed
+                currently_cleared_rows = await conn.fetch(
+                    """
+                    SELECT id FROM bank_transactions
+                    WHERE reconciled_session_id = $1 AND tenant_id = $2
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+                currently_cleared = set(str(r["id"]) for r in currently_cleared_rows)
+                new_cleared = set(body.transaction_ids)
+
+                to_clear = new_cleared - currently_cleared
+                to_unclear = currently_cleared - new_cleared
+
+                now = datetime.utcnow()
+
+                # 3. Batch update only diffs
+                if to_clear:
+                    to_clear_uuids = [UUID(tid) for tid in to_clear]
+                    await conn.execute(
+                        """
+                        UPDATE bank_transactions
+                        SET is_cleared = true,
+                            cleared_at = $2,
+                            reconciled_session_id = $1
+                        WHERE id = ANY($3) AND tenant_id = $4
+                        """,
+                        session_id,
+                        now,
+                        to_clear_uuids,
+                        ctx["tenant_id"],
+                    )
+
+                if to_unclear:
+                    to_unclear_uuids = [UUID(tid) for tid in to_unclear]
+                    await conn.execute(
+                        """
+                        UPDATE bank_transactions
+                        SET is_cleared = false,
+                            cleared_at = NULL,
+                            reconciled_session_id = NULL
+                        WHERE id = ANY($1) AND tenant_id = $2
+                        """,
+                        to_unclear_uuids,
+                        ctx["tenant_id"],
+                    )
+
+                # 4. Compute balance proof
+                stats = await conn.fetchrow(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0) AS cleared_inflows,
+                        COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS cleared_outflows,
+                        COUNT(*) AS cleared_count
+                    FROM bank_transactions
+                    WHERE reconciled_session_id = $1 AND tenant_id = $2
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                opening = int(session["opening_balance"] or 0)
+                cleared_inflows = int(stats["cleared_inflows"])
+                cleared_outflows = int(stats["cleared_outflows"])
+                cleared_balance = opening + cleared_inflows - cleared_outflows
+                statement_ending = int(session["statement_ending_balance"])
+                difference = statement_ending - cleared_balance
+
+                # 5. Update session stats
+                await conn.execute(
+                    """
+                    UPDATE reconciliation_sessions
+                    SET cleared_balance = $2,
+                        difference = $3,
+                        cleared_count = $4,
+                        updated_at = $5
+                    WHERE id = $1
+                    """,
+                    session_id,
+                    cleared_balance,
+                    difference,
+                    int(stats["cleared_count"]),
+                    now,
+                )
+
+                return {
+                    "success": True,
+                    "cleared_count": int(stats["cleared_count"]),
+                    "cleared_inflows": cleared_inflows,
+                    "cleared_outflows": cleared_outflows,
+                    "cleared_balance": cleared_balance,
+                    "statement_ending_balance": statement_ending,
+                    "difference": difference,
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing transactions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to clear transactions")
+
+
+@router.post("/sessions/{session_id}/manual-complete")
+async def manual_complete_session(
+    request: Request,
+    session_id: UUID,
+):
+    """
+    Complete a manual reconciliation session when difference = 0.
+    No adjustment needed.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            async with conn.transaction(isolation="serializable"):
+                session = await conn.fetchrow(
+                    """
+                    SELECT id, status, account_id, statement_ending_balance,
+                           opening_balance, mode
+                    FROM reconciliation_sessions
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                if session["status"] != "in_progress":
+                    raise HTTPException(
+                        status_code=409, detail="Session sudah selesai"
+                    )
+
+                # Compute cleared balance
+                opening = int(session["opening_balance"] or 0)
+                stats = await conn.fetchrow(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0) AS inflows,
+                        COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS outflows,
+                        COUNT(*) AS cnt
+                    FROM bank_transactions
+                    WHERE reconciled_session_id = $1 AND tenant_id = $2
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                cleared_balance = opening + int(stats["inflows"]) - int(stats["outflows"])
+                statement_ending = int(session["statement_ending_balance"])
+                difference = statement_ending - cleared_balance
+
+                if difference != 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Selisih belum 0 (Rp {difference:,}). Gunakan penyesuaian.",
+                    )
+
+                now = datetime.utcnow()
+
+                # Mark cleared transactions as reconciled
+                await conn.execute(
+                    """
+                    UPDATE bank_transactions
+                    SET is_reconciled = true,
+                        reconciled_at = $2
+                    WHERE reconciled_session_id = $1 AND tenant_id = $3
+                    """,
+                    session_id,
+                    now,
+                    ctx["tenant_id"],
+                )
+
+                # Complete session
+                await conn.execute(
+                    """
+                    UPDATE reconciliation_sessions
+                    SET status = 'completed',
+                        completed_at = $2,
+                        difference = 0,
+                        cleared_balance = $3,
+                        updated_at = $2
+                    WHERE id = $1
+                    """,
+                    session_id,
+                    now,
+                    cleared_balance,
+                )
+
+                return {
+                    "success": True,
+                    "session_id": str(session_id),
+                    "status": "completed",
+                    "cleared_count": int(stats["cnt"]),
+                    "statement_ending_balance": statement_ending,
+                    "cleared_balance": cleared_balance,
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing manual session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to complete session")
+
+
+@router.post("/sessions/{session_id}/manual-adjustment")
+async def manual_adjustment(
+    request: Request,
+    session_id: UUID,
+    body: ManualAdjustmentRequest,
+):
+    """
+    Create an adjustment journal to close a manual reconciliation session.
+    Full Iron Laws compliance: 4 (double-entry), 6 (source traceability),
+    14 (idempotency), 17 (currency snapshot), 23 (atomicity).
+
+    After creating the journal, the session is marked completed.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Law 14: Idempotency check
+            idempotency_key = f"recon-adj-{session_id}"
+            existing = await conn.fetchrow(
+                """
+                SELECT result FROM idempotency_keys
+                WHERE key = $1 AND tenant_id = $2 AND expires_at > NOW()
+                """,
+                idempotency_key,
+                ctx["tenant_id"],
+            )
+            if existing and existing["result"]:
+                import json
+                return json.loads(existing["result"])
+
+            async with conn.transaction(isolation="serializable"):
+                # Lock session
+                session = await conn.fetchrow(
+                    """
+                    SELECT id, status, account_id, statement_ending_balance,
+                           opening_balance, mode
+                    FROM reconciliation_sessions
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    session_id,
+                    ctx["tenant_id"],
+                )
+
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                if session["status"] != "in_progress":
+                    raise HTTPException(
+                        status_code=409, detail="Session sudah selesai"
+                    )
+
+
+                # Advisory lock (Bank Sync Rule 4)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TX:recon-adj:{session_id}:{session['account_id']}",
+                )
+                # Get bank account COA
+                bank_account = await conn.fetchrow(
+                    "SELECT coa_id, name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                    session["account_id"],
+                    ctx["tenant_id"],
+                )
+
+                if not bank_account or not bank_account["coa_id"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Bank account has no linked COA account",
+                    )
+
+                # Determine adjustment account
+                adj_account_id = None
+                if body.adjustment_account_id:
+                    adj_account_id = UUID(body.adjustment_account_id)
+                else:
+                    # Default: find misc expense account
+                    adj_account_id = await conn.fetchval(
+                        """
+                        SELECT id FROM chart_of_accounts
+                        WHERE tenant_id = $1 AND (
+                            code LIKE '%%9%%' OR name ILIKE '%%lain%%' OR name ILIKE '%%misc%%'
+                        )
+                        AND type = 'EXPENSE'
+                        ORDER BY code
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                    )
+                    if not adj_account_id:
+                        # Fallback: any expense account
+                        adj_account_id = await conn.fetchval(
+                            """
+                            SELECT id FROM chart_of_accounts
+                            WHERE tenant_id = $1 AND type = 'EXPENSE'
+                            ORDER BY code
+                            LIMIT 1
+                            """,
+                            ctx["tenant_id"],
+                        )
+
+                if not adj_account_id and not body.adjustment_lines:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No adjustment account found. Please specify one.",
+                    )
+
+                now = datetime.utcnow()
+                amount = abs(body.amount)
+
+                # ---- Multi-line adjustment support ----
+                # Backward compat: wrap single account_id into adjustment_lines
+                if not body.adjustment_lines and adj_account_id:
+                    body.adjustment_lines = [
+                        AdjustmentLineItem(account_id=str(adj_account_id), amount=amount)
+                    ]
+
+                if body.adjustment_lines:
+                    # Validate sum equals difference
+                    line_total = sum(line.amount for line in body.adjustment_lines)
+                    if line_total != amount:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Sum of adjustment lines ({line_total}) does not equal difference ({amount})"
+                        )
+
+                    # Validate no duplicates
+                    account_ids = [line.account_id for line in body.adjustment_lines]
+                    if len(account_ids) != len(set(account_ids)):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Duplicate account IDs in adjustment lines"
+                        )
+
+                    # Validate all amounts positive
+                    if any(line.amount <= 0 for line in body.adjustment_lines):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="All line amounts must be positive"
+                        )
+
+                # Law 6: Source traceability
+                source_type = "RECONCILIATION_ADJUSTMENT"
+                source_id = str(session_id)
+
+                # Law 17: Currency snapshot (IDR, rate 1.0)
+                currency_code = "IDR"
+                exchange_rate = 1.0
+
+                # Generate journal number
+                journal_number = f"RECON-ADJ-{now.strftime('%Y%m%d')}-{str(session_id)[:8].upper()}"
+
+                # Law 4: Double-entry journal creation
+                journal_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, entry_date, reference, description,
+                        source_type, source_id, status, total_debit, total_credit,
+                        created_by, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'POSTED', $8, $8, $9, $10, $10)
+                    """,
+                    journal_id,
+                    ctx["tenant_id"],
+                    now.date(),
+                    journal_number,
+                    f"Penyesuaian Rekonsiliasi: {body.description}",
+                    source_type,
+                    source_id,
+                    amount,
+                    ctx["user_id"],
+                    now,
+                )
+
+                # Journal lines — N+1 multi-line support
+                # If body.amount > 0 (bank > book): DEBIT bank for total, CREDIT each contra
+                # If body.amount < 0 (book > bank): DEBIT each contra, CREDIT bank for total
+                line_number = 1
+
+                if body.amount > 0:
+                    # Bank has more: Debit Bank (one line), Credit each contra account
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id,
+                            debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid.uuid4(),
+                        journal_id,
+                        line_number,
+                        bank_account["coa_id"],
+                        amount,
+                        body.description,
+                    )
+                    line_number += 1
+
+                    for adj_line in body.adjustment_lines:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id,
+                                debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            """,
+                            uuid.uuid4(),
+                            journal_id,
+                            line_number,
+                            UUID(adj_line.account_id),
+                            adj_line.amount,
+                            body.description,
+                        )
+                        line_number += 1
+                else:
+                    # Bank has less: Debit each contra account, Credit Bank (one line)
+                    for adj_line in body.adjustment_lines:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id,
+                                debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                            """,
+                            uuid.uuid4(),
+                            journal_id,
+                            line_number,
+                            UUID(adj_line.account_id),
+                            adj_line.amount,
+                            body.description,
+                        )
+                        line_number += 1
+
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id,
+                            debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        uuid.uuid4(),
+                        journal_id,
+                        line_number,
+                        bank_account["coa_id"],
+                        amount,
+                        body.description,
+                    )
+
+                # Iron Law 23: Create bank_transaction for manual adjustment
+                adj_bank_amount_signed = body.amount  # positive = bank has more = inflow
+                adj_tx_id = await create_bank_transaction_for_journal(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    bank_account_id=session["account_id"],
+                    journal_id=journal_id,
+                    transaction_date=now.date(),
+                    transaction_type="adjustment",
+                    amount=int(adj_bank_amount_signed),
+                    reference_type="reconciliation_adjustment",
+                    reference_id=session_id,
+                    description=f"Penyesuaian Rekonsiliasi: {body.description}",
+                    created_by=ctx["user_id"],
+                )
+
+                # Link adjustment bank_txn to session so bulk UPDATE includes it
+                await conn.execute(
+                    """UPDATE bank_transactions
+                       SET reconciled_session_id = $1, is_cleared = true, cleared_at = $2
+                       WHERE id = $3""",
+                    session_id, now, adj_tx_id,
+                )
+
+                # Law 23: Atomic — complete session in same transaction
+                # Mark cleared transactions as reconciled
+                await conn.execute(
+                    """
+                    UPDATE bank_transactions
+                    SET is_reconciled = true,
+                        reconciled_at = $2
+                    WHERE reconciled_session_id = $1 AND tenant_id = $3
+                    """,
+                    session_id,
+                    now,
+                    ctx["tenant_id"],
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE reconciliation_sessions
+                    SET status = 'completed',
+                        completed_at = $2,
+                        difference = 0,
+                        updated_at = $2
+                    WHERE id = $1
+                    """,
+                    session_id,
+                    now,
+                )
+
+                response_data = {
+                    "success": True,
+                    "journal_id": str(journal_id),
+                    "journal_number": journal_number,
+                    "amount": body.amount,
+                    "session_completed": True,
+                }
+
+                # Store idempotency result (Law 14)
+                try:
+                    import json
+                    await conn.execute(
+                        """
+                        INSERT INTO idempotency_keys (key, tenant_id, result, created_at, expires_at)
+                        VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '24 hours')
+                        ON CONFLICT (key, tenant_id) DO NOTHING
+                        """,
+                        idempotency_key,
+                        ctx["tenant_id"],
+                        json.dumps(response_data),
+                    )
+                except Exception:
+                    pass  # Idempotency storage failure is non-fatal
+
+                return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating manual adjustment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create adjustment")
+
+
+@router.post("/sessions/{session_id}/complete", response_model=CompleteResponse)
+async def complete_session(
+    request: Request,
+    session_id: UUID,
+    body: CompleteSessionRequest,
+):
+    """
+    Complete a reconciliation session.
+
+    Validates that the difference is zero (or covered by adjustments),
+    creates journal entries for adjustments, marks transactions as reconciled,
+    and updates session status to completed.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify session
+            session = await conn.fetchrow(
+                """
+                SELECT id, status, account_id, statement_beginning_balance,
+                       statement_ending_balance, cleared_balance, difference
+                FROM reconciliation_sessions
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                session_id,
+                ctx["tenant_id"],
+            )
+
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if session["status"] != "in_progress":
+                raise HTTPException(
+                    status_code=400, detail="Can only complete in-progress sessions"
+                )
+
+            # Calculate adjustments total
+            adjustments_total = sum(adj.amount for adj in body.adjustments)
+            current_difference = session["difference"] or 0
+            final_difference = current_difference - adjustments_total
+
+            # Validate difference is covered
+            if final_difference != 0 and len(body.adjustments) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot complete session with difference of {final_difference}. Add adjustments to balance.",
+                )
+
+            if abs(final_difference) > 100:  # Allow small rounding differences
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Remaining difference of {final_difference} is too large. Add more adjustments.",
+                )
+
+            now = datetime.utcnow()
+            journal_entries_created = 0
+
+            # Get bank account COA entry
+            bank_account = await conn.fetchrow(
+                "SELECT coa_id FROM bank_accounts WHERE id = $1", session["account_id"]
+            )
+
+            # Create adjustments and journal entries
+            for adj in body.adjustments:
+                adj_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO reconciliation_adjustments (
+                        id, tenant_id, session_id, type, amount, description,
+                        account_id, created_by, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    adj_id,
+                    ctx["tenant_id"],
+                    session_id,
+                    adj.type,
+                    adj.amount,
+                    adj.description,
+                    UUID(adj.account_id),
+                    ctx["user_id"],
+                    now,
+                )
+
+                # Create journal entry for adjustment
+                journal_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, entry_date, reference, description,
+                        source_type, source_id, status, created_by, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'reconciliation', $6, 'posted', $7, $8, $8)
+                    """,
+                    journal_id,
+                    ctx["tenant_id"],
+                    now.date(),
+                    f"RECON-ADJ-{session_id.hex[:8]}",
+                    f"Bank Reconciliation Adjustment: {adj.description}",
+                    session_id,
+                    ctx["user_id"],
+                    now,
+                )
+
+                line_num = 0
+
+                # Create journal entry lines
+                # Debit/Credit depends on adjustment type
+                if adj.type in ["bank_fee", "correction"]:
+                    # Fee: Debit expense, Credit bank
+                    line_num += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid.uuid4(),
+                        journal_id,
+                        line_num,
+                        UUID(adj.account_id),
+                        adj.amount,
+                        adj.description,
+                    )
+                    if bank_account and bank_account["coa_id"]:
+                        line_num += 1
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            """,
+                            uuid.uuid4(),
+                            journal_id,
+                            line_num,
+                            bank_account["coa_id"],
+                            adj.amount,
+                            adj.description,
+                        )
+                elif adj.type == "interest":
+                    # Interest: Debit bank, Credit income
+                    if bank_account and bank_account["coa_id"]:
+                        line_num += 1
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                            """,
+                            uuid.uuid4(),
+                            journal_id,
+                            line_num,
+                            bank_account["coa_id"],
+                            adj.amount,
+                            adj.description,
+                        )
+                    line_num += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        uuid.uuid4(),
+                        journal_id,
+                        line_num,
+                        UUID(adj.account_id),
+                        adj.amount,
+                        adj.description,
+                    )
+                else:
+                    # Other: Default to debit expense, credit bank
+                    line_num += 1
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid.uuid4(),
+                        journal_id,
+                        line_num,
+                        UUID(adj.account_id),
+                        adj.amount,
+                        adj.description,
+                    )
+                    if bank_account and bank_account["coa_id"]:
+                        line_num += 1
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            """,
+                            uuid.uuid4(),
+                            journal_id,
+                            line_num,
+                            bank_account["coa_id"],
+                            adj.amount,
+                            adj.description,
+                        )
+
+                journal_entries_created += 1
+
+            # Mark all matched transactions as reconciled
+            await conn.execute(
+                """
+                UPDATE bank_transactions
+                SET is_reconciled = true,
+                    reconciled_at = $2,
+                    reconciled_session_id = $1
+                WHERE tenant_id = $3
+                  AND matched_statement_line_id IN (
+                      SELECT id FROM bank_statement_lines_v2 WHERE session_id = $1
+                  )
+                """,
+                session_id,
+                now,
+                ctx["tenant_id"],
+            )
+
+            # Get final statistics
+            matched_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM bank_statement_lines_v2
+                WHERE session_id = $1 AND match_status = 'matched'
+                """,
+                session_id,
+            )
+
+            # Update session status to completed
+            await conn.execute(
+                """
+                UPDATE reconciliation_sessions
+                SET status = 'completed',
+                    completed_at = $2,
+                    difference = $3,
+                    updated_at = $2
+                WHERE id = $1
+                """,
+                session_id,
+                now,
+                final_difference,
+            )
+
+            return CompleteResponse(
+                success=True,
+                completed_at=now.isoformat(),
+                final_stats=FinalStats(
+                    total_matched=matched_count or 0,
+                    total_adjustments=len(body.adjustments),
+                    opening_difference=current_difference,
+                    closing_difference=adjustments_total,
+                    final_difference=final_difference,
+                ),
+                journal_entries_created=journal_entries_created,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to complete session")
+
+
+
+
+# =============================================================================
+# MATCH HISTORY RECORDING
+# =============================================================================
+
+
+async def record_match_history(
+    conn,
+    tenant_id: str,
+    session_id,
+    statement_line_id,
+    transaction_id,
+    match_confidence: str = "manual",
+    match_method: str = "manual",
+    user_id=None,
+):
+    """Record a match pattern in match_history for the learning loop."""
+    try:
+        # Fetch statement line details
+        stmt = await conn.fetchrow(
+            """SELECT description, amount, reference, type
+               FROM bank_statement_lines_v2 WHERE id = $1""",
+            statement_line_id,
+        )
+        if not stmt:
+            return
+
+        # Fetch transaction details
+        txn = await conn.fetchrow(
+            """SELECT description, amount, reference_type, reference_number,
+                      payee_payer, bank_account_id
+               FROM bank_transactions WHERE id = $1""",
+            transaction_id,
+        )
+        if not txn:
+            return
+
+        # Normalize description
+        normalized_desc = normalize_bank_text(stmt["description"] or "")
+
+        await conn.execute(
+            """
+            INSERT INTO match_history (
+                tenant_id, session_id,
+                statement_description, statement_description_normalized,
+                statement_amount, statement_reference, statement_type,
+                transaction_description, transaction_amount,
+                transaction_source_type, transaction_source_number,
+                transaction_contact_name, transaction_contact_id, transaction_account_id,
+                match_confidence, match_method, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            """,
+            tenant_id,
+            session_id,
+            stmt["description"],
+            normalized_desc,
+            stmt["amount"],
+            stmt["reference"],
+            stmt["type"],
+            txn["description"],
+            txn["amount"],
+            txn["reference_type"],
+            txn["reference_number"],
+            txn["payee_payer"],
+            None,  # contact_id not available in bank_transactions
+            txn["bank_account_id"],
+            match_confidence,
+            match_method,
+            user_id,
+        )
+    except Exception as e:
+        # Non-critical — don't fail the match if history recording fails
+        logger.warning(f"Failed to record match history: {e}")
+
+
+# =============================================================================
+# BANK MATCHING RULES - CRUD ENDPOINTS
+# =============================================================================
+
+
+@router.get("/bank-rules", response_model=BankRulesListResponse)
+async def list_bank_rules(
+    request: Request,
+    bank_account_id: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+):
+    """List bank matching rules for the tenant."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            query = """
+                SELECT id, name, description, is_active, sort_order, rule_type,
+                       bank_account_id, direction, condition_logic, conditions,
+                       contact_id, account_id, tax_rate_id,
+                       times_applied, times_confirmed, times_rejected,
+                       last_applied_at, created_at
+                FROM bank_matching_rules
+                WHERE tenant_id = $1
+            """
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            if bank_account_id:
+                query += f" AND (bank_account_id = ${param_idx} OR bank_account_id IS NULL)"
+                params.append(bank_account_id)
+                param_idx += 1
+
+            if is_active is not None:
+                query += f" AND is_active = ${param_idx}"
+                params.append(is_active)
+                param_idx += 1
+
+            query += " ORDER BY sort_order, created_at"
+
+            rows = await conn.fetch(query, *params)
+
+            rules = []
+            for row in rows:
+                conditions = row["conditions"] or []
+                if isinstance(conditions, str):
+                    conditions = json.loads(conditions)
+
+                rules.append(BankRuleItem(
+                    id=str(row["id"]),
+                    name=row["name"],
+                    description=row["description"],
+                    is_active=row["is_active"],
+                    sort_order=row["sort_order"],
+                    rule_type=row["rule_type"],
+                    bank_account_id=str(row["bank_account_id"]) if row["bank_account_id"] else None,
+                    direction=row["direction"],
+                    condition_logic=row["condition_logic"],
+                    conditions=[
+                        RuleConditionSchema(
+                            field=c.get("field", ""),
+                            operator=c.get("operator", ""),
+                            value=str(c.get("value", "")),
+                            value2=str(c.get("value2", "")) if c.get("value2") else None,
+                        )
+                        for c in conditions
+                    ],
+                    contact_id=str(row["contact_id"]) if row["contact_id"] else None,
+                    account_id=str(row["account_id"]) if row["account_id"] else None,
+                    tax_rate_id=str(row["tax_rate_id"]) if row["tax_rate_id"] else None,
+                    times_applied=row["times_applied"],
+                    times_confirmed=row["times_confirmed"],
+                    times_rejected=row["times_rejected"],
+                    last_applied_at=str(row["last_applied_at"]) if row["last_applied_at"] else None,
+                    created_at=str(row["created_at"]),
+                ))
+
+            return BankRulesListResponse(data=rules, total=len(rules))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing bank rules: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list bank rules")
+
+
+@router.post("/bank-rules", response_model=BankRuleCreateResponse)
+async def create_bank_rule(
+    request: Request,
+    body: CreateBankRuleRequest,
+):
+    """Create a new bank matching rule."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Get next sort_order
+            max_order = await conn.fetchval(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM bank_matching_rules WHERE tenant_id = $1",
+                ctx["tenant_id"],
+            )
+
+            rule_id = uuid.uuid4()
+            conditions_json = json.dumps([
+                {"field": c.field, "operator": c.operator, "value": c.value, "value2": c.value2}
+                for c in body.conditions
+            ])
+            allocations_json = json.dumps(body.allocations) if body.allocations else None
+
+            await conn.execute(
+                """
+                INSERT INTO bank_matching_rules (
+                    id, tenant_id, name, description, sort_order, direction,
+                    bank_account_id, condition_logic, conditions,
+                    contact_id, account_id, tax_rate_id, allocations,
+                    created_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14)
+                """,
+                rule_id,
+                ctx["tenant_id"],
+                body.name,
+                body.description,
+                max_order,
+                body.direction,
+                UUID(body.bank_account_id) if body.bank_account_id else None,
+                body.condition_logic,
+                conditions_json,
+                UUID(body.contact_id) if body.contact_id else None,
+                UUID(body.account_id) if body.account_id else None,
+                UUID(body.tax_rate_id) if body.tax_rate_id else None,
+                allocations_json,
+                ctx["user_id"],
+            )
+
+            # Fetch the created rule
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, description, is_active, sort_order, rule_type,
+                       bank_account_id, direction, condition_logic, conditions,
+                       contact_id, account_id, tax_rate_id,
+                       times_applied, times_confirmed, times_rejected,
+                       last_applied_at, created_at
+                FROM bank_matching_rules WHERE id = $1
+                """,
+                rule_id,
+            )
+
+            conditions = row["conditions"] or []
+            if isinstance(conditions, str):
+                conditions = json.loads(conditions)
+
+            rule_item = BankRuleItem(
+                id=str(row["id"]),
+                name=row["name"],
+                description=row["description"],
+                is_active=row["is_active"],
+                sort_order=row["sort_order"],
+                rule_type=row["rule_type"],
+                bank_account_id=str(row["bank_account_id"]) if row["bank_account_id"] else None,
+                direction=row["direction"],
+                condition_logic=row["condition_logic"],
+                conditions=[
+                    RuleConditionSchema(
+                        field=c.get("field", ""),
+                        operator=c.get("operator", ""),
+                        value=str(c.get("value", "")),
+                        value2=str(c.get("value2", "")) if c.get("value2") else None,
+                    )
+                    for c in conditions
+                ],
+                contact_id=str(row["contact_id"]) if row["contact_id"] else None,
+                account_id=str(row["account_id"]) if row["account_id"] else None,
+                tax_rate_id=str(row["tax_rate_id"]) if row["tax_rate_id"] else None,
+                times_applied=row["times_applied"],
+                times_confirmed=row["times_confirmed"],
+                times_rejected=row["times_rejected"],
+                last_applied_at=str(row["last_applied_at"]) if row["last_applied_at"] else None,
+                created_at=str(row["created_at"]),
+            )
+
+            return BankRuleCreateResponse(success=True, rule=rule_item)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating bank rule: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create bank rule")
+
+
+@router.put("/bank-rules/{rule_id}", response_model=BankRuleUpdateResponse)
+async def update_bank_rule(
+    request: Request,
+    rule_id: UUID,
+    body: UpdateBankRuleRequest,
+):
+    """Update an existing bank matching rule."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Verify rule exists
+            existing = await conn.fetchrow(
+                "SELECT id FROM bank_matching_rules WHERE id = $1 AND tenant_id = $2",
+                rule_id, ctx["tenant_id"],
+            )
+            if not existing:
+                raise HTTPException(status_code=404, detail="Rule not found")
+
+            # Build dynamic UPDATE
+            updates = []
+            params = []
+            param_idx = 1
+
+            if body.name is not None:
+                updates.append(f"name = ${param_idx}")
+                params.append(body.name)
+                param_idx += 1
+
+            if body.description is not None:
+                updates.append(f"description = ${param_idx}")
+                params.append(body.description)
+                param_idx += 1
+
+            if body.is_active is not None:
+                updates.append(f"is_active = ${param_idx}")
+                params.append(body.is_active)
+                param_idx += 1
+
+            if body.direction is not None:
+                updates.append(f"direction = ${param_idx}")
+                params.append(body.direction)
+                param_idx += 1
+
+            if body.bank_account_id is not None:
+                updates.append(f"bank_account_id = ${param_idx}")
+                params.append(UUID(body.bank_account_id) if body.bank_account_id else None)
+                param_idx += 1
+
+            if body.condition_logic is not None:
+                updates.append(f"condition_logic = ${param_idx}")
+                params.append(body.condition_logic)
+                param_idx += 1
+
+            if body.conditions is not None:
+                conditions_json = json.dumps([
+                    {"field": c.field, "operator": c.operator, "value": c.value, "value2": c.value2}
+                    for c in body.conditions
+                ])
+                updates.append(f"conditions = ${param_idx}::jsonb")
+                params.append(conditions_json)
+                param_idx += 1
+
+            if body.contact_id is not None:
+                updates.append(f"contact_id = ${param_idx}")
+                params.append(UUID(body.contact_id) if body.contact_id else None)
+                param_idx += 1
+
+            if body.account_id is not None:
+                updates.append(f"account_id = ${param_idx}")
+                params.append(UUID(body.account_id) if body.account_id else None)
+                param_idx += 1
+
+            if body.tax_rate_id is not None:
+                updates.append(f"tax_rate_id = ${param_idx}")
+                params.append(UUID(body.tax_rate_id) if body.tax_rate_id else None)
+                param_idx += 1
+
+            if body.allocations is not None:
+                updates.append(f"allocations = ${param_idx}::jsonb")
+                params.append(json.dumps(body.allocations))
+                param_idx += 1
+
+            if not updates:
+                raise HTTPException(status_code=400, detail="No fields to update")
+
+            updates.append(f"updated_at = NOW()")
+            params.append(rule_id)
+            params.append(ctx["tenant_id"])
+
+            query = f"""
+                UPDATE bank_matching_rules
+                SET {', '.join(updates)}
+                WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+            """
+
+            await conn.execute(query, *params)
+
+            # Fetch updated rule
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, description, is_active, sort_order, rule_type,
+                       bank_account_id, direction, condition_logic, conditions,
+                       contact_id, account_id, tax_rate_id,
+                       times_applied, times_confirmed, times_rejected,
+                       last_applied_at, created_at
+                FROM bank_matching_rules WHERE id = $1
+                """,
+                rule_id,
+            )
+
+            conditions = row["conditions"] or []
+            if isinstance(conditions, str):
+                conditions = json.loads(conditions)
+
+            rule_item = BankRuleItem(
+                id=str(row["id"]),
+                name=row["name"],
+                description=row["description"],
+                is_active=row["is_active"],
+                sort_order=row["sort_order"],
+                rule_type=row["rule_type"],
+                bank_account_id=str(row["bank_account_id"]) if row["bank_account_id"] else None,
+                direction=row["direction"],
+                condition_logic=row["condition_logic"],
+                conditions=[
+                    RuleConditionSchema(
+                        field=c.get("field", ""),
+                        operator=c.get("operator", ""),
+                        value=str(c.get("value", "")),
+                        value2=str(c.get("value2", "")) if c.get("value2") else None,
+                    )
+                    for c in conditions
+                ],
+                contact_id=str(row["contact_id"]) if row["contact_id"] else None,
+                account_id=str(row["account_id"]) if row["account_id"] else None,
+                tax_rate_id=str(row["tax_rate_id"]) if row["tax_rate_id"] else None,
+                times_applied=row["times_applied"],
+                times_confirmed=row["times_confirmed"],
+                times_rejected=row["times_rejected"],
+                last_applied_at=str(row["last_applied_at"]) if row["last_applied_at"] else None,
+                created_at=str(row["created_at"]),
+            )
+
+            return BankRuleUpdateResponse(success=True, rule=rule_item)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating bank rule: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update bank rule")
+
+
+@router.delete("/bank-rules/{rule_id}", response_model=BankRuleDeleteResponse)
+async def delete_bank_rule(
+    request: Request,
+    rule_id: UUID,
+):
+    """Delete (deactivate) a bank matching rule."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            result = await conn.execute(
+                """
+                UPDATE bank_matching_rules
+                SET is_active = false, updated_at = NOW()
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                rule_id, ctx["tenant_id"],
+            )
+
+            if result == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Rule not found")
+
+            return BankRuleDeleteResponse(success=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting bank rule: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete bank rule")
+
+
+@router.post("/bank-rules/reorder", response_model=ReorderRulesResponse)
+async def reorder_bank_rules(
+    request: Request,
+    body: ReorderRulesRequest,
+):
+    """Reorder bank matching rules."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            for idx, rid in enumerate(body.rule_ids):
+                await conn.execute(
+                    """
+                    UPDATE bank_matching_rules
+                    SET sort_order = $1, updated_at = NOW()
+                    WHERE id = $2 AND tenant_id = $3
+                    """,
+                    idx, UUID(rid), ctx["tenant_id"],
+                )
+
+            return ReorderRulesResponse(success=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reordering bank rules: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reorder bank rules")
+
+
+
+@router.post("/bank-rules/from-match", response_model=CreateRuleFromMatchResponse)
+async def create_rule_from_match(
+    request: Request,
+    body: CreateRuleFromMatchRequest,
+):
+    """Auto-create a bank matching rule from a confirmed match pattern."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            # Fetch statement line details
+            stmt = await conn.fetchrow(
+                """SELECT description, amount, reference, type
+                   FROM bank_statement_lines_v2 WHERE id = $1""",
+                UUID(body.statement_line_id),
+            )
+            if not stmt:
+                raise HTTPException(status_code=404, detail="Statement line not found")
+
+            # Fetch transaction details
+            txn = await conn.fetchrow(
+                """SELECT description, amount, source_type, contact_name,
+                          contact_id, account_id
+                   FROM bank_transactions WHERE id = $1""",
+                UUID(body.transaction_id),
+            )
+            if not txn:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+
+            # Build rule conditions from the match pattern
+            conditions = []
+            stmt_desc = stmt["description"] or ""
+
+            # Condition 1: Description contains key words
+            # Extract most significant words (>3 chars, not common noise)
+            normalized = normalize_bank_text(stmt_desc)
+            words = [w for w in normalized.split() if len(w) > 3]
+            if words:
+                # Use the longest/most specific word as contains condition
+                keyword = max(words, key=len)
+                conditions.append({
+                    "field": "description",
+                    "operator": "contains",
+                    "value": keyword,
+                    "value2": None,
+                })
+
+            # Condition 2: Amount if exact
+            if stmt["amount"] == txn["amount"]:
+                conditions.append({
+                    "field": "amount",
+                    "operator": "equals",
+                    "value": str(float(stmt["amount"])),
+                    "value2": None,
+                })
+
+            if not conditions:
+                return CreateRuleFromMatchResponse(
+                    success=False,
+                    message="Tidak bisa membuat rule — deskripsi terlalu umum",
+                )
+
+            # Determine direction from statement type
+            direction = "both"
+            if stmt["type"] == "credit":
+                direction = "inflow"
+            elif stmt["type"] == "debit":
+                direction = "outflow"
+
+            # Auto-generate rule name
+            rule_name = body.rule_name or f"Auto: {stmt_desc[:50]}"
+
+            # Get next sort_order
+            max_order = await conn.fetchval(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM bank_matching_rules WHERE tenant_id = $1",
+                ctx["tenant_id"],
+            )
+
+            rule_id = uuid.uuid4()
+            conditions_json = json.dumps(conditions)
+
+            await conn.execute(
+                """
+                INSERT INTO bank_matching_rules (
+                    id, tenant_id, name, description, sort_order, rule_type, direction,
+                    condition_logic, conditions,
+                    contact_id, account_id,
+                    created_by
+                ) VALUES ($1, $2, $3, $4, $5, 'learned', $6, 'ALL', $7::jsonb, $8, $9, $10)
+                """,
+                rule_id,
+                ctx["tenant_id"],
+                rule_name,
+                f"Auto-created dari match: {stmt_desc[:80]}",
+                max_order,
+                direction,
+                conditions_json,
+                txn["contact_id"],
+                txn["account_id"],
+                ctx["user_id"],
+            )
+
+            # Update match_history to link to rule
+            await conn.execute(
+                """
+                UPDATE match_history
+                SET created_rule_id = $1
+                WHERE tenant_id = $2 AND statement_description = $3
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                rule_id,
+                ctx["tenant_id"],
+                stmt_desc,
+            )
+
+            # Fetch created rule for response
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, description, is_active, sort_order, rule_type,
+                       bank_account_id, direction, condition_logic, conditions,
+                       contact_id, account_id, tax_rate_id,
+                       times_applied, times_confirmed, times_rejected,
+                       last_applied_at, created_at
+                FROM bank_matching_rules WHERE id = $1
+                """,
+                rule_id,
+            )
+
+            conds = row["conditions"] or []
+            if isinstance(conds, str):
+                conds = json.loads(conds)
+
+            rule_item = BankRuleItem(
+                id=str(row["id"]),
+                name=row["name"],
+                description=row["description"],
+                is_active=row["is_active"],
+                sort_order=row["sort_order"],
+                rule_type=row["rule_type"],
+                bank_account_id=str(row["bank_account_id"]) if row["bank_account_id"] else None,
+                direction=row["direction"],
+                condition_logic=row["condition_logic"],
+                conditions=[
+                    RuleConditionSchema(
+                        field=c.get("field", ""),
+                        operator=c.get("operator", ""),
+                        value=str(c.get("value", "")),
+                        value2=str(c.get("value2", "")) if c.get("value2") else None,
+                    )
+                    for c in conds
+                ],
+                contact_id=str(row["contact_id"]) if row["contact_id"] else None,
+                account_id=str(row["account_id"]) if row["account_id"] else None,
+                tax_rate_id=str(row["tax_rate_id"]) if row["tax_rate_id"] else None,
+                times_applied=row["times_applied"],
+                times_confirmed=row["times_confirmed"],
+                times_rejected=row["times_rejected"],
+                last_applied_at=str(row["last_applied_at"]) if row["last_applied_at"] else None,
+                created_at=str(row["created_at"]),
+            )
+
+            return CreateRuleFromMatchResponse(
+                success=True,
+                rule=rule_item,
+                message=f"Rule '{rule_name}' berhasil dibuat",
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating rule from match: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create rule from match")
+
+
+
+# =============================================================================
+# PHASE 5: AGENTIC RECONCILIATION ENDPOINTS
+# =============================================================================
+
+
+@router.post("/sessions/{session_id}/agentic-reconcile", response_model=AgenticReconcileResponse)
+async def agentic_reconcile(
+    request: Request,
+    session_id: UUID,
+    body: AgenticReconcileRequest,
+):
+    """
+    Analyze unmatched items and generate an action plan.
+
+    This is a deterministic analysis (not LLM-based) that:
+    1. Groups unmatched items by pattern
+    2. Suggests matches based on amount + description similarity
+    3. Suggests categorizations for items with no matching transaction
+    4. Returns an action plan for frontend confirmation
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            session = await conn.fetchrow(
+                "SELECT id, account_id, status FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id, ctx["tenant_id"],
+            )
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            # Get unmatched statement lines
+            unmatched = await conn.fetch(
+                """
+                SELECT id, description, amount, reference, type, date as transaction_date
+                FROM bank_statement_lines_v2
+                WHERE session_id = $1 AND match_status = 'unmatched'
+                ORDER BY date
+                """,
+                session_id,
+            )
+
+            # Get uncleared transactions
+            uncleared = await conn.fetch(
+                """
+                SELECT id, description, amount, reference, source_type,
+                       source_number, contact_name, contact_id, account_id,
+                       transaction_date
+                FROM bank_transactions
+                WHERE account_id = $1 AND tenant_id = $2
+                  AND is_cleared = false
+                ORDER BY transaction_date
+                """,
+                session["account_id"], ctx["tenant_id"],
+            )
+
+            actions = []
+            used_tx_ids = set()
+            used_stmt_ids = set()
+
+            # Strategy 1: Amount-exact matches not caught by earlier stages
+            for stmt in unmatched:
+                if str(stmt["id"]) in used_stmt_ids:
+                    continue
+                stmt_amount = float(stmt["amount"])
+
+                for tx in uncleared:
+                    if str(tx["id"]) in used_tx_ids:
+                        continue
+                    if abs(float(tx["amount"])) == abs(stmt_amount):
+                        actions.append(ReconAction(
+                            action_type="match",
+                            statement_line_id=str(stmt["id"]),
+                            transaction_id=str(tx["id"]),
+                            reason=f"Jumlah sama persis: Rp {stmt_amount:,.0f}",
+                            confidence="high",
+                        ))
+                        used_tx_ids.add(str(tx["id"]))
+                        used_stmt_ids.add(str(stmt["id"]))
+                        break
+
+            # Strategy 2: Suggest categorization for remaining unmatched
+            if body.include_categorize:
+                for stmt in unmatched:
+                    if str(stmt["id"]) in used_stmt_ids:
+                        continue
+
+                    # Check match_history for categorization hints
+                    history = await conn.fetchrow(
+                        """
+                        SELECT transaction_account_id, transaction_contact_id,
+                               transaction_source_type, COUNT(*) as cnt
+                        FROM match_history
+                        WHERE tenant_id = $1
+                          AND statement_description_normalized = $2
+                        GROUP BY transaction_account_id, transaction_contact_id,
+                                 transaction_source_type
+                        ORDER BY cnt DESC
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                        normalize_bank_text(stmt["description"] or ""),
+                    )
+
+                    if history and history["transaction_account_id"]:
+                        actions.append(ReconAction(
+                            action_type="categorize",
+                            statement_line_id=str(stmt["id"]),
+                            category_account_id=str(history["transaction_account_id"]),
+                            category_description=stmt["description"],
+                            reason=f"Berdasarkan {history['cnt']} match sebelumnya",
+                            confidence="medium",
+                        ))
+                        used_stmt_ids.add(str(stmt["id"]))
+
+            # Strategy 3: Suggest exclude for very small amounts
+            if body.include_exclude:
+                for stmt in unmatched:
+                    if str(stmt["id"]) in used_stmt_ids:
+                        continue
+                    if abs(float(stmt["amount"])) < 1000:  # less than Rp 1,000
+                        actions.append(ReconAction(
+                            action_type="exclude",
+                            statement_line_id=str(stmt["id"]),
+                            reason=f"Jumlah kecil: Rp {abs(float(stmt['amount'])):,.0f}",
+                            confidence="low",
+                        ))
+                        used_stmt_ids.add(str(stmt["id"]))
+
+            # Limit actions
+            actions = actions[:body.max_actions]
+
+            plan = ReconActionPlan(
+                actions=actions,
+                summary=f"{len(actions)} aksi direkomendasikan untuk {len(unmatched)} item belum dicocokkan",
+                total_actions=len(actions),
+                estimated_resolution=len([a for a in actions if a.action_type == "match"]),
+            )
+
+            stats = await get_session_statistics(conn, session_id)
+
+            return AgenticReconcileResponse(
+                action_plan=plan,
+                session_stats=stats,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in agentic reconcile: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate action plan")
+
+
+@router.post("/sessions/{session_id}/confirm-batch", response_model=ConfirmBatchResponse)
+async def confirm_batch(
+    request: Request,
+    session_id: UUID,
+    body: ConfirmBatchRequest,
+):
+    """Confirm a batch of reconciliation actions (match, exclude)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            session = await conn.fetchrow(
+                "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id, ctx["tenant_id"],
+            )
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            confirmed = 0
+            failed = 0
+            errors = []
+            now = datetime.utcnow()
+
+            async with conn.transaction():
+                for action in body.actions:
+                    try:
+                        if action.action_type == "match" and action.transaction_id:
+                            stmt_id = UUID(action.statement_line_id)
+                            tx_id = UUID(action.transaction_id)
+
+                            # Verify both exist and are available
+                            stmt = await conn.fetchrow(
+                                "SELECT id, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
+                                stmt_id, session_id,
+                            )
+                            if not stmt or stmt["match_status"] == "matched":
+                                errors.append(f"Statement {action.statement_line_id} not available")
+                                failed += 1
+                                continue
+
+                            tx = await conn.fetchrow(
+                                "SELECT id, is_cleared FROM bank_transactions WHERE id = $1 AND tenant_id = $2",
+                                tx_id, ctx["tenant_id"],
+                            )
+                            if not tx or tx["is_cleared"]:
+                                errors.append(f"Transaction {action.transaction_id} not available")
+                                failed += 1
+                                continue
+
+                            # Create match
+                            match_id = uuid.uuid4()
+                            await conn.execute(
+                                """
+                                INSERT INTO reconciliation_matches (
+                                    id, tenant_id, session_id, statement_line_id, transaction_id,
+                                    match_type, confidence, created_by, created_at
+                                ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', $6, $7, NOW())
+                                """,
+                                match_id, ctx["tenant_id"], session_id,
+                                stmt_id, tx_id, action.confidence, ctx["user_id"],
+                            )
+
+                            await conn.execute(
+                                "UPDATE bank_transactions SET is_cleared = true, cleared_at = $2, matched_statement_line_id = $3 WHERE id = $1",
+                                tx_id, now, stmt_id,
+                            )
+                            await conn.execute(
+                                "UPDATE bank_statement_lines_v2 SET match_status = 'matched' WHERE id = $1",
+                                stmt_id,
+                            )
+
+                            await record_match_history(conn, ctx["tenant_id"], session_id, stmt_id, tx_id, action.confidence, "batch", ctx["user_id"])
+                            confirmed += 1
+
+                        elif action.action_type == "exclude":
+                            stmt_id = UUID(action.statement_line_id)
+                            await conn.execute(
+                                "UPDATE bank_statement_lines_v2 SET match_status = 'excluded' WHERE id = $1",
+                                stmt_id,
+                            )
+                            confirmed += 1
+
+                    except Exception as e:
+                        errors.append(str(e))
+                        failed += 1
+
+                await update_reconciliation_session_stats(conn, session_id)
+
+            stats = await get_session_statistics(conn, session_id)
+
+            return ConfirmBatchResponse(
+                confirmed=confirmed,
+                failed=failed,
+                errors=errors,
+                session_stats=stats,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming batch: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to confirm batch")
+
+
+@router.post("/sessions/{session_id}/categorize", response_model=CategorizeResponse)
+async def categorize_statement_line(
+    request: Request,
+    session_id: UUID,
+    body: CategorizeRequest,
+):
+    """
+    Categorize an unmatched statement line by creating a new transaction
+    and matching it. This creates a bank_transaction record for the item.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            session = await conn.fetchrow(
+                "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
+                session_id, ctx["tenant_id"],
+            )
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            # Get statement line
+            stmt = await conn.fetchrow(
+                "SELECT * FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
+                UUID(body.statement_line_id), session_id,
+            )
+            if not stmt:
+                raise HTTPException(status_code=404, detail="Statement line not found")
+
+            now = datetime.utcnow()
+
+            async with conn.transaction():
+                # Create a bank_transaction from the statement line
+                tx_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date,
+                        description, amount, reference_number, transaction_type,
+                        origin_type, payee_payer,
+                        is_cleared, cleared_at, matched_statement_line_id,
+                        created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', $9, true, $10, $11, NOW())
+                    """,
+                    tx_id, ctx["tenant_id"], session["account_id"],
+                    stmt["transaction_date"],
+                    body.description or stmt["description"],
+                    stmt["amount"],
+                    stmt.get("reference_number") or stmt.get("reference"),
+                    stmt.get("transaction_type") or stmt.get("type") or ("deposit" if stmt["amount"] >= 0 else "withdrawal"),
+                    None,  # payee_payer - contact_id not available as string
+                    now,
+                    UUID(body.statement_line_id),
+                )
+
+                # Create match
+                match_id = uuid.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO reconciliation_matches (
+                        id, tenant_id, session_id, statement_line_id, transaction_id,
+                        match_type, confidence, created_by, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'manual', $6, NOW())
+                    """,
+                    match_id, ctx["tenant_id"], session_id,
+                    UUID(body.statement_line_id), tx_id, ctx["user_id"],
+                )
+
+                # Update statement line
+                await conn.execute(
+                    "UPDATE bank_statement_lines_v2 SET match_status = 'matched' WHERE id = $1",
+                    UUID(body.statement_line_id),
+                )
+
+                await record_match_history(conn, ctx["tenant_id"], session_id, UUID(body.statement_line_id), tx_id, "manual", "categorize", ctx["user_id"])
+                await update_reconciliation_session_stats(conn, session_id)
+
+            stats = await get_session_statistics(conn, session_id)
+
+            return CategorizeResponse(
+                success=True,
+                transaction_id=str(tx_id),
+                match_id=str(match_id),
+                session_stats=stats,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error categorizing: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to categorize")
+
+
+# =============================================================================
+# PHASE 6: RECONCILIATION SUMMARY
+# =============================================================================
+
+
+async def generate_reconciliation_summary(conn, session_id, tenant_id) -> dict:
+    """Generate full reconciliation summary with balance proof."""
+    session = await conn.fetchrow(
+        """
+        SELECT rs.*, ba.account_name
+        FROM reconciliation_sessions rs
+        LEFT JOIN bank_accounts ba ON ba.id = rs.account_id AND ba.tenant_id = rs.tenant_id
+        WHERE rs.id = $1 AND rs.tenant_id = $2
+        """,
+        session_id, tenant_id,
+    )
+    if not session:
+        return None
+
+    # Count by match status
+    status_counts = await conn.fetch(
+        """
+        SELECT match_status, COUNT(*) as cnt
+        FROM bank_statement_lines_v2
+        WHERE session_id = $1
+        GROUP BY match_status
+        """,
+        session_id,
+    )
+    counts = {r["match_status"]: r["cnt"] for r in status_counts}
+
+    # Match methods breakdown from match_history
+    method_counts = await conn.fetch(
+        """
+        SELECT match_method, COUNT(*) as cnt
+        FROM match_history
+        WHERE session_id = $1 AND tenant_id = $2
+        GROUP BY match_method
+        """,
+        session_id, tenant_id,
+    )
+    match_methods = {r["match_method"]: r["cnt"] for r in method_counts}
+
+    # Balance proof
+    statement_ending = float(session["statement_ending_balance"] or 0)
+    ledger_balance = float(session.get("ledger_balance") or 0)
+
+    cleared_sum = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0)
+        FROM bank_statement_lines_v2
+        WHERE session_id = $1 AND match_status = 'matched'
+        """,
+        session_id,
+    )
+    cleared_balance = float(cleared_sum or 0)
+
+    uncleared_sum = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0)
+        FROM bank_statement_lines_v2
+        WHERE session_id = $1 AND match_status IN ('unmatched', 'excluded')
+        """,
+        session_id,
+    )
+    uncleared_balance = float(uncleared_sum or 0)
+
+    difference = statement_ending - ledger_balance if ledger_balance != 0 else 0
+
+    total = sum(counts.values())
+    matched = counts.get("matched", 0)
+    unmatched = counts.get("unmatched", 0)
+    excluded = counts.get("excluded", 0)
+
+    # Categorized = matched via categorize method
+    categorized = match_methods.get("categorize", 0)
+
+    # Can complete?
+    blockers = []
+    if unmatched > 0:
+        blockers.append(f"{unmatched} item belum dicocokkan")
+    if abs(difference) > 0.01 and ledger_balance != 0:
+        blockers.append(f"Selisih Rp {abs(difference):,.0f}")
+
+    return {
+        "session_id": str(session_id),
+        "account_name": session["account_name"],
+        "status": session["status"],
+        "total_statement_lines": total,
+        "matched_count": matched,
+        "unmatched_count": unmatched,
+        "excluded_count": excluded,
+        "categorized_count": categorized,
+        "balance_proof": {
+            "statement_ending_balance": statement_ending,
+            "ledger_balance": ledger_balance,
+            "cleared_balance": cleared_balance,
+            "uncleared_balance": uncleared_balance,
+            "difference": difference,
+            "is_balanced": abs(difference) < 0.01 or ledger_balance == 0,
+        },
+        "match_methods": match_methods,
+        "can_complete": len(blockers) == 0,
+        "completion_blockers": blockers,
+    }
+
+
+@router.get("/sessions/{session_id}/summary", response_model=ReconciliationSummaryResponse)
+async def get_reconciliation_summary(
+    request: Request,
+    session_id: UUID,
+):
+    """Get full reconciliation summary with balance proof."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            summary = await generate_reconciliation_summary(conn, session_id, ctx["tenant_id"])
+            if not summary:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            return ReconciliationSummaryResponse(**summary)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get summary")

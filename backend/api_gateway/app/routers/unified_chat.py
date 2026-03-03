@@ -13,17 +13,22 @@ Endpoints:
   GET  /api/v3/chat/history    - Get conversation history
 """
 
+import base64
 import hashlib
 import io
 import json
 import logging
 import os
+from io import BytesIO
 import uuid as uuid_mod
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Literal, Dict, Any, List
+import asyncio as _asyncio_stream
+import json as _json_stream
 
 from ..services.unified_agent.session_orchestrator import SessionAwareAgent
 from ..services.unified_agent.orchestrator import AgentResponse, TenantContext as OrchestratorTenantContext
@@ -46,6 +51,11 @@ except ImportError:
     CONVERSATION_SERVICE_AVAILABLE = False
 
 logger = logging.getLogger("unified_chat")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _uc_handler = logging.StreamHandler()
+    _uc_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_uc_handler)
 router = APIRouter()
 
 # Singleton agent instance (stateless, safe to reuse)
@@ -56,8 +66,10 @@ _agent = SessionAwareAgent()
 
 UPLOAD_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 UPLOAD_MAX_FILES = 5
-UPLOAD_ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".ofx", ".pdf"}
+UPLOAD_ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".ofx", ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 UPLOAD_BASE_DIR = "/tmp/milkyhoop_uploads"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
 # Import resolve_file_ref from utils (re-export for backward compatibility)
 from ..utils.file_ref import resolve_file_ref  # noqa: F401
@@ -141,6 +153,73 @@ async def _store_upload_file(
     return file_meta
 
 
+def _resize_image_for_vision(image_bytes: bytes, content_type: str) -> tuple:
+    """
+    Resize image to max VISION_MAX_DIMENSION px on longest side.
+    Returns (resized_bytes, mime_type). Always outputs JPEG for compression.
+    Graceful fallback: if Pillow fails, return original bytes.
+    """
+    try:
+        from PIL import Image
+        img = Image.open(BytesIO(image_bytes))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > VISION_MAX_DIMENSION:
+            ratio = VISION_MAX_DIMENSION / max(w, h)
+            new_size = (int(w * ratio), int(h * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), "image/jpeg"
+    except Exception as e:
+        logger.warning(f"[chat] Image resize failed, using original: {e}")
+        return image_bytes, content_type
+
+
+def _build_image_content_blocks(text: str, file_metas: List[dict]):
+    """
+    Build OpenAI vision content blocks if any uploaded files are images.
+    Returns None if no images (caller should use plain text).
+    Images are resized to max 1024px and JPEG-compressed before base64.
+    """
+    image_metas = [
+        fm for fm in file_metas
+        if fm.get("extension", "").lower() in IMAGE_EXTENSIONS
+    ]
+    if not image_metas:
+        return None
+
+    non_image_metas = [fm for fm in file_metas if fm not in image_metas]
+    file_context = _build_file_context(non_image_metas) if non_image_metas else ""
+    full_text = f"{text}\n\n{file_context}".strip() if file_context else text
+
+    blocks = [{"type": "text", "text": full_text}]
+
+    for fm in image_metas:
+        stored_path = fm.get("stored_path", "")
+        if not stored_path or not os.path.exists(stored_path):
+            continue
+        try:
+            with open(stored_path, "rb") as f:
+                raw_bytes = f.read()
+            resized_bytes, mime = _resize_image_for_vision(
+                raw_bytes, fm.get("content_type", "image/jpeg")
+            )
+            b64 = base64.b64encode(resized_bytes).decode("utf-8")
+            blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime};base64,{b64}",
+                    "detail": "low",
+                },
+            })
+        except Exception as e:
+            logger.warning(f"[chat] Failed to read image {stored_path}: {e}")
+
+    return blocks if len(blocks) > 1 else None
+
+
 def _build_file_context(file_metas: List[dict]) -> str:
     """Build file attachment context string for LLM."""
     if not file_metas:
@@ -178,6 +257,10 @@ class ConfirmActionRequest(BaseModel):
         "POSTED",
         description="Document status: DRAFT saves without posting, POSTED creates and posts",
     )
+    payload_overrides: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional field overrides to merge into payload before execution",
+    )
 
 
 class CancelActionRequest(BaseModel):
@@ -190,7 +273,7 @@ class CancelActionRequest(BaseModel):
 class ChatMessageResponse(BaseModel):
     """Unified response from agent chat endpoints."""
     message_id: str = Field(default_factory=lambda: str(uuid_mod.uuid4()))
-    message_type: str = Field(..., description="TEXT | ACTION_PREVIEW | ACTION_RESULT | CLARIFICATION | VALIDATION_ERROR")
+    message_type: str = Field(..., description="TEXT | ACTION_PREVIEW | ACTION_RESULT | CLARIFICATION | VALIDATION_ERROR | CHART")
     text: Optional[str] = Field(None, description="Narrative text from agent")
     data: Optional[Dict[str, Any]] = Field(None, description="Typed data payload")
     trace_id: Optional[str] = Field(None, description="Trace ID for debugging")
@@ -202,6 +285,7 @@ class ChatMessageResponse(BaseModel):
     latency_ms: Optional[int] = Field(None, description="Total processing time in ms")
     session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
     workflow_continuation: Optional[bool] = Field(None, description="Auto-continue workflow after confirm")
+    thinking_stages: Optional[List[str]] = Field(None, description="Tool stage labels for UX thinking indicator")
 
 
 class ActionStatusResponse(BaseModel):
@@ -327,6 +411,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used = agent_resp.get("model_used")
         latency_ms = agent_resp.get("total_latency_ms")
         session_id = agent_resp.get("session_id")
+        thinking_stages = agent_resp.get("thinking_stages")
     else:
         message_type = agent_resp.message_type
         content_text = agent_resp.content
@@ -340,6 +425,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used = agent_resp.model_used
         latency_ms = agent_resp.total_latency_ms
         session_id = getattr(agent_resp, "session_id", None)
+        thinking_stages = getattr(agent_resp, "thinking_stages", None)
     
     data = None
     pending_action_id = None
@@ -355,6 +441,9 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         # DirectAction: preview dict already contains all needed data
         data = preview or {}
         pending_action_id = pending_action_id_val or data.get("pending_action_id")
+    elif message_type == "CHART":
+        # Chart visualization: data contains ChartSpec
+        data = preview or {}
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
 
@@ -369,6 +458,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used=model_used or None,
         latency_ms=latency_ms,
         session_id=session_id,
+        thinking_stages=thinking_stages or None,
     )
 
 
@@ -405,6 +495,127 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 )
         except Exception:
             pass  # Non-fatal, proceed normally
+
+    # ── Workflow continuation shortcut ──
+    # If user sends "lanjut" etc. and there's an active workflow in REVIEWING state,
+    # bypass LLM and directly resume workflow for reliability + speed.
+    if body.session_id and body.text:
+        _resume_keywords = {"lanjut", "next", "ok", "oke", "lanjutkan", "berikutnya", "terus", "ya", "iya"}
+        _text_lower = body.text.strip().lower().rstrip(".!,")
+        _is_resume = (
+            _text_lower in _resume_keywords
+            or "lanjut" in _text_lower
+            or "next item" in _text_lower
+            or "item berikut" in _text_lower
+        )
+        if _is_resume:
+            try:
+                from ..services.unified_agent.workflow_engine import WorkflowEngine
+                _wf_pool = await get_session_db_pool()
+                _wf_engine = WorkflowEngine(
+                    db_pool=_wf_pool,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                    auth_token=ctx["auth_token"],
+                )
+                _wf_state = await _wf_engine.get_state(body.session_id, "bank_reconciliation")
+                logger.info(
+                    f"[RECON-LANJUT] conv={body.session_id} "
+                    f"state={_wf_state.current_state if _wf_state else 'none'}"
+                )
+                _shortcut_states = {"REVIEWING", "BALANCE_PROOF", "FINALIZE"}
+                if _wf_state and _wf_state.status == "active" and _wf_state.current_state in _shortcut_states:
+                    logger.info(f"[UnifiedChat] Workflow shortcut: resuming REVIEWING for session {body.session_id}")
+                    _tenant_ctx = TenantContext(
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                        auth_token=ctx["auth_token"],
+                        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                    )
+                    _sm = SessionManager(
+                        db_pool=_wf_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
+                    _te = ToolExecutor(
+                        context=_tenant_ctx,
+                        session_manager=_sm,
+                        session_id=body.session_id,
+                        user_text=body.text,
+                    )
+                    _wf_result = await _te._execute_start_workflow({
+                        "workflow_type": "bank_reconciliation",
+                    })
+                    logger.info(f"[WfShortcut] result msg_type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}")
+                    # Convert ToolExecutor result to ChatMessageResponse
+                    _pa_id = None
+                    if isinstance(_wf_result, dict):
+                        _pa_id = _wf_result.get("pending_action_id") or (
+                            _wf_result.get("data", {}).get("pending_action_id") if isinstance(_wf_result.get("data"), dict) else None
+                        )
+                    if isinstance(_wf_result, dict) and (_pa_id or _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW"):
+                        return ChatMessageResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            text=_wf_result.get("content") or _wf_result.get("text", ""),
+                            session_id=body.session_id,
+                            pending_action_id=_pa_id,
+                            data=_wf_result.get("data"),
+                        )
+                    else:
+                        # Workflow advanced past REVIEWING (BALANCE_PROOF, FINALIZE, COMPLETED)
+                        if isinstance(_wf_result, dict) and _wf_result.get("completed"):
+                            # Build user-facing completion summary
+                            ar = _wf_result.get("auto_results") or {}
+                            bp = ar.get("balance_proof") or {}
+                            _acct = bp.get("account_name", "")
+                            _matched = bp.get("matched_count", 0)
+                            _total = bp.get("total_statement_lines", 0)
+                            _lines = [f"Rekonsiliasi {_acct} selesai! {_matched} dari {_total} transaksi berhasil dicocokkan."]
+                            return ChatMessageResponse(
+                                message_type="TEXT",
+                                text="\n".join(_lines),
+                                session_id=body.session_id,
+                                data=_wf_result.get("auto_results"),
+                            )
+                        elif isinstance(_wf_result, dict) and _wf_result.get("current_state") == "FINALIZE":
+                            # Can't auto-complete — show blockers
+                            ar = _wf_result.get("auto_results") or {}
+                            bp = ar.get("balance_proof") or {}
+                            blockers = bp.get("completion_blockers", [])
+                            _unmatched_ct = bp.get("unmatched_count", 0)
+                            _diff = bp.get("difference")
+                            _parts = []
+                            if _unmatched_ct > 0:
+                                _parts.append(f"masih ada {_unmatched_ct} transaksi yang belum dicocokkan")
+                            if _diff and float(_diff) != 0:
+                                _diff_fmt = f"Rp {int(abs(float(_diff))):,}".replace(",", ".")
+                                _parts.append(f"selisih {_diff_fmt}")
+                            if _parts:
+                                _lines = ["Rekonsiliasi belum bisa diselesaikan karena " + " dan ".join(_parts) + "."]
+                            else:
+                                _lines = ["Rekonsiliasi belum bisa diselesaikan."]
+                            _lines.append("")
+                            _lines.append("Selesaikan item yang tersisa dulu, atau ketik \"selesai\" kalau mau finalisasi dengan selisih.")
+                            return ChatMessageResponse(
+                                message_type="TEXT",
+                                text="\n".join(_lines),
+                                session_id=body.session_id,
+                                data=_wf_result.get("auto_results"),
+                            )
+                        else:
+                            _text = ""
+                            if isinstance(_wf_result, dict):
+                                _text = _wf_result.get("text") or _wf_result.get("content") or ""
+                            return ChatMessageResponse(
+                                message_type="TEXT",
+                                text=_text or "Lanjutkan.",
+                                session_id=body.session_id,
+                                data=_wf_result.get("data") if isinstance(_wf_result, dict) else None,
+                            )
+            except Exception as e:
+                import traceback
+                logger.warning(f"[UnifiedChat] Workflow shortcut failed: {e}\n{traceback.format_exc()}")
+                pass  # Fall through to normal LLM processing
 
     # Build tenant context for tool executor
     tenant_context = TenantContext(
@@ -463,6 +674,141 @@ async def send_message(request: Request, body: ChatMessageRequest):
     return _to_chat_response(agent_resp)
 
 
+
+
+# =============================================================================
+# POST /message/stream — SSE streaming endpoint with thinking steps
+# =============================================================================
+
+@router.post("/message/stream")
+async def send_message_stream(request: Request, body: ChatMessageRequest):
+    """
+    SSE streaming endpoint. Sends thinking steps in real-time.
+    Same auth/validation as /message, but returns Server-Sent Events.
+
+    Events emitted:
+      THINKING_STEP  - Tool execution progress (running/done)
+      THINKING_DONE  - Agent finished thinking
+      DONE           - Final response (same shape as /message response)
+      ERROR          - Processing error
+      HEARTBEAT      - Keep-alive ping
+    """
+    ctx = _get_user_context(request)
+
+    # FSM Guard: If awaiting confirmation, return immediately (not streamed)
+    if body.session_id:
+        try:
+            db_pool_guard = await get_session_db_pool()
+            sm_guard = SessionManager(db_pool=db_pool_guard, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+            guard_state = await sm_guard.get_state(body.session_id)
+            if guard_state.fsm_state == "AWAITING_CONFIRMATION":
+                # Return as a single SSE event
+                async def _guard_gen():
+                    _resp = {
+                        "event": "DONE",
+                        "data": {
+                            "message_type": "TEXT",
+                            "text": "Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
+                            "session_id": body.session_id,
+                        },
+                    }
+                    yield f"data: {_json_stream.dumps(_resp, default=str)}\n\n"
+                return StreamingResponse(
+                    _guard_gen(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+                )
+        except Exception:
+            pass
+
+    # Build tenant context for tool executor
+    tenant_context = TenantContext(
+        tenant_id=ctx["tenant_id"],
+        user_id=ctx["user_id"],
+        auth_token=ctx["auth_token"],
+        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+    )
+
+    # Fetch conversation history for context
+    history = await _get_conversation_history(
+        user_id=ctx["user_id"],
+        tenant_id=ctx["tenant_id"],
+        conversation_id=body.conversation_id,
+        limit=10,
+    )
+
+    queue: _asyncio_stream.Queue = _asyncio_stream.Queue()
+
+    async def event_callback(event_type: str, data: dict):
+        await queue.put({"event": event_type, "data": data})
+
+    async def run_agent():
+        try:
+            agent_resp = await _agent.process_message(
+                user_text=body.text,
+                context=tenant_context,
+                conversation_history=history,
+                session_id=body.session_id,
+                event_callback=event_callback,
+            )
+
+            # Convert agent response to the same format as /message
+            chat_resp = _to_chat_response(agent_resp)
+            response_data = {
+                "message_id": chat_resp.message_id,
+                "message_type": chat_resp.message_type,
+                "text": chat_resp.text,
+                "data": chat_resp.data,
+                "session_id": chat_resp.session_id,
+                "pending_action_id": chat_resp.pending_action_id,
+                "iterations": chat_resp.iterations,
+                "model_used": chat_resp.model_used,
+                "latency_ms": chat_resp.latency_ms,
+                "thinking_stages": chat_resp.thinking_stages,
+            }
+            await queue.put({"event": "DONE", "data": response_data})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await queue.put({"event": "ERROR", "data": {"message": str(e)}})
+
+    task = _asyncio_stream.create_task(run_agent())
+
+    async def generate():
+        _heartbeat_interval = 30.0  # seconds
+        _total_timeout = 120.0  # seconds
+        _elapsed = 0.0
+        _chunk_timeout = min(_heartbeat_interval, _total_timeout)
+
+        while _elapsed < _total_timeout:
+            try:
+                event = await _asyncio_stream.wait_for(queue.get(), timeout=_chunk_timeout)
+            except _asyncio_stream.TimeoutError:
+                _elapsed += _chunk_timeout
+                yield f"data: {_json_stream.dumps({'event': 'HEARTBEAT', 'data': {}})}\n\n"
+                continue
+
+            yield f"data: {_json_stream.dumps(event, default=str)}\n\n"
+
+            if event["event"] in ("DONE", "ERROR"):
+                break
+        else:
+            # Total timeout reached
+            yield f"data: {_json_stream.dumps({'event': 'ERROR', 'data': {'message': 'Request timeout'}})}\n\n"
+
+        if not task.done():
+            task.cancel()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 # =============================================================================
 # POST /message/upload — Send message with file attachments (multipart)
 # =============================================================================
@@ -513,9 +859,12 @@ async def send_message_with_files(
 
     # ── Enrich user text with file context for LLM ──
     enriched_text = text
+    image_content = None
     if file_metas:
         file_context = _build_file_context(file_metas)
         enriched_text = f"{text}\n\n{file_context}"
+        # Build vision content blocks if images present
+        image_content = _build_image_content_blocks(text, file_metas)
 
     # ── FSM Guard (same as /message) ──
     if session_id:
@@ -535,6 +884,356 @@ async def send_message_with_files(
                 )
         except Exception:
             pass
+
+    # ── Recon Upload Shortcut: bypass LLM when CSV+recon text detected ──
+    # This prevents conversation history from confusing the LLM into thinking
+    # recon is already done, and ensures the workflow always triggers.
+    _recon_shortcut_result = None
+    _has_bank_file = any(
+        fm.get("extension", "").lower() in (".csv", ".xlsx", ".xls", ".ofx")
+        for fm in file_metas
+    )
+    _text_lower = text.strip().lower()
+    _is_recon = (
+        "rekonsiliasi" in _text_lower
+        or "rekon" in _text_lower
+        or ("rekening koran" in _text_lower and ("import" in _text_lower or "upload" in _text_lower))
+    )
+    if _has_bank_file and _is_recon:
+        try:
+            logger.info(f"[ReconShortcut] Detected recon upload — bypassing LLM")
+            from ..services.unified_agent.workflow_engine import WorkflowEngine
+            from ..services.unified_agent.db_utils import get_session_db_pool as _get_wf_pool
+
+            _wf_pool = await _get_wf_pool()
+
+            # Ensure we have a session_id
+            if not session_id:
+                _sm_init = SessionManager(db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                # conversation_id may not be a valid UUID — use it if valid, else generate one
+                import uuid as _uuid
+                try:
+                    _conv_uuid = str(_uuid.UUID(conversation_id))
+                except (ValueError, AttributeError):
+                    _conv_uuid = str(_uuid.uuid4())
+                    logger.info(f"[ReconShortcut] conversation_id {conversation_id} is not a UUID, generated {_conv_uuid}")
+                _sess = await _sm_init.get_or_create_session(_conv_uuid)
+                session_id = str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+
+            _wf_engine = WorkflowEngine(
+                db_pool=_wf_pool,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+                auth_token=ctx["auth_token"],
+            )
+
+            _tenant_ctx = TenantContext(
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+                auth_token=ctx["auth_token"],
+                tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+            )
+            _sm = SessionManager(db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+            _te = ToolExecutor(
+                context=_tenant_ctx,
+                session_manager=_sm,
+                session_id=session_id,
+                user_text=enriched_text,
+            )
+
+            # Cancel any existing active workflow for this session
+            try:
+                _existing_wf = await _wf_engine.get_state(session_id, "bank_reconciliation")
+                if _existing_wf and _existing_wf.status == "active":
+                    await _wf_engine.cancel(session_id, "bank_reconciliation")
+                    logger.info(f"[ReconShortcut] Cancelled existing workflow for session {session_id}")
+            except Exception:
+                pass
+
+            # Pre-identify bank account + balance from user text
+            _shortcut_user_data = {}
+            # Inject file_ref directly from file_metas (bypass auto-inject)
+            if file_metas:
+                _fm = file_metas[0]
+                _shortcut_user_data["file_ref"] = f"chat_upload:{_fm.get('file_hash', '')}{_fm['extension']}"
+            from ..services.unified_agent.balance_parser import parse_balance as _parse_bal
+
+            # Parse balance using robust multi-strategy parser (Law 25: Decimal)
+            _sc_balance_dec, _sc_bal_found = _parse_bal(text.strip())
+            _sc_balance = None
+            if _sc_bal_found and _sc_balance_dec is not None:
+                _sc_balance = int(_sc_balance_dec)
+                _shortcut_user_data["statement_ending_balance"] = _sc_balance
+                logger.info(f"[ReconShortcut] Parsed balance: {_sc_balance}")
+
+            # Extract candidate account numbers (8+ digit numbers, not the balance)
+            import re as _sc_re
+            _sc_nums = _sc_re.findall(r"\d[\d.,]+\d", text.strip())
+            _sc_account_number = None
+            for _n in _sc_nums:
+                _clean = _n.replace(".", "").replace(",", "")
+                if _clean.isdigit() and len(_clean) >= 8:
+                    if _sc_balance and int(_clean) == _sc_balance:
+                        continue  # Skip the balance number
+                    _sc_account_number = _clean
+                    break
+
+            # Look up bank account by number
+            if _sc_account_number:
+                try:
+                    import httpx as _sc_httpx
+                    _sc_headers = {"Authorization": f"Bearer {ctx['auth_token']}"}
+                    async with _sc_httpx.AsyncClient(timeout=10.0) as _sc_client:
+                        _sc_resp = await _sc_client.get(
+                            "http://localhost:8000/api/bank-accounts",
+                            headers=_sc_headers,
+                        )
+                    if _sc_resp.status_code == 200:
+                        _sc_banks = _sc_resp.json()
+                        _sc_items = _sc_banks.get("data", _sc_banks.get("items", _sc_banks if isinstance(_sc_banks, list) else []))
+                        if isinstance(_sc_items, list):
+                            for _bank in _sc_items:
+                                _bank_num = str(_bank.get("account_number", "")).replace("-", "").replace(" ", "")
+                                if _sc_account_number in _bank_num or _bank_num in _sc_account_number:
+                                    _shortcut_user_data["account_id"] = _bank.get("id")
+                                    _shortcut_user_data["account_name"] = _bank.get("account_name", "")
+                                    _bank_label = _bank.get("account_name", "unknown")
+                                    _bank_id = _bank.get("id", "?")
+                                    logger.info(f"[ReconShortcut] Identified bank: {_bank_label} (id={_bank_id})")
+                                    break
+                except Exception as _sc_err:
+                    logger.warning(f"[ReconShortcut] Bank lookup failed: {_sc_err}")
+
+            logger.info(
+                f"[RECON-SHORTCUT] conv={session_id} "
+                f"account={_shortcut_user_data.get('account_id', 'n/a')} "
+                f"balance={_shortcut_user_data.get('statement_ending_balance', 'n/a')} "
+                f"file={'yes' if _shortcut_user_data.get('file_ref') else 'no'}"
+            )
+            _wf_result = await _te._execute_start_workflow({
+                "workflow_type": "bank_reconciliation",
+                "user_data": _shortcut_user_data,
+            })
+
+            logger.info(f"[ReconShortcut] Result type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}")
+
+            if isinstance(_wf_result, dict) and _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+                _da_data = _wf_result.get("data", {})
+                _pa_id = _da_data.get("pending_action_id", "")
+                # Attach uploaded_files metadata
+                if isinstance(_da_data, dict):
+                    _da_data["uploaded_files"] = [
+                        {"filename": fm["filename"], "size": fm["size"],
+                         "extension": fm["extension"], "file_hash": fm["file_hash"]}
+                        for fm in file_metas
+                    ]
+                _recon_shortcut_result = ChatMessageResponse(
+                    message_type="DIRECT_ACTION_PREVIEW",
+                    text=_wf_result.get("content", ""),
+                    session_id=session_id,
+                    pending_action_id=_pa_id,
+                    data=_da_data,
+                )
+            elif isinstance(_wf_result, dict) and _wf_result.get("llm_instruction"):
+                # Workflow gate not ready — translate internal instruction to user-friendly text
+                _wf_state = _wf_result.get("current_state", "")
+                _user_facing = {
+                    "IDENTIFY_ACCOUNT": "Mau rekonsiliasi rekening yang mana? Sebutkan nama atau nomor rekeningnya ya.",
+                    "NEED_BALANCE": "Berapa saldo akhir di rekening koran? Angka ini perlu untuk mencocokkan data.",
+                    "NEED_FILE": "Upload file rekening koran (CSV/XLSX/OFX), atau ketik \"tanpa file\" untuk mode manual.",
+                }.get(_wf_state, _wf_result.get("llm_instruction", ""))
+                _recon_shortcut_result = ChatMessageResponse(
+                    message_type="TEXT",
+                    text=_user_facing,
+                    session_id=session_id,
+                )
+
+        except Exception as _recon_err:
+            logger.error(f"[ReconShortcut] Failed: {_recon_err}", exc_info=True)
+            # Fall through to normal LLM path
+
+    if _recon_shortcut_result:
+        return _recon_shortcut_result
+
+    # ── Document Pipeline Shortcut: route financial docs to Intelligence Layer ──
+    _doc_pipeline_result = None
+    if file_metas and not _recon_shortcut_result:
+        try:
+            from ..services.chat_document_bridge import (
+                detect_upload_intent,
+                upload_chat_file_to_pipeline,
+                process_document_sync,
+                build_draft_proposal,
+            )
+
+            _file_intent = detect_upload_intent(text, file_metas)
+            logger.info(f"[DocPipeline] Intent detected: {_file_intent} for {len(file_metas)} file(s)")
+
+            if _file_intent == "financial_doc":
+                _dp_pool = await get_session_db_pool()
+
+                if len(file_metas) == 1:
+                    # SYNC: Single document — process inline and return draft
+                    _fm = file_metas[0]
+                    _stored_path = _fm.get("stored_path", "")
+
+                    # Read file content from stored chat path
+                    if _stored_path and os.path.exists(_stored_path):
+                        with open(_stored_path, "rb") as _fp:
+                            _file_content = _fp.read()
+                    else:
+                        raise ValueError(f"File not found at {_stored_path}")
+
+                    # Upload to document intake system
+                    async with _dp_pool.acquire() as _dp_conn:
+                        async with _dp_conn.transaction():
+                            await _dp_conn.execute(
+                                "SELECT set_config('app.tenant_id', $1, true)",
+                                ctx["tenant_id"],
+                            )
+                            _doc_record = await upload_chat_file_to_pipeline(
+                                conn=_dp_conn,
+                                file_content=_file_content,
+                                filename=_fm.get("filename", "unnamed"),
+                                content_type=_fm.get("content_type", "application/octet-stream"),
+                                tenant_id=ctx["tenant_id"],
+                                user_id=ctx["user_id"],
+                            )
+
+                    if not _doc_record:
+                        logger.warning("[DocPipeline] File type not supported for pipeline")
+                        # Fall through to LLM vision path
+                    elif _doc_record.get("is_duplicate") and _doc_record.get("draft_plan"):
+                        # Already processed — build proposal from existing draft
+                        _proposal = build_draft_proposal(
+                            draft_plan=_doc_record["draft_plan"],
+                            document={
+                                "id": _doc_record["id"],
+                                "filename": _doc_record["filename"],
+                                "classification": _doc_record.get("doc_type"),
+                            },
+                        )
+                        _doc_pipeline_result = await _propose_document_draft(
+                            proposal=_proposal,
+                            pool=_dp_pool,
+                            ctx=ctx,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            file_metas=file_metas,
+                        )
+                    else:
+                        # Process through pipeline (sync — waits for completion)
+                        logger.info(f"[DocPipeline] Processing doc {_doc_record['id']} through pipeline")
+                        _pipeline_result = await process_document_sync(
+                            pool=_dp_pool,
+                            doc_id=_doc_record["id"],
+                            tenant_id=ctx["tenant_id"],
+                        )
+
+                        if _pipeline_result["status"] == "draft_ready":
+                            _proposal = build_draft_proposal(
+                                draft_plan=_pipeline_result["draft_plan"],
+                                document=_pipeline_result["document"],
+                                analysis_result=_pipeline_result.get("analysis_result"),
+                            )
+                            _doc_pipeline_result = await _propose_document_draft(
+                                proposal=_proposal,
+                                pool=_dp_pool,
+                                ctx=ctx,
+                                session_id=session_id,
+                                conversation_id=conversation_id,
+                                file_metas=file_metas,
+                            )
+                        elif _pipeline_result["status"] in (
+                            "extraction_failed", "classification_failed",
+                            "analysis_failed", "draft_failed", "pipeline_error",
+                        ):
+                            _doc_pipeline_result = ChatMessageResponse(
+                                message_type="TEXT",
+                                text=(
+                                    f"Maaf, saya kesulitan membaca dokumen ini. "
+                                    f"{_pipeline_result.get('error', '')} "
+                                    f"Coba upload ulang dengan kualitas lebih baik, "
+                                    f"atau proses manual di Review Inbox."
+                                ),
+                                session_id=session_id,
+                            )
+                        else:
+                            # Unknown status — let user know
+                            _doc_pipeline_result = ChatMessageResponse(
+                                message_type="TEXT",
+                                text=(
+                                    f"Proses dokumen belum selesai (status: {_pipeline_result['status']}). "
+                                    f"Cek hasilnya di halaman Review Inbox nanti ya."
+                                ),
+                                session_id=session_id,
+                            )
+
+                else:
+                    # ASYNC: Multiple files — batch upload, process in background
+                    _batch_doc_ids = []
+                    for _fm in file_metas:
+                        _stored_path = _fm.get("stored_path", "")
+                        if not _stored_path or not os.path.exists(_stored_path):
+                            continue
+                        # Only pipeline-compatible files (images + PDF)
+                        _ext = _fm.get("extension", "").lower()
+                        if _ext not in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".pdf"):
+                            continue
+
+                        with open(_stored_path, "rb") as _fp:
+                            _file_content = _fp.read()
+
+                        async with _dp_pool.acquire() as _dp_conn:
+                            async with _dp_conn.transaction():
+                                await _dp_conn.execute(
+                                    "SELECT set_config('app.tenant_id', $1, true)",
+                                    ctx["tenant_id"],
+                                )
+                                _doc_record = await upload_chat_file_to_pipeline(
+                                    conn=_dp_conn,
+                                    file_content=_file_content,
+                                    filename=_fm.get("filename", "unnamed"),
+                                    content_type=_fm.get("content_type", "application/octet-stream"),
+                                    tenant_id=ctx["tenant_id"],
+                                    user_id=ctx["user_id"],
+                                )
+                        if _doc_record and not _doc_record.get("is_duplicate"):
+                            _batch_doc_ids.append(_doc_record["id"])
+
+                    if _batch_doc_ids:
+                        # Fire background processing for each document
+                        import asyncio as _bg_asyncio
+                        for _bg_doc_id in _batch_doc_ids:
+                            _bg_asyncio.create_task(
+                                _process_document_background(_dp_pool, _bg_doc_id, ctx["tenant_id"])
+                            )
+
+                        _doc_pipeline_result = ChatMessageResponse(
+                            message_type="TEXT",
+                            text=(
+                                f"Saya proses {len(_batch_doc_ids)} dokumen di background. "
+                                f"Cek hasilnya di halaman Review Inbox nanti ya."
+                            ),
+                            session_id=session_id,
+                        )
+
+            elif _file_intent == "data_import":
+                _doc_pipeline_result = ChatMessageResponse(
+                    message_type="TEXT",
+                    text=(
+                        "Untuk import data CSV/Excel, gunakan fitur Import di halaman terkait. "
+                        "Atau ketik 'rekonsiliasi' jika ini rekening koran."
+                    ),
+                    session_id=session_id,
+                )
+
+        except Exception as _doc_err:
+            logger.error(f"[DocPipeline] Failed: {_doc_err}", exc_info=True)
+            # Fall through to normal LLM path
+
+    if _doc_pipeline_result:
+        return _doc_pipeline_result
 
     # ── Build context & run agent (same as /message) ──
     tenant_context = TenantContext(
@@ -557,6 +1256,7 @@ async def send_message_with_files(
         context=tenant_context,
         conversation_history=history,
         session_id=session_id,
+        image_content=image_content,  # Vision blocks — ephemeral, not saved to history
     )
 
     # ── Logging ──
@@ -594,9 +1294,104 @@ async def send_message_with_files(
     return response
 
 
+async def _propose_document_draft(
+    proposal: dict,
+    pool,
+    ctx: dict,
+    session_id: str,
+    conversation_id: str,
+    file_metas: list,
+) -> ChatMessageResponse:
+    """
+    Convert a document pipeline draft into a DirectAction proposal.
+    Uses existing confirm_document_draft DirectAction from registry.
+    """
+    from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
+    from ..services.unified_agent.session_manager import SessionManager
+
+    _dp_sm = SessionManager(db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+
+    # Ensure session exists
+    _dp_session_id = session_id
+    if not _dp_session_id:
+        import uuid as _uuid
+        try:
+            _conv_uuid = str(_uuid.UUID(conversation_id))
+        except (ValueError, AttributeError):
+            _conv_uuid = str(_uuid.uuid4())
+        _sess = await _dp_sm.get_or_create_session(_conv_uuid)
+        _dp_session_id = str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+
+    _dp_tenant_ctx = TenantContext(
+        tenant_id=ctx["tenant_id"],
+        user_id=ctx["user_id"],
+        auth_token=ctx["auth_token"],
+        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+    )
+    _dp_te = ToolExecutor(
+        context=_dp_tenant_ctx,
+        session_manager=_dp_sm,
+        session_id=_dp_session_id,
+        user_text="",
+    )
+
+    # Use the existing propose_direct_action flow
+    narration = proposal.get("narration", "")
+    action_key = proposal.get("action_key", "confirm_document_draft")
+    payload = proposal.get("payload", {})
+
+    _propose_result = await _dp_te._execute_propose_direct({
+        "action_key": action_key,
+        "payload": payload,
+    })
+
+    if isinstance(_propose_result, dict) and _propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+        _da_data = _propose_result.get("data", {})
+        _pa_id = _da_data.get("pending_action_id", "")
+
+        # Prepend narration to the confirmation content
+        _content = _propose_result.get("content", "")
+        if narration:
+            _content = f"{narration}\n\n{_content}"
+
+        # Attach file metadata
+        if isinstance(_da_data, dict):
+            _da_data["uploaded_files"] = [
+                {"filename": fm["filename"], "size": fm["size"],
+                 "extension": fm["extension"], "file_hash": fm["file_hash"]}
+                for fm in file_metas
+            ]
+
+        return ChatMessageResponse(
+            message_type="DIRECT_ACTION_PREVIEW",
+            text=_content,
+            session_id=_dp_session_id,
+            pending_action_id=_pa_id,
+            data=_da_data,
+        )
+    else:
+        # Proposal failed — return as text with narration
+        error = _propose_result.get("error", "") if isinstance(_propose_result, dict) else ""
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text=f"{narration}\n\n{error}" if error else narration,
+            session_id=_dp_session_id,
+        )
+
+
+async def _process_document_background(pool, doc_id: str, tenant_id: str):
+    """Fire-and-forget background processing for batch document uploads."""
+    try:
+        from ..services.chat_document_bridge import process_document_sync
+        result = await process_document_sync(pool, doc_id, tenant_id)
+        logger.info(f"[DocPipeline] Background processing complete: {doc_id} -> {result.get('status')}")
+    except Exception as e:
+        logger.error(f"[DocPipeline] Background processing failed: {doc_id} -> {e}", exc_info=True)
+
+
 async def _confirm_direct_action(
     pending_action_id: str, tenant_id: str, user_id: str,
-    pool, http_request
+    pool, http_request, payload_overrides: dict = None
 ) -> ChatMessageResponse:
     """Execute a direct action by calling the REST endpoint."""
     import httpx
@@ -638,6 +1433,8 @@ async def _confirm_direct_action(
     action_key = row["action_id"]
     action_plan_raw = row["action_plan"]
     payload = json.loads(action_plan_raw) if isinstance(action_plan_raw, str) else action_plan_raw
+    if payload_overrides:
+        payload.update(payload_overrides)
     config = get_direct_action(action_key)
 
     if not config:
@@ -710,6 +1507,14 @@ async def _confirm_direct_action(
             if payload.get("statement_line_id"):
                 clean_payload["statement_line_id"] = payload["statement_line_id"]
 
+        elif action_key == "categorize_statement":
+            clean_payload = {
+                "statement_line_id": payload["statement_line_id"],
+                "account_id": payload["account_id"],
+                "description": payload.get("description", ""),
+                "contact_id": payload.get("contact_id"),
+            }
+
         # For DELETE/path-param requests, strip ID fields from body to avoid endpoint rejections
         request_body = clean_payload
         if config.rest_method.upper() == 'DELETE':
@@ -747,6 +1552,42 @@ async def _confirm_direct_action(
             # Recon actions: signal frontend to auto-continue workflow
             recon_actions = {"confirm_single_match", "categorize_statement", "create_bill_payment", "create_receive_payment"}
             is_recon = action_key in recon_actions
+
+            # Task G: Short acknowledgment for recon actions
+            if is_recon:
+                success_msg = "Dicatat."
+
+            # Post-execute: mark statement line as matched for recon payment actions
+            if action_key in ("create_bill_payment", "create_receive_payment"):
+                _sl_id = payload.get("statement_line_id")
+                _sess_id = payload.get("session_id")
+                if _sl_id and _sess_id:
+                    try:
+                        # Mark statement line as matched
+                        await pool.execute(
+                            """UPDATE bank_statement_lines_v2
+                               SET match_status = 'matched', updated_at = NOW()
+                               WHERE id = $1 AND tenant_id = $2""",
+                            uuid_mod.UUID(_sl_id), tenant_id
+                        )
+                        # Update session matched/unmatched counts
+                        await pool.execute(
+                            """UPDATE reconciliation_sessions
+                               SET matched_count = (
+                                       SELECT COUNT(*) FROM bank_statement_lines_v2
+                                       WHERE session_id = $1 AND match_status = 'matched' AND tenant_id = $2
+                                   ),
+                                   unmatched_count = (
+                                       SELECT COUNT(*) FROM bank_statement_lines_v2
+                                       WHERE session_id = $1 AND match_status <> 'matched' AND tenant_id = $2
+                                   ),
+                                   updated_at = NOW()
+                               WHERE id = $1 AND tenant_id = $2""",
+                            uuid_mod.UUID(_sess_id), tenant_id
+                        )
+                        logger.info(f"[DirectAction] Marked statement line {_sl_id} as matched (session {_sess_id})")
+                    except Exception as _mark_err:
+                        logger.warning(f"[DirectAction] Failed to mark statement line matched: {_mark_err}")
 
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
@@ -825,7 +1666,7 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
             da_pool2 = await get_session_db_pool()
             return await _confirm_direct_action(
                 body.pending_action_id, ctx["tenant_id"], ctx["user_id"],
-                da_pool2, request
+                da_pool2, request, payload_overrides=body.payload_overrides
             )
 
         # FSM: AWAITING_CONFIRMATION -> EXECUTING
@@ -946,9 +1787,34 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         except Exception as hook_err:
             logger.warning(f"[Cancel] Layer 2 hook failed (non-fatal): {hook_err}")
 
+        # Build contextual cancel message with workflow info
+        cancel_text = "Ok, dilewati."
+        try:
+            if body.session_id:
+                from ..services.unified_agent.workflow_engine import WorkflowEngine
+                _pool = await get_session_db_pool()
+                _eng = WorkflowEngine(
+                    db_pool=_pool,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                    auth_token=ctx["auth_token"],
+                )
+                _wf = await _eng.get_state(body.session_id, "bank_reconciliation")
+                if _wf and _wf.status == "active" and _wf.current_state == "REVIEWING":
+                    _summary = _wf.data.get("summary", {})
+                    _unmatched = _summary.get("unmatched_count", 0)
+                    _reviewed = _wf.data.get("reviewed_count", 0)
+                    _remaining = max(0, _unmatched - _reviewed - 1)  # -1 for the one just cancelled
+                    if _remaining > 0:
+                        cancel_text = f"Ok, dilewati. Masih ada {_remaining} transaksi lagi yang perlu review."
+                    else:
+                        cancel_text = "Ok, dilewati. Itu item terakhir — ketik \"lanjut\" untuk selesaikan rekonsiliasi."
+        except Exception:
+            pass  # Fall back to simple message
+
         return ChatMessageResponse(
             message_type="TEXT",
-            text="Aksi dibatalkan.",
+            text=cancel_text,
             pending_action_id=body.pending_action_id,
             trace_id=str(uuid_mod.uuid4()),
         )

@@ -31,6 +31,7 @@ from ..schemas.vendor_deposits import (
     VoidDepositResponse,
     VendorDepositStatus,
 )
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 router = APIRouter()
 
@@ -52,6 +53,52 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": request.state.user["tenant_id"],
         "user_id": request.state.user.get("user_id"),
     }
+
+
+
+
+async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
+    """
+    Compute bill remaining balance from journal lines on AP account (Law 16).
+    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
+    """
+    bill_id_str = str(bill_id)
+    result = await conn.fetchval("""
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE je.tenant_id = $1
+          AND je.status = 'POSTED'
+          AND coa.account_code = '2-10100'
+          AND (
+              -- Original bill journal (AP credit)
+              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
+              -- Bill payment journals (via allocations)
+              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              -- Bill payment void journals
+              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
+                  SELECT bp.id FROM bill_payments_v2 bp
+                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
+              ))
+              -- Vendor credit application journals
+              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
+                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
+                  WHERE vca.bill_id = $2::uuid
+              ))
+              -- Vendor deposit application journals
+              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
+                  SELECT vda.journal_id FROM vendor_deposit_applications vda
+                  WHERE vda.bill_id = $2::uuid
+              ))
+          )
+    """, tenant_id, bill_id_str)
+    return int(result or 0)
 
 
 # ============================================================================
@@ -347,17 +394,11 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
             raise HTTPException(status_code=400, detail="Deposit is already posted")
 
         # Get accounts
-        vendor_deposit_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800'",
-            ctx["tenant_id"]
-        )
+        vendor_deposit_account = await resolve_account_id(conn, ctx["tenant_id"], '1-10800')
         if not vendor_deposit_account:
             # Seed account if not exists
             await conn.execute("SELECT seed_vendor_deposit_account($1)", ctx["tenant_id"])
-            vendor_deposit_account = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800'",
-                ctx["tenant_id"]
-            )
+            vendor_deposit_account = await resolve_account_id(conn, ctx["tenant_id"], '1-10800')
 
         bank_account = None
         if vd["bank_account_id"]:
@@ -368,14 +409,22 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
 
         if not bank_account:
             # Use default cash account
-            cash_account = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10100'",
-                ctx["tenant_id"]
-            )
+            cash_account = await resolve_account_id(conn, ctx["tenant_id"], '1-10100')
         else:
             cash_account = bank_account["account_id"]
 
         async with conn.transaction():
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
+
+            # Law 5: Period check
+            period_row = await conn.fetchrow(
+                "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                ctx["tenant_id"], vd["deposit_date"]
+            )
+            if period_row and period_row["status"] != 'OPEN':
+                raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
             # Generate journal number
             seq = await conn.fetchrow(
                 """
@@ -389,25 +438,25 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
             )
             journal_number = f"JV-{vd['deposit_date'].year}-{seq['last_number']:05d}"
 
-            # Create journal entry
+            # Law 20: Create journal entry as DRAFT first
             journal = await conn.fetchrow(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, source_id, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_DEPOSIT', $6, 'POSTED', $7)
+                    tenant_id, journal_number, journal_date, memo,
+                    source_type, source_id, total_debit, total_credit, status, created_by, updated_by
+                ) VALUES ($1, $2, $3, $4, 'VENDOR_DEPOSIT', $5, $6, $6, 'DRAFT', $7, $7)
                 RETURNING id, journal_number
                 """,
                 ctx["tenant_id"], journal_number, vd["deposit_date"],
-                vd["deposit_number"], f"Vendor Deposit - {vd['deposit_number']}",
-                deposit_id, ctx.get("user_id")
+                f"Vendor Deposit - {vd['deposit_number']}",
+                deposit_id, vd["amount"], ctx.get("user_id")
             )
 
             # Journal lines
             # Dr. Uang Muka Vendor
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, 0, $4)
                 """,
                 journal["id"], vendor_deposit_account, vd["amount"],
@@ -417,12 +466,15 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
             # Cr. Kas/Bank
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, 0, $3, $4)
                 """,
                 journal["id"], cash_account, vd["amount"],
                 f"Vendor Deposit - {vd['deposit_number']}"
             )
+
+            # Law 20: Post after all lines inserted
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal["id"])
 
             # Update deposit
             await conn.execute(
@@ -482,23 +534,28 @@ async def apply_vendor_deposit(request: Request, deposit_id: UUID, data: ApplyDe
         if bill["status"] not in ("posted", "partial"):
             raise HTTPException(status_code=400, detail="Bill must be posted")
 
-        bill_remaining = bill["total_amount"] - (bill["paid_amount"] or 0)
+        bill_remaining = await get_bill_remaining_from_journal(conn, ctx["tenant_id"], bill["id"])
         if data.amount > bill_remaining:
             raise HTTPException(status_code=400, detail=f"Amount exceeds bill balance. Bill balance: {bill_remaining}")
 
         applied_date = data.applied_date or date.today()
 
         # Get accounts
-        ap_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '2-10100'",
-            ctx["tenant_id"]
-        )
-        vendor_deposit_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800'",
-            ctx["tenant_id"]
-        )
+        ap_account = await resolve_account_id(conn, ctx["tenant_id"], '2-10100')
+        vendor_deposit_account = await resolve_account_id(conn, ctx["tenant_id"], '1-10800')
 
         async with conn.transaction():
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPOSIT_APPLY:{deposit_id}")
+
+            # Law 5: Period check
+            period_row = await conn.fetchrow(
+                "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                ctx["tenant_id"], applied_date
+            )
+            if period_row and period_row["status"] != 'OPEN':
+                raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
             # Generate journal
             seq = await conn.fetchrow(
                 """
@@ -512,24 +569,24 @@ async def apply_vendor_deposit(request: Request, deposit_id: UUID, data: ApplyDe
             )
             journal_number = f"JV-{applied_date.year}-{seq['last_number']:05d}"
 
+            # Law 20: Create journal as DRAFT
             journal = await conn.fetchrow(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_APPLICATION', 'POSTED', $6)
+                    tenant_id, journal_number, journal_date, memo,
+                    source_type, source_id, total_debit, total_credit, status, created_by, updated_by
+                ) VALUES ($1, $2, $3, $4, 'DEPOSIT_APPLICATION', $5, $6, $6, 'DRAFT', $7, $7)
                 RETURNING id
                 """,
                 ctx["tenant_id"], journal_number, applied_date,
-                f"{vd['deposit_number']} -> {bill['bill_number']}",
                 f"Apply Deposit {vd['deposit_number']} to Bill {bill['bill_number']}",
-                ctx.get("user_id")
+                deposit_id, data.amount, ctx.get("user_id")
             )
 
             # Dr. Hutang Usaha
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, 0, $4)
                 """,
                 journal["id"], ap_account, data.amount,
@@ -539,12 +596,15 @@ async def apply_vendor_deposit(request: Request, deposit_id: UUID, data: ApplyDe
             # Cr. Uang Muka Vendor
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, 0, $3, $4)
                 """,
                 journal["id"], vendor_deposit_account, data.amount,
                 f"Apply Deposit {vd['deposit_number']}"
             )
+
+            # Law 20: Post after all lines
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal["id"])
 
             # Create application record
             app = await conn.fetchrow(
@@ -627,10 +687,7 @@ async def refund_vendor_deposit(request: Request, deposit_id: UUID, data: Vendor
             raise HTTPException(status_code=400, detail=f"Insufficient balance. Available: {vd['remaining_amount']}")
 
         # Get accounts
-        vendor_deposit_account = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800'",
-            ctx["tenant_id"]
-        )
+        vendor_deposit_account = await resolve_account_id(conn, ctx["tenant_id"], '1-10800')
 
         bank_account_coa = None
         if data.bank_account_id:
@@ -639,12 +696,20 @@ async def refund_vendor_deposit(request: Request, deposit_id: UUID, data: Vendor
                 data.bank_account_id
             )
         if not bank_account_coa:
-            bank_account_coa = await conn.fetchval(
-                "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10100'",
-                ctx["tenant_id"]
-            )
+            bank_account_coa = await resolve_account_id(conn, ctx["tenant_id"], '1-10100')
 
         async with conn.transaction():
+            # Law 13: Advisory lock
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPOSIT_REFUND:{deposit_id}")
+
+            # Law 5: Period check
+            period_row = await conn.fetchrow(
+                "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                ctx["tenant_id"], data.refund_date
+            )
+            if period_row and period_row["status"] != 'OPEN':
+                raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
             # Generate journal
             seq = await conn.fetchrow(
                 """
@@ -658,23 +723,24 @@ async def refund_vendor_deposit(request: Request, deposit_id: UUID, data: Vendor
             )
             journal_number = f"JV-{data.refund_date.year}-{seq['last_number']:05d}"
 
+            # Law 20: Create journal as DRAFT
             journal = await conn.fetchrow(
                 """
                 INSERT INTO journal_entries (
-                    tenant_id, journal_number, entry_date, reference, description,
-                    source_type, status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_REFUND', 'POSTED', $6)
+                    tenant_id, journal_number, journal_date, memo,
+                    source_type, source_id, total_debit, total_credit, status, created_by, updated_by
+                ) VALUES ($1, $2, $3, $4, 'DEPOSIT_REFUND', $5, $6, $6, 'DRAFT', $7, $7)
                 RETURNING id
                 """,
                 ctx["tenant_id"], journal_number, data.refund_date,
-                vd["deposit_number"], f"Refund Deposit {vd['deposit_number']}",
-                ctx.get("user_id")
+                f"Refund Deposit {vd['deposit_number']}",
+                deposit_id, data.amount, ctx.get("user_id")
             )
 
             # Dr. Kas/Bank
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, 0, $4)
                 """,
                 journal["id"], bank_account_coa, data.amount,
@@ -684,12 +750,15 @@ async def refund_vendor_deposit(request: Request, deposit_id: UUID, data: Vendor
             # Cr. Uang Muka Vendor
             await conn.execute(
                 """
-                INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
+                INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo)
                 VALUES ($1, $2, 0, $3, $4)
                 """,
                 journal["id"], vendor_deposit_account, data.amount,
                 f"Refund Deposit {vd['deposit_number']}"
             )
+
+            # Law 20: Post after all lines
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal["id"])
 
             # Create refund record
             refund = await conn.fetchrow(
@@ -723,35 +792,194 @@ async def refund_vendor_deposit(request: Request, deposit_id: UUID, data: Vendor
 
 @router.post("/{deposit_id}/void", response_model=VoidDepositResponse)
 async def void_vendor_deposit(request: Request, deposit_id: UUID):
-    """Void vendor deposit (only if not applied)"""
+    """
+    Void vendor deposit (only if not applied).
+
+    IRON LAW 2: Immutability - reversal journal, not edit
+    IRON LAW 5: Period validation
+    IRON LAW 13: Advisory lock VENDOR_DEPOSIT_VOID:{deposit_id}
+    IRON LAW 20: DRAFT -> lines -> UPDATE POSTED
+    IRON LAW 26: Reversal linking (reversal_of_id + reversed_by_id)
+    """
+    import uuid as uuid_module
+    import logging
+    logger = logging.getLogger(__name__)
+
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
 
-        vd = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id, ctx["tenant_id"]
-        )
-        if not vd:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
-
-        if vd["applied_amount"] > 0:
-            raise HTTPException(status_code=400, detail="Cannot void deposit with applications")
-
-        if vd["status"] == "void":
-            raise HTTPException(status_code=400, detail="Deposit already voided")
-
         async with conn.transaction():
-            # TODO: Create reversal journal if posted
+            # Law 13: Advisory lock FIRST in transaction
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"VENDOR_DEPOSIT_VOID:{deposit_id}",
+            )
+
+            # Read AFTER lock with FOR UPDATE (fixes TOCTOU)
+            vd = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id, ctx["tenant_id"],
+            )
+            if not vd:
+                raise HTTPException(status_code=404, detail="Vendor deposit not found")
+
+            # C4: Idempotency guard AFTER lock
+            if vd["status"] == "void":
+                return VoidDepositResponse(
+                    deposit_id=deposit_id,
+                    deposit_number=vd["deposit_number"],
+                    status=VendorDepositStatus.void,
+                )
+
+            if vd["status"] == "draft":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot void draft deposit. Delete it instead.",
+                )
+
+            # C5: Dependency check — no applications
+            if (vd["applied_amount"] or 0) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot void deposit with applications. Reverse applications first.",
+                )
+
+            # Create reversal journal if deposit was posted
+            reversal_id = None
+            if vd.get("journal_id"):
+                original_journal = await conn.fetchrow(
+                    "SELECT * FROM journal_entries WHERE id = $1 AND tenant_id = $2 AND status = 'POSTED'",
+                    vd["journal_id"], ctx["tenant_id"],
+                )
+                if not original_journal:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Original journal not found or not POSTED",
+                    )
+
+                # Law 5: Period check on CURRENT_DATE
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE",
+                    ctx["tenant_id"],
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                    )
+
+                # Get journal number
+                journal_number = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
+                )
+                if not journal_number:
+                    journal_number = f"VD-{vd['deposit_number']}"
+
+                # Law 20 Step 1: Create reversal as DRAFT with reversal_of_id (Law 26)
+                reversal_id = uuid_module.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date, description,
+                        source_type, source_id, total_debit, total_credit,
+                        status, created_by, reversal_of_id
+                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_DEPOSIT', $5, $6, $6, 'DRAFT', $7, $8)
+                    """,
+                    reversal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    f"Void {vd['deposit_number']}",
+                    str(deposit_id),
+                    original_journal["total_debit"],
+                    ctx.get("user_id"),
+                    original_journal["id"],
+                )
+
+                # Law 20 Step 2: Insert reversed lines with line_number (swap debit<->credit)
+                original_lines = await conn.fetch(
+                    "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
+                    original_journal["id"],
+                )
+                for idx, line in enumerate(original_lines, 1):
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        uuid_module.uuid4(),
+                        reversal_id,
+                        idx,
+                        line["account_id"],
+                        line["credit"],  # Swap
+                        line["debit"],   # Swap
+                        f"Reversal - {line['memo'] or ''}",
+                    )
+
+                # Law 20 Step 3: Post reversal
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    reversal_id,
+                )
+
+                # Law 26: Mark original as reversed
+                await conn.execute(
+                    "UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2",
+                    reversal_id, original_journal["id"],
+                )
+
+            # C7: Bank mirror reversal (BankSync Rule 3)
+            if vd.get("bank_account_id"):
+                original_btxn = await conn.fetchrow(
+                    """
+                    SELECT id, bank_account_id, amount, transaction_type
+                    FROM bank_transactions
+                    WHERE (reference_type = 'vendor_deposit' OR reference_type = 'VENDOR_DEPOSIT')
+                      AND reference_id = $1
+                      AND status != 'VOIDED'
+                    LIMIT 1
+                    """,
+                    deposit_id,
+                )
+                if original_btxn:
+                    mirror_type = 'deposit' if original_btxn['transaction_type'] == 'withdrawal' else 'withdrawal'
+                    await conn.execute(
+                        """
+                        INSERT INTO bank_transactions (
+                            id, tenant_id, bank_account_id, transaction_date,
+                            transaction_type, amount, running_balance,
+                            reference_type, reference_id, reference_number,
+                            description, journal_id, status, origin_type, source_module,
+                            created_by, posted_by, posted_at
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, 0,
+                            'vendor_deposit_void', $6, $7, $8, $9,
+                            'POSTED', 'SYSTEM', 'vendor_deposit', $10, $10, NOW())
+                        """,
+                        uuid_module.uuid4(),
+                        ctx["tenant_id"],
+                        original_btxn["bank_account_id"],
+                        mirror_type,
+                        -original_btxn["amount"],
+                        deposit_id,
+                        f"VOID-{vd['deposit_number']}",
+                        f"Void deposit - {vd['deposit_number']}",
+                        reversal_id,
+                        ctx.get("user_id"),
+                    )
+
+            # Mark deposit as VOID
             await conn.execute(
                 """
                 UPDATE vendor_deposits SET status = 'void', updated_at = NOW()
                 WHERE id = $1
                 """,
-                deposit_id
+                deposit_id,
             )
+
+            logger.info(f"Vendor deposit voided: {deposit_id}")
 
             return VoidDepositResponse(
                 deposit_id=deposit_id,
@@ -760,8 +988,6 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
             )
 
 
-# ============================================================================
-# VENDOR SPECIFIC ENDPOINTS
 # ============================================================================
 
 @router.get("/by-vendor/{vendor_id}", response_model=VendorDepositsForVendorResponse)

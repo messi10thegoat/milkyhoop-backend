@@ -1,0 +1,141 @@
+scenarios:
+- id: AMD-001
+  category: action_master_data
+  description: Create customer with name and phone number
+  messages:
+  - 'tambah pelanggan baru: PT Maju Jaya, telepon 081234567890'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_CUSTOMER
+  expect_contains:
+  - Maju Jaya
+  tags:
+  - master_data
+  - customer
+  timeout_seconds: 30
+- id: AMD-002
+  category: action_master_data
+  description: Create vendor with name and email
+  messages:
+  - daftarkan vendor baru PT Sumber Makmur, email sumber@email.com
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_VENDOR
+  expect_contains:
+  - Sumber Makmur
+  tags:
+  - master_data
+  - vendor
+  timeout_seconds: 30
+- id: AMD-003
+  category: action_master_data
+  description: Create item with name and selling price
+  messages:
+  - 'tambah item baru: Polo Shirt Premium, harga jual 150000'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_ITEM
+  expect_contains:
+  - Polo
+  tags:
+  - master_data
+  - item
+  timeout_seconds: 30
+- id: AMD-004
+  category: action_master_data
+  description: Create customer with name and address
+  messages:
+  - buat customer baru namanya Toko Bahagia, alamat Jl. Sudirman 123
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_CUSTOMER
+  expect_contains:
+  - Toko Bahagia
+  tags:
+  - master_data
+  - customer
+  timeout_seconds: 30
+- id: AMD-005
+  category: action_master_data
+  description: Create vendor with name and phone
+  messages:
+  - 'daftar vendor: CV Bersama, telepon 0811222333'
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_VENDOR
+  expect_contains:
+  - CV Bersama
+  tags:
+  - master_data
+  - vendor
+  timeout_seconds: 30
+- id: AMD-006
+  category: action_master_data
+  description: Create item with name, unit, and price
+  messages:
+  - 'tambah barang: Celana Jeans, satuan: pcs, harga 200000'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_ITEM
+  expect_contains:
+  - Celana Jeans
+  tags:
+  - master_data
+  - item
+  timeout_seconds: 30
+- id: AMD-007
+  category: action_master_data
+  description: Create corporate customer with type and email
+  messages:
+  - bikin customer PT Abadi Sentosa, tipe perusahaan, email abadi@corp.com
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_CUSTOMER
+  expect_contains:
+  - Abadi Sentosa
+  tags:
+  - master_data
+  - customer
+  timeout_seconds: 30
+- id: AMD-008
+  category: action_master_data
+  description: Create vendor with name and city
+  messages:
+  - 'vendor baru: PT Supplier Utama, alamat Jakarta'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_VENDOR
+  expect_contains:
+  - Supplier Utama
+  tags:
+  - master_data
+  - vendor
+  timeout_seconds: 30
+- id: AMD-009
+  category: action_master_data
+  description: Create item with buy and sell prices
+  messages:
+  - 'item baru Topi Snapback, unit: pcs, harga beli 45000, harga jual 85000'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_ITEM
+  expect_contains:
+  - Topi Snapback
+  tags:
+  - master_data
+  - item
+  timeout_seconds: 30
+- id: AMD-010
+  category: action_master_data
+  description: Create individual customer with name and mobile
+  messages:
+  - 'tambahkan pelanggan individu: Budi Santoso, HP 08123456789'
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_CUSTOMER
+  expect_contains:
+  - Budi Santoso
+  tags:
+  - master_data
+  - customer
+  timeout_seconds: 30

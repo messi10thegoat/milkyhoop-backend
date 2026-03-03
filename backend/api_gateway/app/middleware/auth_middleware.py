@@ -30,6 +30,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/auth/login",
             "/api/auth/refresh",
             "/api/auth/logout",
+            "/api/auth/signup/register",
+            "/api/auth/signup/verify-code",
+            "/api/auth/signup/complete-setup",
+            "/api/auth/signup/resend-code",
             "/",
         }
 
@@ -63,6 +67,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Auth validated via device_id matching (device_id from authenticated login)
         return bool(re.match(r"^/api/devices/ws/[^/]+/?$", path))
 
+    def _is_signup_public_endpoint(self, path: str) -> bool:
+        """Check if path matches signup verify-link (has dynamic token)"""
+        return bool(re.match(r"^/api/auth/signup/verify-link/[^/]+/?$", path))
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
@@ -89,6 +97,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Allow Device WebSocket endpoint (auth via device_id in path)
             if self._is_device_ws_endpoint(path):
                 logger.info(f"Bypassing auth for Device WebSocket: {path}")
+                return await call_next(request)
+
+            # Allow signup verify-link endpoint (dynamic token in URL)
+            if self._is_signup_public_endpoint(path):
                 return await call_next(request)
 
             # Allow internal service requests (action_executor calling kernel endpoints)
@@ -180,7 +192,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         except Exception as e:
-            logger.error(f"Auth middleware error: {str(e)}")
+            import traceback
+            logger.error(
+                "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
+            )
             return JSONResponse(
                 status_code=500, content={"error": "Authentication error"}
             )

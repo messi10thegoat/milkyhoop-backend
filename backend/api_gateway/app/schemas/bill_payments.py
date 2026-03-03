@@ -264,6 +264,9 @@ class BillPaymentDetail(BaseModel):
     updated_at: str
     created_by: Optional[str] = None
 
+    # Journal-only flag (Law 29)
+    is_journal_only: Optional[bool] = None
+
 
 # =============================================================================
 # RESPONSE MODELS - Generic

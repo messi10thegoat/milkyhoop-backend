@@ -34,6 +34,7 @@ from ..schemas.bank_accounts import (
     BankAccountBalanceResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -241,7 +242,7 @@ async def list_bank_accounts(
             # Sort
             valid_sorts = {
                 "account_name": "ba.account_name",
-                "current_balance": "ba.current_balance",
+                "current_balance": "lb.ledger_balance",  # Law 21: journal-derived balance
                 "created_at": "ba.created_at",
             }
             sort_field = valid_sorts.get(sort_by, "ba.account_name")
@@ -254,11 +255,20 @@ async def list_bank_accounts(
             # Get items with CoA info
             query = f"""
                 SELECT ba.id, ba.account_name, ba.account_number, ba.bank_name,
-                       ba.account_type, ba.coa_id, ba.current_balance,
+                       ba.account_type, ba.coa_id,
                        ba.is_active, ba.is_default, ba.created_at,
-                       coa.account_code as coa_code, coa.name as coa_name
+                       coa.account_code as coa_code, coa.name as coa_name,
+                       COALESCE(lb.ledger_balance, 0) as ledger_balance  -- Law 21: journal-derived balance
                 FROM bank_accounts ba
                 LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE jl.account_id = ba.coa_id
+                      AND je.status = 'POSTED'
+                      AND je.tenant_id = $1
+                ) lb ON true
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -277,7 +287,8 @@ async def list_bank_accounts(
                     "coa_id": str(row["coa_id"]),
                     "coa_code": row["coa_code"],
                     "coa_name": row["coa_name"],
-                    "current_balance": row["current_balance"] or 0,
+                    "current_balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "ledger_balance": float(row["ledger_balance"] or 0),
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
                     "created_at": row["created_at"].isoformat(),
@@ -309,10 +320,20 @@ async def get_bank_accounts_dropdown(request: Request):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, account_name, account_number, bank_name, current_balance, currency
-                FROM bank_accounts
-                WHERE tenant_id = $1 AND is_active = true
-                ORDER BY account_name ASC
+                SELECT ba.id, ba.account_name, ba.account_number, ba.bank_name,
+                       COALESCE(lb.ledger_balance, 0) as ledger_balance,
+                       ba.currency
+                FROM bank_accounts ba
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE jl.account_id = ba.coa_id
+                      AND je.status = 'POSTED'
+                      AND je.tenant_id = $1
+                ) lb ON true
+                WHERE ba.tenant_id = $1 AND ba.is_active = true
+                ORDER BY ba.account_name ASC
             """,
                 ctx["tenant_id"],
             )
@@ -323,7 +344,7 @@ async def get_bank_accounts_dropdown(request: Request):
                     "name": row["account_name"],
                     "account_number": row["account_number"],
                     "bank_name": row["bank_name"],
-                    "balance": row["current_balance"],
+                    "balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
                     "currency": row["currency"] or "IDR",
                 }
                 for row in rows
@@ -347,9 +368,18 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
 
         async with pool.acquire() as conn:
             query = """
-                SELECT ba.*, coa.account_code as coa_code, coa.name as coa_name
+                SELECT ba.*, coa.account_code as coa_code, coa.name as coa_name,
+                       COALESCE(lb.ledger_balance, 0) as ledger_balance
                 FROM bank_accounts ba
                 LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE jl.account_id = ba.coa_id
+                      AND je.status = 'POSTED'
+                      AND je.tenant_id = $2
+                ) lb ON true
                 WHERE ba.id = $1 AND ba.tenant_id = $2
             """
             row = await conn.fetchrow(query, bank_account_id, ctx["tenant_id"])
@@ -384,7 +414,8 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     "coa_code": row["coa_code"],
                     "coa_name": row["coa_name"],
                     "opening_balance": row["opening_balance"] or 0,
-                    "current_balance": row["current_balance"] or 0,
+                    "current_balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "ledger_balance": float(row["ledger_balance"] or 0),
                     "last_reconciled_balance": row["last_reconciled_balance"] or 0,
                     "last_reconciled_date": row["last_reconciled_date"].isoformat()
                     if row["last_reconciled_date"]
@@ -437,6 +468,12 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock for bank account creation
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_CREATE:{ctx['tenant_id']}:{body.account_name}",
+                )
+
                 coa_id = None
                 coa_code = None
                 coa_type = None
@@ -536,13 +573,14 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     )
 
                 # Create bank account
+                # Law 21: current_balance column retained but deprecated. Balance computed from journal.
                 bank_account_id = uuid_module.uuid4()
 
                 await conn.execute(
                     """
                     INSERT INTO bank_accounts (
                         id, tenant_id, account_name, account_number, bank_name, bank_branch,
-                        swift_code, coa_id, opening_balance, current_balance,
+                        swift_code, coa_id, opening_balance, current_balance,  -- Law 21: current_balance column retained but deprecated. Balance computed from journal.
                         account_type, currency, is_default, notes, created_by
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)
                 """,
@@ -570,16 +608,10 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     trace_id = uuid_module.uuid4()
                     opening_date = body.opening_date or date.today()
 
-                    # Get opening balance equity account
-                    equity_account_id = await conn.fetchval(
-                        """
-                        SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1 AND account_code = $2
-                    """,
-                        ctx["tenant_id"],
-                        OPENING_BALANCE_EQUITY,
+                    # Law 27: Use resolve_account_id helper
+                    equity_account_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
                     )
-
                     if not equity_account_id:
                         raise HTTPException(
                             status_code=500,
@@ -595,7 +627,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, trace_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, 'POSTED', $8, $8, $9)
+                        ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, 'DRAFT', $8, $8, $9)
                     """,
                         journal_id,
                         ctx["tenant_id"],
@@ -664,6 +696,12 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             f"Modal Saldo Awal - {body.account_name}",
                         )
 
+                    # Law 20: DRAFT→POSTED for hash chain
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        journal_id,
+                    )
+
                     # Create opening bank transaction
                     # Note: Trigger now handles balance update atomically (V076)
                     # For opening balance, running_balance will be set by trigger
@@ -727,6 +765,12 @@ async def update_bank_account(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock for bank account deletion
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_DELETE:{bank_account_id}",
+                )
+
                 # Get existing account
                 ba = await conn.fetchrow(
                     """
@@ -957,6 +1001,34 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                         ctx["tenant_id"],
                     )
 
+                    # Delete reconciliation data (FK cascade: adjustments/matches/lines → sessions → bank_accounts)
+                    recon_session_ids = [
+                        r["id"]
+                        for r in await conn.fetch(
+                            "SELECT id FROM reconciliation_sessions WHERE account_id = $1 AND tenant_id = $2",
+                            bank_account_id,
+                            ctx["tenant_id"],
+                        )
+                    ]
+                    if recon_session_ids:
+                        await conn.execute(
+                            "DELETE FROM reconciliation_adjustments WHERE session_id = ANY($1::uuid[])",
+                            recon_session_ids,
+                        )
+                        await conn.execute(
+                            "DELETE FROM reconciliation_matches WHERE session_id = ANY($1::uuid[])",
+                            recon_session_ids,
+                        )
+                        await conn.execute(
+                            "DELETE FROM bank_statement_lines_v2 WHERE session_id = ANY($1::uuid[])",
+                            recon_session_ids,
+                        )
+                        await conn.execute(
+                            "DELETE FROM reconciliation_sessions WHERE account_id = $1 AND tenant_id = $2",
+                            bank_account_id,
+                            ctx["tenant_id"],
+                        )
+
                     # Delete the bank account (references coa_id)
                     await conn.execute(
                         """
@@ -1019,10 +1091,10 @@ async def get_bank_transactions(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Verify bank account exists
-            ba = await conn.fetchval(
+            # Verify bank account exists and get coa_id for journal lookups
+            ba = await conn.fetchrow(
                 """
-                SELECT id FROM bank_accounts
+                SELECT id, coa_id FROM bank_accounts
                 WHERE id = $1 AND tenant_id = $2
             """,
                 bank_account_id,
@@ -1032,44 +1104,78 @@ async def get_bank_transactions(
             if not ba:
                 raise HTTPException(status_code=404, detail="Bank account not found")
 
+            coa_id = ba["coa_id"]
+
             # Build query
-            conditions = ["bank_account_id = $1"]
+            conditions = ["bt.bank_account_id = $1"]
             params = [bank_account_id]
             param_idx = 2
 
             if transaction_type:
-                conditions.append(f"transaction_type = ${param_idx}")
+                conditions.append(f"bt.transaction_type = ${param_idx}")
                 params.append(transaction_type)
                 param_idx += 1
 
             if date_from:
-                conditions.append(f"transaction_date >= ${param_idx}")
+                conditions.append(f"bt.transaction_date >= ${param_idx}")
                 params.append(date_from)
                 param_idx += 1
 
             if date_to:
-                conditions.append(f"transaction_date <= ${param_idx}")
+                conditions.append(f"bt.transaction_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
 
             if is_reconciled is not None:
-                conditions.append(f"is_reconciled = ${param_idx}")
+                conditions.append(f"bt.is_reconciled = ${param_idx}")
                 params.append(is_reconciled)
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
             # Count total
-            count_query = f"SELECT COUNT(*) FROM bank_transactions WHERE {where_clause}"
+            count_query = f"SELECT COUNT(*) FROM bank_transactions bt WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
 
-            # Get transactions
+            # Law 1: Journal-derived amounts via LEFT JOIN to journal_lines
+            # If bt.journal_id exists, use journal-derived amount; otherwise fallback to bt.amount
+            # Running balance computed as window function over journal-derived amounts
+            coa_param = f"${param_idx}"
+            params.append(coa_id)
+            param_idx += 1
+            tenant_param = f"${param_idx}"
+            params.append(ctx["tenant_id"])
+            param_idx += 1
+
             query = f"""
-                SELECT id, transaction_date, transaction_type, amount, running_balance,
-                       description, payee_payer, reference_type, reference_number,
-                       is_reconciled, created_at
-                FROM bank_transactions
-                WHERE {where_clause}
+                WITH txn_data AS (
+                    SELECT bt.id, bt.transaction_date, bt.transaction_type,
+                           -- Law 1: prefer journal-derived amount, fallback for unreconciled imports
+                           CASE WHEN bt.journal_id IS NOT NULL AND jl.journal_id IS NOT NULL
+                               THEN COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0)
+                               ELSE bt.amount
+                           END as amount,
+                           bt.description, bt.payee_payer, bt.reference_type, bt.reference_number,
+                           bt.is_reconciled, bt.created_at, bt.source_module,
+                           -- Enrich: customer name from sales_invoices via reference_id
+                           si.invoice_number AS related_invoice_number,
+                           c.nama AS customer_name,
+                           -- Enrich: vendor name from bills via reference_id
+                           b.invoice_number AS related_bill_number,
+                           v.name AS vendor_name
+                    FROM bank_transactions bt
+                    LEFT JOIN bank_accounts ba_coa ON ba_coa.id = bt.bank_account_id
+                    LEFT JOIN journal_lines jl ON jl.journal_id = bt.journal_id AND jl.account_id = {coa_param}
+                    LEFT JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = {tenant_param} AND je.status = 'POSTED'
+                    LEFT JOIN sales_invoices si ON bt.reference_type = 'invoice' AND si.id = bt.reference_id
+                    LEFT JOIN customers c ON si.customer_id = c.id
+                    LEFT JOIN bills b ON bt.reference_type = 'bill' AND b.id = bt.reference_id
+                    LEFT JOIN vendors v ON b.vendor_id = v.id
+                    WHERE {where_clause}
+                )
+                SELECT *,
+                    SUM(amount) OVER (ORDER BY transaction_date ASC, created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_balance
+                FROM txn_data
                 ORDER BY transaction_date DESC, created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
@@ -1090,6 +1196,11 @@ async def get_bank_transactions(
                     "reference_number": row["reference_number"],
                     "is_reconciled": row["is_reconciled"],
                     "created_at": row["created_at"].isoformat(),
+                    "source_module": row.get("source_module"),
+                    "customer_name": row.get("customer_name"),
+                    "vendor_name": row.get("vendor_name"),
+                    "related_invoice_number": row.get("related_invoice_number"),
+                    "related_bill_number": row.get("related_bill_number"),
                 }
                 for row in rows
             ]
@@ -1121,9 +1232,18 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
             # Get bank account
             ba = await conn.fetchrow(
                 """
-                SELECT id, account_name, opening_balance, current_balance
-                FROM bank_accounts
-                WHERE id = $1 AND tenant_id = $2
+                SELECT ba.id, ba.account_name, ba.opening_balance,
+                       COALESCE(lb.ledger_balance, 0) as ledger_balance  -- Law 21: journal-derived balance
+                FROM bank_accounts ba
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE jl.account_id = ba.coa_id
+                      AND je.status = 'POSTED'
+                      AND je.tenant_id = $2
+                ) lb ON true
+                WHERE ba.id = $1 AND ba.tenant_id = $2
             """,
                 bank_account_id,
                 ctx["tenant_id"],
@@ -1132,15 +1252,30 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
             if not ba:
                 raise HTTPException(status_code=404, detail="Bank account not found")
 
-            # Get transaction stats
-            stats = await conn.fetchrow(
+            # Law 1: Journal-derived deposits/withdrawals from journal_lines
+            journal_stats = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(SUM(jl.debit), 0) as total_deposits,
+                    COALESCE(SUM(jl.credit), 0) as total_withdrawals,
+                    COUNT(*) as journal_txn_count,
+                    MAX(je.journal_date) as last_journal_date
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                WHERE jl.account_id = (SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2)
+                    AND je.tenant_id = $2 AND je.status = 'POSTED'
+                    AND je.reversed_by_id IS NULL
+            """,
+                bank_account_id,
+                ctx["tenant_id"],
+            )
+
+            # Keep bank_transactions stats for reconciliation counts only
+            recon_stats = await conn.fetchrow(
                 """
                 SELECT
                     COUNT(*) as transaction_count,
-                    COUNT(*) FILTER (WHERE is_reconciled = false) as unreconciled_count,
-                    COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as total_deposits,
-                    COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as total_withdrawals,
-                    MAX(transaction_date) as last_transaction_date
+                    COUNT(*) FILTER (WHERE is_reconciled = false) as unreconciled_count
                 FROM bank_transactions
                 WHERE bank_account_id = $1
             """,
@@ -1153,13 +1288,14 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                     "id": str(ba["id"]),
                     "account_name": ba["account_name"],
                     "opening_balance": ba["opening_balance"] or 0,
-                    "current_balance": ba["current_balance"] or 0,
-                    "total_deposits": int(stats["total_deposits"] or 0),
-                    "total_withdrawals": int(stats["total_withdrawals"] or 0),
-                    "transaction_count": stats["transaction_count"] or 0,
-                    "unreconciled_count": stats["unreconciled_count"] or 0,
-                    "last_transaction_date": stats["last_transaction_date"].isoformat()
-                    if stats["last_transaction_date"]
+                    "current_balance": float(ba["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "ledger_balance": float(ba["ledger_balance"] or 0),
+                    "total_deposits": float(journal_stats["total_deposits"] or 0),  # Law 1: journal-derived
+                    "total_withdrawals": float(journal_stats["total_withdrawals"] or 0),  # Law 1: journal-derived
+                    "transaction_count": recon_stats["transaction_count"] or 0,
+                    "unreconciled_count": recon_stats["unreconciled_count"] or 0,
+                    "last_transaction_date": journal_stats["last_journal_date"].isoformat()
+                    if journal_stats["last_journal_date"]
                     else None,
                 },
             }
@@ -1196,12 +1332,27 @@ async def adjust_bank_balance(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock for balance adjustment
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_ADJUST:{bank_account_id}",
+                )
+
                 # Get bank account
                 ba = await conn.fetchrow(
                     """
-                    SELECT ba.*, coa.id as coa_account_id
+                    SELECT ba.*, coa.id as coa_account_id,
+                           COALESCE(lb.ledger_balance, 0) as ledger_balance
                     FROM bank_accounts ba
                     LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
+                    LEFT JOIN LATERAL (
+                        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE jl.account_id = ba.coa_id
+                          AND je.status = 'POSTED'
+                          AND je.tenant_id = $2
+                    ) lb ON true
                     WHERE ba.id = $1 AND ba.tenant_id = $2
                 """,
                     bank_account_id,
@@ -1224,7 +1375,7 @@ async def adjust_bank_balance(
                         status_code=400, detail="Adjustment amount cannot be zero"
                     )
 
-                current_balance = ba["current_balance"] or 0
+                current_balance = float(ba["ledger_balance"] or 0)  # Law 21: journal-derived balance
                 new_balance = current_balance + adjustment
 
                 if new_balance < 0:
@@ -1244,7 +1395,7 @@ async def adjust_bank_balance(
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'ADJUSTMENT', $6, $7, 'POSTED', $8, $8, $9)
+                    ) VALUES ($1, $2, $3, $4, $5, 'ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -1274,13 +1425,9 @@ async def adjust_bank_balance(
                         f"Penyesuaian Saldo - {body.reason}",
                     )
                     # Cr. Opening Balance Equity (as adjustment source)
-                    equity_id = await conn.fetchval(
-                        """
-                        SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1 AND account_code = $2
-                    """,
-                        ctx["tenant_id"],
-                        OPENING_BALANCE_EQUITY,
+                    # Law 27: Use resolve_account_id helper
+                    equity_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
                     )
                     await conn.execute(
                         """
@@ -1296,13 +1443,9 @@ async def adjust_bank_balance(
                     )
                 else:
                     # Dr. Opening Balance Equity
-                    equity_id = await conn.fetchval(
-                        """
-                        SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1 AND account_code = $2
-                    """,
-                        ctx["tenant_id"],
-                        OPENING_BALANCE_EQUITY,
+                    # Law 27: Use resolve_account_id helper
+                    equity_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
                     )
                     await conn.execute(
                         """
@@ -1329,6 +1472,12 @@ async def adjust_bank_balance(
                         int(abs(adjustment)),
                         f"Penyesuaian Saldo - {body.reason}",
                     )
+
+                # Law 20: DRAFT→POSTED for hash chain
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
 
                 # Create bank transaction (trigger will update balance)
                 await conn.execute(
@@ -1380,105 +1529,6 @@ async def adjust_bank_balance(
 # =============================================================================
 
 
-@router.get("/{bank_account_id}/transactions")
-async def get_bank_account_transactions(
-    request: Request,
-    bank_account_id: str,
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
-):
-    """Get transaction history for a bank account."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        offset = (page - 1) * limit
-        async with pool.acquire() as conn:
-            account = await conn.fetchrow(
-                "SELECT id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                bank_account_id,
-                ctx["tenant_id"],
-            )
-            if not account:
-                raise HTTPException(status_code=404, detail="Bank account not found")
-
-            # Build query with optional date filters
-            date_filter = ""
-            params = [ctx["tenant_id"], bank_account_id]
-            param_idx = 3
-
-            if start_date:
-                date_filter += f" AND date >= ${param_idx}"
-                params.append(start_date)
-                param_idx += 1
-            if end_date:
-                date_filter += f" AND date <= ${param_idx}"
-                params.append(end_date)
-                param_idx += 1
-
-            params.extend([limit, offset])
-
-            rows = await conn.fetch(
-                f"""
-                SELECT * FROM (
-                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
-                        payment_date as date, total_amount as amount, 'Payment Received' as description
-                    FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'expense' as type, expense_number as reference,
-                        expense_date as date, -total_amount as amount, COALESCE(notes, 'Expense') as description
-                    FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
-                        transfer_date as date, -amount, 'Transfer Out' as description
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
-                        transfer_date as date, amount, 'Transfer In' as description
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2 AND status = 'posted'
-                ) t
-                WHERE 1=1 {date_filter}
-                ORDER BY date DESC
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """,
-                *params,
-            )
-
-            transactions = [
-                {
-                    "id": row["id"],
-                    "type": row["type"],
-                    "reference": row["reference"],
-                    "date": row["date"].isoformat() if row["date"] else None,
-                    "amount": row["amount"],
-                    "description": row["description"],
-                }
-                for row in rows
-            ]
-
-            return {
-                "transactions": transactions,
-                "page": page,
-                "limit": limit,
-                "account_name": account["account_name"],
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting bank transactions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get transactions")
-
-
-# =============================================================================
-# BANK ACCOUNT STATEMENT
-# =============================================================================
-
-
 @router.get("/{bank_account_id}/statement")
 async def get_bank_account_statement(
     request: Request,
@@ -1486,7 +1536,10 @@ async def get_bank_account_statement(
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
 ):
-    """Get a statement-style report for a bank account."""
+    """Get a statement-style report for a bank account.
+
+    Law 1: All amounts derived from journal_lines via the bank account's coa_id.
+    """
     # Parse date strings to date objects
     from datetime import datetime
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -1495,97 +1548,72 @@ async def get_bank_account_statement(
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # Get bank account with coa_id for journal lookups
             account = await conn.fetchrow(
-                "SELECT id, account_name, current_balance FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, account_name, coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
                 bank_account_id,
                 ctx["tenant_id"],
             )
             if not account:
                 raise HTTPException(status_code=404, detail="Bank account not found")
 
-            # Get opening balance (balance before start_date)
+            coa_id = account["coa_id"]
+
+            # Law 1: Opening balance from journal_lines (all POSTED entries before start_date)
             opening = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(
-                    CASE
-                        WHEN type IN ('receive_payment', 'transfer_in') THEN amount
-                        ELSE -amount
-                    END
-                ), 0) as opening
-                FROM (
-                    SELECT total_amount as amount, 'receive_payment' as type
-                    FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2
-                      AND payment_date < $3 AND status = 'posted'
-                    UNION ALL
-                    SELECT total_amount as amount, 'expense' as type
-                    FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2
-                      AND expense_date < $3 AND status = 'posted'
-                    UNION ALL
-                    SELECT amount, 'transfer_out' as type
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2
-                      AND transfer_date < $3 AND status = 'posted'
-                    UNION ALL
-                    SELECT amount, 'transfer_in' as type
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2
-                      AND transfer_date < $3 AND status = 'posted'
-                ) t
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.journal_date < $3
+                    AND je.reversed_by_id IS NULL
             """,
+                coa_id,
                 ctx["tenant_id"],
-                bank_account_id,
                 start_dt,
             )
 
-            # Get transactions in period
+            # Law 1: Transactions in period from journal_lines
+            # debit = deposit (money in), credit = withdrawal (money out) for asset accounts
+            # Net amount = debit - credit (positive = deposit, negative = withdrawal)
             rows = await conn.fetch(
                 """
-                SELECT * FROM (
-                    SELECT id::text, 'receive_payment' as type, payment_number as reference,
-                        payment_date as date, total_amount as amount, 'Payment Received' as description
-                    FROM receive_payments
-                    WHERE tenant_id = $1 AND bank_account_id::text = $2
-                      AND payment_date BETWEEN $3 AND $4 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'expense' as type, expense_number as reference,
-                        expense_date as date, -total_amount as amount, COALESCE(notes, 'Expense') as description
-                    FROM expenses
-                    WHERE tenant_id = $1 AND paid_through_id::text = $2
-                      AND expense_date BETWEEN $3 AND $4 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_out' as type, transfer_number as reference,
-                        transfer_date as date, -amount, 'Transfer Out' as description
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND from_bank_id::text = $2
-                      AND transfer_date BETWEEN $3 AND $4 AND status = 'posted'
-                    UNION ALL
-                    SELECT id::text, 'transfer_in' as type, transfer_number as reference,
-                        transfer_date as date, amount, 'Transfer In' as description
-                    FROM bank_transfers
-                    WHERE tenant_id = $1 AND to_bank_id::text = $2
-                      AND transfer_date BETWEEN $3 AND $4 AND status = 'posted'
-                ) t ORDER BY date ASC, id ASC
+                SELECT je.id::text, je.source_type as type, je.description,
+                    je.journal_date as date, je.source_id,
+                    COALESCE(jl.debit, 0) as deposit,
+                    COALESCE(jl.credit, 0) as withdrawal,
+                    COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0) as amount
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE jl.account_id = $1
+                    AND je.tenant_id = $2
+                    AND je.status = 'POSTED'
+                    AND je.journal_date BETWEEN $3 AND $4
+                    AND je.reversed_by_id IS NULL
+                ORDER BY je.journal_date ASC, je.created_at ASC
             """,
+                coa_id,
                 ctx["tenant_id"],
-                bank_account_id,
                 start_dt,
                 end_dt,
             )
 
             transactions = []
-            running_balance = opening or 0
+            running_balance = float(opening or 0)
             for row in rows:
-                running_balance += row["amount"]
+                amount = float(row["amount"])
+                running_balance += amount
                 transactions.append(
                     {
                         "id": row["id"],
-                        "type": row["type"],
-                        "reference": row["reference"],
+                        "type": row["type"] or "journal",
+                        "reference": row["type"] or "",
                         "date": row["date"].isoformat() if row["date"] else None,
-                        "amount": row["amount"],
-                        "description": row["description"],
+                        "amount": amount,
+                        "description": row["description"] or "",
                         "running_balance": running_balance,
                     }
                 )
@@ -1599,7 +1627,7 @@ async def get_bank_account_statement(
                 "account_name": account["account_name"],
                 "start_date": start_date,
                 "end_date": end_date,
-                "opening_balance": opening or 0,
+                "opening_balance": float(opening or 0),
                 "closing_balance": running_balance,
                 "total_deposits": total_deposits,
                 "total_withdrawals": total_withdrawals,

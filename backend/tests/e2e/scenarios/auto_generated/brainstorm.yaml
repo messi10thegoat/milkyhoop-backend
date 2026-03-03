@@ -1,0 +1,135 @@
+scenarios:
+- id: BR-001
+  category: brainstorm
+  description: Ide diskon volume untuk pelanggan
+  messages:
+  - gimana kalau kita kasih diskon volume?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - diskon
+  - volume
+  tags:
+  - brainstorm
+  - pricing
+  timeout_seconds: 60
+- id: BR-002
+  category: brainstorm
+  description: Ide sistem membership pelanggan
+  messages:
+  - apa pendapatmu tentang sistem membership pelanggan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - member
+  tags:
+  - brainstorm
+  - loyalty
+  timeout_seconds: 60
+- id: BR-003
+  category: brainstorm
+  description: Strategi mengurangi piutang macet
+  messages:
+  - strategi mengurangi piutang macet
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  tags:
+  - brainstorm
+  - receivables
+  timeout_seconds: 60
+- id: BR-004
+  category: brainstorm
+  description: Ide untuk meningkatkan cash flow
+  messages:
+  - ide untuk meningkatkan cash flow
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  - kas
+  tags:
+  - brainstorm
+  - cashflow
+  timeout_seconds: 60
+- id: BR-005
+  category: brainstorm
+  description: Cara mengurangi beban operasional
+  messages:
+  - gimana cara mengurangi beban operasional?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  - efisien
+  tags:
+  - brainstorm
+  - cost_reduction
+  timeout_seconds: 60
+- id: BR-006
+  category: brainstorm
+  description: Fokus prioritas kuartal depan
+  messages:
+  - apa yang harus kita fokuskan kuartal depan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - fokus
+  tags:
+  - brainstorm
+  - strategy
+  timeout_seconds: 60
+- id: BR-007
+  category: brainstorm
+  description: Strategi pricing yang lebih baik
+  messages:
+  - strategi pricing yang lebih baik
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - harga
+  - pricing
+  tags:
+  - brainstorm
+  - pricing
+  timeout_seconds: 60
+- id: BR-008
+  category: brainstorm
+  description: Ide automasi proses akuntansi
+  messages:
+  - ide automasi proses akuntansi
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - brainstorm
+  - automation
+  timeout_seconds: 60
+- id: BR-009
+  category: brainstorm
+  description: Ide tambah payment gateway
+  messages:
+  - gimana kalau kita tambah payment gateway?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - payment
+  - gateway
+  tags:
+  - brainstorm
+  - payments
+  timeout_seconds: 60
+- id: BR-010
+  category: brainstorm
+  description: Saran diversifikasi produk
+  messages:
+  - saran diversifikasi produk
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - diversifikasi
+  tags:
+  - brainstorm
+  - product
+  timeout_seconds: 60

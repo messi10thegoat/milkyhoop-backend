@@ -36,6 +36,7 @@ from ..schemas.branches import (
     BranchResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -778,14 +779,8 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
 async def create_from_branch_journal(conn, tenant_id, transfer_id, tx_number, body, amount, user_id):
     """Create journal entry for sending branch."""
     try:
-        branch_receivable = await conn.fetchrow(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = '1-10950'",
-            tenant_id
-        )
-        inventory = await conn.fetchrow(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = '1-10400'",
-            tenant_id
-        )
+        branch_receivable = {"id": await resolve_account_id(conn, tenant_id, '1-10950')}
+        inventory = {"id": await resolve_account_id(conn, tenant_id, '1-10400')}
 
         if not branch_receivable or not inventory:
             logger.warning(f"Branch accounts not found for tenant {tenant_id}")
@@ -1003,14 +998,8 @@ async def receive_transfer(request: Request, transfer_id: UUID):
 async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
     """Create journal entry for receiving branch."""
     try:
-        inventory = await conn.fetchrow(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = '1-10400'",
-            tenant_id
-        )
-        branch_payable = await conn.fetchrow(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND code = '2-10950'",
-            tenant_id
-        )
+        inventory = {"id": await resolve_account_id(conn, tenant_id, '1-10400')}
+        branch_payable = {"id": await resolve_account_id(conn, tenant_id, '2-10950')}
 
         if not inventory or not branch_payable:
             return None

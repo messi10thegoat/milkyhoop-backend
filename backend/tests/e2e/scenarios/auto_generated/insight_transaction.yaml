@@ -1,0 +1,223 @@
+scenarios:
+- id: IT-001
+  category: insight_transaction
+  description: Tanya faktur penjualan terakhir
+  messages:
+  - faktur penjualan terakhir apa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - faktur
+  - faktur
+  tags:
+  - insight
+  - transaction
+  - faktur
+  timeout_seconds: 60
+- id: IT-002
+  category: insight_transaction
+  description: Tanya jumlah faktur belum dibayar
+  messages:
+  - ada berapa faktur belum dibayar?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - faktur
+  - belum
+  tags:
+  - insight
+  - transaction
+  - faktur
+  - unpaid
+  timeout_seconds: 60
+- id: IT-003
+  category: insight_transaction
+  description: Minta daftar pengeluaran minggu ini
+  messages:
+  - daftar pengeluaran minggu ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - transaction
+  - pengeluaran
+  timeout_seconds: 60
+- id: IT-004
+  category: insight_transaction
+  description: Tanya transaksi terakhir dengan customer spesifik
+  messages:
+  - transaksi terakhir dengan Grapgrap Clothing
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Grapgrap
+  tags:
+  - insight
+  - transaction
+  - customer
+  timeout_seconds: 60
+- id: IT-005
+  category: insight_transaction
+  description: Tanya total penjualan bulan ini
+  messages:
+  - total penjualan bulan ini berapa?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - penjualan
+  - Rp
+  tags:
+  - insight
+  - transaction
+  - penjualan
+  timeout_seconds: 60
+- id: IT-006
+  category: insight_transaction
+  description: Tanya invoice yang overdue
+  messages:
+  - invoice mana yang overdue?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - overdue
+  - jatuh tempo
+  tags:
+  - insight
+  - transaction
+  - overdue
+  timeout_seconds: 60
+- id: IT-007
+  category: insight_transaction
+  description: Tanya tagihan yang belum lunas
+  messages:
+  - tagihan yang belum lunas
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - tagihan
+  - belum
+  tags:
+  - insight
+  - transaction
+  - tagihan
+  timeout_seconds: 60
+- id: IT-008
+  category: insight_transaction
+  description: Tanya pembelian terbesar bulan ini
+  messages:
+  - pembelian terbesar bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - transaction
+  - pembelian
+  timeout_seconds: 60
+- id: IT-009
+  category: insight_transaction
+  description: Tanya jumlah transaksi hari ini
+  messages:
+  - berapa transaksi hari ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - transaksi
+  - hari
+  tags:
+  - insight
+  - transaction
+  - daily
+  timeout_seconds: 60
+- id: IT-010
+  category: insight_transaction
+  description: Cek status faktur penjualan
+  messages:
+  - cek status faktur penjualan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - faktur
+  tags:
+  - insight
+  - transaction
+  - faktur
+  - status
+  timeout_seconds: 60
+- id: IT-011
+  category: insight_transaction
+  description: Tanya pembayaran terakhir dari pelanggan
+  messages:
+  - pembayaran terakhir dari pelanggan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pembayaran
+  - bayar
+  tags:
+  - insight
+  - transaction
+  - pembayaran
+  timeout_seconds: 60
+- id: IT-012
+  category: insight_transaction
+  description: Tanya total pembelian bulan ini
+  messages:
+  - total pembelian bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pembelian
+  - Rp
+  tags:
+  - insight
+  - transaction
+  - pembelian
+  timeout_seconds: 60
+- id: IT-013
+  category: insight_transaction
+  description: Minta daftar bill yang pending
+  messages:
+  - daftar bill yang pending
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - tagihan
+  - tagihan
+  tags:
+  - insight
+  - transaction
+  - bill
+  timeout_seconds: 60
+- id: IT-014
+  category: insight_transaction
+  description: Tanya expenses bulan Januari
+  messages:
+  - expenses bulan Januari
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - transaction
+  - expenses
+  timeout_seconds: 60
+- id: IT-015
+  category: insight_transaction
+  description: Tanya riwayat pembayaran ke vendor spesifik
+  messages:
+  - riwayat pembayaran ke PT Wave4
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Wave4
+  tags:
+  - insight
+  - transaction
+  - vendor
+  - pembayaran
+  timeout_seconds: 60

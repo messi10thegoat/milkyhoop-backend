@@ -15,6 +15,7 @@ import json
 from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
+from decimal import Decimal
 
 import asyncpg
 import structlog
@@ -95,7 +96,7 @@ async def get_opening_balance_equity_account(conn: Connection, tenant_id: str) -
     query = """
         SELECT id, account_code as code, name, account_type as type, normal_balance
         FROM chart_of_accounts
-        WHERE tenant_id = $1 AND account_code = '3-50000' AND is_active = true
+        WHERE tenant_id = $1 AND account_code = '3-50000' AND is_active = true  -- Law 27: retained earnings account resolution
     """
     account = await conn.fetchrow(query, tenant_id)
     if not account:
@@ -141,7 +142,7 @@ async def validate_opening_balance_request(
         ar_total = sum(ar.amount for ar in request.ar_balances)
         # Find AR control account in the accounts list
         ar_control = next(
-            (a for a in request.accounts if a.account_code == '1-10300'),
+            (a for a in request.accounts if a.account_code == '1-10300'),  # Law 27: request validation
             None
         )
         if ar_control:
@@ -160,7 +161,7 @@ async def validate_opening_balance_request(
         ap_total = sum(ap.amount for ap in request.ap_balances)
         # Find AP control account in the accounts list
         ap_control = next(
-            (a for a in request.accounts if a.account_code == '2-10100'),
+            (a for a in request.accounts if a.account_code == '2-10100'),  # Law 27: request validation
             None
         )
         if ap_control:
@@ -182,7 +183,7 @@ async def validate_opening_balance_request(
         )
         # Find inventory control account
         inv_control = next(
-            (a for a in request.accounts if a.account_code == '1-10400'),
+            (a for a in request.accounts if a.account_code == '1-10400'),  # Law 27: request validation
             None
         )
         if inv_control:
@@ -493,6 +494,27 @@ async def create_opening_balance(
             )
 
         async with conn.transaction():
+            # Law 13: Advisory lock on opening balance creation
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"OPENING:{tenant_id}"
+            )
+
+            # Law 5: Check period is open for the opening balance date
+            period = await conn.fetchrow(
+                """
+                SELECT id, status FROM fiscal_periods
+                WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                ORDER BY start_date DESC LIMIT 1
+                """,
+                tenant_id, body.opening_date
+            )
+            if period and period["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cannot post opening balance to {period['status'].lower()} period"
+                )
+
             # Get Opening Balance Equity account
             ob_equity = await get_opening_balance_equity_account(conn, tenant_id)
 
@@ -571,7 +593,7 @@ async def create_opening_balance(
                     total_debit, total_credit, status, source_type, source_id,
                     is_opening_balance, created_by
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, 'POSTED', 'OPENING_BALANCE', NULL,
+                    $1, $2, $3, $4, $5, $6, 'DRAFT', 'OPENING_BALANCE', NULL,
                     true, $7
                 ) RETURNING id
             """
@@ -604,6 +626,12 @@ async def create_opening_balance(
                     f"Opening Balance - {line['account_name']}",
                     line["debit"], line["credit"], idx
                 )
+
+            # Law 20: DRAFT -> POSTED after lines inserted (triggers hash chain)
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                journal_id
+            )
 
             # Create AR subledger entries if provided
             ar_journal_id = None
@@ -674,7 +702,7 @@ async def create_opening_balance(
             if body.inventory_balances:
                 for inv in body.inventory_balances:
                     inventory_count += 1
-                    item_total = inv.total_value or int(inv.quantity * inv.unit_cost)
+                    item_total = inv.total_value or Decimal(str(inv.quantity)) * Decimal(str(inv.unit_cost))
                     inventory_total += item_total
 
                     # Update product/item inventory quantity
@@ -831,6 +859,27 @@ async def update_opening_balance(
             )
 
         async with conn.transaction():
+            # Law 13: Advisory lock on opening balance update
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"OPENING_UPDATE:{tenant_id}"
+            )
+
+            # Law 5: Check period is open for the opening balance date
+            period = await conn.fetchrow(
+                """
+                SELECT id, status FROM fiscal_periods
+                WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                ORDER BY start_date DESC LIMIT 1
+                """,
+                tenant_id, body.opening_date
+            )
+            if period and period["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cannot post opening balance to {period['status'].lower()} period"
+                )
+
             # Mark existing as superseded
             await conn.execute(
                 """
@@ -864,15 +913,15 @@ async def update_opening_balance(
                     INSERT INTO journal_entries (
                         tenant_id, journal_number, journal_date, description,
                         total_debit, total_credit, status, source_type,
-                        is_opening_balance, created_by
+                        is_opening_balance, reversal_of_id, created_by
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, 'POSTED', 'OPENING_BALANCE_REVERSAL',
-                        true, $7
+                        $1, $2, $3, $4, $5, $6, 'DRAFT', 'OPENING_BALANCE_REVERSAL',
+                        true, $7, $8
                     ) RETURNING id
                     """,
                     tenant_id, reversal_number, body.opening_date,
                     f"Reversal: {body.reason}",
-                    total_debit, total_credit, user_id
+                    total_debit, total_credit, old_journal_id, user_id
                 )
 
                 for idx, line in enumerate(old_lines, 1):
@@ -886,6 +935,22 @@ async def update_opening_balance(
                         f"Reversal - {line['memo']}",
                         line["credit"], line["debit"], idx  # Swap debit/credit
                     )
+
+                # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    reversal_id
+                )
+
+                # Law 26: Link original journal to reversal
+                await conn.execute(
+                    """
+                    UPDATE journal_entries
+                    SET reversed_by_id = $1
+                    WHERE id = $2
+                    """,
+                    reversal_id, old_journal_id
+                )
 
             # Now create new opening balance (reuse create logic)
             # For simplicity, we'll duplicate the core creation logic here
@@ -972,7 +1037,7 @@ async def update_opening_balance(
                     total_debit, total_credit, status, source_type,
                     is_opening_balance, created_by
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, 'POSTED', 'OPENING_BALANCE',
+                    $1, $2, $3, $4, $5, $6, 'DRAFT', 'OPENING_BALANCE',
                     true, $7
                 ) RETURNING id
                 """,
@@ -993,6 +1058,12 @@ async def update_opening_balance(
                     line["debit"], line["credit"], idx
                 )
 
+            # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                journal_id
+            )
+
             # Handle AR/AP/Inventory (simplified - in production would need more careful handling)
             ar_count = len(body.ar_balances) if body.ar_balances else 0
             ar_total = sum(ar.amount for ar in body.ar_balances) if body.ar_balances else 0
@@ -1000,7 +1071,7 @@ async def update_opening_balance(
             ap_total = sum(ap.amount for ap in body.ap_balances) if body.ap_balances else 0
             inventory_count = len(body.inventory_balances) if body.inventory_balances else 0
             inventory_total = sum(
-                inv.total_value or int(inv.quantity * inv.unit_cost)
+                inv.total_value or Decimal(str(inv.quantity)) * Decimal(str(inv.unit_cost))
                 for inv in body.inventory_balances
             ) if body.inventory_balances else 0
 

@@ -1,0 +1,219 @@
+scenarios:
+- id: IR-001
+  category: insight_report
+  description: Minta neraca saldo / trial balance
+  messages:
+  - tampilkan neraca saldo
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - neraca
+  tags:
+  - insight
+  - report
+  - neraca_saldo
+  timeout_seconds: 60
+- id: IR-002
+  category: insight_report
+  description: Minta laporan laba rugi bulan ini
+  messages:
+  - laporan laba rugi bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - laba
+  - pendapatan
+  tags:
+  - insight
+  - report
+  - laba_rugi
+  timeout_seconds: 60
+- id: IR-003
+  category: insight_report
+  description: Minta neraca keuangan per hari ini
+  messages:
+  - neraca keuangan per hari ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - aset
+  tags:
+  - insight
+  - report
+  - neraca
+  timeout_seconds: 60
+- id: IR-004
+  category: insight_report
+  description: Minta laporan arus kas bulan Januari
+  messages:
+  - laporan arus kas bulan Januari
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  - arus
+  tags:
+  - insight
+  - report
+  - arus_kas
+  timeout_seconds: 60
+- id: IR-005
+  category: insight_report
+  description: Minta trial balance bulan ini
+  messages:
+  - trial balance bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - debit
+  - Rp
+  tags:
+  - insight
+  - report
+  - trial_balance
+  timeout_seconds: 60
+- id: IR-006
+  category: insight_report
+  description: Minta profit and loss Januari 2026
+  messages:
+  - profit and loss Januari 2026
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - report
+  - pnl
+  timeout_seconds: 60
+- id: IR-007
+  category: insight_report
+  description: Tanya laba bersih bulan ini
+  messages:
+  - berapa laba bersih bulan ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - laba
+  - Rp
+  tags:
+  - insight
+  - report
+  - laba_bersih
+  timeout_seconds: 60
+- id: IR-008
+  category: insight_report
+  description: Minta cash flow statement
+  messages:
+  - cash flow statement
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  - kas
+  tags:
+  - insight
+  - report
+  - cash_flow
+  timeout_seconds: 60
+- id: IR-009
+  category: insight_report
+  description: Minta laporan keuangan lengkap
+  messages:
+  - laporan keuangan lengkap
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - report
+  - full_report
+  timeout_seconds: 60
+- id: IR-010
+  category: insight_report
+  description: Minta ringkasan keuangan bulan ini
+  messages:
+  - ringkasan keuangan bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - report
+  - ringkasan
+  timeout_seconds: 60
+- id: IR-011
+  category: insight_report
+  description: Minta aging piutang
+  messages:
+  - aging piutang
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  - jatuh
+  tags:
+  - insight
+  - report
+  - aging_piutang
+  timeout_seconds: 60
+- id: IR-012
+  category: insight_report
+  description: Minta aging hutang
+  messages:
+  - aging hutang
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - hutang
+  - jatuh
+  tags:
+  - insight
+  - report
+  - aging_hutang
+  timeout_seconds: 60
+- id: IR-013
+  category: insight_report
+  description: Minta buku besar akun kas
+  messages:
+  - buku besar akun kas
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  tags:
+  - insight
+  - report
+  - buku_besar
+  timeout_seconds: 60
+- id: IR-014
+  category: insight_report
+  description: Minta general ledger bulan Februari
+  messages:
+  - general ledger bulan Februari
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - insight
+  - report
+  - general_ledger
+  timeout_seconds: 60
+- id: IR-015
+  category: insight_report
+  description: Minta laporan pajak PPN bulan ini
+  messages:
+  - laporan pajak PPN bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pajak
+  - PPN
+  tags:
+  - insight
+  - report
+  - pajak
+  timeout_seconds: 60

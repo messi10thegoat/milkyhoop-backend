@@ -1,0 +1,140 @@
+scenarios:
+- id: MT-001
+  category: multi_turn
+  description: Context carry - customer name should persist across turns
+  messages:
+  - saya mau buat faktur ke Grapgrap Clothing
+  - Kaos Oblong 24s 10 pcs
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  tags:
+  - multi_turn
+  - context_carry
+  timeout_seconds: 90
+- id: MT-002
+  category: multi_turn
+  description: Context carry - vendor name should persist across turns
+  messages:
+  - beli dari PT Wave4 Regression
+  - Kaos Oblong 24s 100 pcs harga 25000
+  expect_behavior:
+  - text_response
+  expect_action_type: CREATE_PURCHASE_INVOICE
+  expect_contains: []
+  tags:
+  - multi_turn
+  - context_carry
+  timeout_seconds: 90
+- id: MT-003
+  category: multi_turn
+  description: Follow-up question referencing previous response context
+  messages:
+  - berapa total piutang usaha?
+  - siapa yang paling banyak?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  - Rp
+  tags:
+  - multi_turn
+  - follow_up
+  timeout_seconds: 90
+- id: MT-004
+  category: multi_turn
+  description: Correction flow - user corrects quantity in follow-up
+  messages:
+  - buat faktur penjualan ke Grapgrap Clothing, Kaos 24s 10 pcs
+  - eh salah, harusnya 20 pcs bukan 10
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - multi_turn
+  - correction
+  timeout_seconds: 90
+- id: MT-005
+  category: multi_turn
+  description: Drill-down into report details from summary
+  messages:
+  - laporan laba rugi bulan ini
+  - breakdown beban operasionalnya dong
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  tags:
+  - multi_turn
+  - drill_down
+  timeout_seconds: 90
+- id: MT-006
+  category: multi_turn
+  description: Mode switch from insight query to payment action
+  messages:
+  - berapa hutang kita ke PT Wave4 Regression?
+  - bayar 5jt dulu
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - multi_turn
+  - mode_switch
+  timeout_seconds: 90
+- id: MT-007
+  category: multi_turn
+  description: Iterative refinement - add item details with discount
+  messages:
+  - buat faktur ke Grapgrap
+  - Kemeja Batik 5 pcs, kasih diskon 10%
+  expect_behavior:
+  - propose_action
+  expect_action_type: CREATE_SALES_INVOICE
+  expect_contains:
+  - Grapgrap
+  tags:
+  - multi_turn
+  - refinement
+  timeout_seconds: 90
+- id: MT-008
+  category: multi_turn
+  description: Analysis then brainstorm - cash flow health check then advice
+  messages:
+  - apakah cash flow kita sehat?
+  - gimana cara meningkatkannya?
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - multi_turn
+  - analysis_brainstorm
+  timeout_seconds: 90
+- id: MT-009
+  category: multi_turn
+  description: Multiple items added progressively in conversation
+  messages:
+  - mau buat faktur ke E2E Wave2 Test Corp
+  - Emas 24 Karat 2 pcs dan Dryfit NFL 10 pcs
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - E2E Wave2
+  tags:
+  - multi_turn
+  - multi_item
+  timeout_seconds: 90
+- id: MT-010
+  category: multi_turn
+  description: Report listing then take action on a specific result
+  messages:
+  - daftar faktur yang overdue
+  - kirim reminder ke Grapgrap
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - multi_turn
+  - report_then_action
+  timeout_seconds: 90

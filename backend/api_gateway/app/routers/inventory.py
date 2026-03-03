@@ -521,140 +521,20 @@ async def add_product(
         raise HTTPException(status_code=500, detail=f"Failed to add product: {str(e)}")
 
 
-@router.post("/products/{product_id}/adjust", response_model=StockAdjustmentResponse)
+@router.post("/products/{product_id}/adjust")
 async def adjust_stock(
     request: Request,
     product_id: str,
-    body: StockAdjustmentRequest
 ):
     """
-    Adjust stock level for a product.
-    Writes directly to inventory_ledger with source_type='STOCK_ADJUSTMENT'.
+    DEPRECATED — HTTP 410 Gone.
+    This endpoint had NO journal creation (violated Iron Law 1, 3, 8, Inventory Rule 1).
+    Use POST /api/items/{product_id}/stock-adjustment instead.
     """
-    try:
-        if not hasattr(request.state, 'user') or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
-
-        tenant_id = request.state.user.get("tenant_id")
-        user_id = request.state.user.get("user_id", "unknown")
-        if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
-
-        # Validate reason
-        valid_reasons = ['opname', 'rusak', 'hilang', 'koreksi', 'lainnya']
-        if body.reason not in valid_reasons:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Alasan tidak valid. Pilih salah satu: {', '.join(valid_reasons)}"
-            )
-
-        conn = await get_db_connection()
-        try:
-            # Get product info and current stock from inventory_ledger
-            product_query = """
-                SELECT
-                    p.nama_produk,
-                    p.satuan,
-                    COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as current_stock,
-                    COALESCE(
-                        (SELECT il2.average_cost FROM inventory_ledger il2
-                         WHERE il2.product_id = p.id AND il2.tenant_id = p.tenant_id
-                           AND il2.average_cost IS NOT NULL
-                         ORDER BY il2.movement_date DESC, il2.created_at DESC LIMIT 1),
-                        0
-                    ) as avg_cost
-                FROM public.products p
-                LEFT JOIN inventory_ledger il
-                    ON il.product_id = p.id AND il.tenant_id = p.tenant_id
-                WHERE p.id = $1 AND p.tenant_id = $2
-                GROUP BY p.id, p.nama_produk, p.satuan
-            """
-            product = await conn.fetchrow(product_query, product_id, tenant_id)
-            if not product:
-                raise HTTPException(status_code=404, detail="Produk tidak ditemukan")
-
-            product_name = product['nama_produk']
-            current_stock = float(product['current_stock'])
-            avg_cost = float(product['avg_cost'])
-            adjustment_amount = body.new_quantity - current_stock
-
-            if adjustment_amount == 0:
-                return StockAdjustmentResponse(
-                    success=True,
-                    message="Stok tidak berubah",
-                    stok_sebelum=current_stock,
-                    stok_setelah=current_stock,
-                    adjustment_amount=0
-                )
-
-            # Determine movement direction
-            if adjustment_amount > 0:
-                quantity_in = adjustment_amount
-                quantity_out = 0
-                movement_type = "IN"
-            else:
-                quantity_in = 0
-                quantity_out = abs(adjustment_amount)
-                movement_type = "OUT"
-
-            # Build source_ref with reason + optional notes
-            source_ref = f"STOCK_ADJ:{body.reason}"
-            if body.notes:
-                source_ref += f" - {body.notes}"
-
-            unit_cost = avg_cost
-            total_cost = abs(adjustment_amount) * unit_cost
-
-            # INSERT into inventory_ledger (follows same pattern as add_product opening balance)
-            insert_query = """
-                INSERT INTO inventory_ledger (
-                    tenant_id, product_id, product_name, movement_type, movement_date,
-                    source_type, source_number,
-                    quantity_in, quantity_out, quantity_balance,
-                    unit_cost, total_cost, average_cost, notes
-                ) VALUES (
-                    $1, $2::uuid, $3, $4, CURRENT_DATE,
-                    'STOCK_ADJUSTMENT', $5,
-                    $6, $7, $8,
-                    $9, $10, $9, $11
-                )
-            """
-            await conn.execute(
-                insert_query,
-                tenant_id,
-                product_id,
-                product_name,
-                movement_type,
-                source_ref,
-                quantity_in,
-                quantity_out,
-                body.new_quantity,
-                unit_cost,
-                total_cost,
-                body.notes or f"Stock adjustment: {body.reason}"
-            )
-
-            logger.info(
-                f"Stock adjusted: product={product_id}, reason={body.reason}, "
-                f"before={current_stock}, after={body.new_quantity}, delta={adjustment_amount}"
-            )
-
-            return StockAdjustmentResponse(
-                success=True,
-                message=f"Stok {product_name} berhasil disesuaikan ({body.reason})",
-                stok_sebelum=current_stock,
-                stok_setelah=body.new_quantity,
-                adjustment_amount=adjustment_amount
-            )
-
-        finally:
-            await conn.close()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Adjust stock error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to adjust stock")
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint has been removed. Use POST /api/items/{product_id}/stock-adjustment instead."
+    )
 
 
 @router.get("/low-stock", response_model=LowStockAlertsResponse)
@@ -684,16 +564,8 @@ async def get_low_stock_alerts(
                     p.nama_produk,
                     p.satuan,
                     COALESCE(stock.current_stock, 0) as current_stock,
-                    COALESCE(
-                        per.minimum_stock,
-                        NULLIF(p.reorder_level, 0)::double precision,
-                        0
-                    ) as minimum_stock,
-                    COALESCE(
-                        per.minimum_stock,
-                        NULLIF(p.reorder_level, 0)::double precision,
-                        0
-                    ) - COALESCE(stock.current_stock, 0) as shortfall,
+                    COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) as minimum_stock,
+                    COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) - COALESCE(stock.current_stock, 0) as shortfall,
                     EXTRACT(DAY FROM (CURRENT_DATE - stock.last_movement))::int as days_since_movement
                 FROM public.products p
                 LEFT JOIN LATERAL (
@@ -703,20 +575,10 @@ async def get_low_stock_alerts(
                     FROM inventory_ledger il
                     WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id
                 ) stock ON true
-                LEFT JOIN persediaan per
-                    ON per.product_id = p.id AND per.tenant_id = p.tenant_id
                 WHERE p.tenant_id = $1
                     AND COALESCE(p.track_inventory, true) = true
-                    AND COALESCE(stock.current_stock, 0) < COALESCE(
-                        per.minimum_stock,
-                        NULLIF(p.reorder_level, 0)::double precision,
-                        0
-                    )
-                    AND COALESCE(
-                        per.minimum_stock,
-                        NULLIF(p.reorder_level, 0)::double precision,
-                        0
-                    ) > 0
+                    AND COALESCE(stock.current_stock, 0) < COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0)
+                    AND COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) > 0
                 ORDER BY shortfall DESC
                 LIMIT $2
             """
@@ -1048,3 +910,310 @@ async def get_product_stock_card(request: Request, product_id: str):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "inventory_router"}
+
+
+# ========================================
+# Top Products (Sales Analytics)
+# ========================================
+
+@router.get("/top-products")
+async def get_top_products(
+    request: Request,
+    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    limit: int = Query(10, ge=1, le=50, description="Max products to return"),
+):
+    """
+    Top-selling products by quantity sold.
+    Source: inventory_ledger outbound movements (Iron Law 16 compliant).
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Date filter (parameterized via SQL, not string interpolation)
+        date_filter = ""
+        if period == "this_month":
+            date_filter = "AND il.created_at >= date_trunc('month', CURRENT_DATE)"
+        elif period == "last_month":
+            date_filter = (
+                "AND il.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
+                "AND il.created_at < date_trunc('month', CURRENT_DATE)"
+            )
+        elif period == "this_year":
+            date_filter = "AND il.created_at >= date_trunc('year', CURRENT_DATE)"
+        # "all" = no date filter
+
+        conn = await get_db_connection()
+        try:
+            rows = await conn.fetch(f"""
+                SELECT
+                    il.product_id,
+                    p.nama_produk AS product_name,
+                    p.sku,
+                    COALESCE(p.base_unit, p.satuan, 'pcs') AS unit,
+                    SUM(il.quantity_out) AS total_qty_sold,
+                    COUNT(DISTINCT il.source_id) AS transaction_count,
+                    MIN(il.created_at) AS first_sale,
+                    MAX(il.created_at) AS last_sale
+                FROM inventory_ledger il
+                JOIN products p ON p.id = il.product_id AND p.tenant_id = il.tenant_id
+                    AND p.status = 'active' AND p.deleted_at IS NULL
+                WHERE il.tenant_id = $1
+                    AND il.quantity_out > 0
+                    AND il.source_type IN ('SALES_INVOICE', 'POS_SALE', 'CASH_SALE', 'SALES_RECEIPT_COGS')
+                    {date_filter}
+                GROUP BY il.product_id, p.nama_produk, p.sku, p.base_unit, p.satuan
+                ORDER BY total_qty_sold DESC
+                LIMIT $2
+            """, tenant_id, limit)
+
+            products = []
+            for r in rows:
+                products.append({
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"] or "",
+                    "sku": r["sku"] or "",
+                    "unit": r["unit"],
+                    "total_qty_sold": float(r["total_qty_sold"]),
+                    "transaction_count": r["transaction_count"],
+                    "first_sale": r["first_sale"].isoformat() if r["first_sale"] else None,
+                    "last_sale": r["last_sale"].isoformat() if r["last_sale"] else None,
+                })
+
+            return {
+                "success": True,
+                "data": {
+                    "period": period,
+                    "products": products,
+                    "total_products": len(products),
+                }
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get top products error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch top products")
+
+
+# ========================================
+# Slow-Moving Products
+# ========================================
+
+@router.get("/slow-moving-products")
+async def get_slow_moving_products(
+    request: Request,
+    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    limit: int = Query(10, ge=1, le=50, description="Max products to return"),
+):
+    """
+    Slow-moving products — includes products with ZERO sales.
+    Source: products LEFT JOIN inventory_ledger (Iron Law 16 compliant).
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Date filter for LEFT JOIN condition (server-generated, safe)
+        date_filter = ""
+        if period == "this_month":
+            date_filter = "AND il.created_at >= date_trunc('month', CURRENT_DATE)"
+        elif period == "last_month":
+            date_filter = (
+                "AND il.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
+                "AND il.created_at < date_trunc('month', CURRENT_DATE)"
+            )
+        elif period == "this_year":
+            date_filter = "AND il.created_at >= date_trunc('year', CURRENT_DATE)"
+
+        conn = await get_db_connection()
+        try:
+            rows = await conn.fetch(f"""
+                SELECT
+                    p.id AS product_id,
+                    p.nama_produk AS product_name,
+                    p.sku,
+                    COALESCE(p.base_unit, p.satuan, 'pcs') AS unit,
+                    COALESCE(SUM(il.quantity_out), 0) AS total_qty_sold,
+                    COUNT(DISTINCT il.source_id) FILTER (WHERE il.source_id IS NOT NULL) AS transaction_count,
+                    MAX(il.created_at) AS last_sale
+                FROM products p
+                LEFT JOIN inventory_ledger il
+                    ON il.product_id = p.id
+                    AND il.tenant_id = p.tenant_id
+                    AND il.quantity_out > 0
+                    AND il.source_type IN ('SALES_INVOICE', 'POS_SALE', 'CASH_SALE', 'SALES_RECEIPT_COGS')
+                    {date_filter}
+                WHERE p.tenant_id = $1
+                    AND p.status = 'active'
+                    AND p.deleted_at IS NULL
+                    AND p.track_inventory = true
+                GROUP BY p.id, p.nama_produk, p.sku, p.base_unit, p.satuan
+                ORDER BY total_qty_sold ASC, p.nama_produk ASC
+                LIMIT $2
+            """, tenant_id, limit)
+
+            products = []
+            for r in rows:
+                products.append({
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"] or "",
+                    "sku": r["sku"] or "",
+                    "unit": r["unit"],
+                    "total_qty_sold": float(r["total_qty_sold"]),
+                    "transaction_count": r["transaction_count"],
+                    "last_sale": r["last_sale"].isoformat() if r["last_sale"] else None,
+                })
+
+            return {
+                "success": True,
+                "data": {
+                    "period": period,
+                    "products": products,
+                    "total_products": len(products),
+                }
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get slow moving products error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch slow moving products")
+
+
+# ========================================
+# Product Profit Margins
+# ========================================
+
+@router.get("/product-margins")
+async def get_product_margins(
+    request: Request,
+    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    limit: int = Query(10, ge=1, le=50, description="Max products to return"),
+    sort: str = Query("margin_desc", description="Sort: margin_desc, margin_asc, revenue_desc, profit_desc"),
+):
+    """
+    Product profit margins — derives actual realized margins from transaction data.
+    Uses sales_invoice_items for actual revenue and unit_cost for COGS.
+    Iron Law compliant: no catalog price fallbacks for margin/COGS calculations.
+    Catalog sell_price and buy_price retained as reference/display fields only.
+    """
+    try:
+        if not hasattr(request.state, 'user') or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Date filter for sales subquery (server-generated, safe)
+        date_filter = ""
+        if period == "this_month":
+            date_filter = "AND si.created_at >= date_trunc('month', CURRENT_DATE)"
+        elif period == "last_month":
+            date_filter = (
+                "AND si.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
+                "AND si.created_at < date_trunc('month', CURRENT_DATE)"
+            )
+        elif period == "this_year":
+            date_filter = "AND si.created_at >= date_trunc('year', CURRENT_DATE)"
+
+        # Sort mapping (server-generated, safe)
+        sort_map = {
+            "margin_desc": "margin_percent DESC, total_qty_sold DESC",
+            "margin_asc": "margin_percent ASC, total_qty_sold DESC",
+            "revenue_desc": "total_revenue DESC, margin_percent DESC",
+            "profit_desc": "total_profit DESC, margin_percent DESC",
+        }
+        order_clause = sort_map.get(sort, sort_map["margin_desc"])
+
+        conn = await get_db_connection()
+        try:
+            rows = await conn.fetch(f"""
+                SELECT
+                    p.id AS product_id,
+                    p.nama_produk AS product_name,
+                    p.sku,
+                    COALESCE(p.base_unit, p.satuan, 'pcs') AS unit,
+                    COALESCE(p.harga_jual, p.sales_price, 0) AS sell_price,
+                    COALESCE(p.purchase_price, 0) AS buy_price,
+                    -- Iron Law: derive actual realized margin from transaction data, not catalog prices
+                    CASE WHEN COALESCE(sales.total_qty_sold, 0) > 0 THEN
+                        (COALESCE(sales.total_revenue, 0) / sales.total_qty_sold) - (COALESCE(sales.total_cogs, 0) / sales.total_qty_sold)
+                    ELSE 0 END AS unit_margin,
+                    CASE WHEN COALESCE(sales.total_revenue, 0) > 0 THEN
+                        ROUND(((COALESCE(sales.total_revenue, 0) - COALESCE(sales.total_cogs, 0))
+                              / COALESCE(sales.total_revenue, 0) * 100)::numeric, 1)
+                    ELSE 0 END AS margin_percent,
+                    COALESCE(sales.total_qty_sold, 0) AS total_qty_sold,
+                    COALESCE(sales.total_revenue, 0) AS total_revenue,
+                    COALESCE(sales.total_cogs, 0) AS total_cogs,
+                    COALESCE(sales.total_revenue, 0) - COALESCE(sales.total_cogs, 0) AS total_profit
+                FROM products p
+                LEFT JOIN (
+                    SELECT
+                        sii.item_id,
+                        SUM(sii.quantity) AS total_qty_sold,
+                        SUM(sii.total) AS total_revenue,
+                        -- Iron Law: no fallback to catalog purchase_price; use only transaction-time unit_cost
+                        SUM(sii.quantity * COALESCE(sii.unit_cost, 0)) AS total_cogs
+                    FROM sales_invoice_items sii
+                    JOIN sales_invoices si ON si.id = sii.invoice_id
+                    WHERE si.tenant_id = $1
+                        AND si.status NOT IN ('void', 'draft')
+                        {date_filter}
+                    GROUP BY sii.item_id
+                ) sales ON sales.item_id = p.id
+                WHERE p.tenant_id = $1
+                    AND p.status = 'active'
+                    AND p.deleted_at IS NULL
+                ORDER BY {order_clause}
+                LIMIT $2
+            """, tenant_id, limit)
+
+            products = []
+            for r in rows:
+                products.append({
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"] or "",
+                    "sku": r["sku"] or "",
+                    "unit": r["unit"],
+                    "sell_price": float(r["sell_price"]),
+                    "buy_price": float(r["buy_price"]),
+                    "unit_margin": float(r["unit_margin"]),
+                    "margin_percent": float(r["margin_percent"]),
+                    "total_qty_sold": float(r["total_qty_sold"]),
+                    "total_revenue": float(r["total_revenue"]),
+                    "total_cogs": float(r["total_cogs"]),
+                    "total_profit": float(r["total_profit"]),
+                })
+
+            return {
+                "success": True,
+                "data": {
+                    "period": period,
+                    "sort": sort,
+                    "products": products,
+                    "total_products": len(products),
+                }
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get product margins error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch product margins")

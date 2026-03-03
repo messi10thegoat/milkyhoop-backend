@@ -1,0 +1,24 @@
+scenarios:
+  - id: "MD-001"
+    category: "happy_path"
+    description: "Create new customer"
+    messages:
+      - "tambahkan pelanggan baru: PT Regression Test E2E, email test@regression.com, telepon 08123456789"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_CUSTOMER"
+    expect_contains: ["Regression"]
+    expect_confirm_success: true
+    preconditions: []
+    tags: ["master_data", "happy_path"]
+
+  - id: "MD-002"
+    category: "happy_path"
+    description: "Create new vendor"
+    messages:
+      - "tambahkan vendor baru: CV Regression Supplier Test, email supplier@regression.com"
+    expect_behavior: ["propose_action"]
+    expect_action_type: "CREATE_VENDOR"
+    expect_contains: ["Regression"]
+    expect_confirm_success: true
+    preconditions: []
+    tags: ["master_data", "happy_path"]

@@ -1,0 +1,80 @@
+scenarios:
+  - id: "FH-001"
+    category: "foundation"
+    description: "Customer search via agent"
+    messages:
+      - "cari customer Grapgrap"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Grapgrap"]
+    expect_not_contains: ["error", "tidak ditemukan"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "master_data"]
+
+  - id: "FH-002"
+    category: "foundation"
+    description: "Item search via agent"
+    messages:
+      - "cari item emas di master data"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Emas"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "master_data"]
+
+  - id: "FH-003"
+    category: "foundation"
+    description: "Trial balance accessible via agent"
+    messages:
+      - "tampilkan neraca saldo bulan ini"
+    expect_behavior: ["text_response"]
+    expect_contains: ["Rp"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "report"]
+
+  - id: "FH-004"
+    category: "foundation"
+    description: "Balance sheet accessible via agent"
+    messages:
+      - "tampilkan neraca keuangan bulan ini"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["error", "terjadi kesalahan"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "report"]
+
+  - id: "FH-005"
+    category: "foundation"
+    description: "Vendor list accessible"
+    messages:
+      - "tampilkan daftar vendor"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["error", "tidak ditemukan"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "master_data"]
+
+  - id: "FH-006"
+    category: "foundation"
+    description: "Account search with type filter"
+    messages:
+      - "cari akun beban listrik"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "chart_of_accounts"]
+
+  - id: "FH-007"
+    category: "foundation"
+    description: "Bank accounts accessible"
+    messages:
+      - "tampilkan daftar akun bank"
+    expect_behavior: ["text_response"]
+    expect_not_contains: ["error"]
+    expect_confirm_success: null
+    preconditions: []
+    tags: ["foundation", "banking"]

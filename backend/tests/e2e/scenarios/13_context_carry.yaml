@@ -1,0 +1,10 @@
+scenarios:
+  - id: "CC-001"
+    category: "context_carry"
+    description: "Remember customer from previous turn"
+    messages:
+      - "cari customer grapgrap"
+      - "buatkan faktur kaos oblong gramasi 24s 2 pcs untuk mereka"
+    expect_behavior: ["text_response", "propose_action"]
+    expect_action_type: "CREATE_SALES_INVOICE"
+    tags: ["context_carry", "multi_turn", "v4"]

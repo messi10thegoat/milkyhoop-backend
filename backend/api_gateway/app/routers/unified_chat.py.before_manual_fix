@@ -1,0 +1,448 @@
+"""
+Router: Unified Agent Chat (v3 Architecture)
+
+Single LLM agent loop with 37 tools (35 read + 2 action).
+Replaces: action_chat.py pipeline (intent classifier → planner → enrichment).
+Keeps: ActionValidator + ActionExecutor unchanged (called by tools).
+
+Endpoints:
+  POST /api/v3/chat/message    - Send text message (agent loop)
+  POST /api/v3/chat/confirm    - Confirm pending action → execute
+  POST /api/v3/chat/cancel     - Cancel pending action
+  GET  /api/v3/chat/status/{id} - Poll action status
+  GET  /api/v3/chat/history    - Get conversation history
+"""
+
+import json
+import logging
+import uuid as uuid_mod
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from typing import Literal, Dict, Any, List
+
+from ..services.unified_agent.session_orchestrator import SessionAwareAgent
+from ..services.unified_agent.orchestrator import AgentResponse, TenantContext as OrchestratorTenantContext
+from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
+from ..services.action_validator_client import get_action_validator_client
+from ..services.action_executor_client import get_action_executor_client
+
+# Chat history persistence via gRPC
+import grpc
+try:
+    from backend.api_gateway.libs.milkyhoop_protos import (
+        conversation_service_pb2,
+        conversation_service_pb2_grpc,
+    )
+    CONVERSATION_SERVICE_AVAILABLE = True
+except ImportError:
+    CONVERSATION_SERVICE_AVAILABLE = False
+
+logger = logging.getLogger("unified_chat")
+router = APIRouter()
+
+# Singleton agent instance (stateless, safe to reuse)
+_agent = SessionAwareAgent()
+
+
+# ─── Request/Response Models ───────────────────────────────────────────────────
+
+class ChatMessageRequest(BaseModel):
+    """Request to send a message to the unified agent."""
+    conversation_id: str = Field(..., description="Conversation session ID")
+    session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+    text: str = Field(..., min_length=1, max_length=2000, description="User message")
+
+
+class ConfirmActionRequest(BaseModel):
+    """Request to confirm a pending action."""
+    conversation_id: str = Field(..., description="Conversation session ID")
+    session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+    pending_action_id: str = Field(..., description="ID of the pending action to confirm")
+    doc_status: Literal["DRAFT", "POSTED"] = Field(
+        "POSTED",
+        description="Document status: DRAFT saves without posting, POSTED creates and posts",
+    )
+
+
+class CancelActionRequest(BaseModel):
+    """Request to cancel a pending action."""
+    conversation_id: str = Field(..., description="Conversation session ID")
+    session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+    pending_action_id: str = Field(..., description="ID of the pending action to cancel")
+
+
+class ChatMessageResponse(BaseModel):
+    """Unified response from agent chat endpoints."""
+    message_id: str = Field(default_factory=lambda: str(uuid_mod.uuid4()))
+    message_type: str = Field(..., description="TEXT | ACTION_PREVIEW | ACTION_RESULT | CLARIFICATION | VALIDATION_ERROR")
+    text: Optional[str] = Field(None, description="Narrative text from agent")
+    data: Optional[Dict[str, Any]] = Field(None, description="Typed data payload")
+    trace_id: Optional[str] = Field(None, description="Trace ID for debugging")
+    pending_action_id: Optional[str] = Field(None, description="Pending action ID if applicable")
+    # Agent telemetry (optional, useful for debugging)
+    iterations: Optional[int] = Field(None, description="Agent loop iterations")
+    tool_calls: Optional[List[Dict]] = Field(None, description="Tools called during processing")
+    model_used: Optional[str] = Field(None, description="LLM model used")
+    latency_ms: Optional[int] = Field(None, description="Total processing time in ms")
+    session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
+
+
+class ActionStatusResponse(BaseModel):
+    """Response for polling action status."""
+    pending_action_id: str
+    status: str
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+# ─── Auth Helper ───────────────────────────────────────────────────────────────
+
+def _get_user_context(request: Request) -> dict:
+    """
+    Extract user context from request.state (set by AuthMiddleware).
+    Returns dict with tenant_id, user_id, auth_token.
+    """
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    user = request.state.user
+    tenant_id = user.get("tenant_id")
+    user_id = user.get("user_id")
+
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Invalid user context: missing tenant_id")
+
+    # Extract bearer token for downstream API calls
+    auth_header = request.headers.get("authorization", "")
+    auth_token = (
+        auth_header.replace("Bearer ", "")
+        if auth_header.startswith("Bearer ")
+        else ""
+    )
+
+    return {
+        "tenant_id": tenant_id,
+        "user_id": user_id or "",
+        "auth_token": auth_token,
+        "tenant_name": user.get("tenant_name", tenant_id),
+    }
+
+
+# ─── Chat History Helpers ──────────────────────────────────────────────────────
+
+async def _save_to_chat_history(
+    user_id: str,
+    tenant_id: str,
+    message: str,
+    response: str,
+    intent: str = "unified_agent",
+    metadata: dict = None,
+) -> bool:
+    """Persist message pair to conversation history via gRPC."""
+    if not CONVERSATION_SERVICE_AVAILABLE:
+        return False
+    try:
+        channel = grpc.aio.insecure_channel("conversation_service:5002")
+        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
+        req = conversation_service_pb2.SaveMessageRequest(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            message=message,
+            response=response,
+            intent=intent,
+            metadata_json=json.dumps(metadata or {}),
+        )
+        resp = await stub.SaveMessage(req)
+        await channel.close()
+        return resp.status == "success"
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Save failed: {e}")
+        return False
+
+
+async def _get_conversation_history(
+    user_id: str,
+    tenant_id: str,
+    conversation_id: str,
+    limit: int = 10,
+) -> list:
+    """Retrieve recent conversation history as OpenAI message format."""
+    if not CONVERSATION_SERVICE_AVAILABLE:
+        return []
+    try:
+        channel = grpc.aio.insecure_channel("conversation_service:5002")
+        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
+        req = conversation_service_pb2.GetChatHistoryRequest(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        resp = await stub.GetChatHistory(req)
+        await channel.close()
+
+        # Convert to OpenAI message format
+        messages = []
+        for msg in resp.messages:
+            messages.append({"role": "user", "content": msg.message})
+            if msg.response:
+                messages.append({"role": "assistant", "content": msg.response})
+        return messages
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Fetch failed: {e}")
+        return []
+
+
+# ─── Helper: AgentResponse → ChatMessageResponse ──────────────────────────────
+
+def _to_chat_response(agent_resp: AgentResponse) -> ChatMessageResponse:
+    """Convert internal AgentResponse to API response model."""
+    data = None
+    pending_action_id = None
+
+    if agent_resp.message_type == "ACTION_PREVIEW":
+        data = {
+            "pending_action_id": agent_resp.pending_action_id,
+            "preview": agent_resp.preview,
+            "expires_at": agent_resp.expires_at,
+        }
+        pending_action_id = agent_resp.pending_action_id
+    elif agent_resp.message_type == "VALIDATION_ERROR" and agent_resp.errors:
+        data = {"errors": agent_resp.errors}
+
+    return ChatMessageResponse(
+        message_type=agent_resp.message_type,
+        text=agent_resp.content or None,
+        data=data,
+        trace_id=agent_resp.trace_id,
+        pending_action_id=pending_action_id,
+        iterations=agent_resp.iterations,
+        tool_calls=agent_resp.tool_calls_made or None,
+        model_used=agent_resp.model_used or None,
+        latency_ms=agent_resp.total_latency_ms,
+        session_id=agent_resp.get("session_id") if isinstance(agent_resp, dict) else getattr(agent_resp, "session_id", None),
+    )
+
+
+# =============================================================================
+# POST /message — Main entry point: unified agent loop
+# =============================================================================
+
+@router.post("/message", response_model=ChatMessageResponse)
+async def send_message(request: Request, body: ChatMessageRequest):
+    """
+    Process a user message through the unified agent loop.
+
+    The agent autonomously:
+    1. Reads data via API tools (search, list, detail)
+    2. Resolves entities (customer/vendor/item IDs)
+    3. Proposes actions via propose_action tool
+    4. Returns text answers or ACTION_PREVIEW for confirmation
+    """
+    ctx = _get_user_context(request)
+
+    # Build tenant context for tool executor
+    tenant_context = TenantContext(
+        tenant_id=ctx["tenant_id"],
+        user_id=ctx["user_id"],
+        auth_token=ctx["auth_token"],
+        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+    )
+
+    # Fetch conversation history for context
+    history = await _get_conversation_history(
+        user_id=ctx["user_id"],
+        tenant_id=ctx["tenant_id"],
+        conversation_id=body.conversation_id,
+        limit=10,
+    )
+
+    # Run the agent loop
+    agent_resp = await _agent.process_message(
+        user_text=body.text,
+        context=tenant_context,
+        conversation_history=history,
+        session_id=body.session_id,
+    )
+
+    # Persist to chat history (fire-and-forget)
+    await _save_to_chat_history(
+        user_id=ctx["user_id"],
+        tenant_id=ctx["tenant_id"],
+        message=body.text,
+        response=agent_resp.content or "",
+        intent="unified_agent",
+        metadata={
+            "conversation_id": body.conversation_id,
+            "message_type": agent_resp.message_type,
+            "model_used": agent_resp.model_used,
+            "iterations": agent_resp.iterations,
+            "pending_action_id": agent_resp.pending_action_id or None,
+        },
+    )
+
+    logger.info(
+        f"[UnifiedAgent] user={ctx['user_id']} type={agent_resp.message_type} "
+        f"iterations={agent_resp.iterations} tools={len(agent_resp.tool_calls_made)} "
+        f"model={agent_resp.model_used} latency={agent_resp.total_latency_ms}ms"
+    )
+
+    return _to_chat_response(agent_resp)
+
+
+# =============================================================================
+# POST /confirm — Confirm pending action → execute via ActionExecutor
+# =============================================================================
+
+@router.post("/confirm", response_model=ChatMessageResponse)
+async def confirm_action(request: Request, body: ConfirmActionRequest):
+    """
+    Confirm and execute a pending action.
+    Delegates to ActionExecutor (gRPC) — same as action_chat.py.
+    """
+    ctx = _get_user_context(request)
+
+    try:
+        executor = get_action_executor_client()
+        result = await executor.execute_action(
+            pending_action_id=body.pending_action_id,
+            doc_status=body.doc_status,
+            tenant_id=ctx["tenant_id"],
+            user_id=ctx["user_id"],
+        )
+
+        success = result.get("success", False)
+
+        if success:
+            text = (
+                "Dokumen berhasil disimpan sebagai draft."
+                if body.doc_status == "DRAFT"
+                else "Transaksi berhasil diposting."
+            )
+            return ChatMessageResponse(
+                message_type="ACTION_RESULT",
+                text=text,
+                data=result.get("data"),
+                pending_action_id=body.pending_action_id,
+                trace_id=str(uuid_mod.uuid4()),
+            )
+        else:
+            return ChatMessageResponse(
+                message_type="VALIDATION_ERROR",
+                text=result.get("error", "Eksekusi gagal. Silakan coba lagi."),
+                data={"errors": result.get("errors", [])},
+                pending_action_id=body.pending_action_id,
+                trace_id=str(uuid_mod.uuid4()),
+            )
+
+    except Exception as e:
+        logger.exception(f"[Confirm] Failed for {body.pending_action_id}")
+        raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
+
+
+# =============================================================================
+# POST /cancel — Cancel pending action
+# =============================================================================
+
+@router.post("/cancel", response_model=ChatMessageResponse)
+async def cancel_action(request: Request, body: CancelActionRequest):
+    """Cancel a pending action. Clears the pending state."""
+    ctx = _get_user_context(request)
+
+    try:
+        executor = get_action_executor_client()
+        result = await executor.cancel_action(
+            pending_action_id=body.pending_action_id,
+            tenant_id=ctx["tenant_id"],
+            user_id=ctx["user_id"],
+        )
+
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text="Aksi dibatalkan.",
+            pending_action_id=body.pending_action_id,
+            trace_id=str(uuid_mod.uuid4()),
+        )
+
+    except Exception as e:
+        logger.exception(f"[Cancel] Failed for {body.pending_action_id}")
+        raise HTTPException(status_code=500, detail=f"Cancel failed: {str(e)}")
+
+
+# =============================================================================
+# GET /status/{pending_action_id} — Poll action status
+# =============================================================================
+
+@router.get("/status/{pending_action_id}", response_model=ActionStatusResponse)
+async def get_action_status(request: Request, pending_action_id: str):
+    """Poll the status of a pending action."""
+    ctx = _get_user_context(request)
+
+    try:
+        executor = get_action_executor_client()
+        result = await executor.get_action_status(
+            action_id=pending_action_id,
+            tenant_id=ctx["tenant_id"],
+        )
+
+        return ActionStatusResponse(
+            pending_action_id=pending_action_id,
+            status=result.get("status", "UNKNOWN"),
+            message=result.get("message"),
+            data=result.get("data"),
+        )
+
+    except Exception as e:
+        logger.exception(f"[Status] Failed for {pending_action_id}")
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+
+
+# =============================================================================
+# GET /history — Get conversation history
+# =============================================================================
+
+@router.get("/history")
+async def get_history(
+    request: Request,
+    conversation_id: str = "",
+    limit: int = 20,
+):
+    """Retrieve conversation history for the current user."""
+    ctx = _get_user_context(request)
+
+    if not CONVERSATION_SERVICE_AVAILABLE:
+        return {"messages": [], "warning": "Conversation service unavailable"}
+
+    try:
+        channel = grpc.aio.insecure_channel("conversation_service:5002")
+        stub = conversation_service_pb2_grpc.ConversationServiceStub(channel)
+        req = conversation_service_pb2.GetChatHistoryRequest(
+            user_id=ctx["user_id"],
+            tenant_id=ctx["tenant_id"],
+            limit=limit,
+        )
+        resp = await stub.GetChatHistory(req)
+        await channel.close()
+
+        messages = []
+        for msg in resp.messages:
+            messages.append({
+                "id": msg.message_id,
+                "role": "user",
+                "content": msg.message,
+                "timestamp": msg.timestamp,
+            })
+            if msg.response:
+                messages.append({
+                    "id": f"{msg.message_id}_resp",
+                    "role": "assistant",
+                    "content": msg.response,
+                    "timestamp": msg.timestamp,
+                })
+
+        return {"messages": messages, "count": len(messages)}
+
+    except Exception as e:
+        logger.warning(f"[History] Fetch failed: {e}")
+        return {"messages": [], "error": str(e)}

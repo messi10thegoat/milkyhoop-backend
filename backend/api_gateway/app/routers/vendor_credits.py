@@ -43,6 +43,7 @@ from ..schemas.vendor_credits import (
     VendorCreditSummaryResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,7 +109,7 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.tenant_id = $1
           AND je.status = 'POSTED'
-          AND coa.account_code = '2-10100'
+          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
           AND (
               (je.source_type = 'BILL' AND je.source_id = $2::uuid)
               OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
@@ -124,6 +125,11 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
               OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
                   SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
                   WHERE vca.bill_id = $2::uuid
+              ))
+              -- Vendor deposit application journals
+              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
+                  SELECT vda.journal_id FROM vendor_deposit_applications vda
+                  WHERE vda.bill_id = $2::uuid
               ))
           )
     """, tenant_id, bill_id_str)
@@ -857,16 +863,12 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                         detail=f"Cannot post vendor credit with status '{vc['status']}'"
                     )
 
-                # Get account IDs
-                ap_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], AP_ACCOUNT)
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT:{vendor_credit_id}")
 
-                purchase_return_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], PURCHASE_RETURN_ACCOUNT)
+                # Law 27: Resolve account IDs
+                ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
+                purchase_return_account_id = await resolve_account_id(conn, ctx["tenant_id"], PURCHASE_RETURN_ACCOUNT)
 
                 if not ap_account_id or not purchase_return_account_id:
                     raise HTTPException(
@@ -874,10 +876,17 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                         detail="Required accounts not found in CoA"
                     )
 
+                # Law 5: Period check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], vc["credit_date"]
+                )
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
                 # Generate journal number
                 import uuid as uuid_module
                 journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
 
                 journal_number = await conn.fetchval("""
                     SELECT get_next_journal_number($1, 'VC')
@@ -891,13 +900,13 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                 tax_amount = vc["tax_amount"] or 0
                 subtotal = total_amount - tax_amount
 
-                # Create journal entry
+                # Law 20: Create journal entry as DRAFT (Law 25: no float())
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT', $6, $7, 'POSTED', $8, $8, $9)
+                        memo, source_type, source_id,
+                        status, total_debit, total_credit, created_by, updated_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT', $6, 'DRAFT', $7, $7, $8, $8)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -905,12 +914,11 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     vc["credit_date"],
                     f"Vendor Credit {vc['credit_number']} - {vc['vendor_name']}",
                     vendor_credit_id,
-                    str(trace_id),
-                    float(total_amount),
+                    total_amount,
                     ctx["user_id"]
                 )
 
-                # Journal lines
+                # Journal lines (Law 25: pass Decimal directly)
                 line_number = 1
 
                 # Dr. Accounts Payable
@@ -923,7 +931,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     journal_id,
                     line_number,
                     ap_account_id,
-                    float(total_amount),
+                    total_amount,
                     f"Pengurangan Hutang - {vc['credit_number']}"
                 )
                 line_number += 1
@@ -938,17 +946,14 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     journal_id,
                     line_number,
                     purchase_return_account_id,
-                    float(subtotal),
+                    subtotal,
                     f"Retur Pembelian - {vc['credit_number']}"
                 )
                 line_number += 1
 
-                # Cr. VAT Receivable (if tax)
+                # Cr. VAT Receivable (if tax) - Law 27
                 if tax_amount > 0:
-                    tax_account_id = await conn.fetchval("""
-                        SELECT id FROM chart_of_accounts
-                        WHERE tenant_id = $1 AND account_code = $2
-                    """, ctx["tenant_id"], TAX_RECEIVABLE_ACCOUNT)
+                    tax_account_id = await resolve_account_id(conn, ctx["tenant_id"], TAX_RECEIVABLE_ACCOUNT)
 
                     if tax_account_id:
                         await conn.execute("""
@@ -960,9 +965,12 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                             journal_id,
                             line_number,
                             tax_account_id,
-                            float(tax_amount),
+                            tax_amount,
                             f"PPN Retur - {vc['credit_number']}"
                         )
+
+                # Law 20: Post after all lines
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
                 # Update vendor credit status
                 await conn.execute("""
@@ -1013,6 +1021,9 @@ async def apply_vendor_credit(request: Request, vendor_credit_id: UUID, body: Ap
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT_APPLY:{vendor_credit_id}")
+
                 # Get vendor credit
                 vc = await conn.fetchrow("""
                     SELECT * FROM vendor_credits
@@ -1209,10 +1220,20 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                 if not account:
                     raise HTTPException(status_code=400, detail="Payment account not found")
 
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT_REFUND:{vendor_credit_id}")
+
+                # Law 5: Period check
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"], body.refund_date
+                )
+                if period_row and period_row["status"] != 'OPEN':
+                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
                 import uuid as uuid_module
                 refund_id = uuid_module.uuid4()
                 journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
 
                 # Create refund journal
                 journal_number = await conn.fetchval(
@@ -1220,12 +1241,16 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                     ctx["tenant_id"]
                 ) or f"RR-{vc['credit_number']}"
 
+                # Law 27: Resolve AP account
+                ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
+
+                # Law 20: Create journal as DRAFT (Law 25: no float())
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT_REFUND', $6, $7, 'POSTED', $8, $8, $9)
+                        memo, source_type, source_id,
+                        status, total_debit, total_credit, created_by, updated_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT_REFUND', $6, 'DRAFT', $7, $7, $8, $8)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -1233,18 +1258,11 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                     body.refund_date,
                     f"Refund Received {vc['credit_number']} - {vc['vendor_name']}",
                     vendor_credit_id,
-                    str(trace_id),
-                    float(body.amount),
+                    body.amount,
                     ctx["user_id"]
                 )
 
-                # Get AP account
-                ap_account_id = await conn.fetchval("""
-                    SELECT id FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                """, ctx["tenant_id"], AP_ACCOUNT)
-
-                # Dr. Cash/Bank
+                # Dr. Cash/Bank (Law 25: no float())
                 await conn.execute("""
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
@@ -1253,11 +1271,11 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                     uuid_module.uuid4(),
                     journal_id,
                     UUID(body.account_id),
-                    float(body.amount),
+                    body.amount,
                     f"Terima Refund - {vc['credit_number']}"
                 )
 
-                # Cr. AP
+                # Cr. AP (Law 25: no float())
                 await conn.execute("""
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
@@ -1266,9 +1284,12 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                     uuid_module.uuid4(),
                     journal_id,
                     ap_account_id,
-                    float(body.amount),
+                    body.amount,
                     f"Hutang Refund - {vc['credit_number']}"
                 )
+
+                # Law 20: Post after all lines
+                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
 
                 # Create refund record
                 await conn.execute("""
@@ -1334,6 +1355,9 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT_VOID:{vendor_credit_id}")
+
                 # Get vendor credit
                 vc = await conn.fetchrow("""
                     SELECT * FROM vendor_credits
@@ -1376,6 +1400,14 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
                     import uuid as uuid_module
                     reversal_journal_id = uuid_module.uuid4()
 
+                    # Law 5: Period check on CURRENT_DATE
+                    period_row = await conn.fetchrow(
+                        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE",
+                        ctx["tenant_id"]
+                    )
+                    if period_row and period_row["status"] != 'OPEN':
+                        raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+
                     # Get original journal lines
                     original_lines = await conn.fetch("""
                         SELECT * FROM journal_lines WHERE journal_id = $1
@@ -1386,13 +1418,13 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
                         ctx["tenant_id"]
                     ) or f"RV-{vc['credit_number']}"
 
-                    # Create reversal header
+                    # Law 20: Create reversal header as DRAFT (Law 25: no float())
                     await conn.execute("""
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_CREDIT', $5, $6, 'POSTED', $7, $7, $8)
+                            memo, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by, updated_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_CREDIT', $5, $6, 'DRAFT', $7, $7, $8, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1400,7 +1432,7 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
                         f"Void {vc['credit_number']} - {vc['vendor_name']}",
                         vendor_credit_id,
                         vc["journal_id"],
-                        float(vc["total_amount"]),
+                        vc["total_amount"],
                         ctx["user_id"]
                     )
 
@@ -1420,7 +1452,10 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
                             f"Reversal - {line['memo'] or ''}"
                         )
 
-                    # Mark original journal as reversed
+                    # Law 20: Post reversal after all lines
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)
+
+                    # Mark original journal as reversed (Law 26)
                     await conn.execute("""
                         UPDATE journal_entries
                         SET reversed_by_id = $2, status = 'VOID'

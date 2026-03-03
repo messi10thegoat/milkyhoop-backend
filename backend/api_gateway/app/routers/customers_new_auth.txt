@@ -1,0 +1,22 @@
+def get_user_context(request: Request) -> dict:
+    # Internal API key (service-to-service)
+    internal_key = request.headers.get('X-Internal-API-Key')
+    if internal_key:
+        import os
+        expected_key = os.getenv('INTERNAL_API_KEY', '')
+        if not expected_key or internal_key != expected_key:
+            raise HTTPException(status_code=401, detail={'error': 'Invalid internal API key'})
+        tenant_id = request.query_params.get('tenant_id')
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail={'error': 'tenant_id required'})
+        return {'tenant_id': tenant_id, 'user_id': None}
+    
+    # JWT token
+    if not hasattr(request.state, 'user') or not request.state.user:
+        raise HTTPException(status_code=401, detail={'error': 'Authentication required', 'code': 'MISSING_TOKEN'})
+    user = request.state.user
+    tenant_id = user.get('tenant_id')
+    user_id = user.get('user_id')
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='Invalid user context')
+    return {'tenant_id': tenant_id, 'user_id': UUID(user_id) if user_id else None}

@@ -26,6 +26,7 @@ from ..schemas.vendors import (
     MergeVendorResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account, resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -262,13 +263,27 @@ async def list_vendors(
             param_idx = 2
 
             if search:
-                conditions.append(
-                    f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
-                    f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                    f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                # Split search into words for fuzzy matching
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
+                        f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                        f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
+                            f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                            f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             if is_active is not None:
                 conditions.append(f"is_active = ${param_idx}")
@@ -283,30 +298,14 @@ async def list_vendors(
             if is_pkp is True:
                 conditions.append("is_pkp = true")
 
-            # Pure Ledger: has_overdue filter using journal-based outstanding
+            # Pure Ledger: has_overdue filter using compute_ap_outstanding() DB function
             if has_overdue is True:
                 conditions.append(
                     """EXISTS (
-                    SELECT 1 FROM bills b2
-                    WHERE b2.vendor_id = vendors.id
-                    AND b2.due_date < CURRENT_DATE
-                    AND b2.status_v2 NOT IN ('paid', 'void', 'draft')
-                    AND (
-                        COALESCE((
-                            SELECT SUM(jl2.credit) FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b2.id AND je2.source_type = 'BILL'
-                              AND je2.tenant_id = b2.tenant_id AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) -
-                        COALESCE((
-                            SELECT SUM(bpa2.amount_applied) FROM bill_payment_allocations bpa2
-                            JOIN bill_payments_v2 bp2 ON bp2.id = bpa2.payment_id
-                            WHERE bpa2.bill_id = b2.id AND bp2.tenant_id = b2.tenant_id
-                              AND bp2.status = 'posted' AND bp2.journal_id IS NOT NULL
-                        ), 0)
-                    ) > 0
+                    SELECT 1 FROM compute_ap_outstanding(vendors.tenant_id) ap_fn
+                    WHERE ap_fn.vendor_id = vendors.id
+                      AND ap_fn.due_date < CURRENT_DATE
+                      AND ap_fn.outstanding > 0
                 )"""
                 )
 
@@ -339,27 +338,12 @@ async def list_vendors(
                            v.payment_terms_days, v.is_active, v.created_at,
                            COALESCE(ap.ap_balance, 0) as ap_balance
                     FROM vendors v
-                    LEFT JOIN LATERAL (
-                        -- Pure Ledger: AP balance from journals
-                        SELECT COALESCE(SUM(
-                            COALESCE((
-                                SELECT SUM(jl3.credit) FROM journal_lines jl3
-                                JOIN journal_entries je3 ON je3.id = jl3.journal_id
-                                JOIN chart_of_accounts coa3 ON coa3.id = jl3.account_id
-                                WHERE je3.source_id = b3.id AND je3.source_type = 'BILL'
-                                  AND je3.tenant_id = v.tenant_id AND je3.status = 'POSTED'
-                                  AND coa3.account_code LIKE '2-101%%'
-                            ), 0) -
-                            COALESCE((
-                                SELECT SUM(bpa3.amount_applied) FROM bill_payment_allocations bpa3
-                                JOIN bill_payments_v2 bp3 ON bp3.id = bpa3.payment_id
-                                WHERE bpa3.bill_id = b3.id AND bp3.tenant_id = v.tenant_id
-                                  AND bp3.status = 'posted' AND bp3.journal_id IS NOT NULL
-                            ), 0)
-                        ) FILTER (WHERE b3.status_v2 NOT IN ('draft', 'void', 'paid')), 0) as ap_balance
-                        FROM bills b3
-                        WHERE b3.vendor_id = v.id AND b3.tenant_id = v.tenant_id
-                    ) ap ON true
+                    LEFT JOIN (
+                        -- Pure Ledger: AP balance from compute_ap_outstanding() DB function
+                        SELECT vendor_id, COALESCE(SUM(outstanding), 0) as ap_balance
+                        FROM compute_ap_outstanding($1)
+                        GROUP BY vendor_id
+                    ) ap ON ap.vendor_id = v.id
                     WHERE {where_aliased}
                     ORDER BY COALESCE(ap.ap_balance, 0) {sort_dir}
                     LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -377,6 +361,19 @@ async def list_vendors(
 
             rows = await conn.fetch(query, *params)
 
+            # Pure Ledger: batch-fetch AP balances from compute_ap_outstanding() DB function
+            vendor_ids = [str(row["id"]) for row in rows]
+            ap_balances = {}
+            if vendor_ids:
+                ap_rows = await conn.fetch("""
+                    SELECT vendor_id::text as vid,
+                           COALESCE(SUM(outstanding), 0) as ap_balance
+                    FROM compute_ap_outstanding($1)
+                    WHERE vendor_id::text = ANY($2)
+                    GROUP BY vendor_id
+                """, ctx["tenant_id"], vendor_ids)
+                ap_balances = {row["vid"]: float(row["ap_balance"]) for row in ap_rows}
+
             items = [
                 {
                     "id": str(row["id"]),
@@ -390,6 +387,7 @@ async def list_vendors(
                     "payment_terms_days": row["payment_terms_days"],
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
+                    "ap_balance": ap_balances.get(str(row["id"]), 0),
                 }
                 for row in rows
             ]
@@ -452,6 +450,12 @@ async def get_vendor(request: Request, vendor_id: UUID):
             )
             has_transactions = tx_count > 0
 
+            # Pure Ledger: AP balance from compute_vendor_ap() DB function
+            ap_balance_val = await conn.fetchval("""
+                SELECT COALESCE(SUM(outstanding), 0)
+                FROM compute_vendor_ap($1, $2)
+            """, ctx["tenant_id"], vendor_id)
+
             return {
                 "success": True,
                 "data": {
@@ -499,6 +503,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "updated_at": row["updated_at"].isoformat(),
                     # Transaction check
                     "has_transactions": has_transactions,
+                    "ap_balance": float(ap_balance_val) if ap_balance_val else 0,
                 },
             }
 
@@ -542,45 +547,17 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
             if not vendor:
                 raise HTTPException(status_code=404, detail="Vendor not found")
 
-            # Pure Ledger: AP balance from journals per bill
+            # Pure Ledger: AP balance from compute_vendor_ap() DB function
             balance_query = """
-                WITH vendor_bill_outstanding AS (
-                    SELECT
-                        b.id as bill_id,
-                        b.status_v2,
-                        b.due_date,
-                        COALESCE(b.grand_total, b.amount) as bill_amount,
-                        COALESCE((
-                            SELECT SUM(jl2.credit) FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id AND je2.source_type = 'BILL'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as journal_credit,
-                        COALESCE((
-                            SELECT SUM(bpa2.amount_applied) FROM bill_payment_allocations bpa2
-                            JOIN bill_payments_v2 bp2 ON bp2.id = bpa2.payment_id
-                            WHERE bpa2.bill_id = b.id AND bp2.tenant_id = $1
-                              AND bp2.status = 'posted' AND bp2.journal_id IS NOT NULL
-                        ), 0) as journal_paid
-                    FROM bills b
-                    WHERE b.tenant_id = $1 AND b.vendor_id = $2 AND b.status_v2 != 'void'
-                ),
-                vbo AS (
-                    SELECT *,
-                        (journal_credit - journal_paid) as outstanding
-                    FROM vendor_bill_outstanding
-                )
                 SELECT
-                    COALESCE(SUM(CASE WHEN status_v2 NOT IN ('draft', 'void', 'paid') THEN outstanding ELSE 0 END), 0) as total_balance,
-                    COUNT(*) FILTER (WHERE status_v2 = 'posted' AND journal_paid = 0) as unpaid_count,
-                    COUNT(*) FILTER (WHERE status_v2 = 'posted' AND journal_paid > 0 AND outstanding > 0) as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND status_v2 NOT IN ('draft', 'void', 'paid') AND outstanding > 0) as overdue_count,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND status_v2 NOT IN ('draft', 'void', 'paid') THEN outstanding ELSE 0 END), 0) as overdue_amount,
-                    COALESCE(SUM(bill_amount), 0) as total_billed,
-                    COALESCE(SUM(journal_paid), 0) as total_paid
-                FROM vbo
+                    COALESCE(SUM(outstanding), 0) as total_balance,
+                    COUNT(*) FILTER (WHERE paid_amount = 0 AND outstanding > 0) as unpaid_count,
+                    COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0) as partial_count,
+                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND outstanding > 0) as overdue_count,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND outstanding > 0 THEN outstanding ELSE 0 END), 0) as overdue_amount,
+                    COALESCE(SUM(bill_total), 0) as total_billed,
+                    COALESCE(SUM(paid_amount), 0) as total_paid
+                FROM compute_vendor_ap($1, $2)
             """
             balance = await conn.fetchrow(balance_query, ctx["tenant_id"], vendor_id)
 
@@ -642,6 +619,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+          async with conn.transaction():
             # Check for duplicate name
             existing = await conn.fetchval(
                 "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
@@ -768,6 +746,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+          async with conn.transaction():
             # Fetch existing vendor with all fields for change tracking
             existing = await conn.fetchrow(
                 """SELECT id, name, code, contact_person, phone, email,
@@ -928,6 +907,7 @@ async def toggle_vendor_status(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+          async with conn.transaction():
             # Check if vendor exists
             existing = await conn.fetchrow(
                 "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
@@ -1012,6 +992,7 @@ async def delete_vendor(request: Request, vendor_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+          async with conn.transaction():
             # Check if vendor exists
             existing = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
@@ -1178,37 +1159,16 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
             # issue_date instead of bill_date
             # grand_total/amount instead of total_amount
             # status_v2 instead of status
-            # Pure Ledger: open bills with journal-based outstanding
+            # Pure Ledger: open bills from compute_vendor_ap() DB function
             rows = await conn.fetch(
                 """
-                WITH open_bills AS (
-                    SELECT
-                        b.id, b.invoice_number, b.issue_date, b.due_date,
-                        COALESCE(b.grand_total, b.amount) as total_amount,
-                        COALESCE((
-                            SELECT SUM(jl2.credit) FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id AND je2.source_type = 'BILL'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as journal_amount,
-                        COALESCE((
-                            SELECT SUM(bpa2.amount_applied) FROM bill_payment_allocations bpa2
-                            JOIN bill_payments_v2 bp2 ON bp2.id = bpa2.payment_id
-                            WHERE bpa2.bill_id = b.id AND bp2.tenant_id = $1
-                              AND bp2.status = 'posted' AND bp2.journal_id IS NOT NULL
-                        ), 0) as paid_amount,
-                        CASE WHEN b.due_date < CURRENT_DATE THEN true ELSE false END as is_overdue
-                    FROM bills b
-                    WHERE b.tenant_id = $1
-                      AND b.vendor_id::text = $2
-                      AND b.status_v2 = 'posted'
-                )
-                SELECT id, invoice_number, issue_date, due_date, total_amount,
-                       paid_amount, (journal_amount - paid_amount) as remaining_amount, is_overdue
-                FROM open_bills
-                WHERE (journal_amount - paid_amount) > 0
+                SELECT bill_id, bill_number, bill_date, due_date,
+                       bill_total as total_amount,
+                       paid_amount,
+                       outstanding as remaining_amount,
+                       CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue
+                FROM compute_vendor_ap($1, $2::uuid)
+                WHERE outstanding > 0
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
@@ -1216,9 +1176,9 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
             )
             bills = [
                 {
-                    "id": str(row["id"]),
-                    "bill_number": row["invoice_number"],
-                    "bill_date": row["issue_date"].isoformat(),
+                    "id": str(row["bill_id"]),
+                    "bill_number": row["bill_number"],
+                    "bill_date": row["bill_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
                     "total_amount": row["total_amount"],
                     "paid_amount": int(row["paid_amount"]) or 0,
@@ -1285,6 +1245,12 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
+                # Law 13: Advisory lock for opening balance
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"VENDOR_OPENING:{vendor_id}",
+                )
+
                 # 1. Verify vendor exists
                 vendor = await conn.fetchrow(
                     "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
@@ -1321,14 +1287,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     )
 
                 # 3. Get AP account (2-10100 - Hutang Usaha)
-                ap_account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code, name
-                    FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = '2-10100' AND is_active = true
-                    """,
-                    ctx["tenant_id"],
-                )
+                ap_account = await resolve_account(conn, ctx["tenant_id"], '2-10100')
                 if not ap_account:
                     raise HTTPException(
                         status_code=500,
@@ -1336,14 +1295,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     )
 
                 # 4. Get Opening Balance Equity account (3-50000 - Modal Saldo Awal)
-                equity_account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code, name
-                    FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = '3-50000' AND is_active = true
-                    """,
-                    ctx["tenant_id"],
-                )
+                equity_account = await resolve_account(conn, ctx["tenant_id"], '3-50000')
                 if not equity_account:
                     raise HTTPException(
                         status_code=500,
@@ -1378,7 +1330,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     ) VALUES (
                         $1, $2, $3, $4,
                         'VENDOR_OPENING_BALANCE', $5, $6, $6,
-                        'POSTED', true, $7
+                        'DRAFT', true, $7
                     ) RETURNING id
                     """,
                     ctx["tenant_id"],
@@ -1417,6 +1369,12 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     f"Opening Balance Equity - {vendor_name}",
                 )
 
+                # Law 20: DRAFT→POSTED pattern for hash chain
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
+
                 # 8. Create AP subledger entry for tracking
                 await conn.execute(
                     """
@@ -1446,7 +1404,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     "data": {
                         "vendor_id": vendor_id,
                         "vendor_name": vendor_name,
-                        "amount": float(amount),
+                        "amount": int(amount),
                         "as_of_date": as_of_date.isoformat(),
                         "journal_id": str(journal_id),
                         "journal_number": journal_number,
@@ -1454,12 +1412,12 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                             "debit": {
                                 "account_code": ap_account["account_code"],
                                 "account_name": ap_account["name"],
-                                "amount": float(amount),
+                                "amount": int(amount),
                             },
                             "credit": {
                                 "account_code": equity_account["account_code"],
                                 "account_name": equity_account["name"],
-                                "amount": float(amount),
+                                "amount": int(amount),
                             },
                         },
                         "iron_laws_compliance": {
@@ -1658,8 +1616,8 @@ async def get_vendor_journal_entries(
                         "account_id": str(lr["account_id"]),
                         "account_name": lr["account_name"],
                         "account_code": lr["account_code"],
-                        "debit": float(lr["debit"]) if lr["debit"] else 0,
-                        "credit": float(lr["credit"]) if lr["credit"] else 0,
+                        "debit": int(lr["debit"]) if lr["debit"] else 0,
+                        "credit": int(lr["credit"]) if lr["credit"] else 0,
                         "memo": lr["memo"],
                     }
                     for lr in line_rows
@@ -1672,10 +1630,10 @@ async def get_vendor_journal_entries(
                         "journal_number": row["journal_number"],
                         "description": row["description"],
                         "source_type": row["source_type"],
-                        "total_debit": float(row["total_debit"])
+                        "total_debit": int(row["total_debit"])
                         if row["total_debit"]
                         else 0,
-                        "total_credit": float(row["total_credit"])
+                        "total_credit": int(row["total_credit"])
                         if row["total_credit"]
                         else 0,
                         "status": row["status"],
@@ -1840,7 +1798,7 @@ async def get_vendor_activity(
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
                 document_number=row.get("document_number"),
-                total=float(row["total"]) if row.get("total") is not None else None,
+                total=int(row["total"]) if row.get("total") is not None else None,
                 field_name=row.get("field_name"),
                 old_value=row.get("old_value"),
                 new_value=row.get("new_value"),
@@ -1895,6 +1853,12 @@ async def merge_vendors(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13: Advisory lock for merge
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"VENDOR_MERGE:{target_id}",
+                )
+
                 # Validate source vendor
                 source_vendor = await conn.fetchrow(
                     "SELECT id, name, is_active, merged_into_id, notes FROM vendors WHERE id = $1 AND tenant_id = $2",
@@ -1967,6 +1931,27 @@ async def merge_vendors(
                 )
                 summary["expenses"] = int(result.split()[-1])
 
+                # Transfer vendor_credits
+                result = await conn.execute(
+                    "UPDATE vendor_credits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
+                    target_id, ctx["tenant_id"], [source_id],
+                )
+                summary["vendor_credits"] = int(result.split()[-1])
+
+                # Transfer vendor_deposits
+                result = await conn.execute(
+                    "UPDATE vendor_deposits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
+                    target_id, ctx["tenant_id"], [source_id],
+                )
+                summary["vendor_deposits"] = int(result.split()[-1])
+
+                # Transfer accounts_payable
+                result = await conn.execute(
+                    "UPDATE accounts_payable SET supplier_id = $1 WHERE tenant_id = $2 AND supplier_id = ANY($3)",
+                    target_id, ctx["tenant_id"], [source_id],
+                )
+                summary["accounts_payable"] = int(result.split()[-1])
+
                 # Soft-delete source vendor
                 merge_note = (
                     f"[MERGED] into '{target_vendor['name']}' (ID: {target_id})"
@@ -1974,17 +1959,18 @@ async def merge_vendors(
                 existing_notes = source_vendor["notes"] or ""
                 new_notes = f"{existing_notes}\n{merge_note}".strip()
 
+                user_id = ctx.get("user_id")
                 await conn.execute(
-                    "UPDATE vendors SET is_active = false, merged_into_id = $1, notes = $3, updated_at = NOW() WHERE id = $2 AND tenant_id = $4",
+                    "UPDATE vendors SET is_active = false, merged_into_id = $1, notes = $3, updated_at = NOW(), deleted_at = NOW(), deleted_by = $5 WHERE id = $2 AND tenant_id = $4",
                     target_id,
                     source_id,
                     new_notes,
                     ctx["tenant_id"],
+                    user_id,
                 )
 
                 # Log to audit
                 try:
-                    user_id = ctx.get("user_id")
                     await conn.execute(
                         """INSERT INTO master_data_audit_log (tenant_id, entity_type, entity_id, entity_name, action, field_name, new_value, changed_by, notes)
                         VALUES ($1, 'vendor', $2, $3, 'MERGE', 'merged_into_id', $4, $5, $6)""",

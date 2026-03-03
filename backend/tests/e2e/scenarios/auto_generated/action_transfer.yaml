@@ -1,0 +1,62 @@
+scenarios:
+- id: ATR-001
+  category: action_transfer
+  description: Inter-bank transfer with explicit amount
+  messages:
+  - transfer antar bank 10.000.000
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - transfer
+  - inter-bank
+  timeout_seconds: 60
+- id: ATR-002
+  category: action_transfer
+  description: Transfer from cash to bank with abbreviated amount
+  messages:
+  - pindahkan dana 5jt dari kas ke bank
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - transfer
+  - cash-to-bank
+  - abbreviation
+  timeout_seconds: 60
+- id: ATR-003
+  category: action_transfer
+  description: English bank transfer command
+  messages:
+  - bank transfer 20000000
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - transfer
+  - english
+  timeout_seconds: 60
+- id: ATR-004
+  category: action_transfer
+  description: Cash withdrawal from bank
+  messages:
+  - tarik tunai dari bank 3jt
+  expect_behavior:
+  - propose_action
+  expect_contains: []
+  tags:
+  - transfer
+  - withdrawal
+  timeout_seconds: 60
+- id: ATR-005
+  category: action_transfer
+  description: Cash deposit to bank
+  messages:
+  - setor tunai ke bank 15jt
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - transfer
+  - deposit
+  timeout_seconds: 60

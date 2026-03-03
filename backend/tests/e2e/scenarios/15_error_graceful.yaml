@@ -1,0 +1,10 @@
+scenarios:
+  - id: "GR-001"
+    category: "error"
+    description: "Non-existent customer - offer to create"
+    messages:
+      - "buatkan faktur ke PT Tidak Ada, kaos oblong 10 pcs"
+    expect_behavior: ["text_response"]
+    expect_contains: ["belum terdaftar"]
+    expect_not_contains: ["traceback", "500", "Invalid"]
+    tags: ["error", "graceful", "v4"]

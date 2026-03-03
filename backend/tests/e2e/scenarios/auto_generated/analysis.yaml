@@ -1,0 +1,275 @@
+scenarios:
+- id: AN-001
+  category: analysis
+  description: Evaluasi performa penjualan bulan berjalan
+  messages:
+  - apakah penjualan bulan ini bagus?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - penjualan
+  tags:
+  - analysis
+  - sales
+  timeout_seconds: 60
+- id: AN-002
+  category: analysis
+  description: Analisis margin keuntungan
+  messages:
+  - bagaimana margin keuntungan kita?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - margin
+  - laba
+  tags:
+  - analysis
+  - profitability
+  timeout_seconds: 60
+- id: AN-003
+  category: analysis
+  description: Evaluasi kesehatan cash flow
+  messages:
+  - apakah cash flow kita sehat?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - kas
+  - kas
+  tags:
+  - analysis
+  - cashflow
+  timeout_seconds: 60
+- id: AN-004
+  category: analysis
+  description: Perbandingan penjualan antar bulan
+  messages:
+  - bandingkan penjualan Januari vs Februari
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - analysis
+  - comparison
+  timeout_seconds: 60
+- id: AN-005
+  category: analysis
+  description: Tren pengeluaran 3 bulan terakhir
+  messages:
+  - tren pengeluaran 3 bulan terakhir
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  - pengeluaran
+  tags:
+  - analysis
+  - expenses
+  - trend
+  timeout_seconds: 60
+- id: AN-006
+  category: analysis
+  description: Identifikasi pelanggan terbesar
+  messages:
+  - siapa pelanggan terbesar kita?
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - analysis
+  - customers
+  timeout_seconds: 60
+- id: AN-007
+  category: analysis
+  description: Identifikasi vendor dengan pembayaran terbanyak
+  messages:
+  - vendor mana yang paling banyak kita bayar?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - vendor
+  tags:
+  - analysis
+  - vendors
+  timeout_seconds: 60
+- id: AN-008
+  category: analysis
+  description: Identifikasi item terlaris
+  messages:
+  - item apa yang paling laku?
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - analysis
+  - items
+  - sales
+  timeout_seconds: 60
+- id: AN-009
+  category: analysis
+  description: Evaluasi profitabilitas bulan berjalan
+  messages:
+  - apakah kita profitable bulan ini?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - analysis
+  - profitability
+  timeout_seconds: 60
+- id: AN-010
+  category: analysis
+  description: Analisis rasio hutang terhadap aset
+  messages:
+  - rasio hutang terhadap aset
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - rasio
+  - hutang
+  - aset
+  tags:
+  - analysis
+  - ratio
+  - debt
+  timeout_seconds: 60
+- id: AN-011
+  category: analysis
+  description: Analisis burn rate bulanan
+  messages:
+  - berapa burn rate kita per bulan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - analysis
+  - burnrate
+  timeout_seconds: 60
+- id: AN-012
+  category: analysis
+  description: Evaluasi efisiensi penagihan piutang
+  messages:
+  - efisiensi penagihan piutang bagaimana?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - piutang
+  - penagihan
+  tags:
+  - analysis
+  - receivables
+  timeout_seconds: 60
+- id: AN-013
+  category: analysis
+  description: Evaluasi pengendalian hutang
+  messages:
+  - apakah hutang kita masih terkendali?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - hutang
+  tags:
+  - analysis
+  - payables
+  timeout_seconds: 60
+- id: AN-014
+  category: analysis
+  description: Analisis beban operasional bulan berjalan
+  messages:
+  - analisis beban operasional bulan ini
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - beban
+  - operasional
+  tags:
+  - analysis
+  - opex
+  timeout_seconds: 60
+- id: AN-015
+  category: analysis
+  description: Perbandingan pendapatan vs beban
+  messages:
+  - perbandingan pendapatan vs beban
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - pendapatan
+  - beban
+  tags:
+  - analysis
+  - revenue
+  - expenses
+  timeout_seconds: 60
+- id: AN-016
+  category: analysis
+  description: Evaluasi likuiditas posisi keuangan
+  messages:
+  - seberapa likuid posisi keuangan kita?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - likuid
+  - kas
+  - lancar
+  tags:
+  - analysis
+  - liquidity
+  timeout_seconds: 60
+- id: AN-017
+  category: analysis
+  description: Evaluasi kemampuan bayar tagihan jatuh tempo
+  messages:
+  - apakah kita bisa bayar semua tagihan jatuh tempo minggu depan?
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - tagihan
+  - bayar
+  tags:
+  - analysis
+  - payables
+  - forecast
+  timeout_seconds: 60
+- id: AN-018
+  category: analysis
+  description: Review keuangan bulanan
+  messages:
+  - review keuangan bulanan
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - Rp
+  tags:
+  - analysis
+  - monthly_review
+  timeout_seconds: 60
+- id: AN-019
+  category: analysis
+  description: Analisis working capital
+  messages:
+  - working capital kita berapa?
+  expect_behavior:
+  - text_response
+  expect_contains: []
+  tags:
+  - analysis
+  - working_capital
+  timeout_seconds: 60
+- id: AN-020
+  category: analysis
+  description: Analisis gross profit margin per item
+  messages:
+  - gross profit margin per item
+  expect_behavior:
+  - text_response
+  expect_contains:
+  - margin
+  tags:
+  - analysis
+  - margin
+  - items
+  timeout_seconds: 60

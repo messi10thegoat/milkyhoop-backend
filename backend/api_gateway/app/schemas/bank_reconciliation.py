@@ -210,6 +210,9 @@ class SessionListItem(BaseModel):
     matched_count: int = 0
     total_lines: int = 0
     difference: Optional[int] = None
+
+    # Ledger balance from journal_lines (BankSync Rule 6)
+    ledger_balance: Optional[int] = None
     created_at: str
     completed_at: Optional[str] = None
 
@@ -281,6 +284,9 @@ class HistoryItem(BaseModel):
     statement_ending_balance: int
     system_balance: int
     difference: Optional[int] = None
+
+    # Ledger balance from journal_lines (BankSync Rule 6)
+    ledger_balance: Optional[int] = None
     matched_count: int
     adjustment_count: int
     status: str
@@ -311,6 +317,9 @@ class SessionDetail(BaseModel):
     system_ending_balance: Optional[int] = None
     cleared_balance: Optional[int] = None
     difference: Optional[int] = None
+
+    # Ledger balance from journal_lines (BankSync Rule 6)
+    ledger_balance: Optional[int] = None
 
     # Status
     status: Literal["in_progress", "completed", "cancelled"]
