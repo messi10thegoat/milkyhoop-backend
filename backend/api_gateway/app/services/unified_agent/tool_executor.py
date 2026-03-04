@@ -213,6 +213,7 @@ ACTION_CATEGORY_MAP = {
 ACTION_ENRICHMENT = {
     "CREATE_SALES_INVOICE": "_enrich_sales_invoice",
     "CREATE_PURCHASE_INVOICE": "_enrich_purchase_invoice",
+    "CREATE_BILL": "_enrich_purchase_invoice",  # alias — registry uses CREATE_BILL
     "CREATE_EXPENSE": "_enrich_expense",
     "CREATE_PURCHASE_ORDER": "_enrich_purchase_order",
     "CREATE_CREDIT_NOTE": "_enrich_credit_note",
@@ -263,6 +264,13 @@ class ToolExecutor:
         self.propose_count = 0
         self._validator_client = None
         self._executor_client = None
+
+    @staticmethod
+    def _truncate(text: str, max_len: int = 15) -> str:
+        """Truncate text for chart labels."""
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "…"
 
     @property
     def validator_client(self):
