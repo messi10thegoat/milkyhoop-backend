@@ -10,7 +10,7 @@ Pattern: identical to ragllm/api_tools.py but with action tools added.
 
 from typing import Dict, List, Any
 
-from .direct_action_registry import DIRECT_ACTIONS, QUERY_ACTIONS, get_fields_description
+from .direct_action_registry import DIRECT_ACTIONS, QUERY_ACTIONS
 
 
 # ─── Endpoint Mapping ──────────────────────────────────────────────────────────
@@ -18,175 +18,216 @@ from .direct_action_registry import DIRECT_ACTIONS, QUERY_ACTIONS, get_fields_de
 
 TOOL_ENDPOINTS: Dict[str, Dict[str, str]] = {
     # Master Data — Search
-    "search_customers":       {"method": "GET", "path": "/api/customers/autocomplete"},
-    "search_vendors":         {"method": "GET", "path": "/api/vendors/autocomplete"},
-    "search_items":           {"method": "GET", "path": "/api/items"},
-    "search_accounts":        {"method": "GET", "path": "/api/accounts/dropdown"},
-    "search_bank_accounts":   {"method": "GET", "path": "/api/bank-accounts"},
-    "get_customer_invoices":  {"method": "GET", "path": "/api/sales-invoices"},
-    "get_vendor_bills":       {"method": "GET", "path": "/api/bills"},
-
+    "search_customers": {"method": "GET", "path": "/api/customers/autocomplete"},
+    "search_vendors": {"method": "GET", "path": "/api/vendors/autocomplete"},
+    "search_items": {"method": "GET", "path": "/api/items"},
+    "search_accounts": {"method": "GET", "path": "/api/accounts/dropdown"},
+    "search_bank_accounts": {"method": "GET", "path": "/api/bank-accounts"},
+    "get_customer_invoices": {"method": "GET", "path": "/api/sales-invoices"},
+    "get_vendor_bills": {"method": "GET", "path": "/api/bills"},
     # Master Data — Detail
-    "get_customer_detail":    {"method": "GET", "path": "/api/customers/{id}"},
-    "get_vendor_detail":      {"method": "GET", "path": "/api/vendors/{id}"},
-    "get_item_detail":        {"method": "GET", "path": "/api/items/{id}"},
-
+    "get_customer_detail": {"method": "GET", "path": "/api/customers/{id}"},
+    "get_vendor_detail": {"method": "GET", "path": "/api/vendors/{id}"},
+    "get_item_detail": {"method": "GET", "path": "/api/items/{id}"},
     # Master Data — List
-    "get_customers":          {"method": "GET", "path": "/api/customers"},
-    "get_vendors":            {"method": "GET", "path": "/api/vendors"},
-    "get_items":              {"method": "GET", "path": "/api/items"},
-
+    "get_customers": {"method": "GET", "path": "/api/customers"},
+    "get_vendors": {"method": "GET", "path": "/api/vendors"},
+    "get_items": {"method": "GET", "path": "/api/items"},
     # Financial Documents
-    "get_invoices":           {"method": "GET", "path": "/api/sales-invoices"},
-    "get_invoice_detail":     {"method": "GET", "path": "/api/sales-invoices/{id}"},
-    "get_bills":              {"method": "GET", "path": "/api/bills"},
-    "get_bill_detail":        {"method": "GET", "path": "/api/bills/{id}"},
-    "get_expenses":           {"method": "GET", "path": "/api/expenses"},
-    "get_expense_detail":     {"method": "GET", "path": "/api/expenses/{id}"},
-    "get_credit_notes":       {"method": "GET", "path": "/api/credit-notes"},
-    "get_purchase_orders":    {"method": "GET", "path": "/api/purchase-orders"},
-
+    "get_invoices": {"method": "GET", "path": "/api/sales-invoices"},
+    "get_invoice_detail": {"method": "GET", "path": "/api/sales-invoices/{id}"},
+    "get_bills": {"method": "GET", "path": "/api/bills"},
+    "get_bill_detail": {"method": "GET", "path": "/api/bills/{id}"},
+    "get_expenses": {"method": "GET", "path": "/api/expenses"},
+    "get_expense_detail": {"method": "GET", "path": "/api/expenses/{id}"},
+    "get_credit_notes": {"method": "GET", "path": "/api/credit-notes"},
+    "get_purchase_orders": {"method": "GET", "path": "/api/purchase-orders"},
     # Payments
-    "get_receive_payments":   {"method": "GET", "path": "/api/receive-payments"},
-    "get_bill_payments":      {"method": "GET", "path": "/api/bill-payments"},
-
+    "get_receive_payments": {"method": "GET", "path": "/api/receive-payments"},
+    "get_bill_payments": {"method": "GET", "path": "/api/bill-payments"},
     # Accounting
-    "get_journal_entries":    {"method": "GET", "path": "/api/journals"},
-    "get_general_ledger":     {"method": "GET", "path": "/api/ledger"},
-    "get_trial_balance":      {"method": "GET", "path": "/api/reports/trial-balance"},
+    "get_journal_entries": {"method": "GET", "path": "/api/journals"},
+    "get_general_ledger": {"method": "GET", "path": "/api/ledger"},
+    "get_trial_balance": {"method": "GET", "path": "/api/reports/trial-balance"},
     "get_accounting_periods": {"method": "GET", "path": "/api/periods"},
-    "get_chart_of_accounts":  {"method": "GET", "path": "/api/accounts"},
-
+    "get_chart_of_accounts": {"method": "GET", "path": "/api/accounts"},
     # Reports
-    "get_profit_loss":        {"method": "GET", "path": "/api/reports/laba-rugi/{periode}"},
-    "get_balance_sheet":      {"method": "GET", "path": "/api/reports/neraca/{periode}"},
-    "get_cash_flow":          {"method": "GET", "path": "/api/reports/arus-kas/{periode}"},
-    "get_ar_aging":           {"method": "GET", "path": "/api/reports/aging-receivable"},
-    "get_ap_aging":           {"method": "GET", "path": "/api/reports/aging-payable"},
-
+    "get_profit_loss": {"method": "GET", "path": "/api/reports/laba-rugi/{periode}"},
+    "get_balance_sheet": {"method": "GET", "path": "/api/reports/neraca/{periode}"},
+    "get_cash_flow": {"method": "GET", "path": "/api/reports/arus-kas/{periode}"},
+    "get_ar_aging": {"method": "GET", "path": "/api/reports/aging-receivable"},
+    "get_ap_aging": {"method": "GET", "path": "/api/reports/aging-payable"},
     # Banking
-    "get_bank_accounts":      {"method": "GET", "path": "/api/bank-accounts"},
-    "get_bank_transactions":  {"method": "GET", "path": "/api/bank-accounts/{bank_account_id}/transactions"},
-    "get_bank_reconciliation": {"method": "GET", "path": "/api/bank-reconciliation/accounts"},
-
+    "get_bank_accounts": {"method": "GET", "path": "/api/bank-accounts"},
+    "get_bank_transactions": {
+        "method": "GET",
+        "path": "/api/bank-accounts/{bank_account_id}/transactions",
+    },
+    "get_bank_reconciliation": {
+        "method": "GET",
+        "path": "/api/bank-reconciliation/accounts",
+    },
     # Dashboard
-    "get_dashboard_summary":  {"method": "GET", "path": "/api/dashboard/summary"},
-    "get_overdue_invoices":   {"method": "GET", "path": "/api/dashboard/overdue-invoices"},
-    "get_overdue_bills":      {"method": "GET", "path": "/api/dashboard/overdue-bills"},
-
+    "get_dashboard_summary": {"method": "GET", "path": "/api/dashboard/summary"},
+    "get_overdue_invoices": {
+        "method": "GET",
+        "path": "/api/dashboard/overdue-invoices",
+    },
+    "get_overdue_bills": {"method": "GET", "path": "/api/dashboard/overdue-bills"},
     # Inventory Analytics
-    "get_top_products":          {"method": "GET", "path": "/api/inventory/top-products"},
-    "get_slow_moving_products": {"method": "GET", "path": "/api/inventory/slow-moving-products"},
-    "get_product_margins":      {"method": "GET", "path": "/api/inventory/product-margins"},
-
+    "get_top_products": {"method": "GET", "path": "/api/inventory/top-products"},
+    "get_slow_moving_products": {
+        "method": "GET",
+        "path": "/api/inventory/slow-moving-products",
+    },
+    "get_product_margins": {"method": "GET", "path": "/api/inventory/product-margins"},
     # Financial Ratios
-    "get_financial_ratios":    {"method": "GET", "path": "/api/financial-ratios"},
-    "get_ratio_dashboard":     {"method": "GET", "path": "/api/financial-ratios/dashboard"},
-    "get_ratio_trend":         {"method": "GET", "path": "/api/financial-ratios/trend"},
-    "get_ratio_alerts":        {"method": "GET", "path": "/api/financial-ratios/alerts"},
-
+    "get_financial_ratios": {"method": "GET", "path": "/api/financial-ratios"},
+    "get_ratio_dashboard": {"method": "GET", "path": "/api/financial-ratios/dashboard"},
+    "get_ratio_trend": {"method": "GET", "path": "/api/financial-ratios/trend"},
+    "get_ratio_alerts": {"method": "GET", "path": "/api/financial-ratios/alerts"},
     # Budgets
-    "get_budgets":             {"method": "GET", "path": "/api/budgets"},
-    "get_budget_detail":       {"method": "GET", "path": "/api/budgets/{id}/vs-actual"},
-
+    "get_budgets": {"method": "GET", "path": "/api/budgets"},
+    "get_budget_detail": {"method": "GET", "path": "/api/budgets/{id}/vs-actual"},
     # Document Intake
-    "review_document":         {"method": "GET", "path": "/api/document-intake/document/{document_id}"},
+    "review_document": {
+        "method": "GET",
+        "path": "/api/document-intake/document/{document_id}",
+    },
     # Cost Centers
-    "get_cost_centers":        {"method": "GET", "path": "/api/cost-centers"},
-    "get_cost_center_summary": {"method": "GET", "path": "/api/cost-centers/{id}/summary"},
+    "get_cost_centers": {"method": "GET", "path": "/api/cost-centers"},
+    "get_cost_center_summary": {
+        "method": "GET",
+        "path": "/api/cost-centers/{id}/summary",
+    },
     # === Sprint 2: Cash & Payment Workflows ===
     "get_bank_transfers": {
         "method": "GET",
         "path": "/api/bank-transfers",
         "params": ["status", "search", "date_from", "date_to"],
-        "description": "List transfer antar rekening bank"
+        "description": "List transfer antar rekening bank",
     },
     "get_bank_transfer_detail": {
         "method": "GET",
         "path": "/api/bank-transfers/{id}",
         "params": [],
-        "description": "Detail transfer bank termasuk jurnal"
+        "description": "Detail transfer bank termasuk jurnal",
     },
     "get_bank_transfer_summary": {
         "method": "GET",
         "path": "/api/bank-transfers/summary",
         "params": [],
-        "description": "Ringkasan total transfer bank"
+        "description": "Ringkasan total transfer bank",
     },
     "get_vendor_deposits": {
         "method": "GET",
         "path": "/api/vendor-deposits",
         "params": ["status", "vendor_id"],
-        "description": "List uang muka ke vendor"
+        "description": "List uang muka ke vendor",
     },
     "get_vendor_deposit_detail": {
         "method": "GET",
         "path": "/api/vendor-deposits/{id}",
         "params": [],
-        "description": "Detail deposit vendor termasuk sisa yang belum digunakan"
+        "description": "Detail deposit vendor termasuk sisa yang belum digunakan",
     },
     "get_customer_deposits": {
         "method": "GET",
         "path": "/api/customer-deposits",
         "params": ["status", "customer_id", "search"],
-        "description": "List uang muka pelanggan"
+        "description": "List uang muka pelanggan",
     },
     "get_customer_deposit_detail": {
         "method": "GET",
         "path": "/api/customer-deposits/{id}",
         "params": [],
-        "description": "Detail deposit pelanggan"
+        "description": "Detail deposit pelanggan",
     },
     "get_cheques": {
         "method": "GET",
         "path": "/api/cheques",
         "params": ["cheque_type", "status", "search"],
-        "description": "List giro/cheque. Filter: pending, deposited, cleared, bounced"
+        "description": "List giro/cheque. Filter: pending, deposited, cleared, bounced",
     },
     # === Sprint 3: Recurring & Pipeline ===
-    "get_recurring_invoices":     {"method": "GET", "path": "/api/recurring-invoices", "params": ["status", "customer_id"], "description": "List faktur berulang (recurring invoice)"},
-    "get_recurring_invoices_due": {"method": "GET", "path": "/api/recurring-invoices/due", "params": [], "description": "Faktur berulang yang jatuh tempo"},
-    "get_recurring_bills":        {"method": "GET", "path": "/api/recurring-bills", "params": ["status", "vendor_id"], "description": "List tagihan berulang (subscription, langganan)"},
-    "get_recurring_bills_due":    {"method": "GET", "path": "/api/recurring-bills/due", "params": [], "description": "Tagihan berulang yang jatuh tempo"},
-    "get_sales_orders":           {"method": "GET", "path": "/api/sales-orders", "params": ["status", "customer_id", "search"], "description": "List sales order"},
-    "get_sales_order_detail":     {"method": "GET", "path": "/api/sales-orders/{id}", "params": [], "description": "Detail sales order termasuk item dan status fulfillment"},
-    "get_quotes":                 {"method": "GET", "path": "/api/quotes", "params": ["status", "customer_id", "search"], "description": "List penawaran (quotes)"},
+    "get_recurring_invoices": {
+        "method": "GET",
+        "path": "/api/recurring-invoices",
+        "params": ["status", "customer_id"],
+        "description": "List faktur berulang (recurring invoice)",
+    },
+    "get_recurring_invoices_due": {
+        "method": "GET",
+        "path": "/api/recurring-invoices/due",
+        "params": [],
+        "description": "Faktur berulang yang jatuh tempo",
+    },
+    "get_recurring_bills": {
+        "method": "GET",
+        "path": "/api/recurring-bills",
+        "params": ["status", "vendor_id"],
+        "description": "List tagihan berulang (subscription, langganan)",
+    },
+    "get_recurring_bills_due": {
+        "method": "GET",
+        "path": "/api/recurring-bills/due",
+        "params": [],
+        "description": "Tagihan berulang yang jatuh tempo",
+    },
+    "get_sales_orders": {
+        "method": "GET",
+        "path": "/api/sales-orders",
+        "params": ["status", "customer_id", "search"],
+        "description": "List sales order",
+    },
+    "get_sales_order_detail": {
+        "method": "GET",
+        "path": "/api/sales-orders/{id}",
+        "params": [],
+        "description": "Detail sales order termasuk item dan status fulfillment",
+    },
+    "get_quotes": {
+        "method": "GET",
+        "path": "/api/quotes",
+        "params": ["status", "customer_id", "search"],
+        "description": "List penawaran (quotes)",
+    },
     # ── Sprint 4: Asset & Inventory Operations ──────────────────
     "get_fixed_assets": {
         "method": "GET",
         "path": "/api/fixed-assets",
         "params": ["status", "category_id", "search"],
-        "description": "List aset tetap. Filter: status (active, disposed, sold), category, search. GUNAKAN untuk 'aset apa saja?', 'daftar aset tetap', 'nilai buku aset'"
+        "description": "List aset tetap. Filter: status (active, disposed, sold), category, search. GUNAKAN untuk 'aset apa saja?', 'daftar aset tetap', 'nilai buku aset'",
     },
     "get_fixed_asset_detail": {
         "method": "GET",
         "path": "/api/fixed-assets/{id}",
         "params": ["id"],
-        "description": "Detail aset tetap termasuk informasi depresiasi. GUNAKAN untuk 'detail aset X', 'berapa nilai buku mesin?'"
+        "description": "Detail aset tetap termasuk informasi depresiasi. GUNAKAN untuk 'detail aset X', 'berapa nilai buku mesin?'",
     },
     "get_stock_adjustments": {
         "method": "GET",
         "path": "/api/stock-adjustments",
         "params": ["status", "adjustment_type", "search", "date_from", "date_to"],
-        "description": "List penyesuaian stok. Filter: status (draft, posted, void), type (increase, decrease, recount, damaged, expired). GUNAKAN untuk 'ada adjustment stok apa?', 'penyesuaian stok bulan ini'"
+        "description": "List penyesuaian stok. Filter: status (draft, posted, void), type (increase, decrease, recount, damaged, expired). GUNAKAN untuk 'ada adjustment stok apa?', 'penyesuaian stok bulan ini'",
     },
     "get_stock_adjustment_detail": {
         "method": "GET",
         "path": "/api/stock-adjustments/{id}",
         "params": ["id"],
-        "description": "Detail penyesuaian stok termasuk item dan jurnal terkait. GUNAKAN untuk 'detail adjustment SA-001'"
+        "description": "Detail penyesuaian stok termasuk item dan jurnal terkait. GUNAKAN untuk 'detail adjustment SA-001'",
     },
     "get_payroll_summary": {
         "method": "GET",
         "path": "/api/payroll/summary",
         "params": [],
-        "description": "Ringkasan gaji/payroll: jumlah per status, total bulan ini. GUNAKAN untuk 'berapa total gajian bulan ini?', 'expense payroll', 'ringkasan penggajian'"
+        "description": "Ringkasan gaji/payroll: jumlah per status, total bulan ini. GUNAKAN untuk 'berapa total gajian bulan ini?', 'expense payroll', 'ringkasan penggajian'",
     },
-
-
-
     # Direct Actions
-    "propose_direct_action":  {"method": "POST", "path": "/internal/direct-action"},  # handled internally
+    "propose_direct_action": {
+        "method": "POST",
+        "path": "/internal/direct-action",
+    },  # handled internally
 }
 
 
@@ -226,10 +267,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "q": {"type": "string", "description": "Kata kunci pencarian (nama/email)"}
+                "q": {
+                    "type": "string",
+                    "description": "Kata kunci pencarian (nama/email)",
+                }
             },
-            "required": ["q"]
-        }
+            "required": ["q"],
+        },
     },
     {
         "name": "search_vendors",
@@ -239,8 +283,8 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "q": {"type": "string", "description": "Kata kunci pencarian (nama)"}
             },
-            "required": ["q"]
-        }
+            "required": ["q"],
+        },
     },
     {
         "name": "search_items",
@@ -248,10 +292,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "search": {"type": "string", "description": "Kata kunci pencarian (nama/SKU)"}
+                "search": {
+                    "type": "string",
+                    "description": "Kata kunci pencarian (nama/SKU)",
+                }
             },
-            "required": ["search"]
-        }
+            "required": ["search"],
+        },
     },
     {
         "name": "search_accounts",
@@ -259,11 +306,29 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "search": {"type": "string", "description": "Kata kunci pencarian (nama/kode akun)"},
-                "type": {"type": "string", "description": "Tipe akun (WAJIB): ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE, COGS, OTHER_INCOME, OTHER_EXPENSE, RECEIVABLE, PAYABLE", "enum": ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE", "COGS", "OTHER_INCOME", "OTHER_EXPENSE", "RECEIVABLE", "PAYABLE"]}
+                "search": {
+                    "type": "string",
+                    "description": "Kata kunci pencarian (nama/kode akun)",
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Tipe akun (WAJIB): ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE, COGS, OTHER_INCOME, OTHER_EXPENSE, RECEIVABLE, PAYABLE",
+                    "enum": [
+                        "ASSET",
+                        "LIABILITY",
+                        "EQUITY",
+                        "REVENUE",
+                        "EXPENSE",
+                        "COGS",
+                        "OTHER_INCOME",
+                        "OTHER_EXPENSE",
+                        "RECEIVABLE",
+                        "PAYABLE",
+                    ],
+                },
             },
-            "required": ["search"]
-        }
+            "required": ["search"],
+        },
     },
     {
         "name": "search_bank_accounts",
@@ -271,7 +336,10 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Nama bank atau nomor rekening"},
+                "query": {
+                    "type": "string",
+                    "description": "Nama bank atau nomor rekening",
+                },
             },
             "required": ["query"],
         },
@@ -282,7 +350,10 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "customer_id": {"type": "string", "description": "UUID pelanggan (dari search_customers)"},
+                "customer_id": {
+                    "type": "string",
+                    "description": "UUID pelanggan (dari search_customers)",
+                },
                 "status": {
                     "type": "string",
                     "enum": ["outstanding", "all"],
@@ -298,7 +369,10 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "vendor_id": {"type": "string", "description": "UUID vendor (dari search_vendors)"},
+                "vendor_id": {
+                    "type": "string",
+                    "description": "UUID vendor (dari search_vendors)",
+                },
                 "status": {
                     "type": "string",
                     "enum": ["outstanding", "all"],
@@ -308,59 +382,50 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "required": ["vendor_id"],
         },
     },
-
     # ── Master Data Detail ──
     {
         "name": "get_customer_detail",
         "description": "Detail pelanggan by ID. Return: name, email, phone, address, ar_balance, total_invoices.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID pelanggan"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID pelanggan"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_vendor_detail",
         "description": "Detail vendor by ID. Return: name, email, phone, address, ap_balance, total_bills.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID vendor"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID vendor"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_item_detail",
         "description": "Detail barang/jasa by ID. Return: name, sku, sales_price, purchase_price, unit, current_stock, type.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID item"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID item"}},
+            "required": ["id"],
+        },
     },
-
     # ── Master Data List ──
     {
         "name": "get_customers",
         "description": "List semua pelanggan. Return array of {id, name, email, ar_balance}.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_vendors",
         "description": "List semua vendor. Return array of {id, name, email, ap_balance}.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_items",
         "description": "List semua barang/jasa. Return array of {id, name, sku, sales_price, unit}.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # ── Financial Documents ──
     {
         "name": "get_invoices",
@@ -368,24 +433,34 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "search": {"type": "string", "description": "Cari berdasarkan nama customer atau nomor faktur (ILIKE)"},
-                "status": {"type": "string", "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published)."},
-                "customer_id": {"type": "string", "description": "Filter by customer UUID"},
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "search": {
+                    "type": "string",
+                    "description": "Cari berdasarkan nama customer atau nomor faktur (ILIKE)",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published).",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Filter by customer UUID",
+                },
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_invoice_detail",
         "description": "Detail faktur penjualan by ID. Return: number, customer, items, amounts, status, journal.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID faktur"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID faktur"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_bills",
@@ -393,24 +468,31 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published)."},
-                "search": {"type": "string", "description": "Cari berdasarkan nama vendor atau nomor tagihan (ILIKE)"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published).",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari berdasarkan nama vendor atau nomor tagihan (ILIKE)",
+                },
                 "vendor_id": {"type": "string", "description": "Filter by vendor UUID"},
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_bill_detail",
         "description": "Detail faktur pembelian by ID. Return: number, vendor, items, amounts, status, journal.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID tagihan"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID tagihan"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_expenses",
@@ -418,45 +500,44 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_expense_detail",
         "description": "Detail transaksi biaya by ID.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID expense"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID expense"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_credit_notes",
         "description": "List nota kredit.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_purchase_orders",
         "description": "List purchase orders.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # ── Payments ──
     {
         "name": "get_receive_payments",
         "description": "List penerimaan pembayaran (dari pelanggan).",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_bill_payments",
         "description": "List pembayaran tagihan (ke vendor).",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # ── Accounting ──
     {
         "name": "get_journal_entries",
@@ -464,11 +545,17 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "source_type": {"type": "string", "description": "Filter: SALES_INVOICE, PURCHASE_INVOICE, PAYMENT, EXPENSE, MANUAL_JOURNAL, REVERSAL"},
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "source_type": {
+                    "type": "string",
+                    "description": "Filter: SALES_INVOICE, PURCHASE_INVOICE, PAYMENT, EXPENSE, MANUAL_JOURNAL, REVERSAL",
+                },
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_general_ledger",
@@ -477,10 +564,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string", "description": "UUID akun"},
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_trial_balance",
@@ -488,22 +578,24 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02), default hari ini"}
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02), default hari ini",
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_accounting_periods",
         "description": "List periode akuntansi. Return: id, name, start_date, end_date, status (OPEN/CLOSED).",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_chart_of_accounts",
         "description": "Daftar semua akun (chart of accounts). Return: id, code, name, type, parent_id.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # ── Reports ──
     {
         "name": "get_profit_loss",
@@ -511,10 +603,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_balance_sheet",
@@ -522,10 +617,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"}
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_cash_flow",
@@ -533,10 +631,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"},
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_ar_aging",
@@ -544,10 +645,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"}
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_ap_aging",
@@ -555,17 +659,19 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "periode": {"type": "string", "description": "Periode format YYYY-MM (contoh: 2026-02)"}
+                "periode": {
+                    "type": "string",
+                    "description": "Periode format YYYY-MM (contoh: 2026-02)",
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
-
     # ── Banking ──
     {
         "name": "get_bank_accounts",
         "description": "List akun bank. Return: id, name, account_number, balance.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_bank_transactions",
@@ -573,16 +679,34 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "bank_account_id": {"type": "string", "description": "UUID akun bank (dapatkan dari get_bank_accounts)"},
-                "date_from": {"type": "string", "description": "Tanggal mulai filter (YYYY-MM-DD)"},
-                "date_to": {"type": "string", "description": "Tanggal akhir filter (YYYY-MM-DD)"},
-                "transaction_type": {"type": "string", "description": "Filter jenis transaksi. PENTING: JANGAN filter jika user tanya 'transaksi masuk' atau 'transaksi keluar' — ambil semua lalu kelompokkan. Jenis: deposit, withdrawal, payment_received, payment_made, opening. Uang MASUK = deposit + payment_received. Uang KELUAR = withdrawal + payment_made."},
-                "is_reconciled": {"type": "boolean", "description": "Filter berdasarkan status rekonsiliasi"},
+                "bank_account_id": {
+                    "type": "string",
+                    "description": "UUID akun bank (dapatkan dari get_bank_accounts)",
+                },
+                "date_from": {
+                    "type": "string",
+                    "description": "Tanggal mulai filter (YYYY-MM-DD)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Tanggal akhir filter (YYYY-MM-DD)",
+                },
+                "transaction_type": {
+                    "type": "string",
+                    "description": "Filter jenis transaksi. PENTING: JANGAN filter jika user tanya 'transaksi masuk' atau 'transaksi keluar' — ambil semua lalu kelompokkan. Jenis: deposit, withdrawal, payment_received, payment_made, opening. Uang MASUK = deposit + payment_received. Uang KELUAR = withdrawal + payment_made.",
+                },
+                "is_reconciled": {
+                    "type": "boolean",
+                    "description": "Filter berdasarkan status rekonsiliasi",
+                },
                 "skip": {"type": "integer", "description": "Offset/skip (default 0)"},
-                "limit": {"type": "integer", "description": "Jumlah per halaman (default 50, max 200)"}
+                "limit": {
+                    "type": "integer",
+                    "description": "Jumlah per halaman (default 50, max 200)",
+                },
             },
-            "required": ["bank_account_id"]
-        }
+            "required": ["bank_account_id"],
+        },
     },
     {
         "name": "get_bank_reconciliation",
@@ -592,10 +716,9 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "bank_account_id": {"type": "string", "description": "UUID akun bank"}
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
-
     # ── Dashboard ──
     {
         "name": "get_dashboard_summary",
@@ -603,22 +726,25 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "period": {"type": "string", "description": "Periode: month, quarter, year", "enum": ["month", "quarter", "year"]}
+                "period": {
+                    "type": "string",
+                    "description": "Periode: month, quarter, year",
+                    "enum": ["month", "quarter", "year"],
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_overdue_invoices",
         "description": "List faktur penjualan yang sudah lewat jatuh tempo.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_overdue_bills",
         "description": "List tagihan pembelian yang sudah lewat jatuh tempo.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # ── Inventory Analytics ──
     {
         "name": "get_top_products",
@@ -626,11 +752,18 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "period": {"type": "string", "description": "Filter periode: all (semua), this_month (bulan ini), last_month (bulan lalu), this_year (tahun ini)", "enum": ["all", "this_month", "last_month", "this_year"]},
-                "limit": {"type": "integer", "description": "Jumlah produk (default 10, max 50)"}
+                "period": {
+                    "type": "string",
+                    "description": "Filter periode: all (semua), this_month (bulan ini), last_month (bulan lalu), this_year (tahun ini)",
+                    "enum": ["all", "this_month", "last_month", "this_year"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Jumlah produk (default 10, max 50)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_slow_moving_products",
@@ -638,11 +771,18 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "period": {"type": "string", "description": "Filter periode: all, this_month, last_month, this_year", "enum": ["all", "this_month", "last_month", "this_year"]},
-                "limit": {"type": "integer", "description": "Jumlah produk (default 10, max 50)"}
+                "period": {
+                    "type": "string",
+                    "description": "Filter periode: all, this_month, last_month, this_year",
+                    "enum": ["all", "this_month", "last_month", "this_year"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Jumlah produk (default 10, max 50)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_product_margins",
@@ -650,14 +790,29 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "period": {"type": "string", "description": "Filter periode: all, this_month, last_month, this_year", "enum": ["all", "this_month", "last_month", "this_year"]},
-                "limit": {"type": "integer", "description": "Jumlah produk (default 10, max 50)"},
-                "sort": {"type": "string", "description": "Urutan: margin_desc, margin_asc, revenue_desc, profit_desc", "enum": ["margin_desc", "margin_asc", "revenue_desc", "profit_desc"]}
+                "period": {
+                    "type": "string",
+                    "description": "Filter periode: all, this_month, last_month, this_year",
+                    "enum": ["all", "this_month", "last_month", "this_year"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Jumlah produk (default 10, max 50)",
+                },
+                "sort": {
+                    "type": "string",
+                    "description": "Urutan: margin_desc, margin_asc, revenue_desc, profit_desc",
+                    "enum": [
+                        "margin_desc",
+                        "margin_asc",
+                        "revenue_desc",
+                        "profit_desc",
+                    ],
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
-
     # -- Financial Ratios --
     {
         "name": "get_financial_ratios",
@@ -665,15 +820,18 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "as_of_date": {"type": "string", "description": "Tanggal analisis YYYY-MM-DD (default: hari ini)"}
+                "as_of_date": {
+                    "type": "string",
+                    "description": "Tanggal analisis YYYY-MM-DD (default: hari ini)",
+                }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_ratio_dashboard",
         "description": "Dashboard ringkas rasio keuangan utama: current ratio, quick ratio, gross margin, net margin, debt-to-equity, inventory turnover. Termasuk alert dan tren. GUNAKAN untuk overview cepat kesehatan keuangan.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_ratio_trend",
@@ -681,24 +839,33 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "ratio": {"type": "string", "description": "Kode rasio: current_ratio, quick_ratio, gross_profit_margin, net_profit_margin, debt_to_equity, inventory_turnover"},
-                "periods": {"type": "integer", "description": "Jumlah periode (default 12, max 60)"},
-                "period_type": {"type": "string", "description": "Tipe periode: monthly, quarterly, yearly", "enum": ["monthly", "quarterly", "yearly"]}
+                "ratio": {
+                    "type": "string",
+                    "description": "Kode rasio: current_ratio, quick_ratio, gross_profit_margin, net_profit_margin, debt_to_equity, inventory_turnover",
+                },
+                "periods": {
+                    "type": "integer",
+                    "description": "Jumlah periode (default 12, max 60)",
+                },
+                "period_type": {
+                    "type": "string",
+                    "description": "Tipe periode: monthly, quarterly, yearly",
+                    "enum": ["monthly", "quarterly", "yearly"],
+                },
             },
-            "required": ["ratio"]
-        }
+            "required": ["ratio"],
+        },
     },
     {
         "name": "get_ratio_alerts",
         "description": "Alert rasio keuangan yang melewati batas ideal. GUNAKAN untuk pertanyaan: ada masalah keuangan, warning, red flag, rasio yang perlu perhatian. Return: list rasio dengan alert level (warning/danger).",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
-
     # -- Budgets --
     {
         "name": "get_budgets",
         "description": "List semua budget/anggaran. GUNAKAN untuk pertanyaan: budget apa saja, anggaran tahun ini, daftar budget. Return: list budget dengan nama, periode, status, total amount.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_budget_detail",
@@ -707,17 +874,19 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "UUID budget"},
-                "month": {"type": "integer", "description": "Filter bulan tertentu (1-12, optional)"}
+                "month": {
+                    "type": "integer",
+                    "description": "Filter bulan tertentu (1-12, optional)",
+                },
             },
-            "required": ["id"]
-        }
+            "required": ["id"],
+        },
     },
-
     # -- Cost Centers --
     {
         "name": "get_cost_centers",
         "description": "List cost center/departemen. GUNAKAN untuk pertanyaan: biaya per departemen, cost center apa saja, list departemen. Return: list cost center dengan nama, kode, parent.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_cost_center_summary",
@@ -726,11 +895,17 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "UUID cost center"},
-                "start_date": {"type": "string", "description": "Tanggal mulai YYYY-MM-DD"},
-                "end_date": {"type": "string", "description": "Tanggal akhir YYYY-MM-DD"}
+                "start_date": {
+                    "type": "string",
+                    "description": "Tanggal mulai YYYY-MM-DD",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Tanggal akhir YYYY-MM-DD",
+                },
             },
-            "required": ["id", "start_date", "end_date"]
-        }
+            "required": ["id", "start_date", "end_date"],
+        },
     },
     # === Sprint 2: Cash & Payment Workflows ===
     {
@@ -739,13 +914,26 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["all", "draft", "posted", "void"], "description": "Filter status transfer"},
-                "search": {"type": "string", "description": "Cari berdasarkan nomor transfer"},
-                "date_from": {"type": "string", "description": "Tanggal mulai (YYYY-MM-DD)"},
-                "date_to": {"type": "string", "description": "Tanggal akhir (YYYY-MM-DD)"}
+                "status": {
+                    "type": "string",
+                    "enum": ["all", "draft", "posted", "void"],
+                    "description": "Filter status transfer",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari berdasarkan nomor transfer",
+                },
+                "date_from": {
+                    "type": "string",
+                    "description": "Tanggal mulai (YYYY-MM-DD)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Tanggal akhir (YYYY-MM-DD)",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_bank_transfer_detail",
@@ -755,13 +943,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "id": {"type": "string", "description": "UUID transfer bank"}
             },
-            "required": ["id"]
-        }
+            "required": ["id"],
+        },
     },
     {
         "name": "get_bank_transfer_summary",
         "description": "Ringkasan total transfer bank. Untuk: total transfer bulan ini, ringkasan mutasi antar rekening.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_vendor_deposits",
@@ -769,11 +957,17 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter status: draft, posted, partial, applied, void"},
-                "vendor_id": {"type": "string", "description": "Filter berdasarkan vendor UUID"}
+                "status": {
+                    "type": "string",
+                    "description": "Filter status: draft, posted, partial, applied, void",
+                },
+                "vendor_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan vendor UUID",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_vendor_deposit_detail",
@@ -783,8 +977,8 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "id": {"type": "string", "description": "UUID deposit vendor"}
             },
-            "required": ["id"]
-        }
+            "required": ["id"],
+        },
     },
     {
         "name": "get_customer_deposits",
@@ -792,12 +986,22 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["all", "draft", "posted", "partial", "applied", "void"], "description": "Filter status deposit"},
-                "customer_id": {"type": "string", "description": "Filter berdasarkan customer UUID"},
-                "search": {"type": "string", "description": "Cari berdasarkan nomor deposit atau nama pelanggan"}
+                "status": {
+                    "type": "string",
+                    "enum": ["all", "draft", "posted", "partial", "applied", "void"],
+                    "description": "Filter status deposit",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan customer UUID",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari berdasarkan nomor deposit atau nama pelanggan",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_customer_deposit_detail",
@@ -807,8 +1011,8 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "id": {"type": "string", "description": "UUID deposit pelanggan"}
             },
-            "required": ["id"]
-        }
+            "required": ["id"],
+        },
     },
     {
         "name": "get_cheques",
@@ -816,12 +1020,30 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "cheque_type": {"type": "string", "enum": ["received", "issued"], "description": "Tipe: diterima atau dikeluarkan"},
-                "status": {"type": "string", "enum": ["pending", "deposited", "cleared", "bounced", "cancelled", "replaced"], "description": "Status giro"},
-                "search": {"type": "string", "description": "Cari nomor giro atau nama pihak"}
+                "cheque_type": {
+                    "type": "string",
+                    "enum": ["received", "issued"],
+                    "description": "Tipe: diterima atau dikeluarkan",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "deposited",
+                        "cleared",
+                        "bounced",
+                        "cancelled",
+                        "replaced",
+                    ],
+                    "description": "Status giro",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari nomor giro atau nama pihak",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     # === Sprint 3: Recurring & Pipeline ===
     {
@@ -830,16 +1052,22 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter status: active, paused, expired"},
-                "customer_id": {"type": "string", "description": "Filter berdasarkan customer UUID"}
+                "status": {
+                    "type": "string",
+                    "description": "Filter status: active, paused, expired",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan customer UUID",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_recurring_invoices_due",
         "description": "Faktur berulang yang jatuh tempo untuk diproses. GUNAKAN untuk: invoice recurring mana yang harus diproses, ada tagihan otomatis yang perlu dikirim?",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_recurring_bills",
@@ -847,16 +1075,22 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter status: active, paused, expired"},
-                "vendor_id": {"type": "string", "description": "Filter berdasarkan vendor UUID"}
+                "status": {
+                    "type": "string",
+                    "description": "Filter status: active, paused, expired",
+                },
+                "vendor_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan vendor UUID",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_recurring_bills_due",
         "description": "Tagihan berulang yang jatuh tempo bulan ini. GUNAKAN untuk: tagihan recurring mana yang harus dibayar, ada subscription yang jatuh tempo?",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_sales_orders",
@@ -864,23 +1098,41 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["all", "draft", "confirmed", "partial_shipped", "shipped", "partial_invoiced", "invoiced", "completed", "cancelled"], "description": "Filter status order"},
-                "customer_id": {"type": "string", "description": "Filter berdasarkan customer UUID"},
-                "search": {"type": "string", "description": "Cari nomor order atau nama pelanggan"}
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "all",
+                        "draft",
+                        "confirmed",
+                        "partial_shipped",
+                        "shipped",
+                        "partial_invoiced",
+                        "invoiced",
+                        "completed",
+                        "cancelled",
+                    ],
+                    "description": "Filter status order",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan customer UUID",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari nomor order atau nama pelanggan",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "get_sales_order_detail",
         "description": "Detail sales order termasuk item, status fulfillment, dan shipment.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "UUID sales order"}
-            },
-            "required": ["id"]
-        }
+            "properties": {"id": {"type": "string", "description": "UUID sales order"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "get_quotes",
@@ -888,74 +1140,103 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["all", "draft", "sent", "accepted", "expired", "declined", "converted"], "description": "Filter status penawaran"},
-                "customer_id": {"type": "string", "description": "Filter berdasarkan customer UUID"},
-                "search": {"type": "string", "description": "Cari nomor penawaran atau nama pelanggan"}
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "all",
+                        "draft",
+                        "sent",
+                        "accepted",
+                        "expired",
+                        "declined",
+                        "converted",
+                    ],
+                    "description": "Filter status penawaran",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Filter berdasarkan customer UUID",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Cari nomor penawaran atau nama pelanggan",
+                },
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
-        # ── Sprint 4: Asset & Inventory Operations ──────────────────
-        {
-            "name": "get_fixed_assets",
-            "description": "List aset tetap perusahaan. Filter: status (active, disposed, sold), category_id, search. Untuk 'aset apa saja?', 'daftar aset tetap'",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "description": "Filter status: active, disposed, sold"},
-                    "category_id": {"type": "string", "description": "Filter by category UUID"},
-                    "search": {"type": "string", "description": "Cari nama aset"}
+    # ── Sprint 4: Asset & Inventory Operations ──────────────────
+    {
+        "name": "get_fixed_assets",
+        "description": "List aset tetap perusahaan. Filter: status (active, disposed, sold), category_id, search. Untuk 'aset apa saja?', 'daftar aset tetap'",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter status: active, disposed, sold",
                 },
-                "required": []
-            }
-        },
-        {
-            "name": "get_fixed_asset_detail",
-            "description": "Detail aset tetap termasuk informasi depresiasi, nilai buku, dan jadwal penyusutan. Untuk 'detail aset X', 'berapa depresiasi mesin?'",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "UUID aset tetap"}
+                "category_id": {
+                    "type": "string",
+                    "description": "Filter by category UUID",
                 },
-                "required": ["id"]
-            }
+                "search": {"type": "string", "description": "Cari nama aset"},
+            },
+            "required": [],
         },
-        {
-            "name": "get_stock_adjustments",
-            "description": "List penyesuaian stok/inventory. Filter: status (draft, posted, void), adjustment_type (increase, decrease, recount, damaged, expired). Untuk 'ada adjustment stok?', 'penyesuaian stok bulan ini'",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "description": "Filter: all, draft, posted, void"},
-                    "adjustment_type": {"type": "string", "description": "Filter: increase, decrease, recount, damaged, expired"},
-                    "search": {"type": "string", "description": "Cari nomor adjustment"},
-                    "date_from": {"type": "string", "description": "Tanggal mulai (YYYY-MM-DD)"},
-                    "date_to": {"type": "string", "description": "Tanggal akhir (YYYY-MM-DD)"}
+    },
+    {
+        "name": "get_fixed_asset_detail",
+        "description": "Detail aset tetap termasuk informasi depresiasi, nilai buku, dan jadwal penyusutan. Untuk 'detail aset X', 'berapa depresiasi mesin?'",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "UUID aset tetap"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "get_stock_adjustments",
+        "description": "List penyesuaian stok/inventory. Filter: status (draft, posted, void), adjustment_type (increase, decrease, recount, damaged, expired). Untuk 'ada adjustment stok?', 'penyesuaian stok bulan ini'",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter: all, draft, posted, void",
                 },
-                "required": []
-            }
-        },
-        {
-            "name": "get_stock_adjustment_detail",
-            "description": "Detail penyesuaian stok termasuk item yang disesuaikan dan jurnal terkait. Untuk 'detail adjustment SA-001'",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "UUID stock adjustment"}
+                "adjustment_type": {
+                    "type": "string",
+                    "description": "Filter: increase, decrease, recount, damaged, expired",
                 },
-                "required": ["id"]
-            }
+                "search": {"type": "string", "description": "Cari nomor adjustment"},
+                "date_from": {
+                    "type": "string",
+                    "description": "Tanggal mulai (YYYY-MM-DD)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Tanggal akhir (YYYY-MM-DD)",
+                },
+            },
+            "required": [],
         },
-        {
-            "name": "get_payroll_summary",
-            "description": "Ringkasan penggajian/payroll: jumlah run per status, total gaji bulan ini. Untuk 'berapa total gajian?', 'expense payroll bulan ini', 'ringkasan penggajian'",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
+    },
+    {
+        "name": "get_stock_adjustment_detail",
+        "description": "Detail penyesuaian stok termasuk item yang disesuaikan dan jurnal terkait. Untuk 'detail adjustment SA-001'",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "UUID stock adjustment"}
+            },
+            "required": ["id"],
         },
-
+    },
+    {
+        "name": "get_payroll_summary",
+        "description": "Ringkasan penggajian/payroll: jumlah run per status, total gaji bulan ini. Untuk 'berapa total gajian?', 'expense payroll bulan ini', 'ringkasan penggajian'",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
     # ── Document Intake ──
     {
         "name": "review_document",
@@ -965,11 +1246,11 @@ READ_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "document_id": {
                     "type": "string",
-                    "description": "UUID dokumen yang akan di-review"
+                    "description": "UUID dokumen yang akan di-review",
                 }
             },
-            "required": ["document_id"]
-        }
+            "required": ["document_id"],
+        },
     },
 ]
 
@@ -993,82 +1274,82 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                 "action_type": {
                     "type": "string",
                     "enum": ACTION_TYPE_ENUM,
-                    "description": "Tipe aksi"
+                    "description": "Tipe aksi",
                 },
                 "assumptions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Asumsi yang dibuat LLM"
+                    "description": "Asumsi yang dibuat LLM",
                 },
                 "customer_id": {
                     "type": "string",
-                    "description": "UUID customer (dari search_customers). Untuk: sales invoice, credit note, receive payment"
+                    "description": "UUID customer (dari search_customers). Untuk: sales invoice, credit note, receive payment",
                 },
                 "vendor_id": {
                     "type": "string",
-                    "description": "UUID vendor (dari search_vendors). Untuk: purchase invoice, make payment, purchase order"
+                    "description": "UUID vendor (dari search_vendors). Untuk: purchase invoice, make payment, purchase order",
                 },
                 "items": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "item_id": {"type": "string", "description": "UUID item (dari search_items)"},
+                            "item_id": {
+                                "type": "string",
+                                "description": "UUID item (dari search_items)",
+                            },
                             "quantity": {"type": "number"},
                             "unit_price": {"type": "number"},
-                            "description": {"type": "string"}
+                            "description": {"type": "string"},
                         },
-                        "required": ["item_id", "quantity", "unit_price"]
+                        "required": ["item_id", "quantity", "unit_price"],
                     },
-                    "description": "Daftar item. Untuk: invoices, purchase orders, credit notes"
+                    "description": "Daftar item. Untuk: invoices, purchase orders, credit notes",
                 },
                 "invoice_date": {
                     "type": "string",
-                    "description": "Tanggal faktur YYYY-MM-DD. Untuk: sales/purchase invoice"
+                    "description": "Tanggal faktur YYYY-MM-DD. Untuk: sales/purchase invoice",
                 },
                 "due_date": {
                     "type": "string",
-                    "description": "Tanggal jatuh tempo YYYY-MM-DD"
+                    "description": "Tanggal jatuh tempo YYYY-MM-DD",
                 },
                 "invoice_id": {
                     "type": "string",
-                    "description": "UUID faktur yang dibayar/di-credit note"
+                    "description": "UUID faktur yang dibayar/di-credit note",
                 },
-                "bill_id": {
-                    "type": "string",
-                    "description": "UUID bill yang dibayar"
-                },
+                "bill_id": {"type": "string", "description": "UUID bill yang dibayar"},
                 "amount": {
                     "type": "number",
-                    "description": "Jumlah pembayaran/expense/transfer"
+                    "description": "Jumlah pembayaran/expense/transfer",
                 },
                 "payment_date": {
                     "type": "string",
-                    "description": "Tanggal pembayaran YYYY-MM-DD"
+                    "description": "Tanggal pembayaran YYYY-MM-DD",
                 },
                 "payment_method": {
                     "type": "string",
-                    "description": "Metode bayar: cash, bank_transfer, giro"
+                    "description": "Metode bayar: cash, bank_transfer, giro",
                 },
                 "payment_account_id": {
                     "type": "string",
-                    "description": "UUID akun kas/bank untuk pembayaran"
+                    "description": "UUID akun kas/bank untuk pembayaran",
                 },
                 "expense_account_id": {
                     "type": "string",
-                    "description": "UUID akun beban"
+                    "description": "UUID akun beban",
                 },
                 "from_account_id": {
                     "type": "string",
-                    "description": "UUID akun asal (bank transfer)"
+                    "description": "UUID akun asal (bank transfer)",
                 },
                 "to_account_id": {
                     "type": "string",
-                    "description": "UUID akun tujuan (bank transfer)"
+                    "description": "UUID akun tujuan (bank transfer)",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Keterangan/memo transaksi"
+                    "description": "Keterangan/memo transaksi",
                 },
                 "lines": {
                     "type": "array",
@@ -1078,54 +1359,51 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                             "account_id": {"type": "string"},
                             "debit": {"type": "number"},
                             "credit": {"type": "number"},
-                            "description": {"type": "string"}
-                        }
+                            "description": {"type": "string"},
+                        },
                     },
-                    "description": "Journal lines (untuk POST_GENERAL_JOURNAL)"
+                    "description": "Journal lines (untuk POST_GENERAL_JOURNAL)",
                 },
                 "posting_date": {
                     "type": "string",
-                    "description": "Tanggal posting YYYY-MM-DD"
+                    "description": "Tanggal posting YYYY-MM-DD",
                 },
                 "journal_id": {
                     "type": "string",
-                    "description": "UUID jurnal yang di-reverse"
+                    "description": "UUID jurnal yang di-reverse",
                 },
                 "name": {
                     "type": "string",
-                    "description": "Nama (customer/vendor/product baru)"
+                    "description": "Nama (customer/vendor/product baru)",
                 },
                 "email": {
                     "type": "string",
-                    "description": "Email (customer/vendor baru)"
+                    "description": "Email (customer/vendor baru)",
                 },
                 "phone": {
                     "type": "string",
-                    "description": "Telepon (customer/vendor baru)"
+                    "description": "Telepon (customer/vendor baru)",
                 },
-                "sku": {
-                    "type": "string",
-                    "description": "SKU produk baru"
-                },
+                "sku": {"type": "string", "description": "SKU produk baru"},
                 "unit": {
                     "type": "string",
-                    "description": "Satuan produk (pcs, kg, dll)"
+                    "description": "Satuan produk (pcs, kg, dll)",
                 },
                 "sell_price": {
                     "type": "number",
-                    "description": "Harga jual produk baru"
+                    "description": "Harga jual produk baru",
                 },
                 "buy_price": {
                     "type": "number",
-                    "description": "Harga beli produk baru"
+                    "description": "Harga beli produk baru",
                 },
                 "periode": {
                     "type": "string",
-                    "description": "Periode YYYY-MM (untuk CLOSE_PERIOD, REOPEN_PERIOD)"
-                }
+                    "description": "Periode YYYY-MM (untuk CLOSE_PERIOD, REOPEN_PERIOD)",
+                },
             },
-            "required": ["action_type"]
-        }
+            "required": ["action_type"],
+        },
     },
     {
         "name": "simulate_action",
@@ -1139,7 +1417,7 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                 "action_type": {
                     "type": "string",
                     "enum": ACTION_TYPE_ENUM,
-                    "description": "Tipe aksi yang disimulasi"
+                    "description": "Tipe aksi yang disimulasi",
                 },
                 "customer_id": {"type": "string", "description": "UUID customer"},
                 "vendor_id": {"type": "string", "description": "UUID vendor"},
@@ -1150,18 +1428,17 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                         "properties": {
                             "item_id": {"type": "string"},
                             "quantity": {"type": "number"},
-                            "unit_price": {"type": "number"}
-                        }
+                            "unit_price": {"type": "number"},
+                        },
                     },
-                    "description": "Daftar item"
+                    "description": "Daftar item",
                 },
                 "amount": {"type": "number", "description": "Jumlah"},
-                "invoice_date": {"type": "string", "description": "Tanggal YYYY-MM-DD"}
+                "invoice_date": {"type": "string", "description": "Tanggal YYYY-MM-DD"},
             },
-            "required": ["action_type"]
-        }
+            "required": ["action_type"],
+        },
     },
-
     {
         "name": "propose_direct_action",
         "description": (
@@ -1180,7 +1457,7 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                 "action_key": {
                     "type": "string",
                     "enum": list(DIRECT_ACTIONS.keys()),
-                    "description": "The action to propose"
+                    "description": "The action to propose",
                 },
                 "payload": {
                     "type": "object",
@@ -1200,117 +1477,116 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                     "properties": {
                         "account_name": {
                             "type": "string",
-                            "description": "Nama rekening bank (required for create_bank_account)"
+                            "description": "Nama rekening bank (required for create_bank_account)",
                         },
                         "account_type": {
                             "type": "string",
-                            "enum": ["bank", "cash", "petty_cash", "e_wallet", "credit_card"],
-                            "description": "Tipe akun: bank, cash, petty_cash, e_wallet, credit_card (default: cash)"
+                            "enum": [
+                                "bank",
+                                "cash",
+                                "petty_cash",
+                                "e_wallet",
+                                "credit_card",
+                            ],
+                            "description": "Tipe akun: bank, cash, petty_cash, e_wallet, credit_card (default: cash)",
                         },
                         "bank_name": {
                             "type": "string",
-                            "description": "Nama bank (e.g. BCA, BRI, Mandiri)"
+                            "description": "Nama bank (e.g. BCA, BRI, Mandiri)",
                         },
                         "account_number": {
                             "type": "string",
-                            "description": "Nomor rekening bank"
+                            "description": "Nomor rekening bank",
                         },
                         "opening_balance": {
                             "type": "number",
-                            "description": "Saldo awal (default: 0)"
+                            "description": "Saldo awal (default: 0)",
                         },
                         "currency": {
                             "type": "string",
                             "enum": ["IDR", "USD", "EUR", "SGD"],
-                            "description": "Mata uang (default: IDR)"
+                            "description": "Mata uang (default: IDR)",
                         },
                         "is_default": {
                             "type": "boolean",
-                            "description": "Apakah ini rekening utama (default: false)"
+                            "description": "Apakah ini rekening utama (default: false)",
                         },
                         "name": {
                             "type": "string",
-                            "description": "Nama vendor/supplier (required for create_vendor)"
+                            "description": "Nama vendor/supplier (required for create_vendor)",
                         },
                         "company_name": {
                             "type": "string",
-                            "description": "Nama perusahaan vendor"
+                            "description": "Nama perusahaan vendor",
                         },
-                        "phone": {
-                            "type": "string",
-                            "description": "Nomor telepon"
-                        },
-                        "email": {
-                            "type": "string",
-                            "description": "Alamat email"
-                        },
-                        "address": {
-                            "type": "string",
-                            "description": "Alamat"
-                        },
-                        "tax_id": {
-                            "type": "string",
-                            "description": "NPWP"
-                        },
-                        "notes": {
-                            "type": "string",
-                            "description": "Catatan tambahan"
-                        },
+                        "phone": {"type": "string", "description": "Nomor telepon"},
+                        "email": {"type": "string", "description": "Alamat email"},
+                        "address": {"type": "string", "description": "Alamat"},
+                        "tax_id": {"type": "string", "description": "NPWP"},
+                        "notes": {"type": "string", "description": "Catatan tambahan"},
                         "sku": {
                             "type": "string",
-                            "description": "Kode/SKU barang (for create_item)"
+                            "description": "Kode/SKU barang (for create_item)",
                         },
                         "base_unit": {
                             "type": "string",
-                            "description": "Satuan barang: pcs, roll, meter, kg (for create_item)"
+                            "description": "Satuan barang: pcs, roll, meter, kg (for create_item)",
                         },
                         "sales_price": {
                             "type": "number",
-                            "description": "Harga jual (for create_item)"
+                            "description": "Harga jual (for create_item)",
                         },
                         "purchase_price": {
                             "type": "number",
-                            "description": "Harga beli (for create_item)"
+                            "description": "Harga beli (for create_item)",
                         },
                         "item_type": {
                             "type": "string",
                             "enum": ["goods", "service", "non_inventory"],
-                            "description": "Tipe: goods, service, atau non_inventory (for create_item, default: goods)"
+                            "description": "Tipe: goods, service, atau non_inventory (for create_item, default: goods)",
                         },
-                        "description": {
-                            "type": "string",
-                            "description": "Deskripsi"
-                        },
+                        "description": {"type": "string", "description": "Deskripsi"},
                         "account_code": {
                             "type": "string",
-                            "description": "Kode akun CoA, e.g. 1-10700, 5-20100 (for create_account)"
+                            "description": "Kode akun CoA, e.g. 1-10700, 5-20100 (for create_account)",
                         },
                         "account_type_coa": {
                             "type": "string",
-                            "enum": ["ASSET", "RECEIVABLE", "LIABILITY", "PAYABLE", "EQUITY", "REVENUE", "COGS", "EXPENSE", "OTHER_INCOME", "OTHER_EXPENSE"],
-                            "description": "Tipe akun CoA (for create_account). Will be mapped to 'type' field automatically."
+                            "enum": [
+                                "ASSET",
+                                "RECEIVABLE",
+                                "LIABILITY",
+                                "PAYABLE",
+                                "EQUITY",
+                                "REVENUE",
+                                "COGS",
+                                "EXPENSE",
+                                "OTHER_INCOME",
+                                "OTHER_EXPENSE",
+                            ],
+                            "description": "Tipe akun CoA (for create_account). Will be mapped to 'type' field automatically.",
                         },
                         "parent_id": {
                             "type": "string",
-                            "description": "UUID akun induk (opsional, for create_account)"
+                            "description": "UUID akun induk (opsional, for create_account)",
                         },
                         "id": {
                             "type": "string",
-                            "description": "UUID entity (required for update/delete actions)"
-                        }
-                    }
-                }
+                            "description": "UUID entity (required for update/delete actions)",
+                        },
+                    },
+                },
             },
-            "required": ["action_key", "payload"]
-        }
+            "required": ["action_key", "payload"],
+        },
     },
     {
         "name": "start_workflow",
         "description": (
-            "Start or advance a deterministic workflow (e.g. bank reconciliation). "
+            "Start bank reconciliation or document review workflow ONLY. "
+            "NOT for tutorials — use start_tutorial instead. "
             "Kamu = INTERPRETER, engine = CONTROLLER. "
-            "Kirim data yang diekstrak dari user message via user_data. "
-            "Engine akan return instruction yang harus kamu ikuti."
+            "Kirim data yang diekstrak dari user message via user_data."
         ),
         "parameters": {
             "type": "object",
@@ -1318,25 +1594,49 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                 "workflow_type": {
                     "type": "string",
                     "enum": ["bank_reconciliation", "document_review"],
-                    "description": "Tipe workflow. bank_reconciliation untuk rekon bank, document_review untuk review draft dokumen AI."
+                    "description": "Tipe workflow. bank_reconciliation untuk rekon bank, document_review untuk review draft dokumen AI.",
                 },
                 "user_data": {
                     "type": "object",
                     "description": "Data dari user: account_id, account_name, statement_ending_balance, file_ref, no_file, dll.",
                     "properties": {
-                        "account_id": {"type": "string", "description": "UUID akun bank"},
-                        "account_name": {"type": "string", "description": "Nama akun bank"},
-                        "statement_ending_balance": {"type": "number", "description": "Saldo akhir rekening koran (IDR)"},
-                        "file_ref": {"type": "string", "description": "Reference ke file yang diupload (dari attached file)"},
-                        "no_file": {"type": "boolean", "description": "true jika user tidak mau upload file (mode manual)"},
-                        "statement_start_date": {"type": "string", "description": "Tanggal awal statement (YYYY-MM-DD)"},
-                        "statement_end_date": {"type": "string", "description": "Tanggal akhir statement (YYYY-MM-DD)"},
-                        "document_id": {"type": "string", "description": "UUID dokumen yang akan di-review (untuk document_review workflow)"}
-                    }
-                }
+                        "account_id": {
+                            "type": "string",
+                            "description": "UUID akun bank",
+                        },
+                        "account_name": {
+                            "type": "string",
+                            "description": "Nama akun bank",
+                        },
+                        "statement_ending_balance": {
+                            "type": "number",
+                            "description": "Saldo akhir rekening koran (IDR)",
+                        },
+                        "file_ref": {
+                            "type": "string",
+                            "description": "Reference ke file yang diupload (dari attached file)",
+                        },
+                        "no_file": {
+                            "type": "boolean",
+                            "description": "true jika user tidak mau upload file (mode manual)",
+                        },
+                        "statement_start_date": {
+                            "type": "string",
+                            "description": "Tanggal awal statement (YYYY-MM-DD)",
+                        },
+                        "statement_end_date": {
+                            "type": "string",
+                            "description": "Tanggal akhir statement (YYYY-MM-DD)",
+                        },
+                        "document_id": {
+                            "type": "string",
+                            "description": "UUID dokumen yang akan di-review (untuk document_review workflow)",
+                        },
+                    },
+                },
             },
-            "required": ["workflow_type", "user_data"]
-        }
+            "required": ["workflow_type", "user_data"],
+        },
     },
     {
         "name": "cancel_workflow",
@@ -1351,19 +1651,17 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "enum": ["bank_reconciliation", "document_review"],
                     "description": "Tipe workflow yang dibatalkan",
-                    "default": "bank_reconciliation"
+                    "default": "bank_reconciliation",
                 }
-            }
-        }
+            },
+        },
     },
 ]
 
 
-
-
-
 # ─── Query Tools ──────────────────────────────────────────────────────────────
 # Read-only financial intelligence queries — no mutations
+
 
 def _build_query_tool_definition() -> Dict[str, Any]:
     """Build execute_query tool definition dynamically from QUERY_ACTIONS registry."""
@@ -1386,7 +1684,7 @@ def _build_query_tool_definition() -> Dict[str, Any]:
                 "query_key": {
                     "type": "string",
                     "enum": query_keys,
-                    "description": "The query to execute"
+                    "description": "The query to execute",
                 },
                 "params": {
                     "type": "object",
@@ -1396,10 +1694,10 @@ def _build_query_tool_definition() -> Dict[str, Any]:
                         "periode (YYYY-MM format). "
                         "Dates are auto-filled if not provided."
                     ),
-                }
+                },
             },
-            "required": ["query_key"]
-        }
+            "required": ["query_key"],
+        },
     }
 
 
@@ -1421,11 +1719,11 @@ SESSION_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "description": "Jumlah event terakhir (default: 10, max: 20)"
+                    "description": "Jumlah event terakhir (default: 10, max: 20)",
                 }
             },
-            "required": []
-        }
+            "required": [],
+        },
     },
     {
         "name": "search_chat_history",
@@ -1439,15 +1737,15 @@ SESSION_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Kata kunci pencarian (nama customer, invoice, aksi, dll)"
+                    "description": "Kata kunci pencarian (nama customer, invoice, aksi, dll)",
                 },
                 "days_back": {
                     "type": "integer",
-                    "description": "Berapa hari ke belakang (default: 7, max: 30)"
-                }
+                    "description": "Berapa hari ke belakang (default: 7, max: 30)",
+                },
             },
-            "required": ["query"]
-        }
+            "required": ["query"],
+        },
     },
     {
         "name": "review_next_unmatched",
@@ -1462,30 +1760,121 @@ SESSION_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "ID session rekonsiliasi aktif"
+                    "description": "ID session rekonsiliasi aktif",
                 },
                 "skip": {
                     "type": "integer",
-                    "description": "Jumlah item yang di-skip (default: 0, untuk lanjut ke item berikutnya)"
-                }
+                    "description": "Jumlah item yang di-skip (default: 0, untuk lanjut ke item berikutnya)",
+                },
             },
-            "required": ["session_id"]
-        }
+            "required": ["session_id"],
+        },
     },
 ]
 
+
+# --- Tutorial Tools (wired from tutorial_registry.py) ---
+
+TUTORIAL_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "get_tutorial",
+        "description": (
+            "Get structured tutorial for guiding user. Returns tutorial config "
+            "with steps, prerequisites, and linked actions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tutorial_key": {
+                    "type": "string",
+                    "description": "Tutorial key, e.g. 'onboarding', 'tutorial_invoicing'",
+                },
+            },
+            "required": ["tutorial_key"],
+        },
+    },
+    {
+        "name": "list_tutorials",
+        "description": "List all available tutorials with their keys, step counts, and signal words.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "start_tutorial",
+        "description": "Start a tutorial for the user. Use this when user asks for tutorial, guidance, ajarin, or how-to. Creates progress record and returns first step.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tutorial_key": {
+                    "type": "string",
+                    "description": "Tutorial key to start",
+                },
+            },
+            "required": ["tutorial_key"],
+        },
+    },
+    {
+        "name": "advance_tutorial",
+        "description": "Advance the user's active tutorial to the next step. Call after step completion.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tutorial_key": {
+                    "type": "string",
+                    "description": "Tutorial key to advance",
+                },
+            },
+            "required": ["tutorial_key"],
+        },
+    },
+    {
+        "name": "dismiss_tutorial",
+        "description": "Dismiss/skip a tutorial. Respects cooldown before re-offering.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tutorial_key": {
+                    "type": "string",
+                    "description": "Tutorial key to dismiss",
+                },
+            },
+            "required": ["tutorial_key"],
+        },
+    },
+]
 
 
 # ─── Registry Functions ────────────────────────────────────────────────────────
 
 # Combined list: all read tools + action tools
-ALL_TOOLS: List[Dict[str, Any]] = READ_TOOLS + ACTION_TOOLS + [QUERY_TOOL] + SESSION_TOOLS
+ALL_TOOLS: List[Dict[str, Any]] = (
+    READ_TOOLS + ACTION_TOOLS + [QUERY_TOOL] + SESSION_TOOLS + TUTORIAL_TOOLS
+)
 
 # Set of tool names that are action tools (handled by gRPC, not httpx)
-ACTION_TOOL_NAMES = {"propose_action", "simulate_action", "propose_direct_action", "execute_query"}
+ACTION_TOOL_NAMES = {
+    "propose_action",
+    "simulate_action",
+    "propose_direct_action",
+    "execute_query",
+}
 
 # Set of tool names that are session tools (handled by session_manager, not API)
-SESSION_TOOL_NAMES = {"get_session_events", "search_chat_history", "review_next_unmatched", "start_workflow", "cancel_workflow"}
+SESSION_TOOL_NAMES = {
+    "get_session_events",
+    "search_chat_history",
+    "review_next_unmatched",
+    "start_workflow",
+    "cancel_workflow",
+}
+
+# Set of tool names that are tutorial tools (DB-backed, no session_manager needed)
+TUTORIAL_TOOL_NAMES = {
+    "get_tutorial",
+    "list_tutorials",
+    "start_tutorial",
+    "advance_tutorial",
+    "dismiss_tutorial",
+}
 
 # Set of all valid tool names
 ALL_TOOL_NAMES = {t["name"] for t in ALL_TOOLS}
@@ -1498,10 +1887,7 @@ def get_tools() -> List[Dict[str, Any]]:
 
 def get_tools_for_openai() -> List[Dict[str, Any]]:
     """Return tool definitions in OpenAI function calling format (backward compat)."""
-    return [
-        {"type": "function", "function": tool}
-        for tool in ALL_TOOLS
-    ]
+    return [{"type": "function", "function": tool} for tool in ALL_TOOLS]
 
 
 def get_endpoint_for_tool(tool_name: str) -> Dict[str, str] | None:
@@ -1519,6 +1905,11 @@ def is_session_tool(tool_name: str) -> bool:
     return tool_name in SESSION_TOOL_NAMES
 
 
+def is_tutorial_tool(tool_name: str) -> bool:
+    """Check if tool is a tutorial tool (DB-backed, not session_manager)."""
+    return tool_name in TUTORIAL_TOOL_NAMES
+
+
 def is_valid_tool(tool_name: str) -> bool:
     """Check if tool name exists in registry."""
     return tool_name in ALL_TOOL_NAMES
@@ -1532,4 +1923,3 @@ def get_action_type_enum(action_type: str) -> int | None:
 def is_direct_action_tool(tool_name: str) -> bool:
     """Check if tool is a direct action tool (handled internally, not gRPC)."""
     return tool_name == "propose_direct_action"
-

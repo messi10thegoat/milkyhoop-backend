@@ -1110,55 +1110,40 @@ ATURAN CHART:
 
 ## Tutorial Mode
 
-You can guide users through interactive tutorials. Tutorials teach users how to use MilkyHoop features step-by-step.
+IMPORTANT RULES:
+- Tutorial requests → call `start_tutorial`. NEVER call `start_workflow`.
+- `start_workflow` is ONLY for bank reconciliation. NOT for tutorials.
+- When user says "tutorial", "ajarin", "cara pakai", "how to" → use tutorial tools below.
 
-### CRITICAL: Tutorial Tools (NOT start_workflow!)
-When user asks for tutorial, guidance, or "ajarin", you MUST use these tutorial-specific tools.
-NEVER use start_workflow for tutorials. start_workflow is ONLY for bank reconciliation.
+### Tutorial Tools
+| Tool | When |
+|------|------|
+| `start_tutorial(key)` | User wants to begin a tutorial |
+| `advance_tutorial(key)` | User completed a step ("lanjut", "next") |
+| `dismiss_tutorial(key)` | User wants to skip ("skip", "nanti") |
+| `list_tutorials` | User asks what tutorials are available |
+| `get_tutorial(key)` | You need step details |
 
-- `list_tutorials` — See all available tutorials
-- `get_tutorial(key)` — Get tutorial structure with steps
-- `start_tutorial(key)` — Begin a tutorial, creates progress record
-- `advance_tutorial(key)` — Move to next step after completion
-- `dismiss_tutorial(key)` — Skip/dismiss when user wants to stop
+### Quick Reference — Tutorial Keys
+- `onboarding` — Getting started (5 steps)
+- `tutorial_invoicing` — Invoice guide (3 steps)
+- `tutorial_bank_recon` — Bank reconciliation guide (3 steps)
+- `tutorial_expenses` — Expense guide (2 steps)
+- `tutorial_reports` — Reports guide (3 steps)
+- `tutorial_payments` — Payment guide (2 steps)
 
-### How to Start a Tutorial
-1. Call `start_tutorial("onboarding")` (or the appropriate key)
-2. Read the returned step data
-3. Narrate the step in TUTORIAL_STEP format (see below)
-4. After user completes a step, call `advance_tutorial(key)`
+### Example Flow
+User: "ajarin saya"
+You: call start_tutorial("onboarding") → get step data → narrate step 1
+User: "lanjut"
+You: call advance_tutorial("onboarding") → narrate next step
+User: "skip"
+You: call dismiss_tutorial("onboarding") → acknowledge
 
-### TUTORIAL_STEP Response Format
-When guiding through a tutorial, respond with message_type TUTORIAL_STEP:
-{
-  "message_type": "TUTORIAL_STEP",
-  "data": {
-    "tutorial_key": "<key>",
-    "step_key": "<step_key>",
-    "step_index": <n>,
-    "total_steps": <total>,
-    "content": "<your narration in markdown, in user's language>",
-    "linked_action": "<DirectAction key or null>",
-    "skippable": true,
-    "actions": [
-      {"key": "continue", "label": "Lanjut"},
-      {"key": "skip", "label": "Lewati"}
-    ]
-  }
-}
-
-When a step has a linked_action, add a start_action button:
-  {"key": "start_action", "label": "Mulai buat [entity] →"}
-
-### Narration Rules
-- Detect user's language from their messages (Indonesian or English)
-- Keep narration short (2-3 sentences per step)
-- When step has linked_action, end with invitation: "Mau coba sekarang?"
-- One step at a time — never list all steps at once
-- If prerequisite already met (user has data), acknowledge and advance
-
-### Auto-trigger
-When context includes auto_tutorial, gently offer the tutorial once. If user declines, respect it.
+### Narration
+- Short: 2-3 sentences per step, in user's language
+- If step has linked_action, invite: "Mau coba sekarang?"
+- One step at a time, never list all steps
 """
 
     tutorial_list = str(list_available_tutorials())

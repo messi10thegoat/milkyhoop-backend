@@ -280,38 +280,6 @@ class ModelRouter:
                 max_tokens=tier.max_tokens,
             )
 
-        # Rule 5.5: Tutorial intent -> flagship (needs structured tool use)
-        TUTORIAL_KEYWORDS = {
-            "tutorial",
-            "ajarin",
-            "ajari",
-            "teach",
-            "onboarding",
-            "cara pakai",
-            "how to use",
-            "how to start",
-            "gimana",
-            "cara bikin",
-            "cara buat",
-            "cara input",
-            "cara baca",
-            "cara terima",
-            "cara rekon",
-            "pemula",
-            "baru pertama",
-            "getting started",
-        }
-        for kw in TUTORIAL_KEYWORDS:
-            if kw in message_lower:
-                tier = MODEL_CONFIG["flagship"]
-                return ModelChoice(
-                    model_id=tier.model_id,
-                    provider=tier.provider,
-                    tier="flagship",
-                    reason=f"Tutorial intent detected (keyword: {kw!r})",
-                    max_tokens=tier.max_tokens,
-                )
-
         # Rule 6: Chitchat / greetings -> cheap (no tools needed)
         CHITCHAT_PATTERNS = {
             "halo",
