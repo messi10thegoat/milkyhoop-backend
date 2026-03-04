@@ -30,6 +30,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/auth/login",
             "/api/auth/refresh",
             "/api/auth/logout",
+            "/api/auth/google",
             "/api/auth/signup/register",
             "/api/auth/signup/verify-code",
             "/api/auth/signup/complete-setup",
@@ -114,7 +115,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     "role": "ADMIN",
                     "source": "action_executor",
                 }
-                logger.info(f"Internal service auth bypass: {x_source} tenant={x_tenant}")
+                logger.info(
+                    f"Internal service auth bypass: {x_source} tenant={x_tenant}"
+                )
                 return await call_next(request)
 
             # Require authentication for all other paths
@@ -193,6 +196,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             import traceback
+
             logger.error(
                 "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
             )

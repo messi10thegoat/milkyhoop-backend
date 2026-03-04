@@ -14,6 +14,7 @@ from .routers import chat
 from .routers import session
 from .routers import auth
 from .routers import signup
+from .routers import google_auth
 from .routers import customer
 from .routers import transactions
 from .routers import products
@@ -111,6 +112,7 @@ from .routers import periods
 from .routers import user
 from .routers import bill_payments
 from .routers import payment_requests
+
 # DEPRECATED: replaced by unified_chat at /api/v3/chat
 # from .routers import action_chat
 from .routers import chat_history
@@ -162,7 +164,7 @@ os.environ[
 ] = "/app/backend/api_gateway/libs/milkyhoop_prisma/engine/query-engine-debian-openssl-3.5.x"
 
 # Prisma client (Python)
-from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+from backend.api_gateway.libs.milkyhoop_prisma import Prisma  # noqa: E402
 
 prisma = Prisma()
 
@@ -287,6 +289,7 @@ app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(signup.router, prefix="/api/auth/signup", tags=["signup"])
+app.include_router(google_auth.router, prefix="/api/auth/google", tags=["google-auth"])
 app.include_router(session.router, tags=["authentication"])
 app.include_router(customer.router, prefix="", tags=["customer"])
 app.include_router(ragcrud_test.router, prefix="/api/test/ragcrud", tags=["ragcrud"])
@@ -370,8 +373,12 @@ app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-l
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(accounting_settings.router, prefix="/api", tags=["settings"])
-app.include_router(financial_reports_journal.router, prefix="/api/reports", tags=["reports-journal"])
-app.include_router(psak_reports.router, prefix="/api/reports/psak", tags=["psak-reports"])
+app.include_router(
+    financial_reports_journal.router, prefix="/api/reports", tags=["reports-journal"]
+)
+app.include_router(
+    psak_reports.router, prefix="/api/reports/psak", tags=["psak-reports"]
+)
 
 # Dashboard Summary router (aggregated KPIs)
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
@@ -600,7 +607,10 @@ app.include_router(payroll.router, prefix="", tags=["payroll"])
 app.include_router(chat_history.router, prefix="/api/v3/chat", tags=["chat-history"])
 app.include_router(chat_usage.router, prefix="/api/v3/chat", tags=["chat-usage"])
 app.include_router(unified_chat.router, prefix="/api/v3/chat", tags=["unified-chat"])
-app.include_router(document_intake.router, prefix="/api/document-intake", tags=["document-intake"])
+app.include_router(
+    document_intake.router, prefix="/api/document-intake", tags=["document-intake"]
+)
+
 
 @app.get("/")
 async def root():
@@ -644,10 +654,10 @@ async def healthz():
 # ALIAS ENDPOINTS FOR AUDIT COMPATIBILITY
 # ===========================================
 
-import asyncpg
-from fastapi import HTTPException, Request, Query
-from typing import Optional
-from datetime import date
+import asyncpg  # noqa: E402
+from fastapi import HTTPException, Request, Query  # noqa: E402
+from typing import Optional  # noqa: E402
+from datetime import date  # noqa: E402
 
 
 async def _get_pool() -> asyncpg.Pool:
