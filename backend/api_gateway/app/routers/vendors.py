@@ -26,7 +26,7 @@ from ..schemas.vendors import (
     MergeVendorResponse,
 )
 from ..config import settings
-from ..services.resolve_account import resolve_account, resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -88,16 +88,44 @@ async def autocomplete_vendors(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            query = """
+            # Multi-word AND splitting (same pattern as items search)
+            words = q.strip().split()
+            params: list = [ctx["tenant_id"]]
+            word_clauses = []
+            for word in words:
+                idx = len(params) + 1
+                word_clauses.append(
+                    f"(name ILIKE ${idx} OR code ILIKE ${idx} OR company_name ILIKE ${idx} OR display_name ILIKE ${idx} OR phone ILIKE ${idx})"
+                )
+                params.append(f"%{word}%")
+            where_search = " AND ".join(word_clauses) if word_clauses else "TRUE"
+            limit_idx = len(params) + 1
+            params.append(limit)
+
+            query = f"""
                 SELECT id, name, code, phone, company_name, display_name
                 FROM vendors
                 WHERE tenant_id = $1
                   AND is_active = true
-                  AND (name ILIKE $2 OR code ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR phone ILIKE $2)
+                  AND {where_search}
                 ORDER BY name ASC
-                LIMIT $3
+                LIMIT ${limit_idx}
             """
-            rows = await conn.fetch(query, ctx["tenant_id"], f"%{q}%", limit)
+            rows = await conn.fetch(query, *params)
+
+            # Fuzzy fallback: if ILIKE returns nothing, try trigram similarity
+            if not rows:
+                fuzzy_query = """
+                    SELECT id, name, code, phone, company_name, display_name,
+                           similarity(name, $2) AS sim
+                    FROM vendors
+                    WHERE tenant_id = $1
+                      AND is_active = true
+                      AND similarity(name, $2) > 0.25
+                    ORDER BY sim DESC
+                    LIMIT $3
+                """
+                rows = await conn.fetch(fuzzy_query, ctx["tenant_id"], q, limit)
 
             items = [
                 {
@@ -365,13 +393,17 @@ async def list_vendors(
             vendor_ids = [str(row["id"]) for row in rows]
             ap_balances = {}
             if vendor_ids:
-                ap_rows = await conn.fetch("""
+                ap_rows = await conn.fetch(
+                    """
                     SELECT vendor_id::text as vid,
                            COALESCE(SUM(outstanding), 0) as ap_balance
                     FROM compute_ap_outstanding($1)
                     WHERE vendor_id::text = ANY($2)
                     GROUP BY vendor_id
-                """, ctx["tenant_id"], vendor_ids)
+                """,
+                    ctx["tenant_id"],
+                    vendor_ids,
+                )
                 ap_balances = {row["vid"]: float(row["ap_balance"]) for row in ap_rows}
 
             items = [
@@ -451,10 +483,14 @@ async def get_vendor(request: Request, vendor_id: UUID):
             has_transactions = tx_count > 0
 
             # Pure Ledger: AP balance from compute_vendor_ap() DB function
-            ap_balance_val = await conn.fetchval("""
+            ap_balance_val = await conn.fetchval(
+                """
                 SELECT COALESCE(SUM(outstanding), 0)
                 FROM compute_vendor_ap($1, $2)
-            """, ctx["tenant_id"], vendor_id)
+            """,
+                ctx["tenant_id"],
+                vendor_id,
+            )
 
             return {
                 "success": True,
@@ -484,8 +520,6 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "default_pph_rate": float(row["default_pph_rate"])
                     if row["default_pph_rate"]
                     else None,
-                    "company_name": row["company_name"],
-                    "display_name": row["display_name"],
                     "mobile_phone": row["mobile_phone"],
                     "website": row["website"],
                     "currency": row["currency"],
@@ -619,38 +653,38 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-          async with conn.transaction():
-            # Check for duplicate name
-            existing = await conn.fetchval(
-                "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
-                ctx["tenant_id"],
-                body.name,
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Vendor with name '{body.name}' already exists",
-                )
-
-            # Check for duplicate code if provided
-            if body.code:
-                existing_code = await conn.fetchval(
-                    "SELECT id FROM vendors WHERE tenant_id = $1 AND code = $2",
+            async with conn.transaction():
+                # Check for duplicate name
+                existing = await conn.fetchval(
+                    "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
                     ctx["tenant_id"],
-                    body.code,
+                    body.name,
                 )
-                if existing_code:
+                if existing:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Vendor with code '{body.code}' already exists",
+                        detail=f"Vendor with name '{body.name}' already exists",
                     )
 
-            # Parse opening_balance_date from string to date
-            opening_date = parse_date(getattr(body, "opening_balance_date", None))
+                # Check for duplicate code if provided
+                if body.code:
+                    existing_code = await conn.fetchval(
+                        "SELECT id FROM vendors WHERE tenant_id = $1 AND code = $2",
+                        ctx["tenant_id"],
+                        body.code,
+                    )
+                    if existing_code:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Vendor with code '{body.code}' already exists",
+                        )
 
-            # Insert vendor with ALL fields including extended columns
-            vendor_id = await conn.fetchval(
-                """
+                # Parse opening_balance_date from string to date
+                opening_date = parse_date(getattr(body, "opening_balance_date", None))
+
+                # Insert vendor with ALL fields including extended columns
+                vendor_id = await conn.fetchval(
+                    """
                 INSERT INTO vendors (
                     tenant_id, code, name, contact_person, phone, email,
                     address, city, province, postal_code, tax_id,
@@ -666,62 +700,66 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                 )
                 RETURNING id
                 """,
-                ctx["tenant_id"],
-                body.code,
-                body.name,
-                getattr(body, "contact_person", None),
-                body.phone,
-                body.email,
-                getattr(body, "address", None),
-                getattr(body, "city", None),
-                getattr(body, "province", None),
-                getattr(body, "postal_code", None),
-                getattr(body, "tax_id", None),
-                getattr(body, "payment_terms_days", 30),
-                getattr(body, "credit_limit", None),
-                getattr(body, "notes", None),
-                getattr(body, "vendor_type", "BADAN"),
-                getattr(body, "opening_balance", 0),
-                opening_date,
-                getattr(body, "company_name", None),
-                getattr(body, "display_name", None),
-                getattr(body, "mobile_phone", None),
-                getattr(body, "website", None),
-                getattr(body, "is_pkp", False),
-                getattr(body, "currency", "IDR"),
-                getattr(body, "bank_name", None),
-                getattr(body, "bank_account_number", None),
-                getattr(body, "bank_account_holder", None),
-                ctx["user_id"],
-            )
+                    ctx["tenant_id"],
+                    body.code,
+                    body.name,
+                    getattr(body, "contact_person", None),
+                    body.phone,
+                    body.email,
+                    getattr(body, "address", None),
+                    getattr(body, "city", None),
+                    getattr(body, "province", None),
+                    getattr(body, "postal_code", None),
+                    getattr(body, "tax_id", None),
+                    getattr(body, "payment_terms_days", 30),
+                    getattr(body, "credit_limit", None),
+                    getattr(body, "notes", None),
+                    getattr(body, "vendor_type", "BADAN"),
+                    getattr(body, "opening_balance", 0),
+                    opening_date,
+                    getattr(body, "company_name", None),
+                    getattr(body, "display_name", None),
+                    getattr(body, "mobile_phone", None),
+                    getattr(body, "website", None),
+                    getattr(body, "is_pkp", False),
+                    getattr(body, "currency", "IDR"),
+                    getattr(body, "bank_name", None),
+                    getattr(body, "bank_account_number", None),
+                    getattr(body, "bank_account_holder", None),
+                    ctx["user_id"],
+                )
 
-            logger.info(f"Vendor created: {vendor_id}, name={body.name}")
+                logger.info(f"Vendor created: {vendor_id}, name={body.name}")
 
-            # Log activity: Vendor created
-            user_id = ctx.get("user_id")
-            user = request.state.user
-            user_name = (
-                user.get("fullname")
-                or user.get("username")
-                or user.get("email")
-                or "System"
-            )
-            await conn.execute(
-                """
+                # Log activity: Vendor created
+                user_id = ctx.get("user_id")
+                user = request.state.user
+                user_name = (
+                    user.get("fullname")
+                    or user.get("username")
+                    or user.get("email")
+                    or "System"
+                )
+                await conn.execute(
+                    """
                 INSERT INTO vendor_activities (vendor_id, tenant_id, type, description, actor_id, actor_name)
                 VALUES ($1, $2, 'created', 'Vendor dibuat', $3, $4)
                 """,
-                vendor_id,
-                ctx["tenant_id"],
-                user_id,
-                user_name,
-            )
+                    vendor_id,
+                    ctx["tenant_id"],
+                    user_id,
+                    user_name,
+                )
 
-            return {
-                "success": True,
-                "message": "Vendor created successfully",
-                "data": {"id": str(vendor_id), "name": body.name, "code": body.code},
-            }
+                return {
+                    "success": True,
+                    "message": "Vendor created successfully",
+                    "data": {
+                        "id": str(vendor_id),
+                        "name": body.name,
+                        "code": body.code,
+                    },
+                }
 
     except HTTPException:
         raise
@@ -746,10 +784,10 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-          async with conn.transaction():
-            # Fetch existing vendor with all fields for change tracking
-            existing = await conn.fetchrow(
-                """SELECT id, name, code, contact_person, phone, email,
+            async with conn.transaction():
+                # Fetch existing vendor with all fields for change tracking
+                existing = await conn.fetchrow(
+                    """SELECT id, name, code, contact_person, phone, email,
                           address, city, province, postal_code, tax_id,
                           payment_terms_days, credit_limit, notes,
                           vendor_type, company_name, display_name,
@@ -757,128 +795,130 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                           bank_name, bank_account_number, bank_account_holder,
                           is_active
                    FROM vendors WHERE id = $1 AND tenant_id = $2""",
-                vendor_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Vendor not found")
-
-            # Check for duplicate name if name is being changed
-            if body.name and body.name != existing["name"]:
-                duplicate = await conn.fetchval(
-                    "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2 AND id != $3",
-                    ctx["tenant_id"],
-                    body.name,
                     vendor_id,
+                    ctx["tenant_id"],
                 )
-                if duplicate:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Vendor with name '{body.name}' already exists",
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Vendor not found")
+
+                # Check for duplicate name if name is being changed
+                if body.name and body.name != existing["name"]:
+                    duplicate = await conn.fetchval(
+                        "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2 AND id != $3",
+                        ctx["tenant_id"],
+                        body.name,
+                        vendor_id,
                     )
+                    if duplicate:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Vendor with name '{body.name}' already exists",
+                        )
 
-            # Build update query dynamically
-            update_data = body.model_dump(exclude_unset=True)
-            if not update_data:
-                return {
-                    "success": True,
-                    "message": "No changes provided",
-                    "data": {"id": str(vendor_id)},
-                }
+                # Build update query dynamically
+                update_data = body.model_dump(exclude_unset=True)
+                if not update_data:
+                    return {
+                        "success": True,
+                        "message": "No changes provided",
+                        "data": {"id": str(vendor_id)},
+                    }
 
-            updates = []
-            params = []
-            param_idx = 1
+                updates = []
+                params = []
+                param_idx = 1
 
-            for field, value in update_data.items():
-                updates.append(f"{field} = ${param_idx}")
-                params.append(value)
-                param_idx += 1
+                for field, value in update_data.items():
+                    updates.append(f"{field} = ${param_idx}")
+                    params.append(value)
+                    param_idx += 1
 
-            updates.append("updated_at = NOW()")
-            params.extend([vendor_id, ctx["tenant_id"]])
+                updates.append("updated_at = NOW()")
+                params.extend([vendor_id, ctx["tenant_id"]])
 
-            query = f"""
+                query = f"""
                 UPDATE vendors
                 SET {', '.join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
             """
-            await conn.execute(query, *params)
+                await conn.execute(query, *params)
 
-            logger.info(f"Vendor updated: {vendor_id}")
+                logger.info(f"Vendor updated: {vendor_id}")
 
-            # Log activity: Track changes for each updated field
-            user_id = ctx.get("user_id")
-            user = request.state.user
-            user_name = (
-                user.get("fullname")
-                or user.get("username")
-                or user.get("email")
-                or "System"
-            )
+                # Log activity: Track changes for each updated field
+                user_id = ctx.get("user_id")
+                user = request.state.user
+                user_name = (
+                    user.get("fullname")
+                    or user.get("username")
+                    or user.get("email")
+                    or "System"
+                )
 
-            field_labels = {
-                "name": "Nama",
-                "code": "Kode",
-                "contact_person": "Kontak",
-                "phone": "Telepon",
-                "email": "Email",
-                "address": "Alamat",
-                "city": "Kota",
-                "province": "Provinsi",
-                "postal_code": "Kode Pos",
-                "tax_id": "NPWP",
-                "payment_terms_days": "Termin Pembayaran",
-                "credit_limit": "Limit Kredit",
-                "notes": "Catatan",
-                "vendor_type": "Tipe Vendor",
-                "company_name": "Nama Perusahaan",
-                "display_name": "Nama Tampilan",
-                "mobile_phone": "HP",
-                "website": "Website",
-                "is_pkp": "PKP",
-                "currency": "Mata Uang",
-                "bank_name": "Bank",
-                "bank_account_number": "No Rekening",
-                "bank_account_holder": "Pemilik Rekening",
-                "is_active": "Status Aktif",
-            }
+                field_labels = {
+                    "name": "Nama",
+                    "code": "Kode",
+                    "contact_person": "Kontak",
+                    "phone": "Telepon",
+                    "email": "Email",
+                    "address": "Alamat",
+                    "city": "Kota",
+                    "province": "Provinsi",
+                    "postal_code": "Kode Pos",
+                    "tax_id": "NPWP",
+                    "payment_terms_days": "Termin Pembayaran",
+                    "credit_limit": "Limit Kredit",
+                    "notes": "Catatan",
+                    "vendor_type": "Tipe Vendor",
+                    "company_name": "Nama Perusahaan",
+                    "display_name": "Nama Tampilan",
+                    "mobile_phone": "HP",
+                    "website": "Website",
+                    "is_pkp": "PKP",
+                    "currency": "Mata Uang",
+                    "bank_name": "Bank",
+                    "bank_account_number": "No Rekening",
+                    "bank_account_holder": "Pemilik Rekening",
+                    "is_active": "Status Aktif",
+                }
 
-            changes_logged = []
-            for field, new_value in update_data.items():
-                old_value = existing.get(field)
-                # Normalize values for comparison
-                if old_value != new_value:
-                    label = field_labels.get(field, field)
-                    old_display = str(old_value) if old_value is not None else "-"
-                    new_display = str(new_value) if new_value is not None else "-"
+                changes_logged = []
+                for field, new_value in update_data.items():
+                    old_value = existing.get(field)
+                    # Normalize values for comparison
+                    if old_value != new_value:
+                        label = field_labels.get(field, field)
+                        old_display = str(old_value) if old_value is not None else "-"
+                        new_display = str(new_value) if new_value is not None else "-"
 
-                    # Log each change
-                    await conn.execute(
-                        """
+                        # Log each change
+                        await conn.execute(
+                            """
                         INSERT INTO vendor_activities
                         (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
                         VALUES ($1, $2, 'updated', $3, $4, $5, $6, $7, $8)
                         """,
-                        vendor_id,
-                        ctx["tenant_id"],
-                        f"{label} diubah",
-                        field,
-                        old_display,
-                        new_display,
-                        user_id,
-                        user_name,
-                    )
-                    changes_logged.append(f"{label}: {old_display} -> {new_display}")
+                            vendor_id,
+                            ctx["tenant_id"],
+                            f"{label} diubah",
+                            field,
+                            old_display,
+                            new_display,
+                            user_id,
+                            user_name,
+                        )
+                        changes_logged.append(
+                            f"{label}: {old_display} -> {new_display}"
+                        )
 
-            if changes_logged:
-                logger.info(f"Vendor {vendor_id} changes logged: {changes_logged}")
+                if changes_logged:
+                    logger.info(f"Vendor {vendor_id} changes logged: {changes_logged}")
 
-            return {
-                "success": True,
-                "message": "Vendor updated successfully",
-                "data": {"id": str(vendor_id)},
-            }
+                return {
+                    "success": True,
+                    "message": "Vendor updated successfully",
+                    "data": {"id": str(vendor_id)},
+                }
 
     except HTTPException:
         raise
@@ -907,67 +947,67 @@ async def toggle_vendor_status(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-          async with conn.transaction():
-            # Check if vendor exists
-            existing = await conn.fetchrow(
-                "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Vendor not found")
+            async with conn.transaction():
+                # Check if vendor exists
+                existing = await conn.fetchrow(
+                    "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    vendor_id,
+                    ctx["tenant_id"],
+                )
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Vendor not found")
 
-            is_active = status == "active"
+                is_active = status == "active"
 
-            # Update status
-            await conn.execute(
-                """
+                # Update status
+                await conn.execute(
+                    """
                 UPDATE vendors
                 SET is_active = $1, updated_at = NOW()
                 WHERE id = $2 AND tenant_id = $3
                 """,
-                is_active,
-                vendor_id,
-                ctx["tenant_id"],
-            )
+                    is_active,
+                    vendor_id,
+                    ctx["tenant_id"],
+                )
 
-            logger.info(f"Vendor status changed: {vendor_id}, status={status}")
+                logger.info(f"Vendor status changed: {vendor_id}, status={status}")
 
-            # Log activity: Status change
-            user_id = ctx.get("user_id")
-            user = request.state.user
-            user_name = (
-                user.get("fullname")
-                or user.get("username")
-                or user.get("email")
-                or "System"
-            )
-            old_status = "aktif" if existing["is_active"] else "nonaktif"
-            new_status = "aktif" if is_active else "nonaktif"
+                # Log activity: Status change
+                user_id = ctx.get("user_id")
+                user = request.state.user
+                user_name = (
+                    user.get("fullname")
+                    or user.get("username")
+                    or user.get("email")
+                    or "System"
+                )
+                old_status = "aktif" if existing["is_active"] else "nonaktif"
+                new_status = "aktif" if is_active else "nonaktif"
 
-            await conn.execute(
-                """
+                await conn.execute(
+                    """
                 INSERT INTO vendor_activities
                 (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
                 VALUES ($1, $2, 'status_changed', 'Status vendor diubah', 'is_active', $3, $4, $5, $6)
                 """,
-                vendor_id,
-                ctx["tenant_id"],
-                old_status,
-                new_status,
-                user_id,
-                user_name,
-            )
+                    vendor_id,
+                    ctx["tenant_id"],
+                    old_status,
+                    new_status,
+                    user_id,
+                    user_name,
+                )
 
-            return {
-                "success": True,
-                "message": "Status vendor berhasil diubah",
-                "data": {
-                    "id": str(vendor_id),
-                    "name": existing["name"],
-                    "is_active": is_active,
-                },
-            }
+                return {
+                    "success": True,
+                    "message": "Status vendor berhasil diubah",
+                    "data": {
+                        "id": str(vendor_id),
+                        "name": existing["name"],
+                        "is_active": is_active,
+                    },
+                }
 
     except HTTPException:
         raise
@@ -992,33 +1032,35 @@ async def delete_vendor(request: Request, vendor_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-          async with conn.transaction():
-            # Check if vendor exists
-            existing = await conn.fetchrow(
-                "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                vendor_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Vendor not found")
+            async with conn.transaction():
+                # Check if vendor exists
+                existing = await conn.fetchrow(
+                    "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    vendor_id,
+                    ctx["tenant_id"],
+                )
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Vendor not found")
 
-            # Hard delete - remove the row entirely
-            await conn.execute(
-                """
+                # Hard delete - remove the row entirely
+                await conn.execute(
+                    """
                 DELETE FROM vendors
                 WHERE id = $1 AND tenant_id = $2
             """,
-                vendor_id,
-                ctx["tenant_id"],
-            )
+                    vendor_id,
+                    ctx["tenant_id"],
+                )
 
-            logger.info(f"Vendor hard deleted: {vendor_id}, name={existing['name']}")
+                logger.info(
+                    f"Vendor hard deleted: {vendor_id}, name={existing['name']}"
+                )
 
-            return {
-                "success": True,
-                "message": "Vendor deleted successfully",
-                "data": {"id": str(vendor_id), "name": existing["name"]},
-            }
+                return {
+                    "success": True,
+                    "message": "Vendor deleted successfully",
+                    "data": {"id": str(vendor_id), "name": existing["name"]},
+                }
 
     except HTTPException:
         raise
@@ -1287,7 +1329,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     )
 
                 # 3. Get AP account (2-10100 - Hutang Usaha)
-                ap_account = await resolve_account(conn, ctx["tenant_id"], '2-10100')
+                ap_account = await resolve_account(conn, ctx["tenant_id"], "2-10100")
                 if not ap_account:
                     raise HTTPException(
                         status_code=500,
@@ -1295,7 +1337,9 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                     )
 
                 # 4. Get Opening Balance Equity account (3-50000 - Modal Saldo Awal)
-                equity_account = await resolve_account(conn, ctx["tenant_id"], '3-50000')
+                equity_account = await resolve_account(
+                    conn, ctx["tenant_id"], "3-50000"
+                )
                 if not equity_account:
                     raise HTTPException(
                         status_code=500,
@@ -1934,21 +1978,27 @@ async def merge_vendors(
                 # Transfer vendor_credits
                 result = await conn.execute(
                     "UPDATE vendor_credits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
-                    target_id, ctx["tenant_id"], [source_id],
+                    target_id,
+                    ctx["tenant_id"],
+                    [source_id],
                 )
                 summary["vendor_credits"] = int(result.split()[-1])
 
                 # Transfer vendor_deposits
                 result = await conn.execute(
                     "UPDATE vendor_deposits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
-                    target_id, ctx["tenant_id"], [source_id],
+                    target_id,
+                    ctx["tenant_id"],
+                    [source_id],
                 )
                 summary["vendor_deposits"] = int(result.split()[-1])
 
                 # Transfer accounts_payable
                 result = await conn.execute(
                     "UPDATE accounts_payable SET supplier_id = $1 WHERE tenant_id = $2 AND supplier_id = ANY($3)",
-                    target_id, ctx["tenant_id"], [source_id],
+                    target_id,
+                    ctx["tenant_id"],
+                    [source_id],
                 )
                 summary["accounts_payable"] = int(result.split()[-1])
 
