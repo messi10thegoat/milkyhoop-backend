@@ -23,8 +23,8 @@ class TaskComplexity(Enum):
 MODEL_ROUTING: Dict[TaskComplexity, Dict[str, str]] = {
     TaskComplexity.SIMPLE_READ:  {"provider": "openai", "model": "gpt-4o-mini"},
     TaskComplexity.COMPLEX_READ: {"provider": "openai", "model": "gpt-4o-mini"},
-    TaskComplexity.ACTION:       {"provider": "openai", "model": "gpt-4o"},
-    TaskComplexity.SELF_CORRECT: {"provider": "openai", "model": "gpt-4o"},
+    TaskComplexity.ACTION:       {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"},
+    TaskComplexity.SELF_CORRECT: {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"},
 }
 
 

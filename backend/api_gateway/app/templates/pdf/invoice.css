@@ -1,194 +1,250 @@
-/* backend/api_gateway/app/templates/pdf/invoice.css */
+/* Stripe-style invoice v4 — shared CSS for all doc types */
+/* WeasyPrint: @page handles margins, NO padding on body/.invoice */
+
 @page {
     size: A4;
-    margin: 1.5cm 2cm;
+    margin: 2.2cm 2.5cm;
+    @bottom-right {
+        content: "Halaman " counter(page) " dari " counter(pages);
+        font-family: 'DejaVu Sans', sans-serif;
+        font-size: 8pt;
+        color: #1a1a1a;
+    }
 }
 
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: 'DejaVu Sans', Arial, sans-serif;
-    font-size: 9pt;
-    color: #333;
-    line-height: 1.4;
+    font-family: 'DejaVu Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    color: #1a1a1a;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
 }
 
-.invoice {
-    max-width: 100%;
-}
+.invoice { max-width: 100%; }
 
-/* Header */
+/* ── 1. Header ── */
 .header {
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
-    padding-bottom: 15px;
-    margin-bottom: 20px;
-    border-bottom: 2px solid #333;
+    align-items: flex-start;
+    margin-bottom: 32px;
 }
 
-.title {
-    font-size: 18pt;
-    font-weight: bold;
-    letter-spacing: 1px;
+.doc-title {
+    font-size: 22pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
 }
 
-.invoice-number {
+.doc-subtitle {
     font-size: 11pt;
-    color: #666;
+    font-weight: 400;
+    color: #1a1a1a;
+    margin-top: 2px;
 }
 
-/* Meta Section */
-.meta-section {
+.company-logo {
+    max-height: 52px;
+    max-width: 130px;
+    object-fit: contain;
+}
+
+/* ── 2. Meta ── */
+.meta-block { margin-bottom: 28px; }
+
+.meta-table {
+    border-collapse: separate;
+    border-spacing: 20px 5px;
+    margin-left: -20px;
+}
+
+.meta-table td {
+    vertical-align: top;
+    font-size: 9.5pt;
+}
+
+.meta-label {
+    color: #1a1a1a;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.meta-value {
+    color: #1a1a1a;
+    font-weight: 400;
+}
+
+/* ── 3. Parties ── */
+.parties {
     display: flex;
-    justify-content: space-between;
-    margin-bottom: 25px;
+    gap: 80px;
+    margin-bottom: 36px;
 }
 
-.vendor-info {
+.party {
     flex: 1;
+    max-width: 260px;
 }
 
-.vendor-name {
-    font-size: 11pt;
-    font-weight: bold;
-    margin-top: 5px;
+.party-label {
+    font-size: 9.5pt;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 4px;
 }
 
-.vendor-address {
-    font-size: 9pt;
-    color: #666;
-    margin-top: 3px;
+.party-name {
+    font-size: 9.5pt;
+    font-weight: 400;
+    color: #1a1a1a;
+    margin-bottom: 2px;
 }
 
-.invoice-meta {
-    text-align: right;
+.party-detail {
+    font-size: 9.5pt;
+    color: #1a1a1a;
+    line-height: 1.55;
 }
 
-.invoice-meta table {
-    margin-left: auto;
+/* ── 4. Hero Amount ── */
+.hero { margin-bottom: 10px; }
+
+.hero-amount {
+    font-size: 18pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
 }
 
-.invoice-meta td {
-    padding: 2px 8px;
+.hero-due {
+    font-size: 10pt;
+    font-weight: 400;
+    color: #1a1a1a;
+    margin-top: 4px;
 }
 
-.label {
-    color: #666;
-    font-size: 8pt;
-    text-transform: uppercase;
-}
-
-/* Status colors */
-.status-draft { color: #666; }
-.status-posted, .status-unpaid { color: #2563eb; }
-.status-partial { color: #d97706; }
-.status-paid { color: #16a34a; }
-.status-overdue { color: #dc2626; }
-.status-void { color: #6b7280; text-decoration: line-through; }
-
-/* Items Table */
+/* ── 5. Line Items Table ── */
 .items-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 20px;
+    margin-bottom: 24px;
 }
 
-.items-table th {
-    background: #1f2937;
-    color: white;
-    padding: 8px 10px;
+.items-table thead th {
+    font-size: 8.5pt;
+    font-weight: 400;
+    color: #1a1a1a;
+    padding: 10px 0;
+    border-bottom: 1px solid #1a1a1a;
     text-align: left;
-    font-size: 8pt;
-    font-weight: 600;
-    text-transform: uppercase;
 }
 
-.items-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid #e5e7eb;
+.items-table tbody td {
+    font-size: 9.5pt;
+    color: #1a1a1a;
+    padding: 8px 0;
     vertical-align: top;
+    border-bottom: 1px solid #f3f4f6;
 }
 
-.items-table tbody tr:nth-child(even) {
-    background: #f9fafb;
-}
-
-.col-no { width: 5%; text-align: center; }
-.col-item { width: 40%; }
-.col-qty { width: 12%; text-align: right; }
-.col-price { width: 15%; text-align: right; }
-.col-disc { width: 8%; text-align: right; }
-.col-total { width: 20%; text-align: right; }
-
+.col-desc { width: 50%; }
+.col-qty { width: 10%; text-align: center; }
+.col-price { width: 20%; text-align: right; }
+.col-amount { width: 20%; text-align: right; }
 .text-right { text-align: right; }
+.text-center { text-align: center; }
+.text-muted { font-size: 8.5pt; color: #1a1a1a; }
 
-.batch-info {
-    font-size: 8pt;
-    color: #6b7280;
-}
-
-/* Totals */
-.totals-section {
+/* ── 6. Summary ── */
+.summary {
     display: flex;
     justify-content: flex-end;
-    margin-bottom: 20px;
+    margin-bottom: 28px;
 }
 
-.totals-table {
-    width: 250px;
+.summary-table {
+    border-collapse: collapse;
+    min-width: 260px;
 }
 
-.totals-table td {
-    padding: 5px 10px;
+.summary-table td {
+    padding: 6px 0;
+    font-size: 9.5pt;
 }
 
-.totals-table .label {
+.summary-table .label {
+    color: #1a1a1a;
+    font-weight: 400;
+    padding-right: 40px;
+}
+
+.summary-table .value {
     text-align: right;
-    font-size: 9pt;
+    color: #1a1a1a;
+    font-weight: 400;
 }
 
-.totals-table .amount {
-    text-align: right;
-    font-weight: 500;
+.summary-table .total-row td {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 8px;
 }
 
-.grand-total {
-    background: #fef3c7;
-    font-size: 11pt;
-}
-
-.grand-total td {
-    padding: 8px 10px;
-    font-weight: bold;
-}
-
-.balance-due {
-    background: #fee2e2;
-}
-
-/* Notes */
-.notes-section {
-    margin-top: 20px;
-    padding: 12px;
-    background: #f3f4f6;
-    border-radius: 4px;
-}
-
-.notes-content {
-    margin-top: 5px;
-    font-size: 9pt;
-}
-
-/* Footer */
-.footer {
-    margin-top: 30px;
+.summary-table .due-row td {
+    border-top: 1px solid #e5e7eb;
     padding-top: 10px;
+}
+
+.summary-table .due-row .label {
+    font-weight: 700;
+    color: #1a1a1a;
+}
+
+.summary-table .due-row .value {
+    font-weight: 700;
+    color: #1a1a1a;
+    font-size: 10pt;
+}
+
+.summary-table .paid-row td {
+    color: #1a1a1a;
+}
+
+/* ── Notes / Terms ── */
+.notes-section { margin-bottom: 16px; }
+
+.notes-label {
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #1a1a1a;
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+
+.notes-text {
+    font-size: 9.5pt;
+    color: #1a1a1a;
+    line-height: 1.55;
+}
+
+/* ── Opening/closing text (quotes) ── */
+.prose-section {
+    margin-bottom: 20px;
+    font-size: 10pt;
+    color: #1a1a1a;
+    line-height: 1.6;
+}
+
+/* ── 7. Footer ── */
+.footer-line {
+    margin-top: 40px;
+    padding-top: 16px;
     border-top: 1px solid #e5e7eb;
     font-size: 8pt;
-    color: #9ca3af;
+    color: #1a1a1a;
 }

@@ -18,9 +18,6 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import asyncpg
-import uuid as uuid_module
-
-from .resolve_account import resolve_account_id
 
 from ..utils.sorting import build_order_by_clause
 from ..utils.money import cents_to_decimal_string
@@ -1025,230 +1022,95 @@ class BillsService:
         """
         Record a payment for a bill.
 
-        Single-transaction pattern (Iron Law 23, ARAP Rule 1):
-        All operations (journal, bill_payments, bank_txn, cache updates)
-        happen in ONE database transaction. No facade/ap_service.
-
         Account handling:
         - bank_account_id (preferred): Links to bank_accounts, creates bank transaction
         - account_id (legacy): Direct CoA UUID, no bank transaction
+
+        Sign convention for bank transactions:
+        - Bank/cash (ASSET): negative amount (decreases asset)
+        - Credit card (LIABILITY): positive amount (increases liability)
+
+        Returns:
+            {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # 0. RLS context
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
-                )
-
-                # 1. Advisory lock — BEFORE any reads (Law 13)
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BILL_PAYMENT:{str(bill_id)}",
-                )
-
-                # 2. Get bill with row lock
+                # Get bill with row lock to prevent concurrent payment race
                 bill = await conn.fetchrow(
                     """
-                    SELECT id, amount, amount_paid, status, status_v2, ap_id, vendor_name
+                    SELECT id, amount, amount_paid, status, ap_id, vendor_name
                     FROM bills
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
-                    """,
-                    bill_id, tenant_id,
+                """,
+                    bill_id,
+                    tenant_id,
                 )
 
                 if not bill:
                     return {"success": False, "message": "Bill not found", "data": None}
 
-                if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
-                    return {"success": False, "message": "Cannot pay voided bill", "data": None}
-
-                # 3. Compute remaining from journal (Law 16) — NOT cached amount_paid
-                journal_remaining = await conn.fetchval(
-                    """
-                    WITH bill_obligation AS (
-                        SELECT COALESCE(SUM(jl.credit), 0) AS total_credit
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.credit > 0
-                          AND je.source_type = 'BILL' AND je.source_id = $2::text
-                    ),
-                    bill_payments_settled AS (
-                        SELECT COALESCE(SUM(jl.debit), 0) AS total_debit
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
-                          AND (
-                              -- Via bill_payment_allocations
-                              EXISTS (
-                                  SELECT 1 FROM bill_payment_allocations bpa
-                                  JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
-                                  WHERE bpa.bill_id = $2 AND bp.journal_id = je.id
-                              )
-                              -- Via legacy bill_payments
-                              OR EXISTS (
-                                  SELECT 1 FROM bill_payments bp
-                                  WHERE bp.bill_id = $2 AND bp.journal_id = je.id
-                              )
-                              -- Via source_id match for PAYMENT_BILL or BILL_PAYMENT
-                              OR (je.source_type IN ('PAYMENT_BILL', 'BILL_PAYMENT'))
-                          )
-                    )
-                    SELECT GREATEST(0, bo.total_credit - bps.total_debit)
-                    FROM bill_obligation bo, bill_payments_settled bps
-                    """,
-                    tenant_id, str(bill_id),
-                )
-                remaining = int(journal_remaining or 0)
-
-                # Fallback: if no journal obligation yet (bill not posted via kernel),
-                # use cached amount
-                if remaining == 0 and bill["amount_paid"] == 0 and bill["amount"] > 0:
-                    remaining = int(bill["amount"] - bill["amount_paid"])
-
-                payment_amount = int(request["amount"])
-
-                if payment_amount <= 0:
-                    return {"success": False, "message": "Payment amount must be positive", "data": None}
-
-                if payment_amount > remaining:
+                if bill["status"] == "void":
                     return {
                         "success": False,
-                        "message": f"Jumlah pembayaran ({payment_amount:,}) melebihi sisa tagihan ({remaining:,})",
+                        "message": "Cannot pay voided bill",
+                        "data": None,
+                    }
+
+                amount_due = bill["amount"] - bill["amount_paid"]
+                payment_amount = int(request["amount"])
+
+                if payment_amount > amount_due:
+                    return {
+                        "success": False,
+                        "message": f"Payment amount ({payment_amount}) exceeds amount due ({amount_due})",
                         "data": None,
                     }
 
                 payment_date = request.get("payment_date") or date.today()
-                if isinstance(payment_date, str):
-                    payment_date = date.fromisoformat(payment_date)
 
-                # 4. Resolve bank account → coa_id (BankSync Rule 2)
+                # Resolve account - bank_account_id takes precedence
                 bank_account_id = request.get("bank_account_id")
                 coa_id = request.get("account_id")
-                bank_coa_id = None
+                bank_transaction_id = None
                 bank_account = None
 
                 if bank_account_id:
-                    if isinstance(bank_account_id, str):
-                        bank_account_id = UUID(bank_account_id)
-
+                    # NEW FLOW: Use bank_account_id (Law 21: journal-derived balance)
                     bank_account = await conn.fetchrow(
                         """
                         SELECT ba.id, ba.coa_id, ba.account_type, ba.account_name,
-                               coa.is_header, coa.name as coa_name
+                            (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0)
+                             FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                             WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance
                         FROM bank_accounts ba
-                        JOIN chart_of_accounts coa ON coa.id = ba.coa_id
                         WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.is_active = true
-                        """,
-                        bank_account_id, tenant_id,
+                    """,
+                        bank_account_id,
+                        tenant_id,
                     )
 
                     if not bank_account:
-                        return {"success": False, "message": "Bank account not found or inactive", "data": None}
-
-                    if bank_account["is_header"]:
                         return {
                             "success": False,
-                            "message": f"Akun '{bank_account['coa_name']}' adalah akun induk. Pilih akun anak (leaf).",
+                            "message": "Bank account not found or inactive",
                             "data": None,
                         }
 
-                    bank_coa_id = bank_account["coa_id"]
-                    coa_id = bank_coa_id
+                    coa_id = bank_account["coa_id"]
 
-                elif coa_id:
-                    if isinstance(coa_id, str):
-                        coa_id = UUID(coa_id)
-                    bank_coa_id = coa_id
-                else:
-                    return {"success": False, "message": "bank_account_id atau account_id wajib diisi", "data": None}
-
-                # 5. Resolve AP account (Law 27)
-                ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
-                if not ap_account_id:
-                    return {"success": False, "message": "AP account (2-10100) not found", "data": None}
-
-                # 6. Generate payment number
-                payment_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, 'BP')", tenant_id
-                ) or f"BP-{date.today().strftime('%y%m')}-AUTO"
-
-                # 7. Create journal DRAFT → lines → POSTED (Law 20)
-                journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
-                payment_id = uuid_module.uuid4()
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', $6, $7, 'DRAFT', $8, $8, $9)
-                    """,
-                    journal_id, tenant_id, payment_number, payment_date,
-                    f"Pembayaran ke {bill['vendor_name']}",
-                    payment_id, str(trace_id),
-                    payment_amount, user_id,
-                )
-
-                # Dr. Accounts Payable (reduces liability)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, 1, $3, $4, 0, $5)
-                    """,
-                    uuid_module.uuid4(), journal_id, ap_account_id,
-                    payment_amount, f"Pelunasan hutang - {bill['vendor_name']}",
-                )
-
-                # Cr. Bank/Cash (money going out)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, 2, $3, 0, $4, $5)
-                    """,
-                    uuid_module.uuid4(), journal_id, bank_coa_id,
-                    payment_amount, f"Pembayaran dari bank - {payment_number}",
-                )
-
-                # DRAFT → POSTED (triggers hash chain)
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # 8. INSERT bill_payments record (with journal_id from start)
-                await conn.execute(
-                    """
-                    INSERT INTO bill_payments (
-                        id, tenant_id, bill_id, amount, payment_date, payment_method,
-                        account_id, bank_account_id, journal_id,
-                        reference, notes, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    """,
-                    payment_id, tenant_id, bill_id, payment_amount,
-                    payment_date, request["payment_method"],
-                    coa_id, bank_account_id if bank_account_id else None,
-                    journal_id,
-                    request.get("reference"), request.get("notes"), user_id,
-                )
-
-                # 9. INSERT bank_transaction (with journal_id, BankSync Rule 1)
-                bank_transaction_id = None
-                if bank_account:
+                    # Determine amount sign based on account type
+                    # Credit card = LIABILITY: positive amount (increases liability)
+                    # Bank/cash = ASSET: negative amount (decreases asset)
                     if bank_account["account_type"] == "credit_card":
-                        tx_amount = payment_amount
+                        tx_amount = payment_amount  # positive = liability increase
                         tx_type = "charge"
                     else:
-                        tx_amount = -payment_amount
+                        tx_amount = -payment_amount  # negative = asset decrease
                         tx_type = "payment_made"
+
+                    # Create bank transaction (trigger updates balance atomically)
+                    import uuid as uuid_module
 
                     bank_transaction_id = uuid_module.uuid4()
                     await conn.execute(
@@ -1257,48 +1119,122 @@ class BillsService:
                             id, tenant_id, bank_account_id, transaction_date,
                             transaction_type, amount, running_balance,
                             reference_type, reference_id, description,
-                            payee_payer, journal_id, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'bill', $7, $8, $9, $10, $11)
-                        """,
-                        bank_transaction_id, tenant_id, bank_account["id"],
-                        payment_date, tx_type, tx_amount,
-                        bill_id, f"Payment for {bill['vendor_name']}",
-                        bill["vendor_name"], journal_id, user_id,
+                            payee_payer, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'bill', $7, $8, $9, $10)
+                    """,
+                        bank_transaction_id,
+                        tenant_id,
+                        bank_account["id"],
+                        payment_date,
+                        tx_type,
+                        tx_amount,
+                        bill_id,
+                        f"Payment for {bill['vendor_name']}",
+                        bill["vendor_name"],
+                        user_id,
                     )
 
-                # 10. Update bill cache (Law 21 — write-side only)
-                new_paid = int(bill["amount_paid"]) + payment_amount
-                new_status = "paid" if new_paid >= int(bill["amount"]) else "partial"
+                    logger.info(
+                        f"Bank transaction created: {bank_transaction_id}, "
+                        f"type={tx_type}, amount={tx_amount}, bank={bank_account['account_name']}"
+                    )
 
-                await conn.execute(
+                elif not coa_id:
+                    return {
+                        "success": False,
+                        "message": "Either bank_account_id or account_id is required",
+                        "data": None,
+                    }
+
+                # 1. Insert payment record
+                payment_id = await conn.fetchval(
                     """
-                    UPDATE bills SET amount_paid = $1, status = $2
-                    WHERE id = $3 AND tenant_id = $4
-                    """,
-                    new_paid, new_status, bill_id, tenant_id,
+                    INSERT INTO bill_payments (
+                        tenant_id, bill_id, amount, payment_date, payment_method,
+                        account_id, bank_account_id, bank_transaction_id,
+                        reference, notes, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    RETURNING id
+                """,
+                    tenant_id,
+                    bill_id,
+                    payment_amount,
+                    payment_date,
+                    request["payment_method"],
+                    coa_id,
+                    bank_account_id,
+                    bank_transaction_id,
+                    request.get("reference"),
+                    request.get("notes"),
+                    user_id,
                 )
 
-                # 11. Update AP cache (if exists)
-                if bill["ap_id"]:
+                # Note: Trigger will update bill.amount_paid and status
+
+                # 2. Apply payment to AP (REQUIRED - atomic with payment)
+                # Golden Rule: Payment must ALWAYS update AP and create Journal
+                journal_id = None
+
+                if not bill["ap_id"]:
+                    logger.warning(
+                        f"Bill {bill_id} has no AP record. Skipping AP integration. "
+                        "This may indicate a data integrity issue."
+                    )
+                elif not self.accounting:
+                    logger.warning(
+                        "Accounting kernel not available. Skipping AP integration."
+                    )
+                else:
+                    ap_result = await self.accounting.apply_ap_payment(
+                        tenant_id=tenant_id,
+                        ap_id=bill["ap_id"],
+                        payment_amount=Decimal(payment_amount),
+                        payment_date=payment_date,
+                        payment_method=request["payment_method"],
+                        account_id=coa_id,
+                    )
+
+                    if not ap_result.get("success"):
+                        # Rollback by raising exception
+                        raise ValueError(
+                            f"AP payment failed: {ap_result.get('error', 'Unknown error')}. "
+                            "Payment rolled back."
+                        )
+
+                    journal_id = ap_result.get("journal_id")
+
+                # Update payment and bank transaction with journal link
+                if journal_id:
                     await conn.execute(
                         """
-                        UPDATE accounts_payable
-                        SET amount_paid = amount_paid + $1,
-                            status = CASE
-                                WHEN amount_paid + $1 >= amount THEN 'PAID'
-                                WHEN amount_paid + $1 > 0 THEN 'PARTIAL'
-                                ELSE status
-                            END,
-                            updated_at = NOW()
-                        WHERE id = $2 AND tenant_id = $3
-                        """,
-                        payment_amount, bill["ap_id"], tenant_id,
+                        UPDATE bill_payments
+                        SET journal_id = $1
+                        WHERE id = $2
+                    """,
+                        journal_id,
+                        payment_id,
                     )
 
-                logger.info(
-                    f"Bill payment recorded: bill={bill_id}, amount={payment_amount}, "
-                    f"journal={journal_id}, bank_txn={bank_transaction_id}"
+                    if bank_transaction_id:
+                        await conn.execute(
+                            """
+                            UPDATE bank_transactions
+                            SET journal_id = $1
+                            WHERE id = $2
+                        """,
+                            journal_id,
+                            bank_transaction_id,
+                        )
+
+                # Get updated bill status
+                updated_bill = await conn.fetchrow(
+                    """
+                    SELECT amount, amount_paid, status FROM bills WHERE id = $1
+                """,
+                    bill_id,
                 )
+
+                new_amount_due = updated_bill["amount"] - updated_bill["amount_paid"]
 
                 return {
                     "success": True,
@@ -1307,13 +1243,17 @@ class BillsService:
                         "id": str(payment_id),
                         "bill_id": str(bill_id),
                         "amount": payment_amount,
-                        "journal_id": str(journal_id),
-                        "bill_status": new_status,
-                        "amount_due": int(bill["amount"]) - new_paid,
-                        "bank_transaction_id": str(bank_transaction_id) if bank_transaction_id else None,
+                        "bill_status": updated_bill["status"],
+                        "amount_due": new_amount_due,
+                        "bank_transaction_id": str(bank_transaction_id)
+                        if bank_transaction_id
+                        else None,
                     },
                 }
 
+    # =========================================================================
+    # MARK AS PAID
+    # =========================================================================
     async def mark_paid(
         self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID
     ) -> Dict[str, Any]:

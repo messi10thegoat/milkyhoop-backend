@@ -103,8 +103,6 @@ class SessionAwareAgent:
             tool_executor=tool_executor,
             image_content=image_content,
             event_callback=event_callback,
-            db_pool=self.db_pool,
-            chat_session_id=session_id,
         )
 
         # Normalize response (handle both dict and AgentResponse object)

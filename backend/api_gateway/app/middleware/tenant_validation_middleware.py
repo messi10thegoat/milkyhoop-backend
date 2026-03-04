@@ -54,6 +54,9 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
         # Pattern: /{tenant_id}/chat (no /api prefix)
         if re.match(r'^/[^/]+/chat/?$', path):
             return True
+        # /api/tenant/profile/* is NOT a tenant-scoped path (profile is a route, not tenant_id)
+        if path.startswith("/api/tenant/profile"):
+            return True
         return False
 
     async def dispatch(self, request: Request, call_next):

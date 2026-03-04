@@ -170,14 +170,10 @@ logger = logging.getLogger("unified_agent.tool_executor")
 import time as _cache_time
 
 TOOL_CACHE_TTL = 300  # 5 minutes
-_cache_logger = __import__('logging').getLogger('unified_agent.cache')
 CACHEABLE_TOOLS = frozenset({
     "get_chart_of_accounts",
     "get_bank_accounts",
     "get_accounting_periods",
-    "search_customers",
-    "search_vendors",
-    "search_items",
 })
 
 # Per-request in-memory cache (lives for duration of one agent turn)
@@ -199,7 +195,6 @@ def get_from_cache(tool_name: str, params: dict) -> dict | None:
     key = _cache_key(tool_name, params)
     entry = _turn_cache.get(key)
     if entry and (_cache_time.time() - entry["ts"]) < TOOL_CACHE_TTL:
-        _cache_logger.warning("[Phase3-Cache] HIT tool=%s", tool_name)
         return entry["result"]
     return None
 
@@ -209,7 +204,6 @@ def set_in_cache(tool_name: str, params: dict, result: dict):
         return
     key = _cache_key(tool_name, params)
     _turn_cache[key] = {"ts": _cache_time.time(), "result": result}
-    _cache_logger.warning("[Phase3-Cache] SET tool=%s key=%s", tool_name, key[:60])
 
 def clear_turn_cache():
     """Clear the per-turn cache. Call at start of each new turn."""

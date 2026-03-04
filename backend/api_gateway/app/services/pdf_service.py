@@ -177,6 +177,52 @@ class PDFService:
         return pdf_bytes
 
 
+
+    def generate_quote_pdf(self, quote_data, tenant_info):
+        """
+        Generate PDF for a quote (penawaran harga).
+
+        Args:
+            quote_data: Quote data dict with items and totals.
+            tenant_info: Tenant info dict with name, address, phone, email, logo_data.
+
+        Returns:
+            PDF content as bytes
+        """
+        template = self.jinja_env.get_template("quote.html")
+
+        # Get status label
+        status = quote_data.get("status", "draft")
+        status_label = self.STATUS_LABELS.get(status, status.upper())
+
+        # Build company context matching template variable name
+        company = {
+            "name": tenant_info.get("name"),
+            "address": tenant_info.get("address"),
+            "phone": tenant_info.get("phone"),
+            "email": tenant_info.get("email"),
+            "logo_base64": tenant_info.get("logo_data"),
+        }
+
+        # Render HTML
+        html_content = template.render(
+            quote=quote_data,
+            company=company,
+            status_label=status_label,
+            generated_at=datetime.now(),
+        )
+
+        # Load CSS
+        css_path = TEMPLATE_DIR / "invoice.css"
+        stylesheets = []
+        if css_path.exists():
+            stylesheets.append(CSS(filename=str(css_path)))
+
+        # Generate PDF
+        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+
+        return pdf_bytes
+
     def generate_income_statement_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
         """Generate PDF for Income Statement (Laba Rugi) from PSAK engine output."""
         template = self.jinja_env.get_template("laba_rugi.html")

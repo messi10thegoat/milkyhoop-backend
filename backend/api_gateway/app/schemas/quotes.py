@@ -85,6 +85,8 @@ class CreateQuoteRequest(BaseModel):
     notes: Optional[str] = Field(None, description="Notes to customer")
     terms: Optional[str] = Field(None, description="Terms and conditions")
     footer: Optional[str] = Field(None, description="Footer text")
+    opening_text: Optional[str] = Field(None, description="Opening text shown before line items")
+    closing_text: Optional[str] = Field(None, description="Closing text shown after line items")
     items: List[QuoteItemCreate] = Field(..., min_length=1, description="Quote line items")
 
     @field_validator('customer_name')
@@ -117,6 +119,8 @@ class UpdateQuoteRequest(BaseModel):
     notes: Optional[str] = None
     terms: Optional[str] = None
     footer: Optional[str] = None
+    opening_text: Optional[str] = None
+    closing_text: Optional[str] = None
     items: Optional[List[QuoteItemUpdate]] = None
 
 
@@ -210,6 +214,8 @@ class QuoteDetail(BaseModel):
     notes: Optional[str] = None
     terms: Optional[str] = None
     footer: Optional[str] = None
+    opening_text: Optional[str] = None
+    closing_text: Optional[str] = None
     items: List[QuoteItemResponse] = []
     created_at: str
     updated_at: str

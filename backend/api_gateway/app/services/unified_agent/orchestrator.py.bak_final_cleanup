@@ -23,7 +23,7 @@ from uuid import uuid4
 
 from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse
 from .system_prompt import build_system_prompt, build_system_messages, get_intent_bias, _infer_intent
-from .intent_classifier import RouteResult  # classify_and_route removed (Final Cleanup)
+from .intent_classifier import classify_and_route, RouteResult, CHITCHAT_SHORTCIRCUIT_THRESHOLD
 from .tool_registry import get_tools, get_tools_for_domains, TOOL_DOMAINS
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label
 from .tool_registry import is_tutorial_tool  # noqa: E402
@@ -512,16 +512,16 @@ MAX_TOOL_CALLS = 12  # Hard budget: total tool calls per request
 MAX_PROPOSE_ATTEMPTS = 2  # Max propose_action retries
 MAX_OUTPUT_TOKENS = 4000  # LLM output token limit
 
-# Per-intent iteration budgets (Final Cleanup: capped for token savings)
+# Phase 4B: Per-intent iteration budgets
 MAX_ITERATIONS_BY_INTENT = {
     "CHITCHAT": 1,
-    "SIMPLE_READ": 3,
-    "COMPLEX_READ": 3,
-    "ACTION": 4,
-    "CHART": 2,
-    "RECON": 5,
-    "FOLLOWUP": 3,
-    "WORKFLOW_CONTINUE": 3,
+    "SIMPLE_READ": 4,
+    "COMPLEX_READ": 6,
+    "ACTION": 6,
+    "CHART": 3,
+    "RECON": 6,
+    "FOLLOWUP": 4,
+    "WORKFLOW_CONTINUE": 6,
 }
 
 # Tools that MUST execute sequentially (state-mutating or order-dependent)
@@ -778,24 +778,25 @@ class UnifiedAgent:
         if not tool_executor:
             tool_executor = ToolExecutor(context, user_text=user_text)
 
-        # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
-        _intent = _infer_intent(user_text)
-        _route = RouteResult(
-            intent=_intent,
-            confidence=1.0,
-            classifier_skipped=True,
-            low_confidence_fallback=False,
-            classifier_tokens_in=0,
-            classifier_tokens_out=0,
-            classifier_latency_ms=0,
+        # Phase 4A: Classify intent via LLM classifier (replaces _infer_intent heuristic)
+        _route = await classify_and_route(
+            user_message=user_text,
+            chat_session_id=chat_session_id,
+            db_pool=db_pool,
         )
+        _intent = _route.intent
         logger.warning(
-            "[INTENT] intent=%s user='%s'",
-            _intent, user_text[:50],
+            "[Phase4] intent=%s confidence=%.2f skipped=%s fallback=%s user='%s'",
+            _intent, _route.confidence, _route.classifier_skipped,
+            _route.low_confidence_fallback, user_text[:50],
         )
 
-        # CHITCHAT short-circuit — bypass agent loop entirely
-        if _intent == "CHITCHAT":
+        # Phase 4B: CHITCHAT short-circuit — bypass agent loop entirely
+        if (
+            _intent == "CHITCHAT"
+            and _route.confidence >= CHITCHAT_SHORTCIRCUIT_THRESHOLD
+            and not _route.classifier_skipped
+        ):
             return await self._handle_chitchat(user_text, context, _route)
 
         # Build messages — segmented system prompt (Phase 3A)
@@ -1500,7 +1501,7 @@ class UnifiedAgent:
             message_type="TEXT",
             content="Maaf, saya tidak bisa menyelesaikan permintaan ini. "
             "Bisa coba ulangi dengan informasi yang lebih spesifik?",
-            iterations=_max_iter,
+            iterations=MAX_ITERATIONS,
             tool_calls_made=tool_calls_log,
             model_used=current_model,
             total_latency_ms=int((time.time() - start_time) * 1000),

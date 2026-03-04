@@ -166,56 +166,6 @@ from .tutorial_progress import (  # noqa: E402
 )
 
 logger = logging.getLogger("unified_agent.tool_executor")
-# ─── Phase 2C: Tool Response Cache ───────────────────────────────────────────
-import time as _cache_time
-
-TOOL_CACHE_TTL = 300  # 5 minutes
-_cache_logger = __import__('logging').getLogger('unified_agent.cache')
-CACHEABLE_TOOLS = frozenset({
-    "get_chart_of_accounts",
-    "get_bank_accounts",
-    "get_accounting_periods",
-    "search_customers",
-    "search_vendors",
-    "search_items",
-})
-
-# Per-request in-memory cache (lives for duration of one agent turn)
-# This is sufficient because:
-# 1. Within a single turn, the same tool may be called multiple times
-# 2. Between turns, data may change so we shouldn't cache
-# 3. Avoids DB complexity of session-backed cache
-_turn_cache: dict = {}
-
-def _cache_key(tool_name: str, params: dict) -> str:
-    """Generate cache key from tool name + sorted params."""
-    import json as _cj
-    return f"{tool_name}:{_cj.dumps(params, sort_keys=True, default=str)}"
-
-def get_from_cache(tool_name: str, params: dict) -> dict | None:
-    """Check turn cache for cached result."""
-    if tool_name not in CACHEABLE_TOOLS:
-        return None
-    key = _cache_key(tool_name, params)
-    entry = _turn_cache.get(key)
-    if entry and (_cache_time.time() - entry["ts"]) < TOOL_CACHE_TTL:
-        _cache_logger.warning("[Phase3-Cache] HIT tool=%s", tool_name)
-        return entry["result"]
-    return None
-
-def set_in_cache(tool_name: str, params: dict, result: dict):
-    """Store result in turn cache."""
-    if tool_name not in CACHEABLE_TOOLS:
-        return
-    key = _cache_key(tool_name, params)
-    _turn_cache[key] = {"ts": _cache_time.time(), "result": result}
-    _cache_logger.warning("[Phase3-Cache] SET tool=%s key=%s", tool_name, key[:60])
-
-def clear_turn_cache():
-    """Clear the per-turn cache. Call at start of each new turn."""
-    _turn_cache.clear()
-
-
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     _handler = logging.StreamHandler()
@@ -348,12 +298,6 @@ class ToolExecutor:
         - Non-idempotent tools (propose_action): retry with verify-first
         - Non-retryable errors (400, 401, 409): immediate abort
         """
-        # Phase 2C: Check tool cache first
-        _cached = get_from_cache(tool_name, params)
-        if _cached is not None:
-            logger.info(f"[TOOL_CACHE] HIT tool={tool_name}")
-            return _cached
-
         self.call_count += 1
         if self.call_count > MAX_TOOL_CALLS_PER_REQUEST:
             return _error("BUDGET_EXCEEDED", "Batas tool call tercapai.")
@@ -397,10 +341,6 @@ class ToolExecutor:
                 )
         except Exception:
             pass
-
-        # Phase 2C: Cache successful results
-        if result.get("success"):
-            set_in_cache(tool_name, params, result)
 
         return result
 

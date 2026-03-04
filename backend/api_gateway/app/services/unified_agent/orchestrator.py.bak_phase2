@@ -22,197 +22,14 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse
-from .system_prompt import build_system_prompt, build_system_messages, get_intent_bias, _infer_intent
-from .intent_classifier import RouteResult  # classify_and_route removed (Final Cleanup)
-from .tool_registry import get_tools, get_tools_for_domains, TOOL_DOMAINS
+from .system_prompt import build_system_prompt, build_system_messages, get_intent_bias
+from .tool_registry import get_tools
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .model_router import ModelRouter
 from .correlation import TurnContext
 
 logger = logging.getLogger("unified_agent.orchestrator")
-
-# ─── Phase 2A: Domain-Based Tool Loading ─────────────────────────────────────
-# Maps intent_bias modes → tool domains.
-# Uses get_intent_bias() return value to determine which tool domains to load.
-
-# Broad fallback — when no signal words match
-BROAD_FALLBACK_DOMAINS = {
-    "CORE", "MASTER_DATA", "BANKING", "REPORTS", "ACTIONS",
-}
-
-def _resolve_domains_from_hint(hint_text: str) -> set:
-    """Parse get_intent_bias() MODE hint and map to tool domains.
-
-    DESIGN: Hints add MINIMAL domains — just the structural ones.
-    Specific module domains (AR, AP, INVENTORY, etc.) come from
-    _resolve_domains_from_text() based on actual user words.
-    This keeps tool count low while text signals handle precision.
-    """
-    if not hint_text:
-        return set()
-
-    domains = set()
-    ht = hint_text.upper()
-
-    # Specific workflow modes — these need precise domain sets
-    if "REKONSILIASI" in ht or "REKON" in ht:
-        domains |= {"BANKING", "ACCOUNTING", "WORKFLOW"}
-    if "FILE UPLOAD" in ht:
-        domains |= {"BANKING", "WORKFLOW"}
-    if "REVIEW DOKUMEN" in ht or "DOCUMENT" in ht:
-        domains |= {"WORKFLOW"}
-    if "RE-CONFIRM" in ht or "RECONFIRM" in ht:
-        domains |= {"ACTIONS", "MASTER_DATA"}
-    if "EDIT" in ht:
-        domains |= {"ACTIONS", "MASTER_DATA"}
-    if "TUTORIAL" in ht:
-        pass  # Tutorial tools in CORE
-    if "QUERY" in ht:
-        pass  # execute_query in CORE, specific domains from text signals
-    if "DIRECT ACTION" in ht:
-        domains |= {"ACTIONS"}  # specific modules from text signals
-    if "ACTION" in ht and "DIRECT" not in ht:
-        domains |= {"ACTIONS"}  # specific modules from text signals
-    if "ANALYSIS" in ht or "ANALISIS" in ht:
-        domains |= {"REPORTS"}
-    if "PLANNING" in ht:
-        domains |= {"REPORTS"}
-    if "BRAINSTORM" in ht:
-        domains |= {"REPORTS"}
-    # INSIGHT (default) → EMPTY — rely on text signals
-    # This is intentional: INSIGHT is the catch-all default mode,
-    # so adding domains here would defeat domain-based loading.
-
-    return domains
-
-
-def _resolve_domains_from_text(user_text: str) -> set:
-    """Signal-word check on raw user text for domain routing.
-
-    This is the PRIMARY domain selector. Hint-based selection (from MODE)
-    only adds structural domains (ACTIONS, WORKFLOW, REPORTS).
-    Text signals add the specific module domains (AR, AP, BANKING, etc.).
-    """
-    text_lower = user_text.lower()
-    domains = set()
-
-    # ── AR signals (piutang / customer side) ──
-    ar_words = [
-        "piutang", "receivable", "faktur jual", "sales invoice", "invoice",
-        "pelanggan", "customer", "penjualan",
-    ]
-    if any(w in text_lower for w in ar_words):
-        domains |= {"AR_INVOICES", "MASTER_DATA"}
-
-    # ── AP signals (hutang / vendor side) ──
-    ap_words = [
-        "hutang", "payable", "tagihan", "bill", "vendor", "supplier",
-        "pembelian", "faktur beli", "purchase",
-    ]
-    if any(w in text_lower for w in ap_words):
-        domains |= {"AP_BILLS", "MASTER_DATA"}
-
-    # ── Obligation words → BOTH AR and AP (ambiguous side) ──
-    # "berapa yang belum dibayar si Budi?" — could be customer or vendor
-    obligation_words = [
-        "bayar", "dibayar", "belum bayar", "belum dibayar",
-        "jatuh tempo", "overdue", "outstanding", "tunggakan",
-        "lunas", "belum lunas", "sisa", "terutang",
-    ]
-    if any(w in text_lower for w in obligation_words):
-        domains |= {"AR_INVOICES", "AP_BILLS", "MASTER_DATA"}
-
-    # ── Banking signals ──
-    bank_words = ["bank", "rekening", "saldo", "transfer", "mutasi", "kas"]
-    if any(w in text_lower for w in bank_words):
-        domains |= {"BANKING"}
-
-    # ── Accounting signals ──
-    acct_words = [
-        "jurnal", "journal", "buku besar", "ledger",
-        "neraca saldo", "trial balance", "akun", "coa",
-    ]
-    if any(w in text_lower for w in acct_words):
-        domains |= {"ACCOUNTING"}
-
-    # ── Report signals ──
-    report_words = [
-        "laba rugi", "profit", "neraca", "balance sheet",
-        "arus kas", "cash flow", "laporan",
-    ]
-    if any(w in text_lower for w in report_words):
-        domains |= {"REPORTS"}
-
-    # ── Chart signals ──
-    chart_words = ["grafik", "chart", "graph", "visualisasi", "diagram"]
-    if any(w in text_lower for w in chart_words):
-        domains |= {"CHARTS"}
-
-    # ── Expense signals ──
-    expense_words = ["biaya", "expense", "pengeluaran"]
-    if any(w in text_lower for w in expense_words):
-        domains |= {"EXPENSES"}
-
-    # ── Inventory signals ──
-    inv_words = [
-        "stok", "stock", "persediaan", "inventory",
-        "gudang", "warehouse", "barang",
-    ]
-    if any(w in text_lower for w in inv_words):
-        domains |= {"INVENTORY", "MASTER_DATA"}
-
-    # ── Action signals ──
-    action_words = ["buat", "bikin", "create", "tambah", "catat", "void", "hapus"]
-    if any(w in text_lower for w in action_words):
-        domains |= {"ACTIONS"}
-
-    # ── Workflow signals ──
-    wf_words = ["rekonsiliasi", "rekon", "workflow"]
-    if any(w in text_lower for w in wf_words):
-        domains |= {"WORKFLOW"}
-
-    # ── Pipeline signals ──
-    pipe_words = [
-        "deposit", "uang muka", "giro", "cheque", "recurring", "berulang",
-        "sales order", "pesanan", "quote", "penawaran", "aset tetap", "fixed asset",
-    ]
-    if any(w in text_lower for w in pipe_words):
-        domains |= {"PIPELINE"}
-
-    # ── Analytics ──
-    analytics_words = ["rasio", "ratio", "budget", "anggaran", "cost center", "payroll", "gaji"]
-    if any(w in text_lower for w in analytics_words):
-        domains |= {"ANALYTICS"}
-
-    return domains
-
-
-def resolve_domains(user_text: str, intent_hint: str) -> set:
-    """Determine which tool domains to load for this turn.
-
-    Uses BOTH:
-    1. get_intent_bias() MODE hint (high-level category from system_prompt.py)
-    2. Direct text signal words (catches specific domain keywords)
-
-    Always includes CORE.
-    Falls back to BROAD_FALLBACK_DOMAINS if nothing matches.
-    """
-    domains = {"CORE"}  # always
-
-    # From intent bias MODE
-    domains |= _resolve_domains_from_hint(intent_hint)
-
-    # From raw text signals
-    domains |= _resolve_domains_from_text(user_text)
-
-    # Fallback: if only CORE, use broad set
-    if domains == {"CORE"}:
-        domains |= BROAD_FALLBACK_DOMAINS
-
-    return domains
-
-
 
 import time as _time  # noqa: E402
 import json as _json_helpers  # noqa: E402
@@ -512,18 +329,6 @@ MAX_TOOL_CALLS = 12  # Hard budget: total tool calls per request
 MAX_PROPOSE_ATTEMPTS = 2  # Max propose_action retries
 MAX_OUTPUT_TOKENS = 4000  # LLM output token limit
 
-# Per-intent iteration budgets (Final Cleanup: capped for token savings)
-MAX_ITERATIONS_BY_INTENT = {
-    "CHITCHAT": 1,
-    "SIMPLE_READ": 3,
-    "COMPLEX_READ": 3,
-    "ACTION": 4,
-    "CHART": 2,
-    "RECON": 5,
-    "FOLLOWUP": 3,
-    "WORKFLOW_CONTINUE": 3,
-}
-
 # Tools that MUST execute sequentially (state-mutating or order-dependent)
 MUST_SEQUENTIAL_TOOLS = {
     "propose_action",
@@ -559,99 +364,6 @@ class AgentResponse:
     usage: Dict[str, Any] = field(default_factory=dict)  # Token usage from LLM
 
 
-# ─── Phase 3C: Conversation History Pruning ──────────────────────────────────
-# Sliding window: keep last RECENT_WINDOW messages verbatim.
-# Older messages: summarize with gpt-4o-mini and cache the summary.
-
-RECENT_WINDOW = 4  # Keep last 4 messages verbatim
-SUMMARIZE_THRESHOLD = 8000  # Estimate: trigger summarization above this
-_CHARS_PER_TOKEN = 4  # Rough estimate for token counting
-
-import hashlib as _hashlib
-
-
-def _estimate_tokens(messages: list) -> int:
-    """Rough token estimate: ~4 chars per token for Indonesian text."""
-    total_chars = sum(len(m.get("content", "")) for m in messages)
-    return total_chars // _CHARS_PER_TOKEN
-
-
-async def _summarize_history(older_messages: list, llm_router) -> str:
-    """Summarize older conversation messages using gpt-4o-mini.
-
-    Returns a concise summary string (~200-300 tokens).
-    """
-    from ..llm import LLMMessage, TaskComplexity
-
-    # Build messages for summarization
-    history_text = ""
-    for msg in older_messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if content:
-            history_text += f"{role}: {content[:500]}\n"
-
-    summarize_prompt = (
-        "Ringkas percakapan berikut menjadi summary singkat (maks 3 kalimat). "
-        "Fokus pada: entity yang dibahas (customer/vendor/item), "
-        "aksi yang sudah dilakukan, dan konteks penting. "
-        "Jangan sertakan detail angka kecuali penting.\n\n"
-        f"{history_text}"
-    )
-
-    try:
-        client, model = llm_router.get_client_and_model(TaskComplexity.SIMPLE_READ)
-        resp = await client.chat(
-            messages=[
-                LLMMessage(role="system", content="Kamu adalah summarizer percakapan."),
-                LLMMessage(role="user", content=summarize_prompt),
-            ],
-            model=model,
-            temperature=0.1,
-            max_tokens=300,
-        )
-        return resp.content or ""
-    except Exception as e:
-        logger.warning("[Phase3C] Summarization failed: %s", e)
-        # Fallback: just take first message content
-        return f"Konteks sebelumnya: {older_messages[0].get('content', '')[:200]}"
-
-
-def _prune_history(
-    conversation_history: list,
-    cached_summary: str | None = None,
-    cached_hash: str | None = None,
-) -> tuple:
-    """Decide if history needs pruning.
-
-    Returns (needs_summary: bool, older_messages: list, recent_messages: list, older_hash: str)
-    """
-    if not conversation_history:
-        return False, [], [], ""
-
-    total_tokens = _estimate_tokens(conversation_history)
-
-    if total_tokens <= SUMMARIZE_THRESHOLD:
-        return False, [], conversation_history, ""
-
-    # Split: keep last RECENT_WINDOW messages verbatim
-    recent = conversation_history[-RECENT_WINDOW:]
-    older = conversation_history[:-RECENT_WINDOW]
-
-    if not older:
-        return False, [], conversation_history, ""
-
-    # Hash the older messages to check if cached summary is still valid
-    older_text = "".join(m.get("content", "") for m in older)
-    older_hash = _hashlib.md5(older_text.encode()).hexdigest()
-
-    # If cached summary covers these exact older messages, reuse it
-    if cached_summary and cached_hash == older_hash:
-        return False, older, recent, older_hash  # No new summary needed
-
-    return True, older, recent, older_hash
-
-
 class UnifiedAgent:
     """
     Single agent loop. Replaces: intent classifier + action_planner + enrichment.
@@ -663,80 +375,6 @@ class UnifiedAgent:
     def __init__(self):
         self.router = LLMRouter.from_env()
 
-    async def _handle_chitchat(
-        self,
-        user_text: str,
-        context: TenantContext,
-        route_result: "RouteResult",
-    ) -> AgentResponse:
-        """Phase 4B: CHITCHAT short-circuit.
-        0 tools, IDENTITY_ONLY prompt, max_tokens=300, 1 iteration.
-        Cost: ~500 tokens input + ~100 output = ~$0.0001.
-        """
-        start_time = time.time()
-        from .system_prompt import build_system_messages as _build_sys
-
-        sys_msgs = _build_sys(
-            tenant_name=context.tenant_name,
-            today=date.today().isoformat(),
-            user_text=user_text,
-            intent="CHITCHAT",
-        )
-        messages = [
-            LLMMessage(role=msg["role"], content=msg["content"])
-            for msg in sys_msgs
-        ]
-        messages.append(LLMMessage(role="user", content=user_text))
-
-        client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
-        try:
-            resp = await client.chat(
-                messages=messages,
-                tools=[],
-                model=model,
-                temperature=TEMPERATURE_CHAT,
-                max_tokens=300,
-            )
-            content = (resp.content or "").strip()
-            usage = {}
-            if hasattr(resp, "usage") and resp.usage:
-                usage = dict(resp.usage)
-            # Inject classifier metrics into usage
-            usage["classifier_tokens_in"] = route_result.classifier_tokens_in
-            usage["classifier_tokens_out"] = route_result.classifier_tokens_out
-            usage["classifier_latency_ms"] = route_result.classifier_latency_ms
-            usage["classifier_intent"] = route_result.intent
-            usage["classifier_confidence"] = route_result.confidence
-            usage["classifier_skipped"] = route_result.classifier_skipped
-        except Exception as e:
-            logger.error("[CHITCHAT] LLM error: %s", e)
-            content = "Halo! Ada yang bisa saya bantu dengan pembukuan hari ini?"
-            usage = {
-                "classifier_tokens_in": route_result.classifier_tokens_in,
-                "classifier_tokens_out": route_result.classifier_tokens_out,
-                "classifier_latency_ms": route_result.classifier_latency_ms,
-                "classifier_intent": route_result.intent,
-                "classifier_confidence": route_result.confidence,
-                "classifier_skipped": route_result.classifier_skipped,
-            }
-
-        latency_ms = int((time.time() - start_time) * 1000)
-        logger.warning(
-            "[Phase4-CHITCHAT] SHORT-CIRCUIT user='%s' latency=%dms",
-            user_text[:30], latency_ms,
-        )
-
-        return AgentResponse(
-            message_type="TEXT",
-            content=content,
-            iterations=1,
-            tool_calls_made=[],
-            model_used=model,
-            total_latency_ms=latency_ms,
-            thinking_stages=[],
-            usage=usage,
-        )
-
     async def process_message(
         self,
         user_text: str,
@@ -745,8 +383,6 @@ class UnifiedAgent:
         tool_executor: Optional[ToolExecutor] = None,
         image_content: Optional[list] = None,
         event_callback=None,
-        db_pool=None,
-        chat_session_id: str = None,
     ) -> AgentResponse:
         """
         Main entry point. Processes a user message through the agent loop.
@@ -778,33 +414,13 @@ class UnifiedAgent:
         if not tool_executor:
             tool_executor = ToolExecutor(context, user_text=user_text)
 
-        # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
-        _intent = _infer_intent(user_text)
-        _route = RouteResult(
-            intent=_intent,
-            confidence=1.0,
-            classifier_skipped=True,
-            low_confidence_fallback=False,
-            classifier_tokens_in=0,
-            classifier_tokens_out=0,
-            classifier_latency_ms=0,
-        )
-        logger.warning(
-            "[INTENT] intent=%s user='%s'",
-            _intent, user_text[:50],
-        )
-
-        # CHITCHAT short-circuit — bypass agent loop entirely
-        if _intent == "CHITCHAT":
-            return await self._handle_chitchat(user_text, context, _route)
-
-        # Build messages — segmented system prompt (Phase 3A)
-        # Segments loaded based on intent: CHITCHAT=~500tok, SIMPLE_READ=~2.5K, etc.
+        # Build messages — 2 system messages for OpenAI prompt caching (Phase 1A)
+        # Message 1 (static) is cached by OpenAI (50% input discount).
+        # Message 2 (dynamic) has per-turn context (date, tenant, intent bias).
         system_msgs = build_system_messages(
             tenant_name=context.tenant_name,
             today=date.today().isoformat(),
             user_text=user_text,
-            intent=_intent,
         )
 
         messages: List[LLMMessage] = [
@@ -812,46 +428,15 @@ class UnifiedAgent:
             for msg in system_msgs
         ]
 
-        # Phase 3C: Conversation history pruning
-        # If history exceeds threshold, summarize older messages
+        # Add conversation history (last 10 messages to stay within context)
         if conversation_history:
-            needs_summary, older, recent, older_hash = _prune_history(
-                conversation_history,
-            )
-
-            if needs_summary and older:
-                # Summarize older messages (async, ~100ms with gpt-4o-mini)
-                summary = await _summarize_history(older, self.router)
-                logger.warning(
-                    "[Phase3C] Summarized %d older messages (%d chars) -> %d chars",
-                    len(older),
-                    sum(len(m.get("content", "")) for m in older),
-                    len(summary),
-                )
-                # Prepend summary as system message
+            for msg in conversation_history[-10:]:
                 messages.append(
                     LLMMessage(
-                        role="system",
-                        content=f"Ringkasan percakapan sebelumnya:\n{summary}",
+                        role=msg.get("role", "user"),
+                        content=msg.get("content", ""),
                     )
                 )
-                # Add recent messages verbatim
-                for msg in recent:
-                    messages.append(
-                        LLMMessage(
-                            role=msg.get("role", "user"),
-                            content=msg.get("content", ""),
-                        )
-                    )
-            else:
-                # History within threshold — add last 10 as-is
-                for msg in conversation_history[-10:]:
-                    messages.append(
-                        LLMMessage(
-                            role=msg.get("role", "user"),
-                            content=msg.get("content", ""),
-                        )
-                    )
 
         # Vision: use content block array for THIS turn only (ephemeral)
         if image_content:
@@ -885,22 +470,7 @@ class UnifiedAgent:
         )
 
         # Get tools — skip for "cheap" tier (chitchat/greetings) to save ~9K tokens
-        # Phase 2A: Domain-based tool loading
-        if model_choice.tier == "cheap":
-            tools = []
-            _active_domains = {"CORE"}
-        else:
-            _intent_hint = get_intent_bias(user_text)
-            _active_domains = resolve_domains(user_text, _intent_hint)
-            tools = get_tools_for_domains(_active_domains)
-            logger.warning(
-                "[Phase2] domains=%d tools=%d active=%s",
-                len(_active_domains), len(tools), sorted(_active_domains),
-            )
-            logger.warning(
-                f"[DOMAIN] domains={sorted(_active_domains)} tools_loaded={len(tools)} "
-                f"(of {len(get_tools())} total)"
-            )
+        tools = [] if model_choice.tier == "cheap" else get_tools()
 
         # --- Observability: capture model choice ---
         try:
@@ -915,18 +485,9 @@ class UnifiedAgent:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
-            # Phase 4: Classifier telemetry
-            "classifier_tokens_in": _route.classifier_tokens_in,
-            "classifier_tokens_out": _route.classifier_tokens_out,
-            "classifier_latency_ms": _route.classifier_latency_ms,
-            "classifier_intent": _route.intent,
-            "classifier_confidence": _route.confidence,
-            "classifier_skipped": _route.classifier_skipped,
-            "low_confidence_fallback": _route.low_confidence_fallback,
         }
 
-        _max_iter = MAX_ITERATIONS_BY_INTENT.get(_intent, MAX_ITERATIONS)
-        for iteration in range(_max_iter):
+        for iteration in range(MAX_ITERATIONS):
             # Budget guard
             if tool_executor.call_count >= MAX_TOOL_CALLS:
                 await emit(
@@ -1500,7 +1061,7 @@ class UnifiedAgent:
             message_type="TEXT",
             content="Maaf, saya tidak bisa menyelesaikan permintaan ini. "
             "Bisa coba ulangi dengan informasi yang lebih spesifik?",
-            iterations=_max_iter,
+            iterations=MAX_ITERATIONS,
             tool_calls_made=tool_calls_log,
             model_used=current_model,
             total_latency_ms=int((time.time() - start_time) * 1000),

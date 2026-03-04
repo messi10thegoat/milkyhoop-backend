@@ -130,7 +130,7 @@ class UnifiedConfidenceEngine:
         elif confidence >= 0.20:
             return {
                 "route": "gpt4_deep_analysis",
-                "model": "gpt-4",
+                "model": "gpt-4o-mini-2024-07-18",
                 "tokens_input": 600,
                 "tokens_output": 200,
                 "cost_per_query": 35.0,

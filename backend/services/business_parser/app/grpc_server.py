@@ -144,7 +144,7 @@ class BusinessParserService(pb_grpc.BusinessParserServicer):
                     entities = parsed.get("entities", {})
                     confidence = parsed.get("confidence", 0.0)
                     reasoning = parsed.get("reasoning", "")
-                    model_used = parsed.get("model_used", "gpt-4o")
+                    model_used = parsed.get("model_used", "gpt-4o-mini-2024-07-18")
                     
                     logger.info(
                         f"LLM classification | intent={intent} | "

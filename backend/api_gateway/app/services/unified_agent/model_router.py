@@ -61,7 +61,7 @@ class ModelTier:
 MODEL_CONFIG: dict[str, ModelTier] = {
     # ── Primary (OpenAI) ─────────────────────────────────────
     "flagship": ModelTier(
-        model_id="gpt-4o",
+        model_id="gpt-4o-mini-2024-07-18",
         provider="openai",
         max_tokens=4096,
     ),

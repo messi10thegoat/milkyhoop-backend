@@ -30,7 +30,6 @@ import asyncio as _asyncio_stream
 import json as _json_stream
 
 from ..services.unified_agent.session_orchestrator import SessionAwareAgent
-from ..services.unified_agent.telemetry import record_telemetry
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
 from ..services.action_executor_client import get_action_executor_client
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
@@ -884,41 +883,6 @@ async def send_message(request: Request, body: ChatMessageRequest):
         f"model={model_used} latency={latency}ms "
         f"tokens_in={_tin} tokens_out={_tout} cached={_cached}"
     )
-
-    # Phase 4C: Fire-and-forget telemetry recording
-    try:
-        _cls_intent = _usage.get("classifier_intent", "")
-        _cls_conf = _usage.get("classifier_confidence", 0)
-        _cls_skip = _usage.get("classifier_skipped", False)
-        _cls_tin = _usage.get("classifier_tokens_in", 0)
-        _cls_tout = _usage.get("classifier_tokens_out", 0)
-        _cls_lat = _usage.get("classifier_latency_ms", 0)
-        _cls_fallback = _usage.get("low_confidence_fallback", False)
-
-        _asyncio_stream.create_task(record_telemetry(
-            db_pool=_agent.db_pool if hasattr(_agent, 'db_pool') else None,
-            tenant_id=ctx["tenant_id"],
-            user_id=ctx["user_id"],
-            session_id=body.session_id,
-            intent=_cls_intent or msg_type,
-            confidence=float(_cls_conf) if _cls_conf else None,
-            classifier_skipped=bool(_cls_skip),
-            classifier_tokens_in=int(_cls_tin),
-            classifier_tokens_out=int(_cls_tout),
-            classifier_latency_ms=int(_cls_lat),
-            low_confidence_fallback=bool(_cls_fallback),
-            tools_loaded=0,
-            tools_called=len(tool_calls),
-            iteration_count=iterations,
-            input_tokens=_tin,
-            output_tokens=_tout,
-            cached_tokens=_cached,
-            total_latency_ms=latency,
-            message_type=msg_type,
-            model_used=model_used,
-        ))
-    except Exception as _tel_err:
-        logger.warning("[TELEMETRY] Failed to record: %s", _tel_err)
 
     return _to_chat_response(agent_resp)
 

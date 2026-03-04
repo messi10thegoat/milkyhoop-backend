@@ -455,84 +455,25 @@ async def get_dashboard_summary(
             ar_total = int(ar_total_row["total_piutang"]) if ar_total_row else 0
 
             # Pure Ledger: AR aging from journal-based per-invoice outstanding
+            # ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
             ar_aging_query = """
-                WITH ar_journal_outstanding AS (
-                    SELECT
-                        si.id as invoice_id,
-                        si.invoice_number,
-                        si.customer_name,
-                        si.due_date,
-                        si.status,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as invoice_debit,
-                        COALESCE((
-                            SELECT SUM(rpa.amount_applied)
-                            FROM receive_payment_allocations rpa
-                            JOIN receive_payments rp ON rp.id = rpa.payment_id
-                            WHERE rpa.invoice_id = si.id
-                              AND rpa.tenant_id = $1
-                              AND rp.status = 'posted'
-                              AND rp.journal_id IS NOT NULL
-                        ), 0) as payment_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE_REVERSAL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
-                              AND NOT EXISTS(
-                                  SELECT 1 FROM receive_payment_allocations rpa2
-                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
-                              )
-                        ), 0) as payment_journal_credit
-                    FROM sales_invoices si
-                    WHERE si.tenant_id = $1
-                      AND si.status NOT IN ('draft', 'void', 'paid')
-                ),
-                ar_with_outstanding AS (
-                    SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
-                    FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
-                )
-                SELECT COUNT(DISTINCT customer_name) as customer_count,
+                SELECT
+                    COUNT(DISTINCT customer_name) as customer_count,
                     COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
                     COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
-                FROM ar_with_outstanding
+                FROM compute_ar_outstanding($1)
             """
             ar_aging = await conn.fetchrow(ar_aging_query, tenant_id)
 
+            # ARAP Rule 6: Use compute_ar_outstanding() instead of accounts_receivable table
             oldest_ar_query = """
                 SELECT customer_name, CURRENT_DATE - due_date as days_overdue
-                FROM accounts_receivable
-                WHERE tenant_id = $1 AND due_date < CURRENT_DATE AND status != 'PAID'
+                FROM compute_ar_outstanding($1)
+                WHERE due_date < CURRENT_DATE
                 ORDER BY due_date ASC LIMIT 1
             """
             oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
@@ -908,70 +849,9 @@ async def get_piutang_detail(
             extra_filter = ""
             if overdue_filter:
                 extra_filter = "AND due_date < CURRENT_DATE"
+            # ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
             aging = await conn.fetchrow(
                 f"""
-                WITH ar_journal_outstanding AS (
-                    SELECT
-                        si.id as invoice_id,
-                        si.invoice_number,
-                        si.customer_name,
-                        si.due_date,
-                        si.status,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as invoice_debit,
-                        COALESCE((
-                            SELECT SUM(rpa.amount_applied)
-                            FROM receive_payment_allocations rpa
-                            JOIN receive_payments rp ON rp.id = rpa.payment_id
-                            WHERE rpa.invoice_id = si.id
-                              AND rpa.tenant_id = $1
-                              AND rp.status = 'posted'
-                              AND rp.journal_id IS NOT NULL
-                        ), 0) as payment_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE_REVERSAL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
-                              AND NOT EXISTS(
-                                  SELECT 1 FROM receive_payment_allocations rpa2
-                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
-                              )
-                        ), 0) as payment_journal_credit
-                    FROM sales_invoices si
-                    WHERE si.tenant_id = $1
-                      AND si.status NOT IN ('draft', 'void', 'paid')
-                ),
-                ar_with_outstanding AS (
-                    SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
-                    FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
-                )
                 SELECT COUNT(DISTINCT customer_name) as customer_count,
                     COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
@@ -979,7 +859,7 @@ async def get_piutang_detail(
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus,
                     COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo_count
-                FROM ar_with_outstanding WHERE 1=1 {extra_filter}
+                FROM compute_ar_outstanding($1) WHERE 1=1 {extra_filter}
             """,
                 tenant_id,
             )
@@ -1517,75 +1397,14 @@ async def get_overdue_invoices(request: Request):
         try:
             # Pure Ledger: overdue invoices from journal-based outstanding
             query = """
-                WITH ar_journal_outstanding AS (
-                    SELECT
-                        si.id as invoice_id,
-                        si.invoice_number,
-                        si.customer_name,
-                        si.due_date,
-                        si.status,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as invoice_debit,
-                        COALESCE((
-                            SELECT SUM(rpa.amount_applied)
-                            FROM receive_payment_allocations rpa
-                            JOIN receive_payments rp ON rp.id = rpa.payment_id
-                            WHERE rpa.invoice_id = si.id
-                              AND rpa.tenant_id = $1
-                              AND rp.status = 'posted'
-                              AND rp.journal_id IS NOT NULL
-                        ), 0) as payment_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE_REVERSAL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
-                              AND NOT EXISTS(
-                                  SELECT 1 FROM receive_payment_allocations rpa2
-                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
-                              )
-                        ), 0) as payment_journal_credit
-                    FROM sales_invoices si
-                    WHERE si.tenant_id = $1
-                      AND si.status NOT IN ('draft', 'void', 'paid')
-                ),
-                ar_with_outstanding AS (
-                    SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
-                    FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
-                )
+                -- ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
                 SELECT
                     invoice_number,
                     customer_name,
                     due_date,
                     CURRENT_DATE - due_date as days_overdue,
                     outstanding
-                FROM ar_with_outstanding
+                FROM compute_ar_outstanding($1)
                 WHERE due_date < CURRENT_DATE
                 ORDER BY (CURRENT_DATE - due_date) DESC, outstanding DESC
             """
@@ -2009,71 +1828,10 @@ async def get_cash_flow_projection(request: Request):
 
             # 2. Get expected inflows (AR due in next 7 days)
             # Pure Ledger: expected inflows from journal-based AR outstanding
+            # ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
             ar_query = """
-                WITH ar_journal_outstanding AS (
-                    SELECT
-                        si.id as invoice_id,
-                        si.invoice_number,
-                        si.customer_name,
-                        si.due_date,
-                        si.status,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as invoice_debit,
-                        COALESCE((
-                            SELECT SUM(rpa.amount_applied)
-                            FROM receive_payment_allocations rpa
-                            JOIN receive_payments rp ON rp.id = rpa.payment_id
-                            WHERE rpa.invoice_id = si.id
-                              AND rpa.tenant_id = $1
-                              AND rp.status = 'posted'
-                              AND rp.journal_id IS NOT NULL
-                        ), 0) as payment_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE_REVERSAL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) as reversal_credit,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '1-104%%'
-                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
-                              AND NOT EXISTS(
-                                  SELECT 1 FROM receive_payment_allocations rpa2
-                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
-                              )
-                        ), 0) as payment_journal_credit
-                    FROM sales_invoices si
-                    WHERE si.tenant_id = $1
-                      AND si.status NOT IN ('draft', 'void', 'paid')
-                ),
-                ar_with_outstanding AS (
-                    SELECT *,
-                        (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) as outstanding
-                    FROM ar_journal_outstanding
-                    WHERE (invoice_debit - payment_credit - reversal_credit - payment_journal_credit) > 0
-                )
                 SELECT due_date, SUM(outstanding) as expected
-                FROM ar_with_outstanding
+                FROM compute_ar_outstanding($1)
                 WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
                 GROUP BY due_date
                 ORDER BY due_date

@@ -159,7 +159,7 @@ class APService:
             created_at=row['created_at']
         )
 
-    async def apply_payment(
+    async def apply_payment(  # DEPRECATED: Use direct SQL in bills_service.record_payment() instead. This method uses a separate connection pool, breaking atomicity (Law 23).
         self,
         tenant_id: str,
         ap_id: UUID,
@@ -168,7 +168,8 @@ class APService:
         payment_method: str,
         reference_number: Optional[str] = None,
         notes: Optional[str] = None,
-        create_journal: bool = True
+        create_journal: bool = True,
+        account_id: Optional[UUID] = None,
     ) -> APPaymentApplication:
         """
         Apply a payment to an AP record (pay supplier).
@@ -260,11 +261,20 @@ class APService:
                     # Debit AP, Credit Cash/Bank
                     account_config = settings.accounting
 
-                    # Determine cash/bank account based on payment method
-                    if payment_method.lower() in ['cash', 'tunai']:
-                        credit_account = account_config.CASH_ACCOUNT
-                    else:
-                        credit_account = account_config.BANK_ACCOUNT
+                    # Determine cash/bank account - use specific CoA if provided (Law 27)
+                    credit_account = None
+                    if account_id:
+                        _row = await conn.fetchrow(
+                            "SELECT account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                            account_id, tenant_id
+                        )
+                        if _row:
+                            credit_account = _row["account_code"]
+                    if not credit_account:
+                        if payment_method.lower() in ['cash', 'tunai']:
+                            credit_account = account_config.CASH_ACCOUNT
+                        else:
+                            credit_account = account_config.BANK_ACCOUNT
 
                     journal_request = CreateJournalRequest(
                         tenant_id=tenant_id,

@@ -12,6 +12,8 @@ from uuid import UUID
 from datetime import date, datetime, timedelta
 from io import BytesIO
 import logging
+import base64
+from pathlib import Path as _Path
 import asyncpg
 
 from ..utils.sorting import parse_sort_param
@@ -597,6 +599,33 @@ async def get_bill_pdf(
         if not bill:
             raise HTTPException(status_code=404, detail="Bill not found")
 
+        # Fetch tenant info for PDF header
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            tenant_row = await conn.fetchrow(
+                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                ctx["tenant_id"],
+            )
+            tenant_info = {
+                "name": tenant_row["display_name"] if tenant_row else ctx["tenant_id"],
+                "address": tenant_row["address"] if tenant_row else None,
+                "phone": tenant_row["phone"] if tenant_row else None,
+                "logo_url": tenant_row["logo_url"] if tenant_row else None,
+            } if tenant_row else {"name": ctx["tenant_id"]}
+
+            # Resolve logo to base64 data URI
+            _logo_data = None
+            _logo_fn = tenant_info.get("logo_url")
+            if _logo_fn:
+                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_fn
+                if _logo_path.exists():
+                    with open(_logo_path, "rb") as _lf:
+                        _logo_data = f"data:image/png;base64,{base64.b64encode(_lf.read()).decode()}"
+            tenant_info["logo_data"] = _logo_data
+
+        bill["tenant"] = tenant_info
+
         # Generate PDF
         pdf_service = get_pdf_service()
         pdf_bytes = pdf_service.generate_bill_pdf(bill)
@@ -808,7 +837,7 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
         raise
     except Exception as e:
         logger.error(f"Error recording payment for bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to record payment")
+        raise HTTPException(status_code=500, detail=f"Gagal mencatat pembayaran: {e}")
 
 
 # =============================================================================

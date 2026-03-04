@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Penawaran {{ quote.quote_number or '-' }}</title></head>
+<body>
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Penawaran Harga</h1>
+            <div class="doc-subtitle">Quote</div>
+        </div>
+        {% if company and company.logo_base64 %}
+        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
+
+    <!-- 2. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">Nomor</td>
+                <td class="meta-value">{{ quote.quote_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ quote.quote_date | date_id }}</td>
+            </tr>
+            {% if quote.expiry_date %}
+            <tr>
+                <td class="meta-label">Berlaku s/d</td>
+                <td class="meta-value">{{ quote.expiry_date | date_id }}</td>
+            </tr>
+            {% endif %}
+            {% if quote.reference %}
+            <tr>
+                <td class="meta-label">Referensi</td>
+                <td class="meta-value">{{ quote.reference }}</td>
+            </tr>
+            {% endif %}
+            {% if quote.subject %}
+            <tr>
+                <td class="meta-label">Perihal</td>
+                <td class="meta-value">{{ quote.subject }}</td>
+            </tr>
+            {% endif %}
+        </table>
+    </div>
+
+    <!-- 3. Parties -->
+    <div class="parties">
+        {% if company %}
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}
+            <div class="party-detail">{{ company.address }}</div>
+            {% endif %}
+            {% if company.phone %}
+            <div class="party-detail">{{ company.phone }}</div>
+            {% endif %}
+            {% if company.email %}
+            <div class="party-detail">{{ company.email }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ quote.customer_name or '-' }}</div>
+            {% if quote.customer_email %}
+            <div class="party-detail">{{ quote.customer_email }}</div>
+            {% endif %}
+            {% if quote.customer_phone %}
+            <div class="party-detail">{{ quote.customer_phone }}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 4. Hero Amount -->
+    <div class="hero">
+        <div class="hero-amount">Rp {{ quote.total_amount | currency }}</div>
+        {% if quote.expiry_date %}
+        <div class="hero-due">Berlaku s/d {{ quote.expiry_date | date_id }}</div>
+        {% endif %}
+    </div>
+
+    <div style="height: 28px;"></div>
+
+    <!-- Opening text -->
+    {% if quote.opening_text %}
+    <div class="prose-section">{{ quote.opening_text }}</div>
+    {% endif %}
+
+    <!-- 5. Line Items -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Deskripsi</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in quote["items"] %}
+            <tr>
+                <td class="col-desc">
+                    {{ item.description or '-' }}
+                    {% if item.discount_percent and item.discount_percent|float > 0 %}
+                    <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
+                    {% endif %}
+                </td>
+                <td class="col-qty">{{ item.quantity }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+                <td class="col-price">Rp {{ item.unit_price | currency }}</td>
+                <td class="col-amount">Rp {{ item.line_total | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- 6. Summary -->
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Subtotal</td>
+                <td class="value">Rp {{ quote.subtotal | currency }}</td>
+            </tr>
+            {% if quote.discount_amount and quote.discount_amount|float > 0 %}
+            <tr>
+                <td class="label">Diskon{% if quote.discount_type == "percentage" %} ({{ quote.discount_value }}%){% endif %}</td>
+                <td class="value">-Rp {{ quote.discount_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if quote.shipping_charges and quote.shipping_charges|float > 0 %}
+            <tr>
+                <td class="label">Pengiriman</td>
+                <td class="value">Rp {{ quote.shipping_charges | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if quote.tax_amount and quote.tax_amount|float > 0 %}
+            <tr>
+                <td class="label">Pajak</td>
+                <td class="value">Rp {{ quote.tax_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if quote.adjustment and quote.adjustment|float != 0 %}
+            <tr>
+                <td class="label">{{ quote.adjustment_label or "Penyesuaian" }}</td>
+                <td class="value">Rp {{ quote.adjustment | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label">Total</td>
+                <td class="value">Rp {{ quote.total_amount | currency }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- Closing text -->
+    {% if quote.closing_text %}
+    <div class="prose-section">{{ quote.closing_text }}</div>
+    {% endif %}
+
+    {% if quote.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ quote.notes }}</div>
+    </div>
+    {% endif %}
+
+    {% if quote.terms %}
+    <div class="notes-section">
+        <div class="notes-label">Syarat & Ketentuan</div>
+        <div class="notes-text">{{ quote.terms }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 7. Footer -->
+    <div class="footer-line">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
+</body>
+</html>

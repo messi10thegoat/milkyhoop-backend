@@ -1107,7 +1107,7 @@ class AccountingFacade:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def apply_ap_payment(
+    async def apply_ap_payment(  # DEPRECATED: Separate pool breaks atomicity (Law 23). Use direct SQL in caller instead.
         self,
         tenant_id: str,
         ap_id: UUID,
@@ -1153,7 +1153,8 @@ class AccountingFacade:
                 payment_method=payment_method,
                 reference_number=reference_number,
                 notes=notes,
-                create_journal=True  # Ensures journal is created (Law 8)
+                create_journal=True,  # Ensures journal is created (Law 8)
+                account_id=account_id,  # Pass specific CoA from bank account (Law 27, banksync Rule 2)
             )
 
             return {

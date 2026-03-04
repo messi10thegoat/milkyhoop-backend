@@ -25,6 +25,7 @@ class FieldSpec:
     required: bool = False
     default: Optional[str] = None
     options: list[str] = field(default_factory=list)  # for enum type
+    option_labels: dict[str, str] = field(default_factory=dict)  # enum value → display label
     description: str = ""
     hidden: bool = False         # In payload, NOT shown in confirmation table
     display_only: bool = False   # Shown in table, stripped before REST call
@@ -221,6 +222,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="account_type", label="Tipe Akun", field_type="enum",
                       required=False, default="cash",
                       options=["bank", "cash", "petty_cash", "e_wallet", "credit_card"],
+                      option_labels={"bank": "Bank", "cash": "Kas", "petty_cash": "Kas Kecil",
+                                     "e_wallet": "E-Wallet", "credit_card": "Kartu Kredit"},
                       description="Jenis rekening"),
             FieldSpec(name="bank_name", label="Nama Bank", required=False,
                       description="Nama bank (BCA, Mandiri, dll). Kosongkan untuk kas."),
@@ -267,10 +270,6 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="address", label="Alamat", required=False),
             FieldSpec(name="tax_id", label="NPWP", required=False),
             FieldSpec(name="notes", label="Catatan", required=False),
-            FieldSpec(name="bank_name", label="Nama Bank", required=False, description="Nama bank vendor"),
-            FieldSpec(name="bank_account_number", label="No Rekening Bank", required=False, description="Nomor rekening bank vendor"),
-            FieldSpec(name="bank_account_holder", label="Pemilik Rekening", required=False, description="Nama pemilik rekening bank"),
-            FieldSpec(name="bank_branch", label="Cabang Bank", required=False, description="Cabang bank vendor"),
         ],
     ),
     "create_customer": DirectActionConfig(
@@ -448,7 +447,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                       description="UUID pelanggan — resolve via search_customers"),
             FieldSpec(name="customer_name", label="Pelanggan", required=True),
             FieldSpec(name="invoice_date", label="Tanggal Faktur", field_type="date", required=True),
-            FieldSpec(name="due_date", label="Jatuh Tempo", field_type="date", required=True),
+            FieldSpec(name="due_date", label="Jatuh Tempo", field_type="date", required=False),
             FieldSpec(name="items", label="Item", field_type="json", required=True, hidden=True,
                       description="Array of {item_id, description, quantity, unit_price}"),
             FieldSpec(name="tax_rate", label="Pajak (%)", field_type="percent", default="0"),
@@ -487,7 +486,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                       description="UUID vendor — resolve via search_vendors"),
             FieldSpec(name="vendor_name", label="Vendor", required=True),
             FieldSpec(name="issue_date", label="Tanggal Bill", field_type="date"),
-            FieldSpec(name="due_date", label="Jatuh Tempo", field_type="date", required=True),
+            FieldSpec(name="due_date", label="Jatuh Tempo", field_type="date", required=False),
             FieldSpec(name="invoice_number", label="No. Faktur Vendor"),
             FieldSpec(name="items", label="Item", field_type="json", required=True, hidden=True,
                       description="Array of {product_id, product_name, qty, price, unit}"),
@@ -601,7 +600,9 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="adjustment_date", label="Tanggal", field_type="date", required=True),
             FieldSpec(name="adjustment_type", label="Tipe", field_type="enum",
-                      options=["increase", "decrease", "recount", "damaged", "expired"], required=True),
+                      options=["increase", "decrease", "recount", "damaged", "expired"], required=True,
+                      option_labels={"increase": "Penambahan", "decrease": "Pengurangan",
+                                     "recount": "Stock Opname", "damaged": "Rusak", "expired": "Kadaluarsa"}),
             FieldSpec(name="items", label="Item", field_type="json", required=True, hidden=True,
                       description="Array of {product_id, quantity_adjustment, reason_detail}. "
                                   "quantity_adjustment: positive=increase, negative=decrease."),
@@ -938,7 +939,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="sales_price", label="Harga Jual", field_type="number"),
             FieldSpec(name="purchase_price", label="Harga Beli", field_type="number"),
             FieldSpec(name="item_type", label="Tipe", field_type="enum",
-                      options=["goods", "service", "non_inventory"], default="goods"),
+                      options=["goods", "service", "non_inventory"], default="goods",
+                      option_labels={"goods": "Persediaan", "service": "Jasa", "non_inventory": "Non Persediaan"}),
             FieldSpec(name="description", label="Deskripsi"),
         ],
     ),
@@ -1044,10 +1046,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         ttl_seconds=300,
         action_type_key="UPDATE_VENDOR",
         signal_words=["edit vendor", "ubah vendor", "ganti nama vendor",
-                       "update vendor", "edit supplier",
-                       "rekening vendor", "data bank vendor", "nomor rekening vendor",
-                       "tambah rekening vendor", "ubah rekening vendor", "bank vendor",
-                       "update rekening vendor"],
+                       "update vendor", "edit supplier"],
         entity_name_field="name",
         loading_message_template="Memperbarui vendor {entity_name}…",
         success_message_template="Vendor '{entity_name}' berhasil diperbarui.",
@@ -1057,10 +1056,6 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="phone", label="Telepon"),
             FieldSpec(name="email", label="Email"),
             FieldSpec(name="address", label="Alamat"),
-            FieldSpec(name="bank_name", label="Nama Bank", description="Nama bank vendor (BCA, Mandiri, dll)"),
-            FieldSpec(name="bank_account_number", label="No Rekening Bank", description="Nomor rekening bank vendor"),
-            FieldSpec(name="bank_account_holder", label="Pemilik Rekening", description="Nama pemilik rekening bank"),
-            FieldSpec(name="bank_branch", label="Cabang Bank", description="Cabang bank vendor"),
         ],
     ),
     "update_item": DirectActionConfig(
@@ -1098,10 +1093,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         creates_journal=False,
         ttl_seconds=300,
         action_type_key="UPDATE_BANK_ACCOUNT",
-        signal_words=["edit akun kas", "ubah akun kas", "ganti nama akun kas",
-                       "update bank account", "edit akun bank",
-                       "ubah rekening kas", "edit rekening perusahaan",
-                       "update akun kas bank"],
+        signal_words=["edit rekening", "ubah rekening", "ganti nama bank",
+                       "update bank account", "edit akun kas"],
         entity_name_field="account_name",
         loading_message_template="Memperbarui akun {entity_name}…",
         success_message_template="Akun '{entity_name}' berhasil diperbarui.",
@@ -1841,7 +1834,7 @@ def apply_defaults(action_key: str, payload: dict) -> dict:
     result = dict(payload)
     for f in config.fields:
         if f.default is not None and f.name not in result:
-            if f.field_type == "number":
+            if f.field_type in ("number", "percent"):
                 result[f.name] = int(f.default) if f.default.isdigit() else float(f.default)
             elif f.field_type == "boolean":
                 result[f.name] = f.default.lower() == "true"
@@ -1899,7 +1892,9 @@ def build_confirmation_table(action_key: str, payload: dict) -> str:
             continue
         if value is not None and str(value).strip():
             display_value = str(value)
-            if f.field_type == "number":
+            if f.field_type == "enum" and f.option_labels:
+                display_value = f.option_labels.get(str(value), display_value)
+            elif f.field_type in ("number", "percent"):
                 try:
                     num_val = float(value)
                     display_value = f"Rp {int(num_val):,}".replace(",", ".")
@@ -1942,7 +1937,9 @@ def build_review_card_payload(action_key: str, payload: dict, journal_preview: l
             # Skip empty fields entirely — cleaner card
             continue
         display_value = str(value)
-        if f.field_type == "percent":
+        if f.field_type == "enum" and f.option_labels:
+            display_value = f.option_labels.get(str(value), display_value)
+        elif f.field_type == "percent":
             try:
                 num_val = float(value)
                 if num_val == 0:
@@ -1950,7 +1947,7 @@ def build_review_card_payload(action_key: str, payload: dict, journal_preview: l
                 display_value = f"{num_val:g}%"
             except (ValueError, TypeError):
                 pass
-        elif f.field_type == "number":
+        elif f.field_type in ("number", "percent"):
             try:
                 num_val = float(value)
                 display_value = f"Rp {int(num_val):,}".replace(",", ".")

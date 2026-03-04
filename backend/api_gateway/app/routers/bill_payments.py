@@ -470,6 +470,7 @@ async def list_bill_payments(
                     WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
                       AND je.status = 'POSTED' AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -568,6 +569,7 @@ async def get_bill_payments_summary(request: Request):
                     WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
                       AND je.status = 'POSTED' AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_date
                 ),
                 joined AS (
@@ -606,6 +608,7 @@ async def get_bill_payments_summary(request: Request):
                     WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
                       AND je.status = 'POSTED' AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id
                 ),
                 joined AS (

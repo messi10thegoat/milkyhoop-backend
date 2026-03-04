@@ -82,7 +82,7 @@ async def streaming_chat(request: Request, body: StreamingChatRequest):
     except ImportError:
         raise HTTPException(status_code=503, detail="openai package not installed")
 
-    model = body.model or os.getenv("STREAMING_CHAT_MODEL", "gpt-4o")
+    model = body.model or os.getenv("STREAMING_CHAT_MODEL", "gpt-4o-mini-2024-07-18")
 
     # --- Build ERP-aware system prompt ---
     ctx = _get_user_context(request)
@@ -195,5 +195,5 @@ async def streaming_chat_health():
     return {
         "status": "ok" if has_key else "unconfigured",
         "openai_key_set": has_key,
-        "model": os.getenv("STREAMING_CHAT_MODEL", "gpt-4o"),
+        "model": os.getenv("STREAMING_CHAT_MODEL", "gpt-4o-mini-2024-07-18"),
     }

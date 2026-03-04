@@ -110,6 +110,7 @@ from .routers import ledger
 from .routers import fiscal_years
 from .routers import periods
 from .routers import user
+from .routers import tenant_profile
 from .routers import bill_payments
 from .routers import payment_requests
 
@@ -592,6 +593,7 @@ app.include_router(
 # Periods router (Periode Akuntansi)
 app.include_router(periods.router, prefix="/api/periods", tags=["periods"])
 app.include_router(user.router, prefix="/api", tags=["user"])
+app.include_router(tenant_profile.router, prefix="/api/tenant", tags=["tenant-profile"])
 
 # Expenses router (Biaya & Pengeluaran)
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])

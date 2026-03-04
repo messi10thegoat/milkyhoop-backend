@@ -1,0 +1,194 @@
+/* backend/api_gateway/app/templates/pdf/invoice.css */
+@page {
+    size: A4;
+    margin: 1.5cm 2cm;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'DejaVu Sans', Arial, sans-serif;
+    font-size: 9pt;
+    color: #333;
+    line-height: 1.4;
+}
+
+.invoice {
+    max-width: 100%;
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-bottom: 15px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #333;
+}
+
+.title {
+    font-size: 18pt;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.invoice-number {
+    font-size: 11pt;
+    color: #666;
+}
+
+/* Meta Section */
+.meta-section {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 25px;
+}
+
+.vendor-info {
+    flex: 1;
+}
+
+.vendor-name {
+    font-size: 11pt;
+    font-weight: bold;
+    margin-top: 5px;
+}
+
+.vendor-address {
+    font-size: 9pt;
+    color: #666;
+    margin-top: 3px;
+}
+
+.invoice-meta {
+    text-align: right;
+}
+
+.invoice-meta table {
+    margin-left: auto;
+}
+
+.invoice-meta td {
+    padding: 2px 8px;
+}
+
+.label {
+    color: #666;
+    font-size: 8pt;
+    text-transform: uppercase;
+}
+
+/* Status colors */
+.status-draft { color: #666; }
+.status-posted, .status-unpaid { color: #2563eb; }
+.status-partial { color: #d97706; }
+.status-paid { color: #16a34a; }
+.status-overdue { color: #dc2626; }
+.status-void { color: #6b7280; text-decoration: line-through; }
+
+/* Items Table */
+.items-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+.items-table th {
+    background: #1f2937;
+    color: white;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 8pt;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.items-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e5e7eb;
+    vertical-align: top;
+}
+
+.items-table tbody tr:nth-child(even) {
+    background: #f9fafb;
+}
+
+.col-no { width: 5%; text-align: center; }
+.col-item { width: 40%; }
+.col-qty { width: 12%; text-align: right; }
+.col-price { width: 15%; text-align: right; }
+.col-disc { width: 8%; text-align: right; }
+.col-total { width: 20%; text-align: right; }
+
+.text-right { text-align: right; }
+
+.batch-info {
+    font-size: 8pt;
+    color: #6b7280;
+}
+
+/* Totals */
+.totals-section {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 20px;
+}
+
+.totals-table {
+    width: 250px;
+}
+
+.totals-table td {
+    padding: 5px 10px;
+}
+
+.totals-table .label {
+    text-align: right;
+    font-size: 9pt;
+}
+
+.totals-table .amount {
+    text-align: right;
+    font-weight: 500;
+}
+
+.grand-total {
+    background: #fef3c7;
+    font-size: 11pt;
+}
+
+.grand-total td {
+    padding: 8px 10px;
+    font-weight: bold;
+}
+
+.balance-due {
+    background: #fee2e2;
+}
+
+/* Notes */
+.notes-section {
+    margin-top: 20px;
+    padding: 12px;
+    background: #f3f4f6;
+    border-radius: 4px;
+}
+
+.notes-content {
+    margin-top: 5px;
+    font-size: 9pt;
+}
+
+/* Footer */
+.footer {
+    margin-top: 30px;
+    padding-top: 10px;
+    border-top: 1px solid #e5e7eb;
+    font-size: 8pt;
+    color: #9ca3af;
+}

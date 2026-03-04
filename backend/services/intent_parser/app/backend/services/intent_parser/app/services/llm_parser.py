@@ -77,7 +77,7 @@ def parse_intent_entities(text: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini-2024-07-18",
             messages=[
                 {"role": "system", "content": "Kamu adalah asisten NLP untuk memahami maksud dan ekstraksi entitas."},
                 {"role": "user", "content": prompt}

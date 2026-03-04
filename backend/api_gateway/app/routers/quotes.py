@@ -381,6 +381,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                     notes=quote['notes'],
                     terms=quote['terms'],
                     footer=quote['footer'],
+                    opening_text=quote['opening_text'],
+                    closing_text=quote['closing_text'],
                     items=[QuoteItemResponse(
                         id=str(item['id']),
                         item_id=str(item['item_id']) if item['item_id'] else None,
@@ -449,14 +451,14 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         reference, subject,
                         subtotal, discount_type, discount_value, discount_amount,
                         tax_amount, total_amount, status,
-                        notes, terms, footer, created_by
+                        notes, terms, footer, opening_text, closing_text, created_by
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8,
                         $9, $10,
                         $11, $12, $13, $14,
                         $15, $16, 'draft',
-                        $17, $18, $19, $20
+                        $17, $18, $19, $20, $21, $22
                     )
                 """,
                     quote_id, ctx['tenant_id'], quote_number, body.quote_date, body.expiry_date,
@@ -464,7 +466,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     body.reference, body.subject,
                     totals['subtotal'], body.discount_type, body.discount_value, totals['discount_amount'],
                     totals['tax_amount'], totals['total_amount'],
-                    body.notes, body.terms, body.footer, ctx['user_id']
+                    body.notes, body.terms, body.footer, body.opening_text, body.closing_text, ctx['user_id']
                 )
 
                 # Create items
@@ -543,7 +545,9 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     'discount_value': body.discount_value,
                     'notes': body.notes,
                     'terms': body.terms,
-                    'footer': body.footer
+                    'footer': body.footer,
+                    'opening_text': body.opening_text,
+                    'closing_text': body.closing_text
                 }
 
                 for field, value in update_fields.items():
@@ -916,14 +920,14 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                         reference, subject,
                         subtotal, discount_type, discount_value, discount_amount,
                         tax_amount, total_amount, status,
-                        notes, terms, footer, created_by
+                        notes, terms, footer, opening_text, closing_text, created_by
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8,
                         $9, $10,
                         $11, $12, $13, $14,
                         $15, $16, 'draft',
-                        $17, $18, $19, $20
+                        $17, $18, $19, $20, $21, $22
                     )
                 """,
                     new_id, ctx['tenant_id'], new_number, new_date, new_expiry,
@@ -931,7 +935,7 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                     quote['reference'], quote['subject'],
                     quote['subtotal'], quote['discount_type'], quote['discount_value'], quote['discount_amount'],
                     quote['tax_amount'], quote['total_amount'],
-                    quote['notes'], quote['terms'], quote['footer'], ctx['user_id']
+                    quote['notes'], quote['terms'], quote['footer'], quote['opening_text'], quote['closing_text'], ctx['user_id']
                 )
 
                 # Copy items
@@ -1197,3 +1201,185 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
     except Exception as e:
         logger.error(f"Error converting quote to sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to convert quote to sales order")
+
+
+# =============================================================================
+# GENERATE PDF
+# =============================================================================
+from io import BytesIO
+from fastapi.responses import StreamingResponse
+from ..services.pdf_service import get_pdf_service
+import base64
+from pathlib import Path as _Path
+
+
+@router.get("/{quote_id}/pdf")
+async def get_quote_pdf(
+    request: Request,
+    quote_id: str,
+    format: Literal["url", "inline"] = Query(
+        "inline",
+        description="Response format: 'inline' returns PDF bytes, 'url' returns presigned URL",
+    ),
+):
+    """
+    Generate PDF for a quote (penawaran harga).
+
+    Format options:
+    - inline (default): Returns PDF bytes directly for browser preview
+    - url: Returns presigned URL for download/share (expires in 1 hour)
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Fetch quote header
+            quote = await conn.fetchrow(
+                """
+                SELECT * FROM quotes
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
+
+            if not quote:
+                raise HTTPException(status_code=404, detail="Quote not found")
+
+            # Fetch items
+            items = await conn.fetch(
+                """
+                SELECT * FROM quote_items
+                WHERE quote_id = $1
+                ORDER BY sort_order, id
+                """,
+                uuid_module.UUID(quote_id),
+            )
+
+            # Fetch tenant info for PDF header
+            tenant_row = await conn.fetchrow(
+                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                ctx["tenant_id"],
+            )
+            if tenant_row:
+                tenant_info = {
+                    "name": tenant_row["display_name"],
+                    "address": tenant_row["address"],
+                    "phone": tenant_row["phone"],
+                    "logo_url": tenant_row["logo_url"],
+                }
+            else:
+                tenant_info = {
+                    "name": ctx["tenant_id"],
+                    "address": None,
+                    "phone": None,
+                    "logo_url": None,
+                }
+
+            # Resolve logo to base64 data URI for PDF embedding
+            _logo_data = None
+            _logo_filename = tenant_info.get("logo_url")
+            if _logo_filename:
+                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                if _logo_path.exists():
+                    with open(_logo_path, "rb") as _lf:
+                        _logo_b64 = base64.b64encode(_lf.read()).decode()
+                    _logo_data = f"data:image/png;base64,{_logo_b64}"
+            tenant_info["logo_data"] = _logo_data
+
+            # Build quote data dict for template
+            quote_data = {
+                "id": str(quote["id"]),
+                "quote_number": quote["quote_number"],
+                "quote_date": quote["quote_date"].isoformat() if quote["quote_date"] else None,
+                "expiry_date": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
+                "customer_id": str(quote["customer_id"]) if quote["customer_id"] else None,
+                "customer_name": quote["customer_name"],
+                "customer_email": quote["customer_email"],
+                "reference": quote["reference"],
+                "subject": quote["subject"],
+                "status": quote["status"],
+                "subtotal": quote["subtotal"],
+                "discount_type": quote["discount_type"],
+                "discount_value": float(quote["discount_value"] or 0),
+                "discount_amount": quote["discount_amount"],
+                "tax_amount": quote["tax_amount"],
+                "total_amount": quote["total_amount"],
+                "shipping_charges": None,
+                "adjustment": None,
+                "adjustment_label": None,
+                "opening_text": quote["opening_text"],
+                "closing_text": quote["closing_text"],
+                "notes": quote["notes"],
+                "terms": quote["terms"],
+                "footer": quote["footer"],
+                "items": [
+                    {
+                        "id": str(item["id"]),
+                        "item_id": str(item["item_id"]) if item["item_id"] else None,
+                        "description": item["description"],
+                        "quantity": float(item["quantity"]),
+                        "unit": item["unit"],
+                        "unit_price": item["unit_price"],
+                        "discount_percent": float(item["discount_percent"] or 0),
+                        "tax_rate": float(item["tax_rate"] or 0),
+                        "tax_amount": item["tax_amount"],
+                        "line_total": item["line_total"],
+                        "group_name": item["group_name"],
+                        "sort_order": item["sort_order"],
+                    }
+                    for item in items
+                ],
+            }
+
+        # Generate PDF
+        pdf_service = get_pdf_service()
+        pdf_bytes = pdf_service.generate_quote_pdf(quote_data, tenant_info)
+
+        # Generate filename
+        quote_num = quote["quote_number"] or str(quote_id)[:8]
+        filename = f"Penawaran-{quote_num}.pdf"
+
+        if format == "inline":
+            return StreamingResponse(
+                BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Cache-Control": "private, max-age=300",
+                },
+            )
+
+        # Upload to storage and return presigned URL
+        from ..services.storage_service import get_storage_service
+        from datetime import timedelta
+        storage = get_storage_service()
+        file_path = f"{ctx['tenant_id']}/quotes/{quote_id}.pdf"
+
+        url = await storage.upload_bytes(
+            content=pdf_bytes,
+            file_path=file_path,
+            content_type="application/pdf",
+            metadata={"quote_id": str(quote_id), "quote_number": quote_num},
+        )
+
+        expires_at = datetime.utcnow() + timedelta(seconds=storage.config.url_expiry)
+
+        return {
+            "success": True,
+            "data": {
+                "status": "ok",
+                "url": url,
+                "expires_at": expires_at.isoformat() + "Z",
+                "filename": filename,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error generating PDF for quote {quote_id}: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate PDF")

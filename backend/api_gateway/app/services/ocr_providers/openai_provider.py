@@ -23,12 +23,12 @@ class OpenAIOCRProvider(OCRProvider):
     """
     OpenAI Vision API provider.
     Tier 2: gpt-4o-mini (cheap, fast)
-    Tier 3: gpt-4o (expensive, accurate)
+    Tier 3: gpt-4o-mini (cost-optimized)
     """
 
     TIER_MODELS = {
         2: "gpt-4o-mini",
-        3: "gpt-4o",
+        3: "gpt-4o-mini-2024-07-18",
     }
 
     def __init__(self, api_key: str):

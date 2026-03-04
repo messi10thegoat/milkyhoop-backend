@@ -23,7 +23,6 @@ from uuid import uuid4
 
 from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse
 from .system_prompt import build_system_prompt, build_system_messages, get_intent_bias, _infer_intent
-from .intent_classifier import RouteResult  # classify_and_route removed (Final Cleanup)
 from .tool_registry import get_tools, get_tools_for_domains, TOOL_DOMAINS
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label
 from .tool_registry import is_tutorial_tool  # noqa: E402
@@ -512,18 +511,6 @@ MAX_TOOL_CALLS = 12  # Hard budget: total tool calls per request
 MAX_PROPOSE_ATTEMPTS = 2  # Max propose_action retries
 MAX_OUTPUT_TOKENS = 4000  # LLM output token limit
 
-# Per-intent iteration budgets (Final Cleanup: capped for token savings)
-MAX_ITERATIONS_BY_INTENT = {
-    "CHITCHAT": 1,
-    "SIMPLE_READ": 3,
-    "COMPLEX_READ": 3,
-    "ACTION": 4,
-    "CHART": 2,
-    "RECON": 5,
-    "FOLLOWUP": 3,
-    "WORKFLOW_CONTINUE": 3,
-}
-
 # Tools that MUST execute sequentially (state-mutating or order-dependent)
 MUST_SEQUENTIAL_TOOLS = {
     "propose_action",
@@ -663,80 +650,6 @@ class UnifiedAgent:
     def __init__(self):
         self.router = LLMRouter.from_env()
 
-    async def _handle_chitchat(
-        self,
-        user_text: str,
-        context: TenantContext,
-        route_result: "RouteResult",
-    ) -> AgentResponse:
-        """Phase 4B: CHITCHAT short-circuit.
-        0 tools, IDENTITY_ONLY prompt, max_tokens=300, 1 iteration.
-        Cost: ~500 tokens input + ~100 output = ~$0.0001.
-        """
-        start_time = time.time()
-        from .system_prompt import build_system_messages as _build_sys
-
-        sys_msgs = _build_sys(
-            tenant_name=context.tenant_name,
-            today=date.today().isoformat(),
-            user_text=user_text,
-            intent="CHITCHAT",
-        )
-        messages = [
-            LLMMessage(role=msg["role"], content=msg["content"])
-            for msg in sys_msgs
-        ]
-        messages.append(LLMMessage(role="user", content=user_text))
-
-        client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
-        try:
-            resp = await client.chat(
-                messages=messages,
-                tools=[],
-                model=model,
-                temperature=TEMPERATURE_CHAT,
-                max_tokens=300,
-            )
-            content = (resp.content or "").strip()
-            usage = {}
-            if hasattr(resp, "usage") and resp.usage:
-                usage = dict(resp.usage)
-            # Inject classifier metrics into usage
-            usage["classifier_tokens_in"] = route_result.classifier_tokens_in
-            usage["classifier_tokens_out"] = route_result.classifier_tokens_out
-            usage["classifier_latency_ms"] = route_result.classifier_latency_ms
-            usage["classifier_intent"] = route_result.intent
-            usage["classifier_confidence"] = route_result.confidence
-            usage["classifier_skipped"] = route_result.classifier_skipped
-        except Exception as e:
-            logger.error("[CHITCHAT] LLM error: %s", e)
-            content = "Halo! Ada yang bisa saya bantu dengan pembukuan hari ini?"
-            usage = {
-                "classifier_tokens_in": route_result.classifier_tokens_in,
-                "classifier_tokens_out": route_result.classifier_tokens_out,
-                "classifier_latency_ms": route_result.classifier_latency_ms,
-                "classifier_intent": route_result.intent,
-                "classifier_confidence": route_result.confidence,
-                "classifier_skipped": route_result.classifier_skipped,
-            }
-
-        latency_ms = int((time.time() - start_time) * 1000)
-        logger.warning(
-            "[Phase4-CHITCHAT] SHORT-CIRCUIT user='%s' latency=%dms",
-            user_text[:30], latency_ms,
-        )
-
-        return AgentResponse(
-            message_type="TEXT",
-            content=content,
-            iterations=1,
-            tool_calls_made=[],
-            model_used=model,
-            total_latency_ms=latency_ms,
-            thinking_stages=[],
-            usage=usage,
-        )
-
     async def process_message(
         self,
         user_text: str,
@@ -745,8 +658,6 @@ class UnifiedAgent:
         tool_executor: Optional[ToolExecutor] = None,
         image_content: Optional[list] = None,
         event_callback=None,
-        db_pool=None,
-        chat_session_id: str = None,
     ) -> AgentResponse:
         """
         Main entry point. Processes a user message through the agent loop.
@@ -778,25 +689,12 @@ class UnifiedAgent:
         if not tool_executor:
             tool_executor = ToolExecutor(context, user_text=user_text)
 
-        # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
+        # Phase 3A: Infer intent for segmented prompt loading
         _intent = _infer_intent(user_text)
-        _route = RouteResult(
-            intent=_intent,
-            confidence=1.0,
-            classifier_skipped=True,
-            low_confidence_fallback=False,
-            classifier_tokens_in=0,
-            classifier_tokens_out=0,
-            classifier_latency_ms=0,
-        )
         logger.warning(
-            "[INTENT] intent=%s user='%s'",
+            "[Phase3A] intent=%s user_text='%s'",
             _intent, user_text[:50],
         )
-
-        # CHITCHAT short-circuit — bypass agent loop entirely
-        if _intent == "CHITCHAT":
-            return await self._handle_chitchat(user_text, context, _route)
 
         # Build messages — segmented system prompt (Phase 3A)
         # Segments loaded based on intent: CHITCHAT=~500tok, SIMPLE_READ=~2.5K, etc.
@@ -915,18 +813,9 @@ class UnifiedAgent:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
-            # Phase 4: Classifier telemetry
-            "classifier_tokens_in": _route.classifier_tokens_in,
-            "classifier_tokens_out": _route.classifier_tokens_out,
-            "classifier_latency_ms": _route.classifier_latency_ms,
-            "classifier_intent": _route.intent,
-            "classifier_confidence": _route.confidence,
-            "classifier_skipped": _route.classifier_skipped,
-            "low_confidence_fallback": _route.low_confidence_fallback,
         }
 
-        _max_iter = MAX_ITERATIONS_BY_INTENT.get(_intent, MAX_ITERATIONS)
-        for iteration in range(_max_iter):
+        for iteration in range(MAX_ITERATIONS):
             # Budget guard
             if tool_executor.call_count >= MAX_TOOL_CALLS:
                 await emit(
@@ -1500,7 +1389,7 @@ class UnifiedAgent:
             message_type="TEXT",
             content="Maaf, saya tidak bisa menyelesaikan permintaan ini. "
             "Bisa coba ulangi dengan informasi yang lebih spesifik?",
-            iterations=_max_iter,
+            iterations=MAX_ITERATIONS,
             tool_calls_made=tool_calls_log,
             model_used=current_model,
             total_latency_ms=int((time.time() - start_time) * 1000),

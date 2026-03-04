@@ -31,7 +31,7 @@ class EnrichmentOrchestrator:
         self.llm = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self.tool_executor = ToolExecutor(settings.API_GATEWAY_URL)
         self.max_iterations = 5
-        self.model = "gpt-4o"  # Better for function calling than gpt-4o-mini
+        self.model = "gpt-4o-mini-2024-07-18"  # Better for function calling than gpt-4o-mini
     
     async def enrich_and_plan(
         self, 

@@ -62,7 +62,7 @@ class RAGLLMClient:
             
             # Determine model based on intelligence level if not specified
             if model is None:
-                model = "gpt-4" if intelligence_level == "deep" else "gpt-3.5-turbo"
+                model = "gpt-4o-mini-2024-07-18" if intelligence_level == "deep" else "gpt-3.5-turbo"
             
             # Convert FAQ context to string format
             context_text = self._format_faq_context(faq_context)

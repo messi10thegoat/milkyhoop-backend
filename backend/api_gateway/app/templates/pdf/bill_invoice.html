@@ -1,150 +1,169 @@
 <!DOCTYPE html>
 <html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <title>Faktur {{ bill.invoice_number or '-' }}</title>
-</head>
+<head><meta charset="UTF-8"><title>Faktur {{ bill.invoice_number or '-' }}</title></head>
 <body>
-    <div class="invoice">
-        <!-- Header -->
-        <div class="header">
-            <div class="title">FAKTUR PEMBELIAN</div>
-            <div class="invoice-number">{{ bill.invoice_number or '-' }}</div>
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Faktur Pembelian</h1>
+            <div class="doc-subtitle">Bill</div>
         </div>
+        {% if bill.tenant and bill.tenant.logo_data %}
+        <img src="{{ bill.tenant.logo_data }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
 
-        <!-- Meta Info -->
-        <div class="meta-section">
-            <div class="vendor-info">
-                <div class="label">Dari</div>
-                <div class="vendor-name">{{ bill.vendor.name if bill.vendor else (bill.vendor_name or '-') }}</div>
-                {% if bill.vendor and bill.vendor.address %}
-                <div class="vendor-address">{{ bill.vendor.address }}</div>
-                {% endif %}
-            </div>
-
-            <div class="invoice-meta">
-                <table>
-                    <tr>
-                        <td class="label">Tanggal:</td>
-                        <td>{{ bill.issue_date | date_id }}</td>
-                    </tr>
-                    <tr>
-                        <td class="label">Jatuh Tempo:</td>
-                        <td>{{ bill.due_date | date_id }}</td>
-                    </tr>
-                    {% if bill.ref_no %}
-                    <tr>
-                        <td class="label">Ref:</td>
-                        <td>{{ bill.ref_no }}</td>
-                    </tr>
-                    {% endif %}
-                    <tr>
-                        <td class="label">Status:</td>
-                        <td class="status-{{ bill.status }}">{{ status_label }}</td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-
-        <!-- Items Table -->
-        <table class="items-table">
-            <thead>
-                <tr>
-                    <th class="col-no">#</th>
-                    <th class="col-item">Item</th>
-                    <th class="col-qty">Qty</th>
-                    <th class="col-price">Harga</th>
-                    <th class="col-disc">Disk</th>
-                    <th class="col-total">Jumlah</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in bill["items"] %}
-                <tr>
-                    <td class="col-no">{{ loop.index }}</td>
-                    <td class="col-item">
-                        {{ item.product_name or item.description or '-' }}
-                        {% if item.batch_no %}
-                        <br><span class="batch-info">Batch: {{ item.batch_no }}</span>
-                        {% endif %}
-                        {% if item.exp_date %}
-                        <span class="batch-info"> Exp: {{ item.exp_date }}</span>
-                        {% endif %}
-                    </td>
-                    <td class="col-qty text-right">{{ item.qty or item.quantity }} {{ item.unit or '' }}</td>
-                    <td class="col-price text-right">{{ (item.price or item.unit_price) | currency }}</td>
-                    <td class="col-disc text-right">{{ item.discount_percent | default(0) }}%</td>
-                    <td class="col-total text-right">{{ (item.total or item.subtotal) | currency }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
+    <!-- 2. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">Nomor faktur</td>
+                <td class="meta-value">{{ bill.invoice_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ (bill.issue_date or bill.bill_date) | date_id }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Jatuh tempo</td>
+                <td class="meta-value">{{ bill.due_date | date_id }}</td>
+            </tr>
+            {% if bill.ref_no %}
+            <tr>
+                <td class="meta-label">Referensi</td>
+                <td class="meta-value">{{ bill.ref_no }}</td>
+            </tr>
+            {% endif %}
         </table>
+    </div>
 
-        <!-- Totals -->
-        <div class="totals-section">
-            <table class="totals-table">
-                <tr>
-                    <td class="label">Subtotal</td>
-                    <td class="amount">Rp {{ bill.subtotal | currency }}</td>
-                </tr>
-                {% if bill.item_discount_total and bill.item_discount_total > 0 %}
-                <tr>
-                    <td class="label">Diskon Item</td>
-                    <td class="amount">-Rp {{ bill.item_discount_total | currency }}</td>
-                </tr>
-                {% endif %}
-                {% if bill.invoice_discount_total and bill.invoice_discount_total > 0 %}
-                <tr>
-                    <td class="label">Diskon Faktur</td>
-                    <td class="amount">-Rp {{ bill.invoice_discount_total | currency }}</td>
-                </tr>
-                {% endif %}
-                {% if bill.cash_discount_total and bill.cash_discount_total > 0 %}
-                <tr>
-                    <td class="label">Diskon Tunai</td>
-                    <td class="amount">-Rp {{ bill.cash_discount_total | currency }}</td>
-                </tr>
-                {% endif %}
-                {% if bill.tax_rate and bill.tax_rate > 0 %}
-                <tr>
-                    <td class="label">DPP</td>
-                    <td class="amount">Rp {{ bill.dpp | currency }}</td>
-                </tr>
-                <tr>
-                    <td class="label">PPN ({{ bill.tax_rate }}%)</td>
-                    <td class="amount">Rp {{ bill.tax_amount | currency }}</td>
-                </tr>
-                {% endif %}
-                <tr class="grand-total">
-                    <td class="label">Total</td>
-                    <td class="amount">Rp {{ (bill.amount or bill.grand_total) | currency }}</td>
-                </tr>
-                {% if bill.amount_paid and bill.amount_paid > 0 %}
-                <tr>
-                    <td class="label">Dibayar</td>
-                    <td class="amount">Rp {{ bill.amount_paid | currency }}</td>
-                </tr>
-                <tr class="balance-due">
-                    <td class="label">Sisa</td>
-                    <td class="amount">Rp {{ bill.amount_due | currency }}</td>
-                </tr>
-                {% endif %}
-            </table>
+    <!-- 3. Parties -->
+    <div class="parties">
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ bill.vendor.name if bill.vendor else (bill.vendor_name or '-') }}</div>
+            {% if bill.vendor and bill.vendor.address %}
+            <div class="party-detail">{{ bill.vendor.address }}</div>
+            {% endif %}
         </div>
-
-        {% if bill.notes %}
-        <div class="notes-section">
-            <div class="label">Catatan</div>
-            <div class="notes-content">{{ bill.notes }}</div>
+        {% if bill.tenant %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ bill.tenant.name }}</div>
+            {% if bill.tenant.address %}
+            <div class="party-detail">{{ bill.tenant.address }}</div>
+            {% endif %}
         </div>
         {% endif %}
-
-        <!-- Footer -->
-        <div class="footer">
-            <div class="generated-at">
-                Dicetak: {{ generated_at | date_id }}
-            </div>
-        </div>
     </div>
+
+    <!-- 4. Hero Amount -->
+    {% set bill_total = bill.amount or bill.grand_total or 0 %}
+    <div class="hero">
+        <div class="hero-amount">Rp {{ bill_total | currency }}</div>
+        {% if bill.due_date %}
+        <div class="hero-due">Jatuh tempo {{ bill.due_date | date_id }}</div>
+        {% endif %}
+    </div>
+
+    <div style="height: 28px;"></div>
+
+    <!-- 5. Line Items -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Deskripsi</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in bill["items"] %}
+            <tr>
+                <td class="col-desc">
+                    {{ item.product_name or item.description or '-' }}
+                    {% if item.batch_no %}
+                    <br><span class="text-muted">Batch: {{ item.batch_no }}</span>
+                    {% endif %}
+                    {% if item.discount_percent and item.discount_percent|float > 0 %}
+                    <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
+                    {% endif %}
+                </td>
+                <td class="col-qty">{{ item.qty or item.quantity }}</td>
+                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
+                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- 6. Summary -->
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Subtotal</td>
+                <td class="value">Rp {{ bill.subtotal | currency }}</td>
+            </tr>
+            {% if bill.item_discount_total and bill.item_discount_total|float > 0 %}
+            <tr>
+                <td class="label">Diskon item</td>
+                <td class="value">-Rp {{ bill.item_discount_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if bill.invoice_discount_total and bill.invoice_discount_total|float > 0 %}
+            <tr>
+                <td class="label">Diskon faktur</td>
+                <td class="value">-Rp {{ bill.invoice_discount_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if bill.cash_discount_total and bill.cash_discount_total|float > 0 %}
+            <tr>
+                <td class="label">Diskon tunai</td>
+                <td class="value">-Rp {{ bill.cash_discount_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if bill.tax_rate and bill.tax_rate|float > 0 %}
+            <tr>
+                <td class="label">DPP</td>
+                <td class="value">Rp {{ bill.dpp | currency }}</td>
+            </tr>
+            <tr>
+                <td class="label">PPN ({{ bill.tax_rate }}%)</td>
+                <td class="value">Rp {{ bill.tax_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label">Total</td>
+                <td class="value">Rp {{ bill_total | currency }}</td>
+            </tr>
+            {% if bill.amount_paid and bill.amount_paid|float > 0 %}
+            <tr class="paid-row">
+                <td class="label">Dibayar</td>
+                <td class="value">Rp {{ bill.amount_paid | currency }}</td>
+            </tr>
+            <tr class="due-row">
+                <td class="label">Sisa tagihan</td>
+                <td class="value">Rp {{ bill.amount_due | currency }}</td>
+            </tr>
+            {% endif %}
+        </table>
+    </div>
+
+    {% if bill.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ bill.notes }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 7. Footer -->
+    <div class="footer-line">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
 </body>
 </html>

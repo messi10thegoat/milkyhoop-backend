@@ -297,6 +297,7 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -367,6 +368,7 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),

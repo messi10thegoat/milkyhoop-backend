@@ -1266,9 +1266,7 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
             "Usulkan aksi akuntansi untuk konfirmasi user. "
             "MEMVALIDASI dan membuat preview, tapi TIDAK mengeksekusi. "
             "WAJIB resolve semua ID via search tools SEBELUM memanggil ini. "
-            "Semua field langsung di top-level, JANGAN nest di payload. "
-            "HANYA untuk: BANK_TRANSFER, CREATE_CREDIT_NOTE, CLOSE_PERIOD, REOPEN_PERIOD. "
-            "Semua transaksi dan master data CRUD lainnya → pakai propose_direct_action."
+            "Semua field langsung di top-level, JANGAN nest di payload."
         ),
         "parameters": {
             "type": "object",
@@ -1445,19 +1443,13 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
         "name": "propose_direct_action",
         "description": (
             "Propose a direct action for user confirmation via inline table + CTA buttons. "
-            "Use for master data CRUD AND bank reconciliation actions. "
-            "Include ALL field values in payload. "
-            "KEY FIELDS: "
-            "create_sales_invoice: customer_id, items [{item_id, description, quantity, unit_price}], auto_post=true. "
-            "create_bill: vendor_id, vendor_name, issue_date (NOT bill_date!), items [{product_id, product_name, qty, price, unit}], status=posted. "
-            "create_expense: expense_date, paid_through_id (NOT bank_account_id!), account_id, amount, description. "
-            "create_journal_entry: entry_date (NOT journal_date!), description (NOT memo!), lines [{account_id, description, debit, credit}]. "
-            "create_receive_payment: customer_id, allocations [{invoice_id, amount_applied}], total_amount, payment_date, bank_account_id. "
-            "create_bill_payment: vendor_id, allocations [{bill_id, amount_applied}], total_amount, payment_date, bank_account_id. "
-            "create_stock_adjustment: adjustment_date, adjustment_type, items [{product_id, quantity_adjustment, reason_detail}], notes. "
-            "VOID: void_sales_invoice/void_bill={id, number, reason}. "
-            "For recon: copy review_next_unmatched data into display fields. "
-            "Hidden fields (session_id, statement_line_id) required but not shown."
+            "Use for master data CRUD (bank accounts, vendors) AND bank reconciliation actions "
+            "(categorize_statement, confirm_single_match). "
+            "Include ALL field values gathered from conversation in the payload object. "
+            "The payload MUST contain the relevant fields for the chosen action_key. "
+            "For reconciliation actions: copy data from review_next_unmatched into display fields "
+            "(statement_description, statement_amount, account_name, etc). "
+            "Hidden fields (session_id, statement_line_id) are required but not shown to user."
         ),
         "parameters": {
             "type": "object",
