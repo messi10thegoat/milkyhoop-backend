@@ -17,7 +17,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from decimal import Decimal
-from uuid import uuid4
 from itertools import combinations
 
 import httpx
@@ -30,7 +29,9 @@ def _to_amount(value) -> "Decimal":
     try:
         return Decimal(str(value))
     except Exception:
-        logger.warning(f"[MATCH] Invalid amount value: {value!r} ({type(value).__name__})")
+        logger.warning(
+            f"[MATCH] Invalid amount value: {value!r} ({type(value).__name__})"
+        )
         return Decimal("0")
 
 
@@ -106,9 +107,7 @@ def _safe_get_id(entity: dict, entity_type: str) -> str:
     return ""
 
 
-def find_allocation_options(
-    matches: list[dict], transfer_amount: "Decimal"
-) -> dict:
+def find_allocation_options(matches: list[dict], transfer_amount: "Decimal") -> dict:
     """
     Find how to allocate transfer_amount across matching invoices/bills.
     Capped at 5 items to avoid exponential blowup.
@@ -123,24 +122,27 @@ def find_allocation_options(
     capped = matches[:5]
     for r in range(2, len(capped) + 1):
         for combo in combinations(capped, r):
-            if sum(_to_amount(m.get("amount_due", 0)) for m in combo) == transfer_amount:
+            if (
+                sum(_to_amount(m.get("amount_due", 0)) for m in combo)
+                == transfer_amount
+            ):
                 return {"type": "multi", "allocation": list(combo)}
 
     # No exact combo -> return options for user to pick
     return {"type": "needs_user_input", "options": capped}
 
-from .tool_registry import (
+
+from .tool_registry import (  # noqa: E402
     get_endpoint_for_tool,
-    is_action_tool,
     is_session_tool,
     is_valid_tool,
-    get_action_type_enum,
     ACTION_TYPE_MAP,
-    AUTO_EXECUTE_ACTIONS,
-    is_direct_action_tool,
+    is_tutorial_tool,
 )
-from .direct_action_registry import (
-    get_direct_action, validate_payload, apply_defaults,
+from .direct_action_registry import (  # noqa: E402
+    get_direct_action,
+    validate_payload,
+    apply_defaults,
     build_confirmation_table,
     build_review_card_payload,
     build_ux_metadata,
@@ -148,9 +150,20 @@ from .direct_action_registry import (
     QueryActionConfig,
     ChartQueryConfig,
 )
-from .retry_controller import execute_with_retry, RetryController, ErrorCategory
-from .tool_metadata import get_tool_metadata, get_action_metadata
-from .correlation import TurnContext
+from .retry_controller import execute_with_retry  # noqa: E402
+from .tool_metadata import get_tool_metadata  # noqa: E402
+from .correlation import TurnContext  # noqa: E402
+from .tutorial_registry import (  # noqa: E402
+    get_tutorial,
+    get_tutorial_step,
+    list_available_tutorials,
+)
+from .tutorial_progress import (  # noqa: E402
+    get_progress,
+    upsert_progress,
+    advance_tutorial as advance_tutorial_step,
+    dismiss_tutorial as dismiss_tutorial_progress,
+)
 
 logger = logging.getLogger("unified_agent.tool_executor")
 logger.setLevel(logging.INFO)
@@ -219,7 +232,10 @@ ACTION_ENRICHMENT = {
 
 class TenantContext:
     """Tenant context passed to tool executor."""
-    def __init__(self, tenant_id: str, user_id: str, auth_token: str, tenant_name: str = ""):
+
+    def __init__(
+        self, tenant_id: str, user_id: str, auth_token: str, tenant_name: str = ""
+    ):
         self.tenant_id = tenant_id
         self.user_id = user_id
         self.auth_token = auth_token
@@ -232,7 +248,13 @@ class ToolExecutor:
     Routes: read tools -> httpx, action tools -> gRPC.
     """
 
-    def __init__(self, context: TenantContext, session_manager=None, session_id: str = None, user_text: str = ""):
+    def __init__(
+        self,
+        context: TenantContext,
+        session_manager=None,
+        session_id: str = None,
+        user_text: str = "",
+    ):
         self.context = context
         self.session_manager = session_manager
         self.session_id = session_id
@@ -245,18 +267,22 @@ class ToolExecutor:
     @property
     def validator_client(self):
         if self._validator_client is None:
-            from ..action_validator_client import get_action_validator_client
+            from ..action_validator_client import get_action_validator_client  # noqa: E402
+
             self._validator_client = get_action_validator_client()
         return self._validator_client
 
     @property
     def executor_client(self):
         if self._executor_client is None:
-            from ..action_executor_client import get_action_executor_client
+            from ..action_executor_client import get_action_executor_client  # noqa: E402
+
             self._executor_client = get_action_executor_client()
         return self._executor_client
 
-    async def execute(self, tool_name: str, params: Dict[str, Any], turn_ctx: "TurnContext" = None) -> Dict[str, Any]:
+    async def execute(
+        self, tool_name: str, params: Dict[str, Any], turn_ctx: "TurnContext" = None
+    ) -> Dict[str, Any]:
         """Execute a tool call with automatic retry handling (H4).
 
         Wraps _execute_once() with retry logic from RetryController.
@@ -271,7 +297,7 @@ class ToolExecutor:
         if not is_valid_tool(tool_name):
             return _error("UNKNOWN_TOOL", f"Tool {tool_name!r} tidak ditemukan.")
 
-        tool_meta = get_tool_metadata(tool_name)
+        _tool_meta = get_tool_metadata(tool_name)
 
         # --- Observability: create tool call context if turn_ctx provided ---
         tool_call_ctx = None
@@ -298,15 +324,21 @@ class ToolExecutor:
         try:
             if tool_call_ctx:
                 tc_status = "success" if result.get("success") else "failed"
-                tc_error = result.get("error_type") if not result.get("success") else None
+                tc_error = (
+                    result.get("error_type") if not result.get("success") else None
+                )
                 tool_call_ctx.complete(tc_status, error_type=tc_error)
-                logger.info(f"[TOOL_CALL] tool={tool_name} call_id={tool_call_ctx.tool_call_id} status={tc_status} latency={tool_call_ctx.latency_ms}ms")
+                logger.info(
+                    f"[TOOL_CALL] tool={tool_name} call_id={tool_call_ctx.tool_call_id} status={tc_status} latency={tool_call_ctx.latency_ms}ms"
+                )
         except Exception:
             pass
 
         return result
 
-    async def _execute_once(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_once(
+        self, tool_name: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a single tool call attempt. Routes to appropriate handler."""
         try:
             if is_session_tool(tool_name):
@@ -323,17 +355,147 @@ class ToolExecutor:
                 return await self._execute_get_customer_invoices(params)
             elif tool_name == "get_vendor_bills":
                 return await self._execute_get_vendor_bills(params)
+            elif is_tutorial_tool(tool_name):
+                return await self._execute_tutorial_tool(tool_name, params)
             else:
                 return await self._execute_read(tool_name, params)
         except httpx.TimeoutException:
-            return {"success": False, "error": f"Tool {tool_name!r} timeout.", "error_type": "timeout", "status_code": None}
+            return {
+                "success": False,
+                "error": f"Tool {tool_name!r} timeout.",
+                "error_type": "timeout",
+                "status_code": None,
+            }
         except httpx.ConnectError:
-            return {"success": False, "error": f"Tool {tool_name!r} connection refused.", "error_type": "connection_refused", "status_code": None}
+            return {
+                "success": False,
+                "error": f"Tool {tool_name!r} connection refused.",
+                "error_type": "connection_refused",
+                "status_code": None,
+            }
         except Exception as e:
             logger.exception(f"Tool execution error: {tool_name}")
             return _error("INTERNAL_ERROR", f"Error: {str(e)[:200]}")
 
     # --- Direct Action Execution ---
+
+    # --- Tutorial Tool Execution ---
+
+    async def _execute_tutorial_tool(
+        self, tool_name: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute a tutorial tool (DB-backed, no session_manager needed)."""
+        from .db_utils import get_session_db_pool  # noqa: E402
+
+        pool = await get_session_db_pool()
+        user_id = self.context.user_id
+        tenant_id = self.context.tenant_id
+
+        async with pool.acquire() as conn:
+            if tool_name == "list_tutorials":
+                tutorials = list_available_tutorials()
+                return {"success": True, "tutorials": tutorials}
+
+            elif tool_name == "get_tutorial":
+                tutorial_key = params.get("tutorial_key", "")
+                config = get_tutorial(tutorial_key)
+                if not config:
+                    return _error("NOT_FOUND", f"Tutorial '{tutorial_key}' not found")
+                progress = await get_progress(conn, user_id, tutorial_key)
+                current = progress.current_step if progress else 0
+                steps_data = []
+                for step in config.steps:
+                    steps_data.append(
+                        {
+                            "step_key": step.step_key,
+                            "step_index": step.step_index,
+                            "linked_action": step.linked_action,
+                            "completion_trigger": step.completion_trigger,
+                            "skippable": step.skippable,
+                        }
+                    )
+                return {
+                    "success": True,
+                    "tutorial_key": config.tutorial_key,
+                    "display_key": config.display_key,
+                    "total_steps": config.total_steps,
+                    "current_step": current,
+                    "status": progress.status if progress else "not_started",
+                    "steps": steps_data,
+                }
+
+            elif tool_name == "start_tutorial":
+                tutorial_key = params.get("tutorial_key", "")
+                config = get_tutorial(tutorial_key)
+                if not config:
+                    return _error("NOT_FOUND", f"Tutorial '{tutorial_key}' not found")
+                progress = await upsert_progress(
+                    conn,
+                    user_id,
+                    tenant_id,
+                    tutorial_key,
+                    current_step=1,
+                    status="active",
+                )
+                first_step = config.steps[0] if config.steps else None
+                return {
+                    "success": True,
+                    "message_type": "TUTORIAL_STEP",
+                    "status": "started",
+                    "tutorial_key": tutorial_key,
+                    "current_step": 1,
+                    "total_steps": config.total_steps,
+                    "step": {
+                        "step_key": first_step.step_key,
+                        "linked_action": first_step.linked_action,
+                        "completion_trigger": first_step.completion_trigger,
+                        "skippable": first_step.skippable,
+                    }
+                    if first_step
+                    else None,
+                }
+
+            elif tool_name == "advance_tutorial":
+                tutorial_key = params.get("tutorial_key", "")
+                next_step = await advance_tutorial_step(
+                    conn, user_id, tenant_id, tutorial_key
+                )
+                if next_step is None:
+                    return {
+                        "success": True,
+                        "status": "completed",
+                        "tutorial_key": tutorial_key,
+                    }
+                config = get_tutorial(tutorial_key)
+                step = get_tutorial_step(tutorial_key, next_step)
+                return {
+                    "success": True,
+                    "message_type": "TUTORIAL_STEP",
+                    "status": "advanced",
+                    "tutorial_key": tutorial_key,
+                    "current_step": next_step,
+                    "total_steps": config.total_steps if config else 0,
+                    "step": {
+                        "step_key": step.step_key,
+                        "linked_action": step.linked_action,
+                        "completion_trigger": step.completion_trigger,
+                    }
+                    if step
+                    else None,
+                }
+
+            elif tool_name == "dismiss_tutorial":
+                tutorial_key = params.get("tutorial_key", "")
+                await dismiss_tutorial_progress(conn, user_id, tenant_id, tutorial_key)
+                return {
+                    "success": True,
+                    "status": "dismissed",
+                    "tutorial_key": tutorial_key,
+                }
+
+            return _error(
+                "UNKNOWN_TUTORIAL_TOOL", f"Tutorial tool {tool_name!r} tidak dikenali."
+            )
 
     async def _run_pre_flight_checks(self, config, payload: dict) -> dict:
         """Run pre-flight checks before proposing action to user.
@@ -341,7 +503,7 @@ class ToolExecutor:
         Returns: {"blocked": False} if all pass or no checks.
                  {"blocked": True, "message": "...", "alternatives": [...]} if fail.
         """
-        if not hasattr(config, 'pre_flight_checks') or not config.pre_flight_checks:
+        if not hasattr(config, "pre_flight_checks") or not config.pre_flight_checks:
             return {"blocked": False}
 
         for check in config.pre_flight_checks:
@@ -387,7 +549,10 @@ class ToolExecutor:
         Returns None if config has no journal_preview_endpoint.
         Non-fatal: preview failure → continue without preview.
         """
-        if not hasattr(config, 'journal_preview_endpoint') or not config.journal_preview_endpoint:
+        if (
+            not hasattr(config, "journal_preview_endpoint")
+            or not config.journal_preview_endpoint
+        ):
             return None
 
         try:
@@ -403,7 +568,9 @@ class ToolExecutor:
                     json=payload,
                 )
                 if resp.status_code >= 400:
-                    logger.warning(f"Journal preview HTTP {resp.status_code} for {config.action_key}")
+                    logger.warning(
+                        f"Journal preview HTTP {resp.status_code} for {config.action_key}"
+                    )
                     return None
                 return resp.json()
         except Exception as e:
@@ -412,7 +579,7 @@ class ToolExecutor:
 
     async def _execute_propose_direct(self, params: dict) -> dict:
         """Execute a direct action proposal - validate, store pending, return preview."""
-        import uuid
+        import uuid  # noqa: E402
         from datetime import datetime, timedelta, timezone
 
         action_key = params.get("action_key", "")
@@ -425,7 +592,9 @@ class ToolExecutor:
 
         config = get_direct_action(action_key)
         if not config:
-            return _error("UNKNOWN_ACTION", f"Action '{action_key}' tidak ditemukan di registry.")
+            return _error(
+                "UNKNOWN_ACTION", f"Action '{action_key}' tidak ditemukan di registry."
+            )
 
         # === PRE-FLIGHT CHECKS ===
         pre_flight = await self._run_pre_flight_checks(config, payload)
@@ -437,7 +606,7 @@ class ToolExecutor:
 
         # === JOURNAL PREVIEW ===
         journal_preview = None
-        if config.creates_journal and hasattr(config, 'journal_preview_endpoint'):
+        if config.creates_journal and hasattr(config, "journal_preview_endpoint"):
             journal_preview = await self._get_journal_preview(config, payload)
 
         # Normalize legacy/variant field names before validation
@@ -475,7 +644,12 @@ class ToolExecutor:
             if "reason" not in payload and "void_reason" not in payload:
                 for alt in ("description", "alasan", "note", "notes", "keterangan"):
                     if alt in payload:
-                        target = "void_reason" if action_key in ("void_receive_payment", "void_bill_payment") else "reason"
+                        target = (
+                            "void_reason"
+                            if action_key
+                            in ("void_receive_payment", "void_bill_payment")
+                            else "reason"
+                        )
                         payload[target] = payload.pop(alt)
                         break
 
@@ -496,9 +670,11 @@ class ToolExecutor:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=config.ttl_seconds)
 
         try:
-            from ..unified_agent.db_utils import get_session_db_pool
+            from ..unified_agent.db_utils import get_session_db_pool  # noqa: E402
+
             pool = await get_session_db_pool()
-            await pool.execute("""
+            await pool.execute(
+                """
                 INSERT INTO pending_actions (
                     id, tenant_id, user_id, conversation_id,
                     action_id, action_type, action_category,
@@ -572,12 +748,17 @@ class ToolExecutor:
                 req_params[key] = value
 
         # Auto-fill date defaults for current month if not provided
-        import datetime
+        import datetime  # noqa: E402
+
         today = datetime.date.today()
         if any(qp.param_type == "date" for qp in config.query_params):
-            if "start_date" not in req_params and "start_date" in [qp.name for qp in config.query_params]:
+            if "start_date" not in req_params and "start_date" in [
+                qp.name for qp in config.query_params
+            ]:
                 req_params["start_date"] = today.replace(day=1).isoformat()
-            if "end_date" not in req_params and "end_date" in [qp.name for qp in config.query_params]:
+            if "end_date" not in req_params and "end_date" in [
+                qp.name for qp in config.query_params
+            ]:
                 req_params["end_date"] = today.isoformat()
 
         # Fill path params with defaults if still have placeholders
@@ -652,8 +833,15 @@ class ToolExecutor:
 
         result = {}
         # Pick known financial fields
-        for key in ["total_balance", "cash_balance", "bank_balance",
-                     "account_count", "today_inflows", "today_outflows", "today_net"]:
+        for key in [
+            "total_balance",
+            "cash_balance",
+            "bank_balance",
+            "account_count",
+            "today_inflows",
+            "today_outflows",
+            "today_net",
+        ]:
             if key in d:
                 result[key] = d[key]
         if not result:
@@ -666,8 +854,11 @@ class ToolExecutor:
             return data
         elif isinstance(raw_data, dict):
             # Strip non-data keys
-            return {k: v for k, v in raw_data.items()
-                    if k not in ("success", "status", "message")}
+            return {
+                k: v
+                for k, v in raw_data.items()
+                if k not in ("success", "status", "message")
+            }
         return {"raw": data}
 
     def _format_table(self, data, raw_data) -> dict:
@@ -706,12 +897,17 @@ class ToolExecutor:
             if truncated:
                 result["truncated"] = True
             return result
-        elif isinstance(data, dict) and any(k in data for k in ["items", "data", "periods"]):
+        elif isinstance(data, dict) and any(
+            k in data for k in ["items", "data", "periods"]
+        ):
             for key in ["items", "data", "periods"]:
                 if key in data and isinstance(data[key], list):
                     items = data[key]
-                    return {"items": items[:MAX_ITEMS], "total_count": len(items),
-                            "truncated": len(items) > MAX_ITEMS}
+                    return {
+                        "items": items[:MAX_ITEMS],
+                        "total_count": len(items),
+                        "truncated": len(items) > MAX_ITEMS,
+                    }
         return {"items": [data] if data else [], "total_count": 1 if data else 0}
 
     # --- Transaction Lookup Tools ---
@@ -732,7 +928,7 @@ class ToolExecutor:
                     "Authorization": f"Bearer {self.context.auth_token}",
                 }
                 resp = await client.get(
-                    f"http://localhost:8000/api/sales-invoices",
+                    "http://localhost:8000/api/sales-invoices",
                     headers=headers,
                     params=api_params,
                 )
@@ -778,7 +974,7 @@ class ToolExecutor:
                     "Authorization": f"Bearer {self.context.auth_token}",
                 }
                 resp = await client.get(
-                    f"http://localhost:8000/api/bills",
+                    "http://localhost:8000/api/bills",
                     headers=headers,
                     params=api_params,
                 )
@@ -810,14 +1006,18 @@ class ToolExecutor:
 
     # --- Session Tool Execution ---
 
-    async def _execute_session_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_session_tool(
+        self, tool_name: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a session tool (queries session-level data, not kernel API)."""
         if not self.session_manager or not self.session_id:
             return _error("NO_SESSION", "Session belum diinisialisasi.")
 
         if tool_name == "get_session_events":
             limit = min(params.get("limit", 10), 20)
-            events = await self.session_manager.get_recent_events(self.session_id, limit=limit)
+            events = await self.session_manager.get_recent_events(
+                self.session_id, limit=limit
+            )
             return {"success": True, "data": events}
 
         elif tool_name == "search_chat_history":
@@ -825,7 +1025,9 @@ class ToolExecutor:
             if not query:
                 return _error("MISSING_QUERY", "Parameter 'query' wajib diisi.")
             days_back = min(params.get("days_back", 7), 30)
-            results = await self.session_manager.search_chat_history(query, days_back=days_back)
+            results = await self.session_manager.search_chat_history(
+                query, days_back=days_back
+            )
             return {"success": True, "data": results}
 
         elif tool_name == "review_next_unmatched":
@@ -846,14 +1048,16 @@ class ToolExecutor:
         elif tool_name == "cancel_workflow":
             return await self._execute_cancel_workflow(params)
 
-        return _error("UNKNOWN_SESSION_TOOL", f"Session tool {tool_name!r} tidak dikenali.")
+        return _error(
+            "UNKNOWN_SESSION_TOOL", f"Session tool {tool_name!r} tidak dikenali."
+        )
 
     # --- Start Workflow (Deterministic State Machine) ---
 
     async def _execute_start_workflow(self, params: dict) -> dict:
         """Execute start_workflow: advance the deterministic workflow engine."""
-        from .workflow_engine import WorkflowEngine
-        from .db_utils import get_session_db_pool
+        from .workflow_engine import WorkflowEngine  # noqa: E402
+        from .db_utils import get_session_db_pool  # noqa: E402
 
         pool = await get_session_db_pool()
 
@@ -861,7 +1065,7 @@ class ToolExecutor:
         async def execute_tool(tool_name, tool_params):
             return await self._execute_session_tool(tool_name, tool_params)
 
-        engine = WorkflowEngine(
+        engine = WorkflowEngine(  # noqa: F821
             db_pool=pool,
             tenant_id=self.context.tenant_id,
             user_id=self.context.user_id,
@@ -874,19 +1078,25 @@ class ToolExecutor:
 
         # Auto-inject file_ref from user message if LLM didn't include it
         if not user_data.get("file_ref") and self.user_text:
-            import re as _re
+            import re as _re  # noqa: E402
+
             m = _re.search(r"file_ref=(chat_upload:[^\]\s]+)", self.user_text)
             if m:
                 user_data["file_ref"] = m.group(1)
-                logger.info(f"[Workflow] Auto-injected file_ref={m.group(1)} from user message")
+                logger.info(
+                    f"[Workflow] Auto-injected file_ref={m.group(1)} from user message"
+                )
 
         # Task E: Auto-inject balance from user message text (robust parser)
         if not user_data.get("statement_ending_balance") and self.user_text:
-            from .balance_parser import parse_balance
+            from .balance_parser import parse_balance  # noqa: E402
+
             _bal_val, _bal_found = parse_balance(self.user_text)
             if _bal_found and _bal_val is not None:
                 user_data["statement_ending_balance"] = int(_bal_val)
-                logger.info(f"[Workflow] Auto-injected balance={_bal_val} from parse_balance")
+                logger.info(
+                    f"[Workflow] Auto-injected balance={_bal_val} from parse_balance"
+                )
 
         # Use conversation session_id as chat_session_id
         chat_session_id = self.session_id or "unknown"
@@ -895,14 +1105,18 @@ class ToolExecutor:
         # Also detect AWAITING_DECISION for document review resume
         existing_state = await engine.get_state(chat_session_id, workflow_type)
         if existing_state and existing_state.current_state == "AWAITING_DECISION":
-            logger.info(f"[Workflow] State=AWAITING_DECISION → calling resume() (doc review decision)")
+            logger.info(
+                "[Workflow] State=AWAITING_DECISION → calling resume() (doc review decision)"
+            )
             result = await engine.resume(
                 chat_session_id=chat_session_id,
                 workflow_type=workflow_type,
                 confirmed_data=user_data,
             )
         elif existing_state and existing_state.current_state == "REVIEWING":
-            logger.info(f"[Workflow] State=REVIEWING → calling resume() (reviewed_count will increment)")
+            logger.info(
+                "[Workflow] State=REVIEWING → calling resume() (reviewed_count will increment)"
+            )
             result = await engine.resume(
                 chat_session_id=chat_session_id,
                 workflow_type=workflow_type,
@@ -916,9 +1130,14 @@ class ToolExecutor:
             )
 
         # Auto-propose: if engine is in REVIEWING with a suggestion, bypass LLM
-        logger.info(f"[Workflow] Engine result: state={result.new_state}, auto_results type={type(result.auto_results).__name__}, keys={list(result.auto_results.keys()) if isinstance(result.auto_results, dict) else 'N/A'}")
-        if (result.new_state == "REVIEWING" and result.auto_results
-                and isinstance(result.auto_results, dict)):
+        logger.info(
+            f"[Workflow] Engine result: state={result.new_state}, auto_results type={type(result.auto_results).__name__}, keys={list(result.auto_results.keys()) if isinstance(result.auto_results, dict) else 'N/A'}"
+        )
+        if (
+            result.new_state == "REVIEWING"
+            and result.auto_results
+            and isinstance(result.auto_results, dict)
+        ):
             ar = result.auto_results
             line = (ar.get("review_item") or {}).get("statement_line", {})
             line_id = line.get("id", "")
@@ -942,7 +1161,9 @@ class ToolExecutor:
                         "bill_number": bs.get("bill_number", ""),
                         "bill_amount": bs.get("bill_amount", 0),
                         "amount_due": bs.get("amount_due", 0),
-                        "total_amount": min(abs(line_amount), bs.get("amount_due", 0)) if line_amount else bs.get("amount_due", 0),
+                        "total_amount": min(abs(line_amount), bs.get("amount_due", 0))
+                        if line_amount
+                        else bs.get("amount_due", 0),
                         "bank_account_id": ba_id,
                         "bank_account_name": ba_name,
                         "session_id": sid,
@@ -956,7 +1177,10 @@ class ToolExecutor:
                 alloc_type = ivs.get("allocation_type", "single")
                 if alloc_type != "needs_user_input":
                     allocations = ivs.get("allocations") or [
-                        {"invoice_id": ivs.get("invoice_id", ""), "amount_applied": ivs.get("amount_due", line_amount)}
+                        {
+                            "invoice_id": ivs.get("invoice_id", ""),
+                            "amount_applied": ivs.get("amount_due", line_amount),
+                        }
                     ]
                     propose_params = {
                         "action_key": "create_receive_payment",
@@ -992,7 +1216,9 @@ class ToolExecutor:
             elif line_id:
                 # Fallback: no suggestion — propose categorize without account_id
                 # User sees the line details and picks the account themselves
-                logger.info(f"[Workflow] No suggestion for line {line_id}, fallback categorize_statement")
+                logger.info(
+                    f"[Workflow] No suggestion for line {line_id}, fallback categorize_statement"
+                )
                 propose_params = {
                     "action_key": "categorize_statement",
                     "payload": {
@@ -1007,35 +1233,61 @@ class ToolExecutor:
                 }
 
             if propose_params:
-                logger.info(f"[Workflow] Auto-propose {propose_params['action_key']} for line {line_id}")
+                logger.info(
+                    f"[Workflow] Auto-propose {propose_params['action_key']} for line {line_id}"
+                )
                 propose_result = await self._execute_propose_direct(propose_params)
-                logger.info(f"[Workflow] Propose result: success={propose_result.get('success')}, msg_type={propose_result.get('message_type')}")
+                logger.info(
+                    f"[Workflow] Propose result: success={propose_result.get('success')}, msg_type={propose_result.get('message_type')}"
+                )
                 if not propose_result.get("success"):
-                    logger.warning(f"[Workflow] Auto-propose FAILED: {propose_result.get('error', 'unknown')}")
+                    logger.warning(
+                        f"[Workflow] Auto-propose FAILED: {propose_result.get('error', 'unknown')}"
+                    )
                 if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
                     # Enrich with narrative text + progress (in data for passthrough)
                     ri = ar.get("review_item") or {}
                     position = ri.get("position", 1)
                     remaining = ri.get("remaining", 0)
                     total = position + remaining
-                    item_line = f"{line_desc} — Rp {int(abs(line_amount)):,}".replace(",", ".")
+                    _item_line = f"{line_desc} — Rp {int(abs(line_amount)):,}".replace(
+                        ",", "."
+                    )
                     # Task A: On first item only, prepend import summary + breakdown
                     reviewed_count = ar.get("reviewed_count", 0)
-                    item_counter = ar.get("item_counter", "")
+                    _item_counter = ar.get("item_counter", "")
                     if reviewed_count == 0 and result.auto_results:
                         ar_all = result.auto_results
-                        matched = ar_all.get("matched_count", ar_all.get("auto_matched", 0))
-                        summary_data = ar_all.get("summary") or ar_all.get("session_stats") or {}
-                        total_imported = summary_data.get("total_statement_lines", summary_data.get("total_lines", total + matched))
-                        account_name = ar_all.get("account_name", ar_all.get("bank_account_name", "rekening bank"))
+                        matched = ar_all.get(
+                            "matched_count", ar_all.get("auto_matched", 0)
+                        )
+                        summary_data = (
+                            ar_all.get("summary") or ar_all.get("session_stats") or {}
+                        )
+                        total_imported = summary_data.get(
+                            "total_statement_lines",
+                            summary_data.get("total_lines", total + matched),
+                        )
+                        account_name = ar_all.get(
+                            "account_name",
+                            ar_all.get("bank_account_name", "rekening bank"),
+                        )
                         # Conversational narrative with breakdown
-                        parts = [f"Oke, rekening koran sudah diproses. Ada {total_imported} transaksi di {account_name}."]
+                        parts = [
+                            f"Oke, rekening koran sudah diproses. Ada {total_imported} transaksi di {account_name}."
+                        ]
                         if matched > 0:
-                            parts.append(f"{matched} transaksi langsung cocok dengan data di sistem.")
+                            parts.append(
+                                f"{matched} transaksi langsung cocok dengan data di sistem."
+                            )
                         if total == 1:
-                            parts.append("Masih ada 1 transaksi yang perlu ditinjau manual.")
+                            parts.append(
+                                "Masih ada 1 transaksi yang perlu ditinjau manual."
+                            )
                         else:
-                            parts.append(f"Masih ada {total} transaksi yang perlu ditinjau manual.")
+                            parts.append(
+                                f"Masih ada {total} transaksi yang perlu ditinjau manual."
+                            )
                         # Pre-scan breakdown from review_preview
                         rp = ar_all.get("review_preview", {})
                         breakdown_lines = []
@@ -1043,20 +1295,33 @@ class ToolExecutor:
                         invoice_count = rp.get("invoice_match", 0)
                         no_match_count = rp.get("no_match", 0)
                         if bill_count > 0:
-                            breakdown_lines.append(f"• {bill_count} kemungkinan cocok dengan tagihan vendor.")
+                            breakdown_lines.append(
+                                f"• {bill_count} kemungkinan cocok dengan tagihan vendor."
+                            )
                         if invoice_count > 0:
-                            breakdown_lines.append(f"• {invoice_count} kemungkinan cocok dengan invoice pelanggan.")
+                            breakdown_lines.append(
+                                f"• {invoice_count} kemungkinan cocok dengan invoice pelanggan."
+                            )
                         if no_match_count > 0:
-                            breakdown_lines.append(f"• {no_match_count} perlu kategorisasi manual.")
+                            breakdown_lines.append(
+                                f"• {no_match_count} perlu kategorisasi manual."
+                            )
                         if breakdown_lines:
-                            parts.append("Penilaian awal:\n" + "\n".join(breakdown_lines))
+                            parts.append(
+                                "Penilaian awal:\n" + "\n".join(breakdown_lines)
+                            )
                         parts.append("Mari kita review satu per satu.")
                         narrative = "\n\n".join(parts)
                     else:
                         narrative = "Lanjut ke transaksi berikutnya."
                     propose_result["content"] = narrative
-                    if "data" in propose_result and isinstance(propose_result["data"], dict):
-                        propose_result["data"]["progress"] = {"current": position, "total": total}
+                    if "data" in propose_result and isinstance(
+                        propose_result["data"], dict
+                    ):
+                        propose_result["data"]["progress"] = {
+                            "current": position,
+                            "total": total,
+                        }
                         # Bridge: inject review_card for frontend InlineCard rendering
                         try:
                             _rc = _build_review_card(
@@ -1069,25 +1334,38 @@ class ToolExecutor:
                                 total,
                             )
                             propose_result["data"]["review_card"] = _rc
-                            logger.info(f"[Workflow] review_card injected: title={_rc.get('title_label')}, match={_rc.get('match', {}).get('type') if _rc.get('match') else 'none'}")
+                            logger.info(
+                                f"[Workflow] review_card injected: title={_rc.get('title_label')}, match={_rc.get('match', {}).get('type') if _rc.get('match') else 'none'}"
+                            )
                         except Exception as e:
-                            logger.warning(f"[Workflow] review_card build failed: {e}", exc_info=True)
+                            logger.warning(
+                                f"[Workflow] review_card build failed: {e}",
+                                exc_info=True,
+                            )
                     return propose_result
 
         # ============ DOCUMENT REVIEW AUTO-PROPOSE ============
-        if (workflow_type == "document_review"
-                and result.auto_results
-                and isinstance(result.auto_results, dict)
-                and result.auto_results.get("confirm_suggestion")):
+        if (
+            workflow_type == "document_review"
+            and result.auto_results
+            and isinstance(result.auto_results, dict)
+            and result.auto_results.get("confirm_suggestion")
+        ):
             suggestion = result.auto_results["confirm_suggestion"]
-            logger.info(f"[Workflow] Document review auto-propose: {suggestion.get('action_key')}")
-            propose_result = await self._execute_propose_direct({
-                "action_key": suggestion["action_key"],
-                "payload": suggestion["payload"],
-            })
+            logger.info(
+                f"[Workflow] Document review auto-propose: {suggestion.get('action_key')}"
+            )
+            propose_result = await self._execute_propose_direct(
+                {
+                    "action_key": suggestion["action_key"],
+                    "payload": suggestion["payload"],
+                }
+            )
             if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
                 # Build narrative from instruction
-                narrative = result.llm_instruction or result.auto_results.get("instruction", "")
+                narrative = result.llm_instruction or result.auto_results.get(
+                    "instruction", ""
+                )
                 propose_result["content"] = narrative
                 propose_result["workflow_type"] = "document_review"
                 propose_result["workflow_state"] = result.new_state
@@ -1109,7 +1387,7 @@ class ToolExecutor:
 
     async def _execute_cancel_workflow(self, params: dict) -> dict:
         """Cancel an active workflow."""
-        from .db_utils import get_session_db_pool
+        from .db_utils import get_session_db_pool  # noqa: E402
 
         workflow_type = params.get("workflow_type", "bank_reconciliation")
         chat_session_id = self.session_id or "unknown"
@@ -1119,7 +1397,7 @@ class ToolExecutor:
         async def execute_tool(tool_name, tool_params):
             return await self._execute_session_tool(tool_name, tool_params)
 
-        engine = WorkflowEngine(
+        engine = WorkflowEngine(  # noqa: F821
             db_pool=pool,
             tenant_id=self.context.tenant_id,
             user_id=self.context.user_id,
@@ -1136,7 +1414,6 @@ class ToolExecutor:
         return {"text": "Rekonsiliasi dibatalkan.", "cancelled": True}
 
     # --- Review Next Unmatched (READ-ONLY — Law 0) ---
-
 
     async def _match_against_outstanding_bills(
         self, statement_line: dict, headers: dict
@@ -1174,7 +1451,11 @@ class ToolExecutor:
             for resp in [resp_unpaid, resp_partial]:
                 if resp.status_code == 200:
                     bill_data = resp.json()
-                    unpaid_bills.extend(bill_data.get("items", bill_data.get("data", bill_data.get("bills", []))))
+                    unpaid_bills.extend(
+                        bill_data.get(
+                            "items", bill_data.get("data", bill_data.get("bills", []))
+                        )
+                    )
 
             if not unpaid_bills:
                 return []
@@ -1184,14 +1465,18 @@ class ToolExecutor:
                 bill_number = (bill.get("invoice_number") or "").upper()
                 vendor_name = _safe_get_name(bill, "bill").upper()
                 bill_amount = _to_amount(bill.get("amount", 0))
-                amount_due = _to_amount(bill.get("amount_due", 0))  # J-compliant from API
+                amount_due = _to_amount(
+                    bill.get("amount_due", 0)
+                )  # J-compliant from API
                 amount_paid = _to_amount(bill.get("amount_paid", 0))  # display only
 
                 confidence = None
                 reason = ""
 
                 # Match 1: Reference contains bill number → HIGH confidence
-                if bill_number and (bill_number in reference or bill_number in description):
+                if bill_number and (
+                    bill_number in reference or bill_number in description
+                ):
                     if amount == amount_due:
                         confidence = "HIGH"
                         reason = f"Nomor faktur {bill_number} ditemukan di referensi + jumlah persis cocok"
@@ -1203,36 +1488,48 @@ class ToolExecutor:
                         reason = f"Nomor faktur {bill_number} ditemukan di referensi (jumlah berbeda)"
 
                 # Match 2: Amount exact + vendor name in description → MEDIUM confidence
-                elif vendor_name and len(vendor_name) > 2 and vendor_name in description:
+                elif (
+                    vendor_name and len(vendor_name) > 2 and vendor_name in description
+                ):
                     _vn_display = _safe_get_name(bill, "bill") or vendor_name
                     if amount == amount_due:
                         confidence = "MEDIUM"
-                        reason = f"Vendor {_vn_display} cocok + jumlah persis Rp {int(amount_due):,}".replace(",", ".")
+                        reason = f"Vendor {_vn_display} cocok + jumlah persis Rp {int(amount_due):,}".replace(
+                            ",", "."
+                        )
                     elif amount == bill_amount:
                         confidence = "MEDIUM"
-                        reason = f"Vendor {_vn_display} cocok + jumlah total Rp {int(bill_amount):,}".replace(",", ".")
+                        reason = f"Vendor {_vn_display} cocok + jumlah total Rp {int(bill_amount):,}".replace(
+                            ",", "."
+                        )
                     elif 0 < amount < amount_due:
                         confidence = "LOW"
-                        reason = f"Vendor {_vn_display} cocok, kemungkinan pembayaran sebagian (Rp {int(amount):,} dari Rp {int(amount_due):,})".replace(",", ".")
+                        reason = f"Vendor {_vn_display} cocok, kemungkinan pembayaran sebagian (Rp {int(amount):,} dari Rp {int(amount_due):,})".replace(
+                            ",", "."
+                        )
 
                 # Match 3: Amount exact match only → LOW confidence
                 elif amount == amount_due and amount_due > 0:
                     confidence = "LOW"
-                    reason = f"Jumlah Rp {int(amount_due):,} cocok dengan sisa tagihan {bill_number}".replace(",", ".")
+                    reason = f"Jumlah Rp {int(amount_due):,} cocok dengan sisa tagihan {bill_number}".replace(
+                        ",", "."
+                    )
 
                 if confidence:
-                    suggestions.append({
-                        "bill_id": bill.get("id"),
-                        "bill_number": bill.get("invoice_number"),
-                        "vendor_id": _safe_get_id(bill, "bill"),
-                        "vendor_name": _safe_get_name(bill, "bill"),
-                        "bill_amount": int(bill_amount),
-                        "amount_due": int(amount_due),
-                        "amount_paid": int(amount_paid),
-                        "due_date": bill.get("due_date"),
-                        "confidence": confidence,
-                        "reason": reason,
-                    })
+                    suggestions.append(
+                        {
+                            "bill_id": bill.get("id"),
+                            "bill_number": bill.get("invoice_number"),
+                            "vendor_id": _safe_get_id(bill, "bill"),
+                            "vendor_name": _safe_get_name(bill, "bill"),
+                            "bill_amount": int(bill_amount),
+                            "amount_due": int(amount_due),
+                            "amount_paid": int(amount_paid),
+                            "due_date": bill.get("due_date"),
+                            "confidence": confidence,
+                            "reason": reason,
+                        }
+                    )
 
             # Sort: HIGH > MEDIUM > LOW
             priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -1261,11 +1558,13 @@ class ToolExecutor:
             return []
 
         try:
+
             async def _fetch(params):
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     return await client.get(
                         f"{base_url}/api/sales-invoices",
-                        params=params, headers=headers,
+                        params=params,
+                        headers=headers,
                     )
 
             resp_unpaid, resp_partial = await asyncio.gather(
@@ -1278,7 +1577,9 @@ class ToolExecutor:
                 if resp.status_code == 200:
                     inv_data = resp.json()
                     unpaid_invoices.extend(
-                        inv_data.get("items", inv_data.get("data", inv_data.get("invoices", [])))
+                        inv_data.get(
+                            "items", inv_data.get("data", inv_data.get("invoices", []))
+                        )
                     )
 
             if not unpaid_invoices:
@@ -1295,7 +1596,9 @@ class ToolExecutor:
                 reason = ""
 
                 # Match 1: Reference contains invoice number -> HIGH
-                if inv_number and (inv_number in reference or inv_number in description):
+                if inv_number and (
+                    inv_number in reference or inv_number in description
+                ):
                     if amount == amount_due:
                         confidence = "HIGH"
                         reason = f"Nomor faktur {inv_number} ditemukan di referensi + jumlah persis cocok"
@@ -1307,32 +1610,44 @@ class ToolExecutor:
                         reason = f"Nomor faktur {inv_number} ditemukan di referensi (jumlah berbeda)"
 
                 # Match 2: Customer name in description + amount match -> MEDIUM
-                elif customer_name and len(customer_name) > 2 and customer_name in description:
+                elif (
+                    customer_name
+                    and len(customer_name) > 2
+                    and customer_name in description
+                ):
                     _cn_display = _safe_get_name(inv, "invoice") or customer_name
                     if amount == amount_due:
                         confidence = "MEDIUM"
-                        reason = f"Pelanggan {_cn_display} cocok + jumlah persis Rp {int(amount_due):,}".replace(",", ".")
+                        reason = f"Pelanggan {_cn_display} cocok + jumlah persis Rp {int(amount_due):,}".replace(
+                            ",", "."
+                        )
                     elif amount == inv_amount:
                         confidence = "MEDIUM"
-                        reason = f"Pelanggan {_cn_display} cocok + jumlah total Rp {int(inv_amount):,}".replace(",", ".")
+                        reason = f"Pelanggan {_cn_display} cocok + jumlah total Rp {int(inv_amount):,}".replace(
+                            ",", "."
+                        )
 
                 # Match 3: Amount exact match only -> LOW
                 elif amount == amount_due and amount_due > 0:
                     confidence = "LOW"
-                    reason = f"Jumlah Rp {int(amount_due):,} cocok dengan sisa piutang {inv_number}".replace(",", ".")
+                    reason = f"Jumlah Rp {int(amount_due):,} cocok dengan sisa piutang {inv_number}".replace(
+                        ",", "."
+                    )
 
                 if confidence:
-                    suggestions.append({
-                        "invoice_id": inv.get("id"),
-                        "invoice_number": inv.get("invoice_number"),
-                        "customer_id": _safe_get_id(inv, "invoice"),
-                        "customer_name": _safe_get_name(inv, "invoice"),
-                        "invoice_amount": int(inv_amount),
-                        "amount_due": int(amount_due),
-                        "due_date": inv.get("due_date"),
-                        "confidence": confidence,
-                        "reason": reason,
-                    })
+                    suggestions.append(
+                        {
+                            "invoice_id": inv.get("id"),
+                            "invoice_number": inv.get("invoice_number"),
+                            "customer_id": _safe_get_id(inv, "invoice"),
+                            "customer_name": _safe_get_name(inv, "invoice"),
+                            "invoice_amount": int(inv_amount),
+                            "amount_due": int(amount_due),
+                            "due_date": inv.get("due_date"),
+                            "confidence": confidence,
+                            "reason": reason,
+                        }
+                    )
 
             # Sort: HIGH > MEDIUM > LOW
             priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -1342,7 +1657,6 @@ class ToolExecutor:
         except Exception as e:
             logger.warning(f"[InvoiceMatch] Error matching invoices: {e}")
             return []
-
 
     async def _resolve_coa_id(self, account_code: str, headers: dict) -> str | None:
         """Resolve account_code -> account_id via CoA API (Law 27 - no hardcoded IDs)."""
@@ -1386,18 +1700,23 @@ class ToolExecutor:
             return None
 
         try:
-            from .db_utils import get_session_db_pool
+            from .db_utils import get_session_db_pool  # noqa: E402
+
             pool = await get_session_db_pool()
             async with pool.acquire() as conn:
                 await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", self.context.tenant_id
+                    "SELECT set_config('app.tenant_id', $1, true)",
+                    self.context.tenant_id,
                 )
-                patterns = await conn.fetch("""
+                patterns = await conn.fetch(
+                    """
                     SELECT pattern_regex, account_code, description
                     FROM recon_category_patterns
                     WHERE (tenant_id = $1 OR (tenant_id IS NULL AND is_system_default = true))
                     ORDER BY priority DESC
-                """, self.context.tenant_id)
+                """,
+                    self.context.tenant_id,
+                )
 
             for row in patterns:
                 try:
@@ -1416,7 +1735,9 @@ class ToolExecutor:
                             }
                         # account_id is None -> CoA code doesn't exist for this tenant
                 except re.error:
-                    logger.warning(f"[AutoCat] Bad regex pattern: {row['pattern_regex']}")
+                    logger.warning(
+                        f"[AutoCat] Bad regex pattern: {row['pattern_regex']}"
+                    )
                     continue
 
             return None
@@ -1425,7 +1746,9 @@ class ToolExecutor:
             logger.warning(f"[AutoCat] Error: {e}")
             return None
 
-    async def _execute_review_next_unmatched(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_review_next_unmatched(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Fetch next unmatched statement line + best suggestion.
         READ-ONLY — does NOT modify any data (Law 0 compliant).
@@ -1449,7 +1772,9 @@ class ToolExecutor:
                 )
 
             if resp.status_code != 200:
-                return _error("FETCH_FAILED", f"Gagal mengambil data: HTTP {resp.status_code}")
+                return _error(
+                    "FETCH_FAILED", f"Gagal mengambil data: HTTP {resp.status_code}"
+                )
 
             data = resp.json()
             lines = data.get("data", data.get("lines", []))
@@ -1481,7 +1806,9 @@ class ToolExecutor:
                     )
                 if suggest_resp.status_code == 200:
                     suggest_data = suggest_resp.json()
-                    suggestions = suggest_data.get("data", suggest_data.get("suggestions", []))
+                    suggestions = suggest_data.get(
+                        "data", suggest_data.get("suggestions", [])
+                    )
                     if suggestions:
                         suggestion = suggestions[0]
             except Exception:
@@ -1492,28 +1819,39 @@ class ToolExecutor:
             is_credit = line.get("is_credit", False)
             if not is_credit:  # debit = money out → potential bill payment
                 try:
-                    bill_matches = await self._match_against_outstanding_bills(line, headers)
+                    bill_matches = await self._match_against_outstanding_bills(
+                        line, headers
+                    )
                     if bill_matches:
                         best = bill_matches[0]
                         # Prefer bill match over weak bank_tx suggestion
                         if not suggestion or best["confidence"] in ("HIGH", "MEDIUM"):
                             bill_suggestion = best
                 except Exception as e:
-                    logger.warning(f"[ReviewNext] Bill matching failed (non-fatal): {e}")
+                    logger.warning(
+                        f"[ReviewNext] Bill matching failed (non-fatal): {e}"
+                    )
 
             # Invoice matching for CREDIT lines
             invoice_suggestion = None
             invoice_matches = []
             if is_credit:  # credit = money in → potential invoice payment
                 try:
-                    invoice_matches = await self._match_against_outstanding_invoices(line, headers)
+                    invoice_matches = await self._match_against_outstanding_invoices(
+                        line, headers
+                    )
                     if invoice_matches:
                         best_inv = invoice_matches[0]
                         # Prefer invoice match over weak bank_tx suggestion
-                        if not suggestion or best_inv["confidence"] in ("HIGH", "MEDIUM"):
+                        if not suggestion or best_inv["confidence"] in (
+                            "HIGH",
+                            "MEDIUM",
+                        ):
                             invoice_suggestion = best_inv
                 except Exception as e:
-                    logger.warning(f"[ReviewNext] Invoice matching failed (non-fatal): {e}")
+                    logger.warning(
+                        f"[ReviewNext] Invoice matching failed (non-fatal): {e}"
+                    )
 
             # Auto-categorize: only if no bill/invoice match found
             category_suggestion = None
@@ -1521,7 +1859,9 @@ class ToolExecutor:
                 try:
                     category_suggestion = await self._auto_categorize(line, headers)
                 except Exception as e:
-                    logger.warning(f"[ReviewNext] Auto-categorize failed (non-fatal): {e}")
+                    logger.warning(
+                        f"[ReviewNext] Auto-categorize failed (non-fatal): {e}"
+                    )
 
             # Multi-invoice allocation
             if invoice_matches and invoice_suggestion:
@@ -1533,7 +1873,10 @@ class ToolExecutor:
                             **invoice_suggestion,
                             "allocation_type": "multi",
                             "allocations": [
-                                {"invoice_id": m["invoice_id"], "amount_applied": int(_to_amount(m["amount_due"]))}
+                                {
+                                    "invoice_id": m["invoice_id"],
+                                    "amount_applied": int(_to_amount(m["amount_due"])),
+                                }
                                 for m in allocation["allocation"]
                             ],
                         }
@@ -1544,7 +1887,9 @@ class ToolExecutor:
                             "options": allocation["options"],
                         }
                 except Exception as e:
-                    logger.warning(f"[ReviewNext] Allocation logic failed (non-fatal): {e}")
+                    logger.warning(
+                        f"[ReviewNext] Allocation logic failed (non-fatal): {e}"
+                    )
 
             return {
                 "success": True,
@@ -1561,13 +1906,19 @@ class ToolExecutor:
                         "type": "credit" if line.get("is_credit") else "debit",
                     },
                     "suggestion": {
-                        "transaction_id": suggestion.get("transaction_id") or suggestion.get("id"),
+                        "transaction_id": suggestion.get("transaction_id")
+                        or suggestion.get("id"),
                         "description": suggestion.get("description"),
                         "amount": suggestion.get("amount"),
-                        "date": suggestion.get("transaction_date") or suggestion.get("date"),
-                        "confidence": suggestion.get("confidence") or suggestion.get("score"),
-                        "match_reason": suggestion.get("match_reason") or suggestion.get("reason"),
-                    } if suggestion else None,
+                        "date": suggestion.get("transaction_date")
+                        or suggestion.get("date"),
+                        "confidence": suggestion.get("confidence")
+                        or suggestion.get("score"),
+                        "match_reason": suggestion.get("match_reason")
+                        or suggestion.get("reason"),
+                    }
+                    if suggestion
+                    else None,
                     "bill_suggestion": {
                         "type": "bill_payment",
                         "bill_id": bill_suggestion["bill_id"],
@@ -1579,7 +1930,9 @@ class ToolExecutor:
                         "due_date": bill_suggestion["due_date"],
                         "confidence": bill_suggestion["confidence"],
                         "match_reason": bill_suggestion["reason"],
-                    } if bill_suggestion else None,
+                    }
+                    if bill_suggestion
+                    else None,
                     "invoice_suggestion": {
                         "type": "receive_payment",
                         "invoice_id": invoice_suggestion["invoice_id"],
@@ -1592,22 +1945,27 @@ class ToolExecutor:
                         "confidence": invoice_suggestion["confidence"],
                         "match_reason": invoice_suggestion["reason"],
                         "all_matches": invoice_matches[:5] if invoice_matches else [],
-                    } if invoice_suggestion else None,
+                    }
+                    if invoice_suggestion
+                    else None,
                     "category_suggestion": category_suggestion,
                     "session_id": session_id,
                 },
             }
 
         except httpx.TimeoutException:
-            return _error("TIMEOUT", "Request timeout saat mengambil data rekonsiliasi.")
+            return _error(
+                "TIMEOUT", "Request timeout saat mengambil data rekonsiliasi."
+            )
         except Exception as e:
             logger.exception(f"[ReviewNextUnmatched] Error: {e}")
             return _error("REVIEW_ERROR", f"Error: {str(e)[:200]}")
 
-
     # --- Agentic Reconcile (READ-ONLY — auto-match analysis) ---
 
-    async def _execute_agentic_reconcile(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_agentic_reconcile(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Run automated matching analysis for a reconciliation session.
         READ-ONLY analysis — does NOT require user confirmation.
@@ -1626,11 +1984,18 @@ class ToolExecutor:
                 resp = await client.post(
                     f"{base_url}/api/bank-reconciliation/sessions/{session_id}/agentic-reconcile",
                     headers=headers,
-                    json={"max_actions": 50, "include_categorize": True, "include_exclude": True},
+                    json={
+                        "max_actions": 50,
+                        "include_categorize": True,
+                        "include_exclude": True,
+                    },
                 )
 
             if resp.status_code != 200:
-                return _error("AGENTIC_RECONCILE_FAILED", f"Gagal menjalankan automatch: HTTP {resp.status_code} - {resp.text[:200]}")
+                return _error(
+                    "AGENTIC_RECONCILE_FAILED",
+                    f"Gagal menjalankan automatch: HTTP {resp.status_code} - {resp.text[:200]}",
+                )
 
             data = resp.json()
             action_plan = data.get("action_plan", {})
@@ -1639,7 +2004,9 @@ class ToolExecutor:
             # Summarize results for the agent
             actions = action_plan.get("actions", [])
             match_count = sum(1 for a in actions if a.get("action_type") == "match")
-            categorize_count = sum(1 for a in actions if a.get("action_type") == "categorize")
+            categorize_count = sum(
+                1 for a in actions if a.get("action_type") == "categorize"
+            )
             exclude_count = sum(1 for a in actions if a.get("action_type") == "exclude")
 
             return {
@@ -1658,7 +2025,9 @@ class ToolExecutor:
             }
 
         except httpx.TimeoutException:
-            return _error("TIMEOUT", "Request timeout saat menjalankan automatch rekonsiliasi.")
+            return _error(
+                "TIMEOUT", "Request timeout saat menjalankan automatch rekonsiliasi."
+            )
         except Exception as e:
             logger.exception(f"[AgenticReconcile] Error: {e}")
             return _error("AGENTIC_RECONCILE_ERROR", f"Error: {str(e)[:200]}")
@@ -1670,11 +2039,11 @@ class ToolExecutor:
         if params.get("statement_ending_balance") is None:
             return {
                 "success": False,
-                "error": "statement_ending_balance wajib diisi. Tanyakan saldo akhir rekening koran ke user sebelum membuat session rekonsiliasi."
+                "error": "statement_ending_balance wajib diisi. Tanyakan saldo akhir rekening koran ke user sebelum membuat session rekonsiliasi.",
             }
         """Create or reuse a reconciliation session for a bank account."""
         from datetime import date as date_type
-        import httpx
+        import httpx  # noqa: E402
 
         account_id = params.get("account_id", "")
         if not account_id:
@@ -1705,7 +2074,7 @@ class ToolExecutor:
                             "mode": existing.get("mode", "import"),
                             "message": f"Menggunakan session rekonsiliasi yang sudah ada (ID: {session_id}).",
                             "existing": True,
-                        }
+                        },
                     }
         except Exception as e:
             logger.warning(f"Check existing session failed (non-critical): {e}")
@@ -1734,9 +2103,19 @@ class ToolExecutor:
 
             if resp.status_code >= 400:
                 error_text = resp.text[:300]
-                if "sudah ada" in error_text.lower() or "already" in error_text.lower() or "in_progress" in error_text.lower():
-                    return {"success": False, "error": "Sudah ada session rekonsiliasi aktif untuk akun ini. Gunakan session yang ada."}
-                return {"success": False, "error": f"Gagal buat session rekonsiliasi: {error_text}"}
+                if (
+                    "sudah ada" in error_text.lower()
+                    or "already" in error_text.lower()
+                    or "in_progress" in error_text.lower()
+                ):
+                    return {
+                        "success": False,
+                        "error": "Sudah ada session rekonsiliasi aktif untuk akun ini. Gunakan session yang ada.",
+                    }
+                return {
+                    "success": False,
+                    "error": f"Gagal buat session rekonsiliasi: {error_text}",
+                }
 
             data = resp.json()
             session_id = data.get("id", data.get("session_id", ""))
@@ -1747,13 +2126,15 @@ class ToolExecutor:
                     "status": data.get("status", "in_progress"),
                     "mode": data.get("mode", "import"),
                     "message": f"Session rekonsiliasi berhasil dibuat (ID: {session_id}). Siap untuk import file.",
-                }
+                },
             }
         except Exception as e:
             logger.error(f"Create recon session error: {e}")
             return {"success": False, "error": f"Gagal membuat session: {str(e)}"}
 
-    async def _execute_import_bank_statement(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_import_bank_statement(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Import a bank statement file into a reconciliation session.
         Calls the existing /api/bank-reconciliation/sessions/{id}/import endpoint.
@@ -1763,24 +2144,28 @@ class ToolExecutor:
         file_path = params.get("file_path")
         config = params.get("config", {})
 
-
         # Resolve opaque file_ref if provided (preferred over raw file_path)
         file_ref = params.get("file_ref", "")
         if file_ref:
             from utils.file_ref import resolve_file_ref
+
             resolved = resolve_file_ref(file_ref, self.context.tenant_id)
             if resolved:
                 file_path = resolved
                 logger.info(f"Resolved file_ref '{file_ref}' -> '{file_path}'")
             else:
-                return _error("INVALID_FILE_REF", f"File reference tidak valid atau file tidak ditemukan: {file_ref}")
+                return _error(
+                    "INVALID_FILE_REF",
+                    f"File reference tidak valid atau file tidak ditemukan: {file_ref}",
+                )
 
         if not session_id:
             return _error("MISSING_SESSION_ID", "Parameter 'session_id' wajib diisi.")
         if not file_path:
             return _error("MISSING_FILE_PATH", "Parameter 'file_path' wajib diisi.")
 
-        import os
+        import os  # noqa: E402
+
         if not os.path.exists(file_path):
             return _error("FILE_NOT_FOUND", f"File tidak ditemukan: {file_path}")
 
@@ -1795,24 +2180,32 @@ class ToolExecutor:
             with open(file_path, "rb") as f:
                 file_content = f.read()
 
-            import httpx
+            import httpx  # noqa: E402
+
             base_url = "http://localhost:8000"
             headers = self._build_headers()
 
             # ── Auto-detect columns when no mapping provided ──────────────
             has_column_mapping = any(
-                config.get(k) for k in (
-                    "date_column", "description_column", "amount_column",
-                    "debit_column", "credit_column",
+                config.get(k)
+                for k in (
+                    "date_column",
+                    "description_column",
+                    "amount_column",
+                    "debit_column",
+                    "credit_column",
                 )
             )
             # Only auto-detect for CSV/XLSX (not OFX which has fixed structure)
             if not has_column_mapping and config.get("format") in ("csv", "xlsx"):
-                logger.info(f"[ImportBankStatement] No column mapping in config, auto-detecting...")
+                logger.info(
+                    "[ImportBankStatement] No column mapping in config, auto-detecting..."
+                )
                 try:
                     # Direct call to auto_detect_columns — bypasses WAF
-                    import pandas as pd
-                    import io as _io
+                    import pandas as pd  # noqa: E402
+                    import io as _io  # noqa: E402
+
                     filename_lower = os.path.basename(file_path).lower()
                     if filename_lower.endswith((".xlsx", ".xls")):
                         df = pd.read_excel(_io.BytesIO(file_content), nrows=20)
@@ -1822,10 +2215,13 @@ class ToolExecutor:
                     columns = [str(c) for c in df.columns.tolist()]
                     sample_rows = []
                     for _, row in df.iterrows():
-                        sample_rows.append([str(v) if pd.notna(v) else "" for v in row.tolist()])
+                        sample_rows.append(
+                            [str(v) if pd.notna(v) else "" for v in row.tolist()]
+                        )
 
-                    from ..column_mapper import auto_detect_columns
-                    from ..unified_agent.db_utils import get_session_db_pool
+                    from ..column_mapper import auto_detect_columns  # noqa: E402
+                    from ..unified_agent.db_utils import get_session_db_pool  # noqa: E402
+
                     pool = await get_session_db_pool()
                     detect_result = await auto_detect_columns(
                         tenant_id=self.context.tenant_id,
@@ -1845,17 +2241,27 @@ class ToolExecutor:
                         if not config.get(key):
                             config[key] = value
                 except Exception as detect_err:
-                    logger.warning(f"[ImportBankStatement] Column detection error: {detect_err}")
+                    logger.warning(
+                        f"[ImportBankStatement] Column detection error: {detect_err}"
+                    )
                     # Continue with import anyway — the import endpoint has its own defaults
 
             # ── Call import endpoint ──────────────────────────────────────
             # Remove Content-Type for multipart — let httpx set boundary automatically
-            import_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+            import_headers = {
+                k: v for k, v in headers.items() if k.lower() != "content-type"
+            }
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{base_url}/api/bank-reconciliation/sessions/{session_id}/import",
                     headers=import_headers,
-                    files={"file": (os.path.basename(file_path), file_content, "application/octet-stream")},
+                    files={
+                        "file": (
+                            os.path.basename(file_path),
+                            file_content,
+                            "application/octet-stream",
+                        )
+                    },
                     data={"config": json.dumps(config)},
                 )
 
@@ -1883,7 +2289,9 @@ class ToolExecutor:
                 error_detail = response.text
                 try:
                     error_json = response.json()
-                    error_detail = error_json.get("detail", error_json.get("message", response.text))
+                    error_detail = error_json.get(
+                        "detail", error_json.get("message", response.text)
+                    )
                 except Exception:
                     pass
                 return _error("IMPORT_FAILED", f"Import gagal: {error_detail}")
@@ -1892,7 +2300,9 @@ class ToolExecutor:
             logger.exception(f"[ImportBankStatement] Error: {e}")
             return _error("IMPORT_ERROR", f"Error saat import: {str(e)[:200]}")
 
-    async def _execute_read(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_read(
+        self, tool_name: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a read tool via httpx GET to kernel API."""
         endpoint = get_endpoint_for_tool(tool_name)
         if not endpoint:
@@ -1912,7 +2322,9 @@ class ToolExecutor:
                 # Only validate UUID for ID-type params, not dates/periods
                 if key.endswith("_id") or key == "id":
                     if not _is_valid_uuid(str(value)):
-                        return _error("INVALID_UUID", f"Parameter {key!r} bukan UUID valid.")
+                        return _error(
+                            "INVALID_UUID", f"Parameter {key!r} bukan UUID valid."
+                        )
                 path = path.replace(placeholder, str(value))
             else:
                 if isinstance(value, str) and len(value) > MAX_STRING_LENGTH:
@@ -1925,7 +2337,12 @@ class ToolExecutor:
         async with httpx.AsyncClient(timeout=READ_TOOL_TIMEOUT) as client:
             resp = await client.get(url, params=query_params, headers=headers)
             if resp.status_code >= 400:
-                return {"success": False, "error": f"API returned {resp.status_code}: {resp.text[:200]}", "error_type": "API_ERROR", "status_code": resp.status_code}
+                return {
+                    "success": False,
+                    "error": f"API returned {resp.status_code}: {resp.text[:200]}",
+                    "error_type": "API_ERROR",
+                    "status_code": resp.status_code,
+                }
             data = resp.json()
 
         result = data
@@ -1978,13 +2395,16 @@ class ToolExecutor:
             logger.warning(f"Entity lookup failed for {path}: {e}")
         return None
 
-    async def _enrich_payload(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _enrich_payload(
+        self, action_type: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Dispatch to action-specific enrichment.
         Registry-based: add new action types by adding a method + registry entry.
         Includes structured logging for observability (zero side effects).
         """
-        import time as _time
+        import time as _time  # noqa: E402
+
         _t0 = _time.monotonic()
 
         # Snapshot before enrichment
@@ -2003,14 +2423,16 @@ class ToolExecutor:
             elapsed_ms = int((_time.monotonic() - _t0) * 1000)
             logger.info(
                 "[ENRICH] %s | no enrichment needed (not in registry) | %dms",
-                action_type, elapsed_ms,
+                action_type,
+                elapsed_ms,
             )
             return payload
 
         if not hasattr(self, enricher_name):
             logger.warning(
                 "[ENRICH] WARNING: %s maps to %s but method not found",
-                action_type, enricher_name,
+                action_type,
+                enricher_name,
             )
             return payload
 
@@ -2087,7 +2509,11 @@ class ToolExecutor:
 
         logger.info(
             "[ENRICH] %s | backfilled: %s | skipped: %s | renamed: %s | %dms",
-            action_type, bf_str, sk_str, rn_str, elapsed_ms,
+            action_type,
+            bf_str,
+            sk_str,
+            rn_str,
+            elapsed_ms,
         )
 
         return result
@@ -2120,13 +2546,27 @@ class ToolExecutor:
         return payload
 
     def _add_due_date(self, payload: Dict[str, Any], days: int = 30) -> Dict[str, Any]:
-        """Add due_date = invoice_date + N days if not already set."""
-        if "due_date" not in payload and "invoice_date" in payload:
-            try:
-                inv_date = datetime.strptime(payload["invoice_date"], "%Y-%m-%d")
-                payload["due_date"] = (inv_date + timedelta(days=days)).strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                payload["due_date"] = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        """Add due_date = invoice_date + N days if not already set.
+
+        BUG-05 fix: Also handles case where invoice_date is missing —
+        falls back to today + N days.
+        """
+        if "due_date" not in payload or not payload["due_date"]:
+            base_date_str = payload.get("invoice_date") or payload.get("issue_date")
+            if base_date_str:
+                try:
+                    base_date = datetime.strptime(base_date_str, "%Y-%m-%d")
+                    payload["due_date"] = (base_date + timedelta(days=days)).strftime(
+                        "%Y-%m-%d"
+                    )
+                except (ValueError, TypeError):
+                    payload["due_date"] = (
+                        datetime.now() + timedelta(days=days)
+                    ).strftime("%Y-%m-%d")
+            else:
+                payload["due_date"] = (datetime.now() + timedelta(days=days)).strftime(
+                    "%Y-%m-%d"
+                )
         return payload
 
     # --- Per-action enrichment methods ---
@@ -2144,6 +2584,39 @@ class ToolExecutor:
                 entity = await self._fetch_entity(client, f"/api/customers/{cid}")
                 if entity:
                     payload["customer_name"] = entity.get("name", "")
+
+            # BUG-02 fix: Reverse lookup — resolve customer_id from customer_name
+            if not payload.get("customer_id") and payload.get("customer_name"):
+                cust_name = payload["customer_name"]
+                # Search customers by name via the list endpoint
+                search_resp = await self._fetch_entity(
+                    client, f"/api/customers?search={cust_name}&limit=5"
+                )
+                if search_resp:
+                    items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if items:
+                        # Exact match first (case-insensitive)
+                        exact = next(
+                            (
+                                c
+                                for c in items
+                                if c.get("name", "").strip().lower()
+                                == cust_name.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or items[0]
+                        payload["customer_id"] = resolved.get("id", "")
+                        # Also update customer_name to the canonical DB name
+                        if resolved.get("name"):
+                            payload["customer_name"] = resolved["name"]
+                        logger.info(
+                            f"BUG-02: Resolved customer_id={payload['customer_id']} from name={cust_name}"
+                        )
 
             # Item descriptions + backfill unit_price
             payload = await self._enrich_items(payload, client)
@@ -2181,12 +2654,20 @@ class ToolExecutor:
                     item_id = item.get("item_id")
 
                     # Lookup item name if needed
-                    if item_id and "product_name" not in item and "description" not in item:
-                        detail = await self._fetch_entity(client, f"/api/items/{item_id}")
+                    if (
+                        item_id
+                        and "product_name" not in item
+                        and "description" not in item
+                    ):
+                        detail = await self._fetch_entity(
+                            client, f"/api/items/{item_id}"
+                        )
                         if detail:
                             item["product_name"] = detail.get("name", "Item")
                             if "unit_price" not in item and "price" not in item:
-                                item["price"] = detail.get("purchase_price", detail.get("selling_price", 0))
+                                item["price"] = detail.get(
+                                    "purchase_price", detail.get("selling_price", 0)
+                                )
 
                     # Translate generic field names → bills/v2 schema
                     # description → product_name
@@ -2213,7 +2694,9 @@ class ToolExecutor:
                 od = datetime.strptime(payload["order_date"], "%Y-%m-%d")
                 payload["due_date"] = (od + timedelta(days=30)).strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime(
+                    "%Y-%m-%d"
+                )
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             vid = payload.get("vendor_id")
@@ -2245,23 +2728,38 @@ class ToolExecutor:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 # Try to find bank account matching this ID or coa_id
                 banks_resp = await self._fetch_entity(client, "/api/bank-accounts")
-                banks = banks_resp if isinstance(banks_resp, list) else (banks_resp.get("items") or banks_resp.get("data") or []) if isinstance(banks_resp, dict) else []
+                banks = (
+                    banks_resp
+                    if isinstance(banks_resp, list)
+                    else (banks_resp.get("items") or banks_resp.get("data") or [])
+                    if isinstance(banks_resp, dict)
+                    else []
+                )
                 if banks:
                     # Direct match (already a bank account ID)
-                    direct = next((b for b in banks if str(b.get("id")) == str(pt_id)), None)
+                    direct = next(
+                        (b for b in banks if str(b.get("id")) == str(pt_id)), None
+                    )
                     if direct:
                         pass  # Already correct bank_account_id
                     else:
                         # Try matching coa_id (LLM gave CoA ID instead of bank account ID)
-                        coa_match = next((b for b in banks if str(b.get("coa_id")) == str(pt_id)), None)
+                        coa_match = next(
+                            (b for b in banks if str(b.get("coa_id")) == str(pt_id)),
+                            None,
+                        )
                         if coa_match:
                             payload["paid_through_id"] = str(coa_match["id"])
-                            logger.info(f"Expense enrich: CoA {pt_id} -> bank_account {coa_match['id']}")
+                            logger.info(
+                                f"Expense enrich: CoA {pt_id} -> bank_account {coa_match['id']}"
+                            )
                         else:
                             # No match — use first bank account as fallback
                             if banks:
                                 payload["paid_through_id"] = str(banks[0]["id"])
-                                logger.warning(f"Expense enrich: No bank match for {pt_id}, using default {banks[0]['id']}")
+                                logger.warning(
+                                    f"Expense enrich: No bank match for {pt_id}, using default {banks[0]['id']}"
+                                )
         return payload
 
     async def _enrich_credit_note(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2347,16 +2845,22 @@ class ToolExecutor:
 
         # Collect all non-meta fields as payload (flat schema design)
         _meta_keys = {"action_type", "assumptions"}
-        payload = {k: v for k, v in params.items() if k not in _meta_keys and v is not None}
+        payload = {
+            k: v for k, v in params.items() if k not in _meta_keys and v is not None
+        }
 
         # === ENRICHMENT STEP ===
         # LLM provides intent (IDs, qty, price).
         # Enrichment adds kernel-required fields (names, defaults, descriptions).
         payload = await self._enrich_payload(action_type, payload)
-        logger.info(f"propose_action: type={action_type}, payload_keys={list(payload.keys())}")
+        logger.info(
+            f"propose_action: type={action_type}, payload_keys={list(payload.keys())}"
+        )
 
         if action_type not in ACTION_TYPE_MAP:
-            return _error("INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid.")
+            return _error(
+                "INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid."
+            )
 
         amount_error = _validate_amounts(payload)
         if amount_error:
@@ -2386,7 +2890,11 @@ class ToolExecutor:
                 "data": {
                     "status": "VALIDATION_FAILED",
                     "errors": [
-                        {"layer": e.get("layer", ""), "code": e.get("code", ""), "message": e.get("message", "")}
+                        {
+                            "layer": e.get("layer", ""),
+                            "code": e.get("code", ""),
+                            "message": e.get("message", ""),
+                        }
                         for e in errors
                     ],
                 },
@@ -2404,7 +2912,9 @@ class ToolExecutor:
             assumptions=assumptions,
         )
 
-        if not prepare_result.get("success", False) and not prepare_result.get("pending_action_id"):
+        if not prepare_result.get("success", False) and not prepare_result.get(
+            "pending_action_id"
+        ):
             return _error("PREPARE_FAILED", "Gagal membuat pending action.")
 
         dry_run = validation.get("dry_run", {})
@@ -2427,7 +2937,7 @@ class ToolExecutor:
                             "credit": l.get("credit", 0),
                             "description": l.get("description", ""),
                         }
-                        for l in journal_lines
+                        for l in journal_lines  # noqa: E741
                     ],
                     "total_debit": dry_run.get("total_debit", 0),
                     "total_credit": dry_run.get("total_credit", 0),
@@ -2448,10 +2958,14 @@ class ToolExecutor:
 
         # Flat payload extraction (same as propose)
         _meta_keys = {"action_type", "assumptions"}
-        payload = {k: v for k, v in params.items() if k not in _meta_keys and v is not None}
+        payload = {
+            k: v for k, v in params.items() if k not in _meta_keys and v is not None
+        }
 
         if action_type not in ACTION_TYPE_MAP:
-            return _error("INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid.")
+            return _error(
+                "INVALID_ACTION_TYPE", f"Action type {action_type!r} tidak valid."
+            )
 
         # === SAME ENRICHMENT ===
         payload = await self._enrich_payload(action_type, payload)
@@ -2469,7 +2983,13 @@ class ToolExecutor:
                 "success": False,
                 "data": {
                     "status": "SIMULATION_FAILED",
-                    "errors": [{"layer": "DRY_RUN", "code": "FAILED", "message": "Simulasi gagal"}],
+                    "errors": [
+                        {
+                            "layer": "DRY_RUN",
+                            "code": "FAILED",
+                            "message": "Simulasi gagal",
+                        }
+                    ],
                 },
             }
 
@@ -2479,8 +2999,12 @@ class ToolExecutor:
             "data": {
                 "status": "SIMULATION_OK",
                 "journal_lines": [
-                    {"account": l.get("account_name", ""), "debit": l.get("debit", 0), "credit": l.get("credit", 0)}
-                    for l in result.get("journal_entries", [])
+                    {
+                        "account": l.get("account_name", ""),
+                        "debit": l.get("debit", 0),
+                        "credit": l.get("credit", 0),
+                    }
+                    for l in result.get("journal_entries", [])  # noqa: E741
                 ],
                 "total_debit": result.get("total_debit", 0),
                 "total_credit": result.get("total_credit", 0),
@@ -2492,10 +3016,13 @@ class ToolExecutor:
 
     def _build_chart_spec(self, config: "ChartQueryConfig", data, params: dict) -> dict:
         """Build a ChartSpec from API response data."""
-        import datetime
+        import datetime  # noqa: E402
+
         spec = {
             "chart_type": config.chart_type,
-            "render_target": "artifact" if config.complexity_hint == "complex" else "inline",
+            "render_target": "artifact"
+            if config.complexity_hint == "complex"
+            else "inline",
             "title": config.display_name,
             "subtitle": params.get("periode", datetime.date.today().strftime("%Y-%m")),
             "datasets": [],
@@ -2569,23 +3096,45 @@ class ToolExecutor:
         # Try monthly breakdown first
         monthly = data.get("monthly_breakdown", data.get("details", []))
         if isinstance(monthly, list) and monthly:
-            spec["labels"] = [str(m.get("bulan", m.get("month", m.get("name", "")))) for m in monthly]
+            spec["labels"] = [
+                str(m.get("bulan", m.get("month", m.get("name", "")))) for m in monthly
+            ]
             spec["datasets"] = [
-                {"key": "pendapatan", "label": "Pendapatan",
-                 "values": [float(m.get("pendapatan", m.get("total_pendapatan", 0))) for m in monthly],
-                 "color": "#5B8C51"},
-                {"key": "beban", "label": "Beban",
-                 "values": [float(m.get("beban", m.get("total_beban", 0))) for m in monthly],
-                 "color": "#C45C4B"},
+                {
+                    "key": "pendapatan",
+                    "label": "Pendapatan",
+                    "values": [
+                        float(m.get("pendapatan", m.get("total_pendapatan", 0)))
+                        for m in monthly
+                    ],
+                    "color": "#5B8C51",
+                },
+                {
+                    "key": "beban",
+                    "label": "Beban",
+                    "values": [
+                        float(m.get("beban", m.get("total_beban", 0))) for m in monthly
+                    ],
+                    "color": "#C45C4B",
+                },
             ]
         else:
             spec["labels"] = ["Pendapatan", "Beban"]
-            spec["datasets"] = [{"key": "amount", "label": "Jumlah",
-                                 "values": [float(pendapatan), float(beban)]}]
+            spec["datasets"] = [
+                {
+                    "key": "amount",
+                    "label": "Jumlah",
+                    "values": [float(pendapatan), float(beban)],
+                }
+            ]
 
-        spec["highlights"] = [{"label": "Laba Bersih",
-                               "value": f"Rp {float(laba):,.0f}".replace(",", "."),
-                               "color": "success" if float(laba) >= 0 else "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Laba Bersih",
+                "value": f"Rp {float(laba):,.0f}".replace(",", "."),
+                "color": "success" if float(laba) >= 0 else "danger",
+            }
+        ]
         return spec
 
     def _chart_cash_flow(self, data: dict, spec: dict) -> dict:
@@ -2598,24 +3147,44 @@ class ToolExecutor:
         op = float(operasi.get("net_arus_kas_operasi", operasi.get("total", 0)))
         inv = float(investasi.get("net_arus_kas_investasi", investasi.get("total", 0)))
         fin = float(pendanaan.get("net_arus_kas_pendanaan", pendanaan.get("total", 0)))
-        net = float(data.get("kenaikan_bersih_kas", data.get("net_cash_flow", op + inv + fin)))
+        net = float(
+            data.get("kenaikan_bersih_kas", data.get("net_cash_flow", op + inv + fin))
+        )
 
         spec["labels"] = ["Operasional", "Investasi", "Pendanaan"]
-        spec["datasets"] = [{"key": "amount", "label": "Arus Kas",
-                             "values": [op, inv, fin], "color": "#3B9FE8"}]
-        spec["highlights"] = [{"label": "Net Cash Flow",
-                               "value": f"Rp {net:,.0f}".replace(",", "."),
-                               "color": "success" if net >= 0 else "danger"}]
+        spec["datasets"] = [
+            {
+                "key": "amount",
+                "label": "Arus Kas",
+                "values": [op, inv, fin],
+                "color": "#3B9FE8",
+            }
+        ]
+        spec["highlights"] = [
+            {
+                "label": "Net Cash Flow",
+                "value": f"Rp {net:,.0f}".replace(",", "."),
+                "color": "success" if net >= 0 else "danger",
+            }
+        ]
         return spec
 
     def _chart_expense_breakdown(self, data, spec: dict) -> dict:
         """Transform top-expenses into donut."""
-        items = data if isinstance(data, list) else data.get("items", data.get("expenses", data.get("data", [])))
+        items = (
+            data
+            if isinstance(data, list)
+            else data.get("items", data.get("expenses", data.get("data", [])))
+        )
         if not isinstance(items, list):
             items = []
         spec["slices"] = [
-            {"label": str(e.get("name", e.get("category", e.get("account_name", "Unknown")))),
-             "value": float(e.get("amount", e.get("total", 0)))}
+            {
+                "label": str(
+                    e.get("name", e.get("category", e.get("account_name", "Unknown")))
+                ),
+                "value": float(e.get("amount", e.get("total", 0))),
+            }
             for e in items[:8]
         ]
         total = sum(s["value"] for s in spec["slices"])
@@ -2624,43 +3193,89 @@ class ToolExecutor:
 
     def _chart_top_customers(self, data, spec: dict) -> dict:
         """Transform pendapatan into horizontal bar."""
-        items = data if isinstance(data, list) else data.get("items", data.get("customers", data.get("data", [])))
+        items = (
+            data
+            if isinstance(data, list)
+            else data.get("items", data.get("customers", data.get("data", [])))
+        )
         if not isinstance(items, list):
             items = []
         top = items[:5]
-        spec["labels"] = [self._truncate(str(c.get("name", c.get("customer_name", "")))) for c in top]
-        spec["datasets"] = [{"key": "revenue", "label": "Revenue",
-                             "values": [float(c.get("total", c.get("amount", 0))) for c in top],
-                             "color": "#5B8C51"}]
+        spec["labels"] = [
+            self._truncate(str(c.get("name", c.get("customer_name", "")))) for c in top
+        ]
+        spec["datasets"] = [
+            {
+                "key": "revenue",
+                "label": "Revenue",
+                "values": [float(c.get("total", c.get("amount", 0))) for c in top],
+                "color": "#5B8C51",
+            }
+        ]
         return spec
 
     def _chart_ar_aging(self, data, spec: dict) -> dict:
         """Transform aging-trend into line chart."""
-        items = data if isinstance(data, list) else data.get("trend", data.get("items", data.get("data", [])))
+        items = (
+            data
+            if isinstance(data, list)
+            else data.get("trend", data.get("items", data.get("data", [])))
+        )
         if not isinstance(items, list):
             items = []
-        spec["labels"] = [str(t.get("period", t.get("date", t.get("as_of", "")))) for t in items]
-        spec["datasets"] = [
-            {"key": "current", "label": "Lancar",
-             "values": [float(t.get("current", 0)) for t in items], "color": "#5B8C51"},
-            {"key": "overdue_30", "label": "30 hari",
-             "values": [float(t.get("overdue_30", t.get("30_days", 0))) for t in items], "color": "#F5A623"},
-            {"key": "overdue_60", "label": "60 hari",
-             "values": [float(t.get("overdue_60", t.get("60_days", 0))) for t in items], "color": "#C45C4B"},
-            {"key": "overdue_90", "label": "90+ hari",
-             "values": [float(t.get("overdue_90", t.get("90_days", 0))) for t in items], "color": "#8B6AB8"},
+        spec["labels"] = [
+            str(t.get("period", t.get("date", t.get("as_of", "")))) for t in items
         ]
-        spec["drill_down"] = {"type": "query", "message_template": "Detail piutang overdue periode {label}"}
+        spec["datasets"] = [
+            {
+                "key": "current",
+                "label": "Lancar",
+                "values": [float(t.get("current", 0)) for t in items],
+                "color": "#5B8C51",
+            },
+            {
+                "key": "overdue_30",
+                "label": "30 hari",
+                "values": [
+                    float(t.get("overdue_30", t.get("30_days", 0))) for t in items
+                ],
+                "color": "#F5A623",
+            },
+            {
+                "key": "overdue_60",
+                "label": "60 hari",
+                "values": [
+                    float(t.get("overdue_60", t.get("60_days", 0))) for t in items
+                ],
+                "color": "#C45C4B",
+            },
+            {
+                "key": "overdue_90",
+                "label": "90+ hari",
+                "values": [
+                    float(t.get("overdue_90", t.get("90_days", 0))) for t in items
+                ],
+                "color": "#8B6AB8",
+            },
+        ]
+        spec["drill_down"] = {
+            "type": "query",
+            "message_template": "Detail piutang overdue periode {label}",
+        }
         return spec
+
     # ═══════════════ BATCH 1: Dashboard & KPI ═══════════════
 
     def _chart_kas_composition(self, data: dict, spec: dict) -> dict:
         """Transform kas-bank into donut: account balances."""
         accounts = data.get("accounts", [])
         spec["slices"] = [
-            {"label": str(a.get("name", a.get("account_name", "Unknown"))),
-             "value": abs(float(a.get("balance", a.get("ledger_balance", 0))))}
-            for a in accounts if float(a.get("balance", a.get("ledger_balance", 0))) != 0
+            {
+                "label": str(a.get("name", a.get("account_name", "Unknown"))),
+                "value": abs(float(a.get("balance", a.get("ledger_balance", 0)))),
+            }
+            for a in accounts
+            if float(a.get("balance", a.get("ledger_balance", 0))) != 0
         ]
         total = sum(s["value"] for s in spec["slices"])
         spec["summary"] = f"Total kas & bank: Rp {total:,.0f}".replace(",", ".")
@@ -2670,17 +3285,37 @@ class ToolExecutor:
         """Transform cash-flow-projection into area chart."""
         projections = data.get("projections", data.get("data", []))
         if isinstance(projections, list) and projections:
-            spec["labels"] = [str(p.get("date", p.get("period", ""))) for p in projections]
+            spec["labels"] = [
+                str(p.get("date", p.get("period", ""))) for p in projections
+            ]
             spec["datasets"] = [
-                {"key": "projected", "label": "Saldo Proyeksi",
-                 "values": [float(p.get("projected_balance", p.get("balance", 0))) for p in projections],
-                 "color": "#3B9FE8"},
-                {"key": "inflow", "label": "Kas Masuk",
-                 "values": [float(p.get("inflow", p.get("kas_masuk", 0))) for p in projections],
-                 "color": "#5B8C51"},
-                {"key": "outflow", "label": "Kas Keluar",
-                 "values": [float(p.get("outflow", p.get("kas_keluar", 0))) for p in projections],
-                 "color": "#C45C4B"},
+                {
+                    "key": "projected",
+                    "label": "Saldo Proyeksi",
+                    "values": [
+                        float(p.get("projected_balance", p.get("balance", 0)))
+                        for p in projections
+                    ],
+                    "color": "#3B9FE8",
+                },
+                {
+                    "key": "inflow",
+                    "label": "Kas Masuk",
+                    "values": [
+                        float(p.get("inflow", p.get("kas_masuk", 0)))
+                        for p in projections
+                    ],
+                    "color": "#5B8C51",
+                },
+                {
+                    "key": "outflow",
+                    "label": "Kas Keluar",
+                    "values": [
+                        float(p.get("outflow", p.get("kas_keluar", 0)))
+                        for p in projections
+                    ],
+                    "color": "#C45C4B",
+                },
             ]
         else:
             spec["summary"] = "Tidak ada data proyeksi."
@@ -2689,14 +3324,30 @@ class ToolExecutor:
     def _chart_overdue_invoices(self, data: dict, spec: dict) -> dict:
         """Transform overdue-invoices into horizontal bar."""
         invoices = data.get("invoices", [])
-        spec["labels"] = [self._truncate(str(i.get("customer_name", i.get("name", "Unknown")))) for i in invoices[:10]]
-        spec["datasets"] = [{"key": "outstanding", "label": "Outstanding",
-                             "values": [float(i.get("outstanding", i.get("amount", 0))) for i in invoices[:10]],
-                             "color": "#C45C4B"}]
+        spec["labels"] = [
+            self._truncate(str(i.get("customer_name", i.get("name", "Unknown"))))
+            for i in invoices[:10]
+        ]
+        spec["datasets"] = [
+            {
+                "key": "outstanding",
+                "label": "Outstanding",
+                "values": [
+                    float(i.get("outstanding", i.get("amount", 0)))
+                    for i in invoices[:10]
+                ],
+                "color": "#C45C4B",
+            }
+        ]
         total = float(data.get("total_outstanding", 0))
         count = int(data.get("count", len(invoices)))
-        spec["highlights"] = [{"label": "Total Overdue", "value": f"Rp {total:,.0f}".replace(",", "."),
-                               "color": "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Total Overdue",
+                "value": f"Rp {total:,.0f}".replace(",", "."),
+                "color": "danger",
+            }
+        ]
         if count == 0:
             spec["summary"] = "Tidak ada invoice jatuh tempo."
         return spec
@@ -2704,13 +3355,28 @@ class ToolExecutor:
     def _chart_overdue_bills(self, data: dict, spec: dict) -> dict:
         """Transform overdue-bills into horizontal bar."""
         bills = data.get("bills", [])
-        spec["labels"] = [self._truncate(str(b.get("vendor_name", b.get("name", "Unknown")))) for b in bills[:10]]
-        spec["datasets"] = [{"key": "outstanding", "label": "Outstanding",
-                             "values": [float(b.get("outstanding", b.get("amount", 0))) for b in bills[:10]],
-                             "color": "#C45C4B"}]
+        spec["labels"] = [
+            self._truncate(str(b.get("vendor_name", b.get("name", "Unknown"))))
+            for b in bills[:10]
+        ]
+        spec["datasets"] = [
+            {
+                "key": "outstanding",
+                "label": "Outstanding",
+                "values": [
+                    float(b.get("outstanding", b.get("amount", 0))) for b in bills[:10]
+                ],
+                "color": "#C45C4B",
+            }
+        ]
         total = float(data.get("total_outstanding", 0))
-        spec["highlights"] = [{"label": "Total Overdue", "value": f"Rp {total:,.0f}".replace(",", "."),
-                               "color": "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Total Overdue",
+                "value": f"Rp {total:,.0f}".replace(",", "."),
+                "color": "danger",
+            }
+        ]
         if not bills:
             spec["summary"] = "Tidak ada tagihan jatuh tempo."
         return spec
@@ -2720,14 +3386,27 @@ class ToolExecutor:
         trends = data.get("trends", [])
         spec["labels"] = [str(t.get("label", t.get("date", ""))) for t in trends]
         spec["datasets"] = [
-            {"key": "kas_masuk", "label": "Kas Masuk",
-             "values": [float(t.get("kas_masuk", 0)) for t in trends], "color": "#5B8C51"},
-            {"key": "kas_keluar", "label": "Kas Keluar",
-             "values": [float(t.get("kas_keluar", 0)) for t in trends], "color": "#C45C4B"},
+            {
+                "key": "kas_masuk",
+                "label": "Kas Masuk",
+                "values": [float(t.get("kas_masuk", 0)) for t in trends],
+                "color": "#5B8C51",
+            },
+            {
+                "key": "kas_keluar",
+                "label": "Kas Keluar",
+                "values": [float(t.get("kas_keluar", 0)) for t in trends],
+                "color": "#C45C4B",
+            },
         ]
         net = float(data.get("net_flow", 0))
-        spec["highlights"] = [{"label": "Net Flow", "value": f"Rp {net:,.0f}".replace(",", "."),
-                               "color": "success" if net >= 0 else "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Net Flow",
+                "value": f"Rp {net:,.0f}".replace(",", "."),
+                "color": "success" if net >= 0 else "danger",
+            }
+        ]
         return spec
 
     def _chart_dashboard_kpi(self, data: dict, spec: dict) -> dict:
@@ -2737,16 +3416,27 @@ class ToolExecutor:
         hutang = data.get("hutang", {})
         kas = data.get("kas_bank", {})
         spec["labels"] = ["Pendapatan", "Beban", "Piutang", "Hutang", "Kas"]
-        spec["datasets"] = [{"key": "amount", "label": "Jumlah", "values": [
-            float(lr.get("pendapatan", 0)),
-            float(lr.get("pengeluaran", 0)),
-            float(piutang.get("total", 0)),
-            float(hutang.get("total", 0)),
-            float(kas.get("total", 0)),
-        ]}]
+        spec["datasets"] = [
+            {
+                "key": "amount",
+                "label": "Jumlah",
+                "values": [
+                    float(lr.get("pendapatan", 0)),
+                    float(lr.get("pengeluaran", 0)),
+                    float(piutang.get("total", 0)),
+                    float(hutang.get("total", 0)),
+                    float(kas.get("total", 0)),
+                ],
+            }
+        ]
         profit = float(lr.get("profit", 0))
-        spec["highlights"] = [{"label": "Laba Bersih", "value": f"Rp {profit:,.0f}".replace(",", "."),
-                               "color": "success" if profit >= 0 else "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Laba Bersih",
+                "value": f"Rp {profit:,.0f}".replace(",", "."),
+                "color": "success" if profit >= 0 else "danger",
+            }
+        ]
         return spec
 
     # ═══════════════ BATCH 2: Laporan Keuangan ═══════════════
@@ -2759,24 +3449,48 @@ class ToolExecutor:
         kp = float(data.get("kewajiban_jangka_pendek", {}).get("total", 0))
         kj = float(data.get("kewajiban_jangka_panjang", {}).get("total", 0))
         eq = float(data.get("ekuitas", {}).get("total", 0))
-        spec["labels"] = ["Aset Lancar", "Aset Tetap", "Kwjbn Pendek", "Kwjbn Panjang", "Ekuitas"]
+        spec["labels"] = [
+            "Aset Lancar",
+            "Aset Tetap",
+            "Kwjbn Pendek",
+            "Kwjbn Panjang",
+            "Ekuitas",
+        ]
         spec["datasets"] = [
-            {"key": "aset", "label": "Aset", "values": [al, at, 0, 0, 0], "color": "#3B9FE8"},
-            {"key": "kewajiban_ekuitas", "label": "Kewajiban & Ekuitas",
-             "values": [0, 0, kp, kj, eq], "color": "#F5A623"},
+            {
+                "key": "aset",
+                "label": "Aset",
+                "values": [al, at, 0, 0, 0],
+                "color": "#3B9FE8",
+            },
+            {
+                "key": "kewajiban_ekuitas",
+                "label": "Kewajiban & Ekuitas",
+                "values": [0, 0, kp, kj, eq],
+                "color": "#F5A623",
+            },
         ]
         balanced = data.get("is_balanced", True)
-        spec["highlights"] = [{"label": "Balance", "value": "Seimbang" if balanced else "TIDAK SEIMBANG",
-                               "color": "success" if balanced else "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Balance",
+                "value": "Seimbang" if balanced else "TIDAK SEIMBANG",
+                "color": "success" if balanced else "danger",
+            }
+        ]
         return spec
 
     def _chart_neraca_composition(self, data: dict, spec: dict) -> dict:
         """Transform neraca into donut: aset composition."""
         al = data.get("aset_lancar", {})
         slices = []
-        for key, label in [("kas", "Kas"), ("piutang_usaha", "Piutang"), ("persediaan", "Persediaan"),
-                           ("beban_dibayar_dimuka", "Beban Dibayar Dimuka"),
-                           ("uang_muka_pembelian", "Uang Muka")]:
+        for key, label in [
+            ("kas", "Kas"),
+            ("piutang_usaha", "Piutang"),
+            ("persediaan", "Persediaan"),
+            ("beban_dibayar_dimuka", "Beban Dibayar Dimuka"),
+            ("uang_muka_pembelian", "Uang Muka"),
+        ]:
             val = float(al.get(key, 0))
             if val > 0:
                 slices.append({"label": label, "value": val})
@@ -2793,25 +3507,48 @@ class ToolExecutor:
         """Transform laba-rugi into line chart trend (reuses revenue_expense logic for line)."""
         monthly = data.get("monthly_breakdown", data.get("details", []))
         if isinstance(monthly, list) and monthly:
-            spec["labels"] = [str(m.get("bulan", m.get("month", m.get("name", "")))) for m in monthly]
+            spec["labels"] = [
+                str(m.get("bulan", m.get("month", m.get("name", "")))) for m in monthly
+            ]
             spec["datasets"] = [
-                {"key": "pendapatan", "label": "Pendapatan",
-                 "values": [float(m.get("pendapatan", m.get("total_pendapatan", 0))) for m in monthly],
-                 "color": "#5B8C51"},
-                {"key": "beban", "label": "Beban",
-                 "values": [float(m.get("beban", m.get("total_beban", 0))) for m in monthly],
-                 "color": "#C45C4B"},
-                {"key": "laba", "label": "Laba Bersih",
-                 "values": [float(m.get("laba_bersih", m.get("laba", 0))) for m in monthly],
-                 "color": "#3B9FE8"},
+                {
+                    "key": "pendapatan",
+                    "label": "Pendapatan",
+                    "values": [
+                        float(m.get("pendapatan", m.get("total_pendapatan", 0)))
+                        for m in monthly
+                    ],
+                    "color": "#5B8C51",
+                },
+                {
+                    "key": "beban",
+                    "label": "Beban",
+                    "values": [
+                        float(m.get("beban", m.get("total_beban", 0))) for m in monthly
+                    ],
+                    "color": "#C45C4B",
+                },
+                {
+                    "key": "laba",
+                    "label": "Laba Bersih",
+                    "values": [
+                        float(m.get("laba_bersih", m.get("laba", 0))) for m in monthly
+                    ],
+                    "color": "#3B9FE8",
+                },
             ]
         else:
             p = float(data.get("total_pendapatan", 0))
             b = float(data.get("total_beban", 0))
-            l = float(data.get("laba_bersih", p - b))
+            l = float(data.get("laba_bersih", p - b))  # noqa: E741
             spec["labels"] = ["Periode"]
             spec["datasets"] = [
-                {"key": "pendapatan", "label": "Pendapatan", "values": [p], "color": "#5B8C51"},
+                {
+                    "key": "pendapatan",
+                    "label": "Pendapatan",
+                    "values": [p],
+                    "color": "#5B8C51",
+                },
                 {"key": "beban", "label": "Beban", "values": [b], "color": "#C45C4B"},
                 {"key": "laba", "label": "Laba", "values": [l], "color": "#3B9FE8"},
             ]
@@ -2830,8 +3567,18 @@ class ToolExecutor:
         ni2 = float(comp.get("net_income", 0))
         spec["labels"] = ["Pendapatan", "HPP", "Beban Operasi", "Laba Bersih"]
         spec["datasets"] = [
-            {"key": "period1", "label": "Periode 1", "values": [rev1, cogs1, exp1, ni1], "color": "#3B9FE8"},
-            {"key": "period2", "label": "Periode 2", "values": [rev2, cogs2, exp2, ni2], "color": "#F5A623"},
+            {
+                "key": "period1",
+                "label": "Periode 1",
+                "values": [rev1, cogs1, exp1, ni1],
+                "color": "#3B9FE8",
+            },
+            {
+                "key": "period2",
+                "label": "Periode 2",
+                "values": [rev2, cogs2, exp2, ni2],
+                "color": "#F5A623",
+            },
         ]
         return spec
 
@@ -2841,11 +3588,17 @@ class ToolExecutor:
         cogs = float(data.get("total_hpp", data.get("harga_pokok", {}).get("total", 0)))
         gross = float(data.get("laba_kotor", revenue - cogs))
         spec["labels"] = ["Pendapatan", "HPP", "Laba Kotor"]
-        spec["datasets"] = [{"key": "amount", "label": "Jumlah",
-                             "values": [revenue, cogs, gross]}]
+        spec["datasets"] = [
+            {"key": "amount", "label": "Jumlah", "values": [revenue, cogs, gross]}
+        ]
         margin_pct = (gross / revenue * 100) if revenue > 0 else 0
-        spec["highlights"] = [{"label": "Margin", "value": f"{margin_pct:.1f}%",
-                               "color": "success" if margin_pct > 20 else "danger"}]
+        spec["highlights"] = [
+            {
+                "label": "Margin",
+                "value": f"{margin_pct:.1f}%",
+                "color": "success" if margin_pct > 20 else "danger",
+            }
+        ]
         return spec
 
     def _chart_monthly_cashflow(self, data: dict, spec: dict) -> dict:
@@ -2857,7 +3610,14 @@ class ToolExecutor:
     def _chart_ap_aging(self, data: dict, spec: dict) -> dict:
         """Transform ap-aging into stacked bar."""
         summary = data.get("summary", data)
-        labels = ["Lancar", "1-30 hari", "31-60 hari", "61-90 hari", "91-120 hari", ">120 hari"]
+        labels = [
+            "Lancar",
+            "1-30 hari",
+            "31-60 hari",
+            "61-90 hari",
+            "91-120 hari",
+            ">120 hari",
+        ]
         values = [
             float(summary.get("total_current", 0)),
             float(summary.get("total_1_30", 0)),
@@ -2867,18 +3627,29 @@ class ToolExecutor:
             float(summary.get("total_over_120", 0)),
         ]
         spec["labels"] = labels
-        spec["datasets"] = [{"key": "amount", "label": "Hutang", "values": values, "color": "#C45C4B"}]
+        spec["datasets"] = [
+            {"key": "amount", "label": "Hutang", "values": values, "color": "#C45C4B"}
+        ]
         total = float(summary.get("grand_total", sum(values)))
-        spec["highlights"] = [{"label": "Total AP", "value": f"Rp {total:,.0f}".replace(",", "."),
-                               "color": "neutral"}]
+        spec["highlights"] = [
+            {
+                "label": "Total AP",
+                "value": f"Rp {total:,.0f}".replace(",", "."),
+                "color": "neutral",
+            }
+        ]
         return spec
 
     def _chart_ar_summary(self, data: dict, spec: dict) -> dict:
         """Transform dashboard piutang into donut."""
         spec["slices"] = []
-        for key, label in [("current", "Lancar"), ("overdue_1_30", "1-30 hari"),
-                           ("overdue_31_60", "31-60 hari"), ("overdue_61_90", "61-90 hari"),
-                           ("overdue_90_plus", "90+ hari")]:
+        for key, label in [
+            ("current", "Lancar"),
+            ("overdue_1_30", "1-30 hari"),
+            ("overdue_31_60", "31-60 hari"),
+            ("overdue_61_90", "61-90 hari"),
+            ("overdue_90_plus", "90+ hari"),
+        ]:
             val = float(data.get(key, 0))
             if val > 0:
                 spec["slices"].append({"label": label, "value": val})
@@ -2891,9 +3662,13 @@ class ToolExecutor:
     def _chart_ap_summary(self, data: dict, spec: dict) -> dict:
         """Transform dashboard hutang into donut."""
         spec["slices"] = []
-        for key, label in [("current", "Lancar"), ("overdue_1_30", "1-30 hari"),
-                           ("overdue_31_60", "31-60 hari"), ("overdue_61_90", "61-90 hari"),
-                           ("overdue_90_plus", "90+ hari")]:
+        for key, label in [
+            ("current", "Lancar"),
+            ("overdue_1_30", "1-30 hari"),
+            ("overdue_31_60", "31-60 hari"),
+            ("overdue_61_90", "61-90 hari"),
+            ("overdue_90_plus", "90+ hari"),
+        ]:
             val = float(data.get(key, 0))
             if val > 0:
                 spec["slices"].append({"label": label, "value": val})
@@ -2906,15 +3681,22 @@ class ToolExecutor:
     def _chart_invoice_status(self, data: dict, spec: dict) -> dict:
         """Transform sales-invoices/summary into donut."""
         status_map = [
-            ("draft_count", "Draft"), ("posted_count", "Posted"),
-            ("partial_count", "Partial"), ("paid_count", "Lunas"),
+            ("draft_count", "Draft"),
+            ("posted_count", "Posted"),
+            ("partial_count", "Partial"),
+            ("paid_count", "Lunas"),
             ("overdue_count", "Overdue"),
         ]
-        spec["slices"] = [{"label": label, "value": float(data.get(key, 0))}
-                          for key, label in status_map if float(data.get(key, 0)) > 0]
+        spec["slices"] = [
+            {"label": label, "value": float(data.get(key, 0))}
+            for key, label in status_map
+            if float(data.get(key, 0)) > 0
+        ]
         total = int(data.get("total_count", 0))
         outstanding = float(data.get("total_outstanding", 0))
-        spec["summary"] = f"{total} invoice, outstanding: Rp {outstanding:,.0f}".replace(",", ".")
+        spec[
+            "summary"
+        ] = f"{total} invoice, outstanding: Rp {outstanding:,.0f}".replace(",", ".")
         spec["value_format"] = "number"
         return spec
 
@@ -2922,8 +3704,12 @@ class ToolExecutor:
         """Transform bills/summary into donut."""
         breakdown = data.get("breakdown", {})
         spec["slices"] = []
-        for key, label in [("paid", "Lunas"), ("partial", "Partial"),
-                           ("unpaid", "Belum Bayar"), ("overdue", "Overdue")]:
+        for key, label in [
+            ("paid", "Lunas"),
+            ("partial", "Partial"),
+            ("unpaid", "Belum Bayar"),
+            ("overdue", "Overdue"),
+        ]:
             val = float(breakdown.get(key, {}).get("count", 0))
             if val > 0:
                 spec["slices"].append({"label": label, "value": val})
@@ -2937,15 +3723,26 @@ class ToolExecutor:
         by_method = data.get("by_method", {})
         spec["labels"] = []
         values = []
-        method_labels = {"bank_transfer": "Transfer Bank", "cash": "Tunai",
-                         "cheque": "Cek/Giro", "other": "Lainnya"}
+        method_labels = {
+            "bank_transfer": "Transfer Bank",
+            "cash": "Tunai",
+            "cheque": "Cek/Giro",
+            "other": "Lainnya",
+        }
         for method, info in by_method.items():
             spec["labels"].append(method_labels.get(method, method))
             values.append(float(info.get("amount", 0)))
-        spec["datasets"] = [{"key": "amount", "label": "Jumlah", "values": values, "color": "#3B9FE8"}]
+        spec["datasets"] = [
+            {"key": "amount", "label": "Jumlah", "values": values, "color": "#3B9FE8"}
+        ]
         total = float(data.get("total_paid", 0))
-        spec["highlights"] = [{"label": "Total Bayar", "value": f"Rp {total:,.0f}".replace(",", "."),
-                               "color": "neutral"}]
+        spec["highlights"] = [
+            {
+                "label": "Total Bayar",
+                "value": f"Rp {total:,.0f}".replace(",", "."),
+                "color": "neutral",
+            }
+        ]
         return spec
 
     # ═══════════════ BATCH 4: Inventory & Products ═══════════════
@@ -2953,10 +3750,17 @@ class ToolExecutor:
     def _chart_top_products(self, data: dict, spec: dict) -> dict:
         """Transform top-products into horizontal bar."""
         products = data.get("products", [])
-        spec["labels"] = [self._truncate(str(p.get("product_name", ""))) for p in products[:10]]
-        spec["datasets"] = [{"key": "qty", "label": "Qty Terjual",
-                             "values": [float(p.get("total_qty_sold", 0)) for p in products[:10]],
-                             "color": "#5B8C51"}]
+        spec["labels"] = [
+            self._truncate(str(p.get("product_name", ""))) for p in products[:10]
+        ]
+        spec["datasets"] = [
+            {
+                "key": "qty",
+                "label": "Qty Terjual",
+                "values": [float(p.get("total_qty_sold", 0)) for p in products[:10]],
+                "color": "#5B8C51",
+            }
+        ]
         spec["value_format"] = "number"
         return spec
 
@@ -2964,24 +3768,45 @@ class ToolExecutor:
         """Transform product-margins into grouped bar."""
         products = data.get("products", [])
         top = [p for p in products if float(p.get("total_revenue", 0)) > 0][:10]
-        spec["labels"] = [self._truncate(str(p.get("product_name", "")), 20) for p in top]
+        spec["labels"] = [
+            self._truncate(str(p.get("product_name", "")), 20) for p in top
+        ]
         spec["datasets"] = [
-            {"key": "revenue", "label": "Revenue",
-             "values": [float(p.get("total_revenue", 0)) for p in top], "color": "#5B8C51"},
-            {"key": "cogs", "label": "HPP",
-             "values": [float(p.get("total_cogs", 0)) for p in top], "color": "#C45C4B"},
-            {"key": "profit", "label": "Profit",
-             "values": [float(p.get("total_profit", 0)) for p in top], "color": "#3B9FE8"},
+            {
+                "key": "revenue",
+                "label": "Revenue",
+                "values": [float(p.get("total_revenue", 0)) for p in top],
+                "color": "#5B8C51",
+            },
+            {
+                "key": "cogs",
+                "label": "HPP",
+                "values": [float(p.get("total_cogs", 0)) for p in top],
+                "color": "#C45C4B",
+            },
+            {
+                "key": "profit",
+                "label": "Profit",
+                "values": [float(p.get("total_profit", 0)) for p in top],
+                "color": "#3B9FE8",
+            },
         ]
         return spec
 
     def _chart_slow_moving(self, data: dict, spec: dict) -> dict:
         """Transform slow-moving-products into horizontal bar."""
         products = data.get("products", [])
-        spec["labels"] = [self._truncate(str(p.get("product_name", ""))) for p in products[:10]]
-        spec["datasets"] = [{"key": "qty", "label": "Qty Terjual",
-                             "values": [float(p.get("total_qty_sold", 0)) for p in products[:10]],
-                             "color": "#F5A623"}]
+        spec["labels"] = [
+            self._truncate(str(p.get("product_name", ""))) for p in products[:10]
+        ]
+        spec["datasets"] = [
+            {
+                "key": "qty",
+                "label": "Qty Terjual",
+                "values": [float(p.get("total_qty_sold", 0)) for p in products[:10]],
+                "color": "#F5A623",
+            }
+        ]
         if not products:
             spec["summary"] = "Tidak ada produk slow-moving."
         spec["value_format"] = "number"
@@ -2989,16 +3814,29 @@ class ToolExecutor:
 
     def _chart_sales_trend(self, data: dict, spec: dict) -> dict:
         """Transform daily-summary into line chart."""
-        items = data if isinstance(data, list) else data.get("items", data.get("data", []))
+        items = (
+            data if isinstance(data, list) else data.get("items", data.get("data", []))
+        )
         if isinstance(items, list) and items:
             spec["labels"] = [str(i.get("date", i.get("tanggal", ""))) for i in items]
             spec["datasets"] = [
-                {"key": "total", "label": "Penjualan",
-                 "values": [float(i.get("total", i.get("total_amount", 0))) for i in items],
-                 "color": "#5B8C51"},
-                {"key": "count", "label": "Jumlah Transaksi",
-                 "values": [float(i.get("count", i.get("transaction_count", 0))) for i in items],
-                 "color": "#3B9FE8"},
+                {
+                    "key": "total",
+                    "label": "Penjualan",
+                    "values": [
+                        float(i.get("total", i.get("total_amount", 0))) for i in items
+                    ],
+                    "color": "#5B8C51",
+                },
+                {
+                    "key": "count",
+                    "label": "Jumlah Transaksi",
+                    "values": [
+                        float(i.get("count", i.get("transaction_count", 0)))
+                        for i in items
+                    ],
+                    "color": "#3B9FE8",
+                },
             ]
         else:
             spec["summary"] = "Tidak ada data penjualan."
@@ -3008,11 +3846,21 @@ class ToolExecutor:
         """Transform vendors list into horizontal bar by AP balance."""
         items = data.get("items", data) if isinstance(data, dict) else data
         if isinstance(items, list):
-            sorted_v = sorted(items, key=lambda v: float(v.get("ap_balance", 0)), reverse=True)[:10]
-            spec["labels"] = [self._truncate(str(v.get("name", v.get("display_name", "")))) for v in sorted_v]
-            spec["datasets"] = [{"key": "ap_balance", "label": "Saldo Hutang",
-                                 "values": [float(v.get("ap_balance", 0)) for v in sorted_v],
-                                 "color": "#C45C4B"}]
+            sorted_v = sorted(
+                items, key=lambda v: float(v.get("ap_balance", 0)), reverse=True
+            )[:10]
+            spec["labels"] = [
+                self._truncate(str(v.get("name", v.get("display_name", ""))))
+                for v in sorted_v
+            ]
+            spec["datasets"] = [
+                {
+                    "key": "ap_balance",
+                    "label": "Saldo Hutang",
+                    "values": [float(v.get("ap_balance", 0)) for v in sorted_v],
+                    "color": "#C45C4B",
+                }
+            ]
         return spec
 
     # ═══════════════ BATCH 5: Financial Ratios ═══════════════
@@ -3021,15 +3869,21 @@ class ToolExecutor:
         """Transform financial-ratios profitability section into bar."""
         ratios = data.get("ratios", {}).get("profitability", {})
         labels, values = [], []
-        for key, label in [("roa", "ROA"), ("roe", "ROE"),
-                           ("net_profit_margin", "Net Margin"), ("gross_profit_margin", "Gross Margin")]:
+        for key, label in [
+            ("roa", "ROA"),
+            ("roe", "ROE"),
+            ("net_profit_margin", "Net Margin"),
+            ("gross_profit_margin", "Gross Margin"),
+        ]:
             r = ratios.get(key, {})
             val = r.get("value")
             if val is not None:
                 labels.append(label)
                 values.append(float(val))
         spec["labels"] = labels
-        spec["datasets"] = [{"key": "pct", "label": "%", "values": values, "color": "#5B8C51"}]
+        spec["datasets"] = [
+            {"key": "pct", "label": "%", "values": values, "color": "#5B8C51"}
+        ]
         spec["value_format"] = "percent"
         return spec
 
@@ -3037,35 +3891,53 @@ class ToolExecutor:
         """Transform financial-ratios liquidity section into bar."""
         ratios = data.get("ratios", {}).get("liquidity", {})
         labels, values = [], []
-        for key, label in [("cash_ratio", "Cash Ratio"), ("quick_ratio", "Quick Ratio"),
-                           ("current_ratio", "Current Ratio")]:
+        for key, label in [
+            ("cash_ratio", "Cash Ratio"),
+            ("quick_ratio", "Quick Ratio"),
+            ("current_ratio", "Current Ratio"),
+        ]:
             r = ratios.get(key, {})
             val = r.get("value")
             if val is not None:
                 labels.append(label)
                 values.append(float(val))
         spec["labels"] = labels
-        spec["datasets"] = [{"key": "ratio", "label": "Rasio", "values": values, "color": "#3B9FE8"}]
+        spec["datasets"] = [
+            {"key": "ratio", "label": "Rasio", "values": values, "color": "#3B9FE8"}
+        ]
         wc = ratios.get("working_capital", {}).get("value")
         if wc is not None:
-            spec["highlights"] = [{"label": "Working Capital",
-                                   "value": f"Rp {float(wc):,.0f}".replace(",", "."), "color": "neutral"}]
+            spec["highlights"] = [
+                {
+                    "label": "Working Capital",
+                    "value": f"Rp {float(wc):,.0f}".replace(",", "."),
+                    "color": "neutral",
+                }
+            ]
         spec["value_format"] = "number"
         return spec
 
     def _chart_leverage_ratios(self, data: dict, spec: dict) -> dict:
         """Transform financial-ratios leverage section into bar."""
-        ratios = data.get("ratios", {}).get("leverage", data.get("ratios", {}).get("solvency", {}))
+        ratios = data.get("ratios", {}).get(
+            "leverage", data.get("ratios", {}).get("solvency", {})
+        )
         labels, values = [], []
-        for key, label in [("debt_to_equity", "Debt/Equity"), ("debt_to_asset", "Debt/Asset"),
-                           ("equity_ratio", "Equity Ratio"), ("debt_ratio", "Debt Ratio")]:
+        for key, label in [
+            ("debt_to_equity", "Debt/Equity"),
+            ("debt_to_asset", "Debt/Asset"),
+            ("equity_ratio", "Equity Ratio"),
+            ("debt_ratio", "Debt Ratio"),
+        ]:
             r = ratios.get(key, {})
             val = r.get("value")
             if val is not None:
                 labels.append(label)
                 values.append(float(val))
         spec["labels"] = labels
-        spec["datasets"] = [{"key": "ratio", "label": "Rasio", "values": values, "color": "#F5A623"}]
+        spec["datasets"] = [
+            {"key": "ratio", "label": "Rasio", "values": values, "color": "#F5A623"}
+        ]
         spec["value_format"] = "number"
         return spec
 
@@ -3074,7 +3946,11 @@ class ToolExecutor:
         all_ratios = data.get("ratios", {})
         labels, prof_vals, liq_vals, lev_vals = [], [], [], []
         # Profitability
-        for key, label in [("roa", "ROA"), ("roe", "ROE"), ("net_profit_margin", "Net Margin")]:
+        for key, label in [
+            ("roa", "ROA"),
+            ("roe", "ROE"),
+            ("net_profit_margin", "Net Margin"),
+        ]:
             r = all_ratios.get("profitability", {}).get(key, {})
             val = r.get("value")
             if val is not None:
@@ -3102,9 +3978,24 @@ class ToolExecutor:
                 lev_vals.append(float(val))
         spec["labels"] = labels
         spec["datasets"] = [
-            {"key": "profitability", "label": "Profitabilitas", "values": prof_vals, "color": "#5B8C51"},
-            {"key": "liquidity", "label": "Likuiditas", "values": liq_vals, "color": "#3B9FE8"},
-            {"key": "leverage", "label": "Leverage", "values": lev_vals, "color": "#F5A623"},
+            {
+                "key": "profitability",
+                "label": "Profitabilitas",
+                "values": prof_vals,
+                "color": "#5B8C51",
+            },
+            {
+                "key": "liquidity",
+                "label": "Likuiditas",
+                "values": liq_vals,
+                "color": "#3B9FE8",
+            },
+            {
+                "key": "leverage",
+                "label": "Leverage",
+                "values": lev_vals,
+                "color": "#F5A623",
+            },
         ]
         spec["value_format"] = "number"
         return spec
@@ -3115,14 +4006,29 @@ class ToolExecutor:
         """Transform budget vs-actual into grouped bar."""
         items = data.get("items", data.get("line_items", []))
         if isinstance(items, list) and items:
-            spec["labels"] = [self._truncate(str(i.get("account_name", i.get("name", "")))) for i in items[:15]]
+            spec["labels"] = [
+                self._truncate(str(i.get("account_name", i.get("name", ""))))
+                for i in items[:15]
+            ]
             spec["datasets"] = [
-                {"key": "budget", "label": "Budget",
-                 "values": [float(i.get("budget_amount", i.get("budgeted", 0))) for i in items[:15]],
-                 "color": "#3B9FE8"},
-                {"key": "actual", "label": "Aktual",
-                 "values": [float(i.get("actual_amount", i.get("actual", 0))) for i in items[:15]],
-                 "color": "#5B8C51"},
+                {
+                    "key": "budget",
+                    "label": "Budget",
+                    "values": [
+                        float(i.get("budget_amount", i.get("budgeted", 0)))
+                        for i in items[:15]
+                    ],
+                    "color": "#3B9FE8",
+                },
+                {
+                    "key": "actual",
+                    "label": "Aktual",
+                    "values": [
+                        float(i.get("actual_amount", i.get("actual", 0)))
+                        for i in items[:15]
+                    ],
+                    "color": "#5B8C51",
+                },
             ]
         else:
             spec["summary"] = "Tidak ada data budget."
@@ -3132,10 +4038,21 @@ class ToolExecutor:
         """Transform variance-alerts into horizontal bar."""
         alerts = data.get("alerts", data.get("items", []))
         if isinstance(alerts, list) and alerts:
-            spec["labels"] = [self._truncate(str(a.get("account_name", a.get("name", "")))) for a in alerts[:10]]
-            spec["datasets"] = [{"key": "variance_pct", "label": "Varians %",
-                                 "values": [float(a.get("variance_pct", a.get("variance_percent", 0))) for a in alerts[:10]],
-                                 "color": "#C45C4B"}]
+            spec["labels"] = [
+                self._truncate(str(a.get("account_name", a.get("name", ""))))
+                for a in alerts[:10]
+            ]
+            spec["datasets"] = [
+                {
+                    "key": "variance_pct",
+                    "label": "Varians %",
+                    "values": [
+                        float(a.get("variance_pct", a.get("variance_percent", 0)))
+                        for a in alerts[:10]
+                    ],
+                    "color": "#C45C4B",
+                }
+            ]
         else:
             spec["summary"] = "Tidak ada peringatan varians."
         return spec
@@ -3147,21 +4064,34 @@ class ToolExecutor:
         overhead = float(data.get("overhead_cost", data.get("total_overhead", 0)))
         total = float(data.get("total_cost", material + labor + overhead))
         spec["labels"] = ["Material", "Tenaga Kerja", "Overhead"]
-        spec["datasets"] = [{"key": "cost", "label": "Biaya",
-                             "values": [material, labor, overhead], "color": "#3B9FE8"}]
-        spec["highlights"] = [{"label": "Total Biaya", "value": f"Rp {total:,.0f}".replace(",", "."),
-                               "color": "neutral"}]
+        spec["datasets"] = [
+            {
+                "key": "cost",
+                "label": "Biaya",
+                "values": [material, labor, overhead],
+                "color": "#3B9FE8",
+            }
+        ]
+        spec["highlights"] = [
+            {
+                "label": "Total Biaya",
+                "value": f"Rp {total:,.0f}".replace(",", "."),
+                "color": "neutral",
+            }
+        ]
         return spec
-
 
 
 # --- Helpers ---
 
+
 def _error(code: str, message: str) -> Dict[str, Any]:
     return {"success": False, "error": {"code": code, "message": message}}
 
+
 def _is_valid_uuid(value: str) -> bool:
     return bool(UUID_PATTERN.match(value))
+
 
 def _validate_amounts(payload: Dict[str, Any]) -> Optional[str]:
     amount_fields = ["amount", "unit_price", "total"]
@@ -3187,7 +4117,10 @@ def _validate_amounts(payload: Dict[str, Any]) -> Optional[str]:
                             return f"Item [{i}].quantity harus > 0."
     return None
 
-def _generate_idempotency_key(tenant_id: str, action_type: str, payload: Dict[str, Any]) -> str:
+
+def _generate_idempotency_key(
+    tenant_id: str, action_type: str, payload: Dict[str, Any]
+) -> str:
     normalized = json.dumps(payload, sort_keys=True, default=str)
     # 10-second window: prevents double-click, allows re-creation after
     # Actual execution idempotency is enforced by pending_action_id + confirm flow
@@ -3195,20 +4128,30 @@ def _generate_idempotency_key(tenant_id: str, action_type: str, payload: Dict[st
     raw = f"{tenant_id}:{action_type}:{normalized}:{time_window}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
+
 def _truncate_result(data: Any) -> Any:
     serialized = json.dumps(data, default=str)
     if len(serialized) <= MAX_RESPONSE_SIZE:
         return data
     if isinstance(data, list) and len(data) > MAX_LIST_ITEMS:
-        return data[:MAX_LIST_ITEMS] + [{"_truncated": True, "_total": len(data), "_showing": MAX_LIST_ITEMS}]
+        return data[:MAX_LIST_ITEMS] + [
+            {"_truncated": True, "_total": len(data), "_showing": MAX_LIST_ITEMS}
+        ]
     if isinstance(data, dict):
         for key, value in data.items():
             if isinstance(value, list) and len(value) > MAX_LIST_ITEMS:
-                data[key] = value[:MAX_LIST_ITEMS] + [{"_truncated": True, "_total": len(value), "_showing": MAX_LIST_ITEMS}]
+                data[key] = value[:MAX_LIST_ITEMS] + [
+                    {
+                        "_truncated": True,
+                        "_total": len(value),
+                        "_showing": MAX_LIST_ITEMS,
+                    }
+                ]
     return data
 
 
 # ─── review_card helpers (Bridge: Tahap 5F backend) ───────────────────────────
+
 
 def _fmt_idr(amount) -> str:
     """Format number as Indonesian currency string (dots as thousands)."""
@@ -3282,7 +4225,13 @@ def _build_review_card(
             warning = f"Selisih {_fmt_idr(diff)} \u2014 pembayaran sebagian"
 
     # Journal preview lines
-    journal_lines = _build_journal_preview(statement_line, bill_suggestion, invoice_suggestion, category_suggestion, bank_account_name)
+    journal_lines = _build_journal_preview(
+        statement_line,
+        bill_suggestion,
+        invoice_suggestion,
+        category_suggestion,
+        bank_account_name,
+    )
 
     # Button labels
     if bill_suggestion or invoice_suggestion:
@@ -3296,7 +4245,10 @@ def _build_review_card(
         "title_label": title_label,
         "statement": {
             "description": statement_line.get("description", ""),
-            "date": str(statement_line.get("date", "") or statement_line.get("transaction_date", "")),
+            "date": str(
+                statement_line.get("date", "")
+                or statement_line.get("transaction_date", "")
+            ),
             "amount": line_amount,
             "is_credit": is_credit,
         },
@@ -3352,45 +4304,37 @@ TOOL_STAGE_LABELS: dict[str, str] = {
     "get_bank_accounts": "Mencari rekening bank",
     "get_bank_transactions": "Memeriksa mutasi bank",
     "get_bank_balance": "Memeriksa saldo",
-    "get_bank_transactions": "Memeriksa mutasi bank",
+    "get_bank_transactions": "Memeriksa mutasi bank",  # noqa: F601
     "get_bank_statement_sessions": "Memeriksa rekening koran",
-
     # === Jurnal & Ledger ===
     "get_journal_entries": "Memeriksa jurnal",
     "get_journal_lines": "Memeriksa buku besar",
     "get_journal_detail": "Membaca detail jurnal",
-
     # === Chart of Accounts ===
     "get_chart_of_accounts": "Memeriksa daftar akun",
     "get_account_detail": "Membaca detail akun",
-
     # === Faktur & Piutang ===
     "get_sales_invoices": "Memeriksa faktur penjualan",
     "get_sales_invoice_detail": "Membaca detail faktur",
     "get_customers": "Memeriksa data pelanggan",
     "get_customer_detail": "Membaca detail pelanggan",
-
     # === Bill & Hutang ===
     "get_bills": "Memeriksa tagihan",
     "get_bill_detail": "Membaca detail tagihan",
     "get_vendors": "Memeriksa data vendor",
-
     # === Produk & Inventori ===
     "get_products": "Memeriksa data produk",
     "get_top_products": "Menganalisis penjualan produk",
     "get_slow_moving_products": "Menganalisis produk lambat terjual",
     "get_product_margins": "Menganalisis margin produk",
-
     # === Rasio Keuangan ===
     "get_financial_ratios": "Menganalisis rasio keuangan",
     "get_ratio_dashboard": "Menyusun dashboard rasio",
     "get_ratio_trend": "Menganalisis tren rasio",
     "get_ratio_alerts": "Memeriksa alert keuangan",
-
     # === Budget ===
     "get_budgets": "Memeriksa daftar budget",
     "get_budget_detail": "Menganalisis budget vs aktual",
-
     # === Cost Center ===
     "get_cost_centers": "Memeriksa cost center",
     "get_cost_center_summary": "Menganalisis biaya departemen",
@@ -3411,13 +4355,12 @@ TOOL_STAGE_LABELS: dict[str, str] = {
     "get_sales_orders": "Memeriksa sales order",
     "get_sales_order_detail": "Melihat detail sales order",
     "get_quotes": "Memeriksa penawaran",
-        # Sprint 4: Asset & Inventory Operations
-        "get_fixed_assets": "Memeriksa aset tetap",
-        "get_fixed_asset_detail": "Memeriksa detail aset",
-        "get_stock_adjustments": "Memeriksa penyesuaian stok",
-        "get_stock_adjustment_detail": "Memeriksa detail penyesuaian stok",
-        "get_payroll_summary": "Memeriksa ringkasan penggajian",
-
+    # Sprint 4: Asset & Inventory Operations
+    "get_fixed_assets": "Memeriksa aset tetap",
+    "get_fixed_asset_detail": "Memeriksa detail aset",
+    "get_stock_adjustments": "Memeriksa penyesuaian stok",
+    "get_stock_adjustment_detail": "Memeriksa detail penyesuaian stok",
+    "get_payroll_summary": "Memeriksa ringkasan penggajian",
     "get_product_detail": "Membaca detail produk",
     "get_warehouse_stock": "Memeriksa stok gudang",
     "search_items": "Mencari barang",
@@ -3427,29 +4370,30 @@ TOOL_STAGE_LABELS: dict[str, str] = {
     "search_bank_accounts": "Mencari rekening bank",
     "get_customer_invoices": "Mencari faktur pelanggan",
     "get_vendor_bills": "Mencari tagihan vendor",
-
     # === Laporan ===
     "get_trial_balance": "Menyusun neraca saldo",
     "get_profit_loss": "Menyusun laporan laba rugi",
     "get_balance_sheet": "Menyusun neraca",
     "get_cashflow": "Menyusun laporan arus kas",
-
     # === Rekonsiliasi ===
     "get_reconciliation_workspace": "Memeriksa rekonsiliasi",
     "run_auto_match": "Mencocokkan transaksi",
     "review_next_unmatched": "Memeriksa transaksi belum cocok",
-
     # === Action tools ===
     "propose_action": "Menyiapkan transaksi",
     "propose_direct_action": "Menyiapkan data",
     "simulate_action": "Mensimulasikan dampak",
     "start_workflow": "Memulai proses",
     "cancel_workflow": "Membatalkan proses",
-
     # === Session tools ===
     "get_session_events": "Membaca riwayat sesi",
     "search_chat_history": "Mencari riwayat chat",
-
+    # === Tutorial tools ===
+    "get_tutorial": "Memuat tutorial",
+    "list_tutorials": "Menampilkan daftar tutorial",
+    "start_tutorial": "Memulai tutorial",
+    "advance_tutorial": "Melanjutkan tutorial",
+    "dismiss_tutorial": "Melewatkan tutorial",
     # === Fallback ===
     "_composing": "Menyusun jawaban",
     "_default": "Sedang berpikir",

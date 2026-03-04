@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass
 
+import uuid as uuid_mod
 import asyncpg
 
 from .tutorial_registry import TUTORIAL_REGISTRY
@@ -72,7 +73,7 @@ async def get_progress(
         FROM user_tutorial_progress
         WHERE user_id = $1 AND tutorial_key = $2
         """,
-        user_id,
+        uuid_mod.UUID(user_id) if isinstance(user_id, str) else user_id,
         tutorial_key,
     )
     if row is None:
@@ -105,7 +106,7 @@ async def upsert_progress(
                   current_step, status, dismissed_at, completed_at
         """,
         tenant_id,
-        user_id,
+        uuid_mod.UUID(user_id) if isinstance(user_id, str) else user_id,
         tutorial_key,
         current_step,
         status,
@@ -150,7 +151,7 @@ async def advance_tutorial(
             WHERE user_id = $2 AND tutorial_key = $3
             """,
             next_step,
-            user_id,
+            uuid_mod.UUID(user_id) if isinstance(user_id, str) else user_id,
             tutorial_key,
         )
         logger.info("advance_tutorial: completed key=%s user=%s", tutorial_key, user_id)
@@ -273,7 +274,7 @@ async def get_active_tutorial(
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        user_id,
+        uuid_mod.UUID(user_id) if isinstance(user_id, str) else user_id,
     )
     if row is None:
         return None

@@ -23,7 +23,7 @@ import uuid as uuid_mod
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Literal, Dict, Any, List
 import asyncio as _asyncio_stream
@@ -93,6 +93,83 @@ VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
 # Import resolve_file_ref from utils (re-export for backward compatibility)
 from ..utils.file_ref import resolve_file_ref  # noqa: F401, E402
+
+
+async def _save_chat_attachments(
+    pool,
+    tenant_id: str,
+    session_id: str,
+    file_metas: list,
+) -> list:
+    """
+    Save attachment records to chat_attachments table.
+    Finds the latest user message in the session and links attachments to it.
+    Returns list of attachment dicts for the API response.
+    """
+    if not file_metas or not session_id:
+        return []
+
+    try:
+        # Find the most recent user message in this session
+        message_row = await pool.fetchrow(
+            """
+            SELECT id FROM chat_messages
+            WHERE session_id = $1::uuid AND tenant_id = $2 AND role = 'user'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            session_id,
+            tenant_id,
+        )
+        if not message_row:
+            logger.warning(
+                "[Attachments] No user message found for session %s", session_id
+            )
+            return []
+
+        message_id = message_row["id"]
+        attachments = []
+
+        for fm in file_metas:
+            stored_path = fm.get("stored_path", "")
+            # Build a storage_key relative to UPLOAD_BASE_DIR
+            if stored_path.startswith(UPLOAD_BASE_DIR):
+                storage_key = stored_path[len(UPLOAD_BASE_DIR) :].lstrip("/")
+            else:
+                storage_key = stored_path
+
+            att_id = str(uuid_mod.uuid4())
+            await pool.execute(
+                """
+                INSERT INTO chat_attachments (id, tenant_id, message_id, file_name, content_type, file_size, storage_key)
+                VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7)
+                """,
+                att_id,
+                tenant_id,
+                str(message_id),
+                fm.get("filename", "unknown"),
+                fm.get("content_type", "application/octet-stream"),
+                fm.get("size", 0),
+                storage_key,
+            )
+            attachments.append(
+                {
+                    "id": att_id,
+                    "file_name": fm.get("filename", "unknown"),
+                    "content_type": fm.get("content_type", "application/octet-stream"),
+                    "file_size": fm.get("size", 0),
+                    "storage_key": storage_key,
+                }
+            )
+
+        logger.info(
+            "[Attachments] Saved %d attachments for message %s",
+            len(attachments),
+            str(message_id),
+        )
+        return attachments
+    except Exception as e:
+        logger.error("[Attachments] Failed to save: %s", e, exc_info=True)
+        return []
 
 
 async def _validate_upload_files(files: List[UploadFile]) -> List[str]:
@@ -490,6 +567,9 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         pending_action_id = pending_action_id_val or data.get("pending_action_id")
     elif message_type == "CHART":
         # Chart visualization: data contains ChartSpec
+        data = preview or {}
+    elif message_type == "TUTORIAL_STEP":
+        # Tutorial step: preview contains TutorialStepData
         data = preview or {}
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
@@ -1529,7 +1609,52 @@ async def send_message_with_files(
             for fm in file_metas
         ]
 
+    # -- Save attachment records to DB --
+    if file_metas and session_id:
+        try:
+            att_pool = await get_session_db_pool()
+            saved_atts = await _save_chat_attachments(
+                pool=att_pool,
+                tenant_id=ctx["tenant_id"],
+                session_id=session_id,
+                file_metas=file_metas,
+            )
+            if saved_atts:
+                response.data = response.data or {}
+                response.data["attachments"] = saved_atts
+        except Exception as _att_err:
+            logger.error("[Attachments] Post-save failed: %s", _att_err)
+
     return response
+
+
+# =============================================================================
+# GET /files/{storage_key} - Serve uploaded chat files with tenant isolation
+# =============================================================================
+
+
+@router.get("/files/{storage_key:path}")
+async def get_chat_file(request: Request, storage_key: str):
+    """Serve uploaded chat files with tenant isolation."""
+    ctx = _get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+
+    # Tenant isolation: storage_key must start with tenant_id/
+    if not storage_key.startswith(f"{tenant_id}/"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    file_path = os.path.join(UPLOAD_BASE_DIR, storage_key)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Determine content type from extension
+    import mimetypes
+
+    content_type, _ = mimetypes.guess_type(file_path)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    return FileResponse(file_path, media_type=content_type)
 
 
 async def _propose_document_draft(

@@ -28,12 +28,14 @@ logger = logging.getLogger("unified_agent.model_router")
 # MODEL CHOICE
 # ============================================================
 
+
 @dataclass
 class ModelChoice:
     """Result of model routing decision."""
+
     model_id: str
-    provider: str      # "openai" | "claude" | "gemini"
-    tier: str          # "flagship" | "reliable" | "cheap"
+    provider: str  # "openai" | "claude" | "gemini"
+    tier: str  # "flagship" | "reliable" | "cheap"
     reason: str
     max_tokens: int
 
@@ -42,9 +44,11 @@ class ModelChoice:
 # MODEL TIER CONFIGURATION
 # ============================================================
 
+
 @dataclass(frozen=True)
 class ModelTier:
     """Configuration for a single model tier."""
+
     model_id: str
     provider: str
     max_tokens: int
@@ -71,7 +75,6 @@ MODEL_CONFIG: dict[str, ModelTier] = {
         provider="openai",
         max_tokens=2048,
     ),
-
     # ── Fallback (Claude — different provider for resilience) ──
     "fallback_flagship": ModelTier(
         model_id="claude-3-5-sonnet-20241022",
@@ -92,14 +95,37 @@ MODEL_CONFIG: dict[str, ModelTier] = {
 
 FINANCIAL_KEYWORDS: set[str] = {
     # Indonesian
-    "faktur", "invoice", "tagihan", "bill", "payment",
-    "piutang", "hutang", "jurnal", "journal",
-    "tutup buku", "close period", "neraca", "balance sheet",
-    "laba rugi", "profit loss", "rekonsiliasi", "reconciliation",
-    "nota kredit", "credit note", "nota debit", "debit note",
-    "uang muka", "down payment", "pengeluaran", "expense",
+    "faktur",
+    "invoice",
+    "tagihan",
+    "bill",
+    "payment",
+    "piutang",
+    "hutang",
+    "jurnal",
+    "journal",
+    "tutup buku",
+    "close period",
+    "neraca",
+    "balance sheet",
+    "laba rugi",
+    "profit loss",
+    "rekonsiliasi",
+    "reconciliation",
+    "nota kredit",
+    "credit note",
+    "nota debit",
+    "debit note",
+    "uang muka",
+    "down payment",
+    "pengeluaran",
+    "expense",
     # Master data that involves direct actions
-    "rekening", "bank", "kas", "vendor", "supplier",
+    "rekening",
+    "bank",
+    "kas",
+    "vendor",
+    "supplier",
 }
 
 
@@ -108,16 +134,35 @@ FINANCIAL_KEYWORDS: set[str] = {
 # ============================================================
 
 ACTION_VERBS: set[str] = {
-    "buat", "buatkan", "bikin", "bikinkan", "catat", "catatkan",
-    "posting", "post", "create", "record", "bayar", "bayarkan",
-    "lunasi", "transfer", "tutup", "reopen", "buka",
-    "terima", "kirim", "hapus", "reverse", "koreksi",
+    "buat",
+    "buatkan",
+    "bikin",
+    "bikinkan",
+    "catat",
+    "catatkan",
+    "posting",
+    "post",
+    "create",
+    "record",
+    "bayar",
+    "bayarkan",
+    "lunasi",
+    "transfer",
+    "tutup",
+    "reopen",
+    "buka",
+    "terima",
+    "kirim",
+    "hapus",
+    "reverse",
+    "koreksi",
 }
 
 
 # ============================================================
 # MODEL ROUTER
 # ============================================================
+
 
 class ModelRouter:
     """Rule-based model routing.
@@ -207,7 +252,10 @@ class ModelRouter:
         words = set(re.findall(r"[a-z]+", message_lower))  # word-level matching
         for keyword in FINANCIAL_KEYWORDS:
             if keyword in words or (len(keyword) > 4 and keyword in message_lower):
-                has_action_verb = any(v in words or (len(v) > 4 and v in message_lower) for v in ACTION_VERBS)
+                has_action_verb = any(
+                    v in words or (len(v) > 4 and v in message_lower)
+                    for v in ACTION_VERBS
+                )
                 if has_action_verb:
                     tier = MODEL_CONFIG["flagship"]
                     return ModelChoice(
@@ -232,12 +280,59 @@ class ModelRouter:
                 max_tokens=tier.max_tokens,
             )
 
+        # Rule 5.5: Tutorial intent -> flagship (needs structured tool use)
+        TUTORIAL_KEYWORDS = {
+            "tutorial",
+            "ajarin",
+            "ajari",
+            "teach",
+            "onboarding",
+            "cara pakai",
+            "how to use",
+            "how to start",
+            "gimana",
+            "cara bikin",
+            "cara buat",
+            "cara input",
+            "cara baca",
+            "cara terima",
+            "cara rekon",
+            "pemula",
+            "baru pertama",
+            "getting started",
+        }
+        for kw in TUTORIAL_KEYWORDS:
+            if kw in message_lower:
+                tier = MODEL_CONFIG["flagship"]
+                return ModelChoice(
+                    model_id=tier.model_id,
+                    provider=tier.provider,
+                    tier="flagship",
+                    reason=f"Tutorial intent detected (keyword: {kw!r})",
+                    max_tokens=tier.max_tokens,
+                )
+
         # Rule 6: Chitchat / greetings -> cheap (no tools needed)
         CHITCHAT_PATTERNS = {
-            "halo", "hai", "hi", "hello", "hey", "selamat pagi",
-            "selamat siang", "selamat sore", "selamat malam",
-            "terima kasih", "makasih", "thanks", "ok", "oke",
-            "baik", "siap", "mantap", "good", "bagus",
+            "halo",
+            "hai",
+            "hi",
+            "hello",
+            "hey",
+            "selamat pagi",
+            "selamat siang",
+            "selamat sore",
+            "selamat malam",
+            "terima kasih",
+            "makasih",
+            "thanks",
+            "ok",
+            "oke",
+            "baik",
+            "siap",
+            "mantap",
+            "good",
+            "bagus",
         }
         msg_stripped = message_lower.strip().rstrip("!?.,:;")
         if msg_stripped in CHITCHAT_PATTERNS or len(msg_stripped) <= 5:
@@ -246,7 +341,7 @@ class ModelRouter:
                 model_id=tier.model_id,
                 provider=tier.provider,
                 tier="cheap",
-                reason=f"Chitchat/greeting detected (no tools needed)",
+                reason="Chitchat/greeting detected (no tools needed)",
                 max_tokens=tier.max_tokens,
             )
 

@@ -736,7 +736,7 @@ Semua transaksi `creates_journal=True` — backend enforce Iron Laws (Law 2, 4, 
 
 ### Faktur Penjualan (create_sales_invoice)
 search_customers → search_items → hitung total + pajak → propose
-Fields: customer_id (hidden), customer_name, invoice_date, due_date, items (json array), tax_rate (default 0, hanya isi jika user sebut pajak/PPN), auto_post=true
+Fields: customer_id (hidden), customer_name, invoice_date, due_date (OPSIONAL — default 30 hari dari invoice_date), items (json array), tax_rate (default 0, hanya isi jika user sebut pajak/PPN), auto_post=true
 Item format: {{item_id, description, quantity, unit_price}}
 
 User: "buat faktur penjualan untuk PT Maju Jaya, 10 unit Kabel NYM @500rb, PPN 11%"
@@ -751,7 +751,7 @@ User: "buat faktur penjualan untuk PT Maju Jaya, 10 unit Kabel NYM @500rb, PPN 1
 ### Faktur Pembelian (create_bill)
 search_vendors → search_items → propose
 REST: POST /api/bills/v2 (gunakan V2!)
-Fields: vendor_id (hidden), vendor_name, issue_date (BUKAN bill_date!), due_date, items (json), tax_rate, status="posted"
+Fields: vendor_id (hidden), vendor_name, issue_date (BUKAN bill_date!), due_date (OPSIONAL — default 30 hari dari issue_date), items (json), tax_rate, status="posted"
 Item format V2: {{product_id, product_name, qty, price, unit}}
 
 User: "catat pembelian dari CV Sumber Jaya, 5 unit Semen @80rb"
@@ -1112,12 +1112,21 @@ ATURAN CHART:
 
 You can guide users through interactive tutorials. Tutorials teach users how to use MilkyHoop features step-by-step.
 
-### Available Tools
+### CRITICAL: Tutorial Tools (NOT start_workflow!)
+When user asks for tutorial, guidance, or "ajarin", you MUST use these tutorial-specific tools.
+NEVER use start_workflow for tutorials. start_workflow is ONLY for bank reconciliation.
+
 - `list_tutorials` — See all available tutorials
 - `get_tutorial(key)` — Get tutorial structure with steps
 - `start_tutorial(key)` — Begin a tutorial, creates progress record
 - `advance_tutorial(key)` — Move to next step after completion
 - `dismiss_tutorial(key)` — Skip/dismiss when user wants to stop
+
+### How to Start a Tutorial
+1. Call `start_tutorial("onboarding")` (or the appropriate key)
+2. Read the returned step data
+3. Narrate the step in TUTORIAL_STEP format (see below)
+4. After user completes a step, call `advance_tutorial(key)`
 
 ### TUTORIAL_STEP Response Format
 When guiding through a tutorial, respond with message_type TUTORIAL_STEP:
@@ -1417,7 +1426,7 @@ def get_intent_bias(user_text: str) -> str:
             "JANGAN parafrase ulang apa yang user minta. JANGAN verbose. "
             "Maksimal 1 kalimat pendek."
         )
-    elif has_tutorial:
+    elif has_tutorial and not has_action:
         return (
             "\n\n## HINT\n"
             "MODE: TUTORIAL. User ingin memulai atau melanjutkan tutorial interaktif. "
