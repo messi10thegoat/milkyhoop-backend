@@ -15,7 +15,6 @@ Endpoints:
 
 import base64
 import hashlib
-import io
 import json
 import logging
 import os
@@ -31,22 +30,31 @@ import asyncio as _asyncio_stream
 import json as _json_stream
 
 from ..services.unified_agent.session_orchestrator import SessionAwareAgent
-from ..services.unified_agent.orchestrator import AgentResponse, TenantContext as OrchestratorTenantContext
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
-from ..services.action_validator_client import get_action_validator_client
 from ..services.action_executor_client import get_action_executor_client
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
 from ..services.unified_agent.db_utils import get_session_db_pool
 from ..services.unified_agent.fsm import FSMState
+from ..services.unified_agent.tutorial_progress import (
+    get_active_tutorial,
+    advance_tutorial as _advance_tutorial_step,
+)
+from ..services.unified_agent.tutorial_registry import (
+    get_tutorial_step as _get_tutorial_step,
+)
 
 # Chat history persistence via gRPC
 import grpc
+
 try:
     from backend.api_gateway.libs.milkyhoop_protos import (
         conversation_service_pb2,
         conversation_service_pb2_grpc,
     )
-    CONVERSATION_SERVICE_AVAILABLE = False  # [PHASE A] Disabled - using session_manager instead
+
+    CONVERSATION_SERVICE_AVAILABLE = (
+        False  # [PHASE A] Disabled - using session_manager instead
+    )
 except ImportError:
     CONVERSATION_SERVICE_AVAILABLE = False
 
@@ -66,13 +74,26 @@ _agent = SessionAwareAgent()
 
 UPLOAD_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 UPLOAD_MAX_FILES = 5
-UPLOAD_ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".ofx", ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+UPLOAD_ALLOWED_EXTENSIONS = {
+    ".csv",
+    ".xlsx",
+    ".xls",
+    ".ofx",
+    ".pdf",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".heic",
+    ".heif",
+}
 UPLOAD_BASE_DIR = "/tmp/milkyhoop_uploads"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
 # Import resolve_file_ref from utils (re-export for backward compatibility)
-from ..utils.file_ref import resolve_file_ref  # noqa: F401
+from ..utils.file_ref import resolve_file_ref  # noqa: F401, E402
+
 
 async def _validate_upload_files(files: List[UploadFile]) -> List[str]:
     """Validate uploaded files at boundary. Returns list of errors."""
@@ -86,7 +107,7 @@ async def _validate_upload_files(files: List[UploadFile]) -> List[str]:
         if ext not in UPLOAD_ALLOWED_EXTENSIONS:
             allowed = ", ".join(sorted(UPLOAD_ALLOWED_EXTENSIONS))
             errors.append(
-                f"Tipe file \'{ext}\' tidak didukung untuk \'{f.filename}\'. "
+                f"Tipe file '{ext}' tidak didukung untuk '{f.filename}'. "
                 f"Didukung: {allowed}"
             )
             continue
@@ -96,15 +117,13 @@ async def _validate_upload_files(files: List[UploadFile]) -> List[str]:
         if len(content) > UPLOAD_MAX_FILE_SIZE:
             size_mb = len(content) / (1024 * 1024)
             errors.append(
-                f"File \'{f.filename}\' terlalu besar ({size_mb:.1f}MB). Maksimal 10MB."
+                f"File '{f.filename}' terlalu besar ({size_mb:.1f}MB). Maksimal 10MB."
             )
 
     return errors
 
 
-async def _store_upload_file(
-    file: UploadFile, tenant_id: str, pool
-) -> dict:
+async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
     """
     Store uploaded file with SHA-256 dedup + session-level advisory lock.
     Returns file metadata dict.
@@ -161,6 +180,7 @@ def _resize_image_for_vision(image_bytes: bytes, content_type: str) -> tuple:
     """
     try:
         from PIL import Image
+
         img = Image.open(BytesIO(image_bytes))
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
@@ -184,8 +204,7 @@ def _build_image_content_blocks(text: str, file_metas: List[dict]):
     Images are resized to max 1024px and JPEG-compressed before base64.
     """
     image_metas = [
-        fm for fm in file_metas
-        if fm.get("extension", "").lower() in IMAGE_EXTENSIONS
+        fm for fm in file_metas if fm.get("extension", "").lower() in IMAGE_EXTENSIONS
     ]
     if not image_metas:
         return None
@@ -207,13 +226,15 @@ def _build_image_content_blocks(text: str, file_metas: List[dict]):
                 raw_bytes, fm.get("content_type", "image/jpeg")
             )
             b64 = base64.b64encode(resized_bytes).decode("utf-8")
-            blocks.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime};base64,{b64}",
-                    "detail": "low",
-                },
-            })
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{b64}",
+                        "detail": "low",
+                    },
+                }
+            )
         except Exception as e:
             logger.warning(f"[chat] Failed to read image {stored_path}: {e}")
 
@@ -232,17 +253,19 @@ def _build_file_context(file_metas: List[dict]) -> str:
         ext_label = fm["extension"].upper().lstrip(".")
         # Build opaque file reference (hash only, no server path)
         file_ref = f"chat_upload:{fm.get('file_hash', '')}{fm['extension']}"
-        attachments.append(f"[Attached: {fm['filename']}, {size_str}, {ext_label}, file_ref={file_ref}]")
+        attachments.append(
+            f"[Attached: {fm['filename']}, {size_str}, {ext_label}, file_ref={file_ref}]"
+        )
 
     return "\n".join(attachments)
 
 
-
-
 # ─── Request/Response Models ───────────────────────────────────────────────────
+
 
 class ChatMessageRequest(BaseModel):
     """Request to send a message to the unified agent."""
+
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
     text: str = Field(..., min_length=1, max_length=2000, description="User message")
@@ -250,9 +273,12 @@ class ChatMessageRequest(BaseModel):
 
 class ConfirmActionRequest(BaseModel):
     """Request to confirm a pending action."""
+
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
-    pending_action_id: str = Field(..., description="ID of the pending action to confirm")
+    pending_action_id: str = Field(
+        ..., description="ID of the pending action to confirm"
+    )
     doc_status: Literal["DRAFT", "POSTED"] = Field(
         "POSTED",
         description="Document status: DRAFT saves without posting, POSTED creates and posts",
@@ -265,31 +291,49 @@ class ConfirmActionRequest(BaseModel):
 
 class CancelActionRequest(BaseModel):
     """Request to cancel a pending action."""
+
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
-    pending_action_id: str = Field(..., description="ID of the pending action to cancel")
+    pending_action_id: str = Field(
+        ..., description="ID of the pending action to cancel"
+    )
 
 
 class ChatMessageResponse(BaseModel):
     """Unified response from agent chat endpoints."""
+
     message_id: str = Field(default_factory=lambda: str(uuid_mod.uuid4()))
-    message_type: str = Field(..., description="TEXT | ACTION_PREVIEW | ACTION_RESULT | CLARIFICATION | VALIDATION_ERROR | CHART")
+    message_type: str = Field(
+        ...,
+        description="TEXT | ACTION_PREVIEW | ACTION_RESULT | CLARIFICATION | VALIDATION_ERROR | CHART",
+    )
     text: Optional[str] = Field(None, description="Narrative text from agent")
     data: Optional[Dict[str, Any]] = Field(None, description="Typed data payload")
     trace_id: Optional[str] = Field(None, description="Trace ID for debugging")
-    pending_action_id: Optional[str] = Field(None, description="Pending action ID if applicable")
+    pending_action_id: Optional[str] = Field(
+        None, description="Pending action ID if applicable"
+    )
     # Agent telemetry (optional, useful for debugging)
     iterations: Optional[int] = Field(None, description="Agent loop iterations")
-    tool_calls: Optional[List[Dict]] = Field(None, description="Tools called during processing")
+    tool_calls: Optional[List[Dict]] = Field(
+        None, description="Tools called during processing"
+    )
     model_used: Optional[str] = Field(None, description="LLM model used")
     latency_ms: Optional[int] = Field(None, description="Total processing time in ms")
-    session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
-    workflow_continuation: Optional[bool] = Field(None, description="Auto-continue workflow after confirm")
-    thinking_stages: Optional[List[str]] = Field(None, description="Tool stage labels for UX thinking indicator")
+    session_id: Optional[str] = Field(
+        None, description="Session ID for conversation continuity"
+    )
+    workflow_continuation: Optional[bool] = Field(
+        None, description="Auto-continue workflow after confirm"
+    )
+    thinking_stages: Optional[List[str]] = Field(
+        None, description="Tool stage labels for UX thinking indicator"
+    )
 
 
 class ActionStatusResponse(BaseModel):
     """Response for polling action status."""
+
     pending_action_id: str
     status: str
     message: Optional[str] = None
@@ -297,6 +341,7 @@ class ActionStatusResponse(BaseModel):
 
 
 # ─── Auth Helper ───────────────────────────────────────────────────────────────
+
 
 def _get_user_context(request: Request) -> dict:
     """
@@ -311,14 +356,14 @@ def _get_user_context(request: Request) -> dict:
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context: missing tenant_id")
+        raise HTTPException(
+            status_code=401, detail="Invalid user context: missing tenant_id"
+        )
 
     # Extract bearer token for downstream API calls
     auth_header = request.headers.get("authorization", "")
     auth_token = (
-        auth_header.replace("Bearer ", "")
-        if auth_header.startswith("Bearer ")
-        else ""
+        auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
     )
 
     return {
@@ -330,6 +375,7 @@ def _get_user_context(request: Request) -> dict:
 
 
 # ─── Chat History Helpers ──────────────────────────────────────────────────────
+
 
 async def _save_to_chat_history(
     user_id: str,
@@ -395,6 +441,7 @@ async def _get_conversation_history(
 
 # ─── Helper: AgentResponse → ChatMessageResponse ──────────────────────────────
 
+
 def _to_chat_response(agent_resp) -> ChatMessageResponse:
     """Convert internal AgentResponse or dict to API response model."""
     # Handle both dict (from SessionAwareAgent) and AgentResponse object
@@ -426,7 +473,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         latency_ms = agent_resp.total_latency_ms
         session_id = getattr(agent_resp, "session_id", None)
         thinking_stages = getattr(agent_resp, "thinking_stages", None)
-    
+
     data = None
     pending_action_id = None
 
@@ -462,11 +509,10 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
     )
 
 
-
-
 # =============================================================================
 # POST /message — Main entry point: unified agent loop
 # =============================================================================
+
 
 @router.post("/message", response_model=ChatMessageResponse)
 async def send_message(request: Request, body: ChatMessageRequest):
@@ -485,7 +531,11 @@ async def send_message(request: Request, body: ChatMessageRequest):
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            sm_guard = SessionManager(db_pool=db_pool_guard, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+            sm_guard = SessionManager(
+                db_pool=db_pool_guard,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+            )
             guard_state = await sm_guard.get_state(body.session_id)
             if guard_state.fsm_state == "AWAITING_CONFIRMATION":
                 return ChatMessageResponse(
@@ -500,7 +550,17 @@ async def send_message(request: Request, body: ChatMessageRequest):
     # If user sends "lanjut" etc. and there's an active workflow in REVIEWING state,
     # bypass LLM and directly resume workflow for reliability + speed.
     if body.session_id and body.text:
-        _resume_keywords = {"lanjut", "next", "ok", "oke", "lanjutkan", "berikutnya", "terus", "ya", "iya"}
+        _resume_keywords = {
+            "lanjut",
+            "next",
+            "ok",
+            "oke",
+            "lanjutkan",
+            "berikutnya",
+            "terus",
+            "ya",
+            "iya",
+        }
         _text_lower = body.text.strip().lower().rstrip(".!,")
         _is_resume = (
             _text_lower in _resume_keywords
@@ -511,6 +571,7 @@ async def send_message(request: Request, body: ChatMessageRequest):
         if _is_resume:
             try:
                 from ..services.unified_agent.workflow_engine import WorkflowEngine
+
                 _wf_pool = await get_session_db_pool()
                 _wf_engine = WorkflowEngine(
                     db_pool=_wf_pool,
@@ -518,14 +579,22 @@ async def send_message(request: Request, body: ChatMessageRequest):
                     user_id=ctx["user_id"],
                     auth_token=ctx["auth_token"],
                 )
-                _wf_state = await _wf_engine.get_state(body.session_id, "bank_reconciliation")
+                _wf_state = await _wf_engine.get_state(
+                    body.session_id, "bank_reconciliation"
+                )
                 logger.info(
                     f"[RECON-LANJUT] conv={body.session_id} "
                     f"state={_wf_state.current_state if _wf_state else 'none'}"
                 )
                 _shortcut_states = {"REVIEWING", "BALANCE_PROOF", "FINALIZE"}
-                if _wf_state and _wf_state.status == "active" and _wf_state.current_state in _shortcut_states:
-                    logger.info(f"[UnifiedChat] Workflow shortcut: resuming REVIEWING for session {body.session_id}")
+                if (
+                    _wf_state
+                    and _wf_state.status == "active"
+                    and _wf_state.current_state in _shortcut_states
+                ):
+                    logger.info(
+                        f"[UnifiedChat] Workflow shortcut: resuming REVIEWING for session {body.session_id}"
+                    )
                     _tenant_ctx = TenantContext(
                         tenant_id=ctx["tenant_id"],
                         user_id=ctx["user_id"],
@@ -543,20 +612,30 @@ async def send_message(request: Request, body: ChatMessageRequest):
                         session_id=body.session_id,
                         user_text=body.text,
                     )
-                    _wf_result = await _te._execute_start_workflow({
-                        "workflow_type": "bank_reconciliation",
-                    })
-                    logger.info(f"[WfShortcut] result msg_type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}")
+                    _wf_result = await _te._execute_start_workflow(
+                        {
+                            "workflow_type": "bank_reconciliation",
+                        }
+                    )
+                    logger.info(
+                        f"[WfShortcut] result msg_type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}"
+                    )
                     # Convert ToolExecutor result to ChatMessageResponse
                     _pa_id = None
                     if isinstance(_wf_result, dict):
                         _pa_id = _wf_result.get("pending_action_id") or (
-                            _wf_result.get("data", {}).get("pending_action_id") if isinstance(_wf_result.get("data"), dict) else None
+                            _wf_result.get("data", {}).get("pending_action_id")
+                            if isinstance(_wf_result.get("data"), dict)
+                            else None
                         )
-                    if isinstance(_wf_result, dict) and (_pa_id or _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW"):
+                    if isinstance(_wf_result, dict) and (
+                        _pa_id
+                        or _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW"
+                    ):
                         return ChatMessageResponse(
                             message_type="DIRECT_ACTION_PREVIEW",
-                            text=_wf_result.get("content") or _wf_result.get("text", ""),
+                            text=_wf_result.get("content")
+                            or _wf_result.get("text", ""),
                             session_id=body.session_id,
                             pending_action_id=_pa_id,
                             data=_wf_result.get("data"),
@@ -570,32 +649,47 @@ async def send_message(request: Request, body: ChatMessageRequest):
                             _acct = bp.get("account_name", "")
                             _matched = bp.get("matched_count", 0)
                             _total = bp.get("total_statement_lines", 0)
-                            _lines = [f"Rekonsiliasi {_acct} selesai! {_matched} dari {_total} transaksi berhasil dicocokkan."]
+                            _lines = [
+                                f"Rekonsiliasi {_acct} selesai! {_matched} dari {_total} transaksi berhasil dicocokkan."
+                            ]
                             return ChatMessageResponse(
                                 message_type="TEXT",
                                 text="\n".join(_lines),
                                 session_id=body.session_id,
                                 data=_wf_result.get("auto_results"),
                             )
-                        elif isinstance(_wf_result, dict) and _wf_result.get("current_state") == "FINALIZE":
+                        elif (
+                            isinstance(_wf_result, dict)
+                            and _wf_result.get("current_state") == "FINALIZE"
+                        ):
                             # Can't auto-complete — show blockers
                             ar = _wf_result.get("auto_results") or {}
                             bp = ar.get("balance_proof") or {}
-                            blockers = bp.get("completion_blockers", [])
+                            _blockers = bp.get("completion_blockers", [])
                             _unmatched_ct = bp.get("unmatched_count", 0)
                             _diff = bp.get("difference")
                             _parts = []
                             if _unmatched_ct > 0:
-                                _parts.append(f"masih ada {_unmatched_ct} transaksi yang belum dicocokkan")
+                                _parts.append(
+                                    f"masih ada {_unmatched_ct} transaksi yang belum dicocokkan"
+                                )
                             if _diff and float(_diff) != 0:
-                                _diff_fmt = f"Rp {int(abs(float(_diff))):,}".replace(",", ".")
+                                _diff_fmt = f"Rp {int(abs(float(_diff))):,}".replace(
+                                    ",", "."
+                                )
                                 _parts.append(f"selisih {_diff_fmt}")
                             if _parts:
-                                _lines = ["Rekonsiliasi belum bisa diselesaikan karena " + " dan ".join(_parts) + "."]
+                                _lines = [
+                                    "Rekonsiliasi belum bisa diselesaikan karena "
+                                    + " dan ".join(_parts)
+                                    + "."
+                                ]
                             else:
                                 _lines = ["Rekonsiliasi belum bisa diselesaikan."]
                             _lines.append("")
-                            _lines.append("Selesaikan item yang tersisa dulu, atau ketik \"selesai\" kalau mau finalisasi dengan selisih.")
+                            _lines.append(
+                                'Selesaikan item yang tersisa dulu, atau ketik "selesai" kalau mau finalisasi dengan selisih.'
+                            )
                             return ChatMessageResponse(
                                 message_type="TEXT",
                                 text="\n".join(_lines),
@@ -605,16 +699,25 @@ async def send_message(request: Request, body: ChatMessageRequest):
                         else:
                             _text = ""
                             if isinstance(_wf_result, dict):
-                                _text = _wf_result.get("text") or _wf_result.get("content") or ""
+                                _text = (
+                                    _wf_result.get("text")
+                                    or _wf_result.get("content")
+                                    or ""
+                                )
                             return ChatMessageResponse(
                                 message_type="TEXT",
                                 text=_text or "Lanjutkan.",
                                 session_id=body.session_id,
-                                data=_wf_result.get("data") if isinstance(_wf_result, dict) else None,
+                                data=_wf_result.get("data")
+                                if isinstance(_wf_result, dict)
+                                else None,
                             )
             except Exception as e:
                 import traceback
-                logger.warning(f"[UnifiedChat] Workflow shortcut failed: {e}\n{traceback.format_exc()}")
+
+                logger.warning(
+                    f"[UnifiedChat] Workflow shortcut failed: {e}\n{traceback.format_exc()}"
+                )
                 pass  # Fall through to normal LLM processing
 
     # Build tenant context for tool executor
@@ -644,27 +747,47 @@ async def send_message(request: Request, body: ChatMessageRequest):
     # [PHASE A] Message persistence handled by session_orchestrator.py
     # Old gRPC conversation_service disabled - causes user_id schema conflict
     # await _save_to_chat_history(
-        # user_id=ctx["user_id"],
-        # tenant_id=ctx["tenant_id"],
-        # message=body.text,
-        # response=(agent_resp.get('content') if isinstance(agent_resp, dict) else agent_resp.content) or "",
-        # intent="unified_agent",
-        # metadata={
-            # "conversation_id": body.conversation_id,
-            # "message_type": agent_resp.get("message_type") if isinstance(agent_resp, dict) else agent_resp.message_type,
-            # "model_used": agent_resp.get("model_used") if isinstance(agent_resp, dict) else agent_resp.model_used,
-            # "iterations": agent_resp.get("iterations") if isinstance(agent_resp, dict) else agent_resp.iterations,
-            # "pending_action_id": (agent_resp.get("pending_action_id") if isinstance(agent_resp, dict) else agent_resp.pending_action_id) or None,
-        # },
+    # user_id=ctx["user_id"],
+    # tenant_id=ctx["tenant_id"],
+    # message=body.text,
+    # response=(agent_resp.get('content') if isinstance(agent_resp, dict) else agent_resp.content) or "",
+    # intent="unified_agent",
+    # metadata={
+    # "conversation_id": body.conversation_id,
+    # "message_type": agent_resp.get("message_type") if isinstance(agent_resp, dict) else agent_resp.message_type,
+    # "model_used": agent_resp.get("model_used") if isinstance(agent_resp, dict) else agent_resp.model_used,
+    # "iterations": agent_resp.get("iterations") if isinstance(agent_resp, dict) else agent_resp.iterations,
+    # "pending_action_id": (agent_resp.get("pending_action_id") if isinstance(agent_resp, dict) else agent_resp.pending_action_id) or None,
+    # },
     # )
 
     # Handle both dict and object responses
-    msg_type = agent_resp.get("message_type") if isinstance(agent_resp, dict) else agent_resp.message_type
-    iterations = agent_resp.get("iterations", 0) if isinstance(agent_resp, dict) else agent_resp.iterations
-    tool_calls = agent_resp.get("tool_calls_made", []) if isinstance(agent_resp, dict) else (agent_resp.tool_calls_made or [])
-    model_used = agent_resp.get("model_used") if isinstance(agent_resp, dict) else agent_resp.model_used
-    latency = agent_resp.get("total_latency_ms", 0) if isinstance(agent_resp, dict) else agent_resp.total_latency_ms
-    
+    msg_type = (
+        agent_resp.get("message_type")
+        if isinstance(agent_resp, dict)
+        else agent_resp.message_type
+    )
+    iterations = (
+        agent_resp.get("iterations", 0)
+        if isinstance(agent_resp, dict)
+        else agent_resp.iterations
+    )
+    tool_calls = (
+        agent_resp.get("tool_calls_made", [])
+        if isinstance(agent_resp, dict)
+        else (agent_resp.tool_calls_made or [])
+    )
+    model_used = (
+        agent_resp.get("model_used")
+        if isinstance(agent_resp, dict)
+        else agent_resp.model_used
+    )
+    latency = (
+        agent_resp.get("total_latency_ms", 0)
+        if isinstance(agent_resp, dict)
+        else agent_resp.total_latency_ms
+    )
+
     logger.info(
         f"[UnifiedAgent] user={ctx['user_id']} type={msg_type} "
         f"iterations={iterations} tools={len(tool_calls)} "
@@ -674,11 +797,10 @@ async def send_message(request: Request, body: ChatMessageRequest):
     return _to_chat_response(agent_resp)
 
 
-
-
 # =============================================================================
 # POST /message/stream — SSE streaming endpoint with thinking steps
 # =============================================================================
+
 
 @router.post("/message/stream")
 async def send_message_stream(request: Request, body: ChatMessageRequest):
@@ -699,7 +821,11 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            sm_guard = SessionManager(db_pool=db_pool_guard, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+            sm_guard = SessionManager(
+                db_pool=db_pool_guard,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+            )
             guard_state = await sm_guard.get_state(body.session_id)
             if guard_state.fsm_state == "AWAITING_CONFIRMATION":
                 # Return as a single SSE event
@@ -713,10 +839,15 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
                         },
                     }
                     yield f"data: {_json_stream.dumps(_resp, default=str)}\n\n"
+
                 return StreamingResponse(
                     _guard_gen(),
                     media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
         except Exception:
             pass
@@ -769,6 +900,7 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
             await queue.put({"event": "DONE", "data": response_data})
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             await queue.put({"event": "ERROR", "data": {"message": str(e)}})
 
@@ -782,7 +914,9 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
 
         while _elapsed < _total_timeout:
             try:
-                event = await _asyncio_stream.wait_for(queue.get(), timeout=_chunk_timeout)
+                event = await _asyncio_stream.wait_for(
+                    queue.get(), timeout=_chunk_timeout
+                )
             except _asyncio_stream.TimeoutError:
                 _elapsed += _chunk_timeout
                 yield f"data: {_json_stream.dumps({'event': 'HEARTBEAT', 'data': {}})}\n\n"
@@ -809,9 +943,11 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
         },
     )
 
+
 # =============================================================================
 # POST /message/upload — Send message with file attachments (multipart)
 # =============================================================================
+
 
 @router.post("/message/upload", response_model=ChatMessageResponse)
 async def send_message_with_files(
@@ -819,7 +955,9 @@ async def send_message_with_files(
     conversation_id: str = Form(..., description="Conversation session ID"),
     text: str = Form(..., min_length=1, max_length=2000, description="User message"),
     session_id: Optional[str] = Form(None, description="Session ID for 4-layer memory"),
-    files: List[UploadFile] = File(default=[], description="Attached files (max 5, max 10MB each)"),
+    files: List[UploadFile] = File(
+        default=[], description="Attached files (max 5, max 10MB each)"
+    ),
 ):
     """
     Process a user message with file attachments through the unified agent loop.
@@ -897,28 +1035,42 @@ async def send_message_with_files(
     _is_recon = (
         "rekonsiliasi" in _text_lower
         or "rekon" in _text_lower
-        or ("rekening koran" in _text_lower and ("import" in _text_lower or "upload" in _text_lower))
+        or (
+            "rekening koran" in _text_lower
+            and ("import" in _text_lower or "upload" in _text_lower)
+        )
     )
     if _has_bank_file and _is_recon:
         try:
-            logger.info(f"[ReconShortcut] Detected recon upload — bypassing LLM")
+            logger.info("[ReconShortcut] Detected recon upload — bypassing LLM")
             from ..services.unified_agent.workflow_engine import WorkflowEngine
-            from ..services.unified_agent.db_utils import get_session_db_pool as _get_wf_pool
+            from ..services.unified_agent.db_utils import (
+                get_session_db_pool as _get_wf_pool,
+            )
 
             _wf_pool = await _get_wf_pool()
 
             # Ensure we have a session_id
             if not session_id:
-                _sm_init = SessionManager(db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                _sm_init = SessionManager(
+                    db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                )
                 # conversation_id may not be a valid UUID — use it if valid, else generate one
                 import uuid as _uuid
+
                 try:
                     _conv_uuid = str(_uuid.UUID(conversation_id))
                 except (ValueError, AttributeError):
                     _conv_uuid = str(_uuid.uuid4())
-                    logger.info(f"[ReconShortcut] conversation_id {conversation_id} is not a UUID, generated {_conv_uuid}")
+                    logger.info(
+                        f"[ReconShortcut] conversation_id {conversation_id} is not a UUID, generated {_conv_uuid}"
+                    )
                 _sess = await _sm_init.get_or_create_session(_conv_uuid)
-                session_id = str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+                session_id = (
+                    str(_sess.session_id)
+                    if hasattr(_sess, "session_id")
+                    else str(_sess)
+                )
 
             _wf_engine = WorkflowEngine(
                 db_pool=_wf_pool,
@@ -933,7 +1085,9 @@ async def send_message_with_files(
                 auth_token=ctx["auth_token"],
                 tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
             )
-            _sm = SessionManager(db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+            _sm = SessionManager(
+                db_pool=_wf_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+            )
             _te = ToolExecutor(
                 context=_tenant_ctx,
                 session_manager=_sm,
@@ -943,10 +1097,14 @@ async def send_message_with_files(
 
             # Cancel any existing active workflow for this session
             try:
-                _existing_wf = await _wf_engine.get_state(session_id, "bank_reconciliation")
+                _existing_wf = await _wf_engine.get_state(
+                    session_id, "bank_reconciliation"
+                )
                 if _existing_wf and _existing_wf.status == "active":
                     await _wf_engine.cancel(session_id, "bank_reconciliation")
-                    logger.info(f"[ReconShortcut] Cancelled existing workflow for session {session_id}")
+                    logger.info(
+                        f"[ReconShortcut] Cancelled existing workflow for session {session_id}"
+                    )
             except Exception:
                 pass
 
@@ -955,8 +1113,12 @@ async def send_message_with_files(
             # Inject file_ref directly from file_metas (bypass auto-inject)
             if file_metas:
                 _fm = file_metas[0]
-                _shortcut_user_data["file_ref"] = f"chat_upload:{_fm.get('file_hash', '')}{_fm['extension']}"
-            from ..services.unified_agent.balance_parser import parse_balance as _parse_bal
+                _shortcut_user_data[
+                    "file_ref"
+                ] = f"chat_upload:{_fm.get('file_hash', '')}{_fm['extension']}"
+            from ..services.unified_agent.balance_parser import (
+                parse_balance as _parse_bal,
+            )
 
             # Parse balance using robust multi-strategy parser (Law 25: Decimal)
             _sc_balance_dec, _sc_bal_found = _parse_bal(text.strip())
@@ -968,6 +1130,7 @@ async def send_message_with_files(
 
             # Extract candidate account numbers (8+ digit numbers, not the balance)
             import re as _sc_re
+
             _sc_nums = _sc_re.findall(r"\d[\d.,]+\d", text.strip())
             _sc_account_number = None
             for _n in _sc_nums:
@@ -982,6 +1145,7 @@ async def send_message_with_files(
             if _sc_account_number:
                 try:
                     import httpx as _sc_httpx
+
                     _sc_headers = {"Authorization": f"Bearer {ctx['auth_token']}"}
                     async with _sc_httpx.AsyncClient(timeout=10.0) as _sc_client:
                         _sc_resp = await _sc_client.get(
@@ -990,16 +1154,33 @@ async def send_message_with_files(
                         )
                     if _sc_resp.status_code == 200:
                         _sc_banks = _sc_resp.json()
-                        _sc_items = _sc_banks.get("data", _sc_banks.get("items", _sc_banks if isinstance(_sc_banks, list) else []))
+                        _sc_items = _sc_banks.get(
+                            "data",
+                            _sc_banks.get(
+                                "items",
+                                _sc_banks if isinstance(_sc_banks, list) else [],
+                            ),
+                        )
                         if isinstance(_sc_items, list):
                             for _bank in _sc_items:
-                                _bank_num = str(_bank.get("account_number", "")).replace("-", "").replace(" ", "")
-                                if _sc_account_number in _bank_num or _bank_num in _sc_account_number:
+                                _bank_num = (
+                                    str(_bank.get("account_number", ""))
+                                    .replace("-", "")
+                                    .replace(" ", "")
+                                )
+                                if (
+                                    _sc_account_number in _bank_num
+                                    or _bank_num in _sc_account_number
+                                ):
                                     _shortcut_user_data["account_id"] = _bank.get("id")
-                                    _shortcut_user_data["account_name"] = _bank.get("account_name", "")
+                                    _shortcut_user_data["account_name"] = _bank.get(
+                                        "account_name", ""
+                                    )
                                     _bank_label = _bank.get("account_name", "unknown")
                                     _bank_id = _bank.get("id", "?")
-                                    logger.info(f"[ReconShortcut] Identified bank: {_bank_label} (id={_bank_id})")
+                                    logger.info(
+                                        f"[ReconShortcut] Identified bank: {_bank_label} (id={_bank_id})"
+                                    )
                                     break
                 except Exception as _sc_err:
                     logger.warning(f"[ReconShortcut] Bank lookup failed: {_sc_err}")
@@ -1010,21 +1191,32 @@ async def send_message_with_files(
                 f"balance={_shortcut_user_data.get('statement_ending_balance', 'n/a')} "
                 f"file={'yes' if _shortcut_user_data.get('file_ref') else 'no'}"
             )
-            _wf_result = await _te._execute_start_workflow({
-                "workflow_type": "bank_reconciliation",
-                "user_data": _shortcut_user_data,
-            })
+            _wf_result = await _te._execute_start_workflow(
+                {
+                    "workflow_type": "bank_reconciliation",
+                    "user_data": _shortcut_user_data,
+                }
+            )
 
-            logger.info(f"[ReconShortcut] Result type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}")
+            logger.info(
+                f"[ReconShortcut] Result type={_wf_result.get('message_type') if isinstance(_wf_result, dict) else 'N/A'}"
+            )
 
-            if isinstance(_wf_result, dict) and _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+            if (
+                isinstance(_wf_result, dict)
+                and _wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW"
+            ):
                 _da_data = _wf_result.get("data", {})
                 _pa_id = _da_data.get("pending_action_id", "")
                 # Attach uploaded_files metadata
                 if isinstance(_da_data, dict):
                     _da_data["uploaded_files"] = [
-                        {"filename": fm["filename"], "size": fm["size"],
-                         "extension": fm["extension"], "file_hash": fm["file_hash"]}
+                        {
+                            "filename": fm["filename"],
+                            "size": fm["size"],
+                            "extension": fm["extension"],
+                            "file_hash": fm["file_hash"],
+                        }
                         for fm in file_metas
                     ]
                 _recon_shortcut_result = ChatMessageResponse(
@@ -1040,7 +1232,7 @@ async def send_message_with_files(
                 _user_facing = {
                     "IDENTIFY_ACCOUNT": "Mau rekonsiliasi rekening yang mana? Sebutkan nama atau nomor rekeningnya ya.",
                     "NEED_BALANCE": "Berapa saldo akhir di rekening koran? Angka ini perlu untuk mencocokkan data.",
-                    "NEED_FILE": "Upload file rekening koran (CSV/XLSX/OFX), atau ketik \"tanpa file\" untuk mode manual.",
+                    "NEED_FILE": 'Upload file rekening koran (CSV/XLSX/OFX), atau ketik "tanpa file" untuk mode manual.',
                 }.get(_wf_state, _wf_result.get("llm_instruction", ""))
                 _recon_shortcut_result = ChatMessageResponse(
                     message_type="TEXT",
@@ -1067,7 +1259,9 @@ async def send_message_with_files(
             )
 
             _file_intent = detect_upload_intent(text, file_metas)
-            logger.info(f"[DocPipeline] Intent detected: {_file_intent} for {len(file_metas)} file(s)")
+            logger.info(
+                f"[DocPipeline] Intent detected: {_file_intent} for {len(file_metas)} file(s)"
+            )
 
             if _file_intent == "financial_doc":
                 _dp_pool = await get_session_db_pool()
@@ -1095,15 +1289,21 @@ async def send_message_with_files(
                                 conn=_dp_conn,
                                 file_content=_file_content,
                                 filename=_fm.get("filename", "unnamed"),
-                                content_type=_fm.get("content_type", "application/octet-stream"),
+                                content_type=_fm.get(
+                                    "content_type", "application/octet-stream"
+                                ),
                                 tenant_id=ctx["tenant_id"],
                                 user_id=ctx["user_id"],
                             )
 
                     if not _doc_record:
-                        logger.warning("[DocPipeline] File type not supported for pipeline")
+                        logger.warning(
+                            "[DocPipeline] File type not supported for pipeline"
+                        )
                         # Fall through to LLM vision path
-                    elif _doc_record.get("is_duplicate") and _doc_record.get("draft_plan"):
+                    elif _doc_record.get("is_duplicate") and _doc_record.get(
+                        "draft_plan"
+                    ):
                         # Already processed — build proposal from existing draft
                         _proposal = build_draft_proposal(
                             draft_plan=_doc_record["draft_plan"],
@@ -1123,7 +1323,9 @@ async def send_message_with_files(
                         )
                     else:
                         # Process through pipeline (sync — waits for completion)
-                        logger.info(f"[DocPipeline] Processing doc {_doc_record['id']} through pipeline")
+                        logger.info(
+                            f"[DocPipeline] Processing doc {_doc_record['id']} through pipeline"
+                        )
                         _pipeline_result = await process_document_sync(
                             pool=_dp_pool,
                             doc_id=_doc_record["id"],
@@ -1145,8 +1347,11 @@ async def send_message_with_files(
                                 file_metas=file_metas,
                             )
                         elif _pipeline_result["status"] in (
-                            "extraction_failed", "classification_failed",
-                            "analysis_failed", "draft_failed", "pipeline_error",
+                            "extraction_failed",
+                            "classification_failed",
+                            "analysis_failed",
+                            "draft_failed",
+                            "pipeline_error",
                         ):
                             _doc_pipeline_result = ChatMessageResponse(
                                 message_type="TEXT",
@@ -1178,7 +1383,15 @@ async def send_message_with_files(
                             continue
                         # Only pipeline-compatible files (images + PDF)
                         _ext = _fm.get("extension", "").lower()
-                        if _ext not in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".pdf"):
+                        if _ext not in (
+                            ".jpg",
+                            ".jpeg",
+                            ".png",
+                            ".webp",
+                            ".heic",
+                            ".heif",
+                            ".pdf",
+                        ):
                             continue
 
                         with open(_stored_path, "rb") as _fp:
@@ -1194,7 +1407,9 @@ async def send_message_with_files(
                                     conn=_dp_conn,
                                     file_content=_file_content,
                                     filename=_fm.get("filename", "unnamed"),
-                                    content_type=_fm.get("content_type", "application/octet-stream"),
+                                    content_type=_fm.get(
+                                        "content_type", "application/octet-stream"
+                                    ),
                                     tenant_id=ctx["tenant_id"],
                                     user_id=ctx["user_id"],
                                 )
@@ -1204,9 +1419,12 @@ async def send_message_with_files(
                     if _batch_doc_ids:
                         # Fire background processing for each document
                         import asyncio as _bg_asyncio
+
                         for _bg_doc_id in _batch_doc_ids:
                             _bg_asyncio.create_task(
-                                _process_document_background(_dp_pool, _bg_doc_id, ctx["tenant_id"])
+                                _process_document_background(
+                                    _dp_pool, _bg_doc_id, ctx["tenant_id"]
+                                )
                             )
 
                         _doc_pipeline_result = ChatMessageResponse(
@@ -1260,11 +1478,31 @@ async def send_message_with_files(
     )
 
     # ── Logging ──
-    msg_type = agent_resp.get("message_type") if isinstance(agent_resp, dict) else agent_resp.message_type
-    iterations = agent_resp.get("iterations", 0) if isinstance(agent_resp, dict) else agent_resp.iterations
-    tool_calls = agent_resp.get("tool_calls_made", []) if isinstance(agent_resp, dict) else (agent_resp.tool_calls_made or [])
-    model_used = agent_resp.get("model_used") if isinstance(agent_resp, dict) else agent_resp.model_used
-    latency = agent_resp.get("total_latency_ms", 0) if isinstance(agent_resp, dict) else agent_resp.total_latency_ms
+    msg_type = (
+        agent_resp.get("message_type")
+        if isinstance(agent_resp, dict)
+        else agent_resp.message_type
+    )
+    iterations = (
+        agent_resp.get("iterations", 0)
+        if isinstance(agent_resp, dict)
+        else agent_resp.iterations
+    )
+    tool_calls = (
+        agent_resp.get("tool_calls_made", [])
+        if isinstance(agent_resp, dict)
+        else (agent_resp.tool_calls_made or [])
+    )
+    model_used = (
+        agent_resp.get("model_used")
+        if isinstance(agent_resp, dict)
+        else agent_resp.model_used
+    )
+    latency = (
+        agent_resp.get("total_latency_ms", 0)
+        if isinstance(agent_resp, dict)
+        else agent_resp.total_latency_ms
+    )
 
     logger.info(
         f"[UnifiedAgent+Files] user={ctx['user_id']} type={msg_type} "
@@ -1309,18 +1547,23 @@ async def _propose_document_draft(
     from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
     from ..services.unified_agent.session_manager import SessionManager
 
-    _dp_sm = SessionManager(db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+    _dp_sm = SessionManager(
+        db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+    )
 
     # Ensure session exists
     _dp_session_id = session_id
     if not _dp_session_id:
         import uuid as _uuid
+
         try:
             _conv_uuid = str(_uuid.UUID(conversation_id))
         except (ValueError, AttributeError):
             _conv_uuid = str(_uuid.uuid4())
         _sess = await _dp_sm.get_or_create_session(_conv_uuid)
-        _dp_session_id = str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+        _dp_session_id = (
+            str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+        )
 
     _dp_tenant_ctx = TenantContext(
         tenant_id=ctx["tenant_id"],
@@ -1340,12 +1583,17 @@ async def _propose_document_draft(
     action_key = proposal.get("action_key", "confirm_document_draft")
     payload = proposal.get("payload", {})
 
-    _propose_result = await _dp_te._execute_propose_direct({
-        "action_key": action_key,
-        "payload": payload,
-    })
+    _propose_result = await _dp_te._execute_propose_direct(
+        {
+            "action_key": action_key,
+            "payload": payload,
+        }
+    )
 
-    if isinstance(_propose_result, dict) and _propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+    if (
+        isinstance(_propose_result, dict)
+        and _propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW"
+    ):
         _da_data = _propose_result.get("data", {})
         _pa_id = _da_data.get("pending_action_id", "")
 
@@ -1357,8 +1605,12 @@ async def _propose_document_draft(
         # Attach file metadata
         if isinstance(_da_data, dict):
             _da_data["uploaded_files"] = [
-                {"filename": fm["filename"], "size": fm["size"],
-                 "extension": fm["extension"], "file_hash": fm["file_hash"]}
+                {
+                    "filename": fm["filename"],
+                    "size": fm["size"],
+                    "extension": fm["extension"],
+                    "file_hash": fm["file_hash"],
+                }
                 for fm in file_metas
             ]
 
@@ -1371,7 +1623,11 @@ async def _propose_document_draft(
         )
     else:
         # Proposal failed — return as text with narration
-        error = _propose_result.get("error", "") if isinstance(_propose_result, dict) else ""
+        error = (
+            _propose_result.get("error", "")
+            if isinstance(_propose_result, dict)
+            else ""
+        )
         return ChatMessageResponse(
             message_type="TEXT",
             text=f"{narration}\n\n{error}" if error else narration,
@@ -1383,15 +1639,25 @@ async def _process_document_background(pool, doc_id: str, tenant_id: str):
     """Fire-and-forget background processing for batch document uploads."""
     try:
         from ..services.chat_document_bridge import process_document_sync
+
         result = await process_document_sync(pool, doc_id, tenant_id)
-        logger.info(f"[DocPipeline] Background processing complete: {doc_id} -> {result.get('status')}")
+        logger.info(
+            f"[DocPipeline] Background processing complete: {doc_id} -> {result.get('status')}"
+        )
     except Exception as e:
-        logger.error(f"[DocPipeline] Background processing failed: {doc_id} -> {e}", exc_info=True)
+        logger.error(
+            f"[DocPipeline] Background processing failed: {doc_id} -> {e}",
+            exc_info=True,
+        )
 
 
 async def _confirm_direct_action(
-    pending_action_id: str, tenant_id: str, user_id: str,
-    pool, http_request, payload_overrides: dict = None
+    pending_action_id: str,
+    tenant_id: str,
+    user_id: str,
+    pool,
+    http_request,
+    payload_overrides: dict = None,
 ) -> ChatMessageResponse:
     """Execute a direct action by calling the REST endpoint."""
     import httpx
@@ -1401,38 +1667,46 @@ async def _confirm_direct_action(
     row = await pool.fetchrow(
         """SELECT action_id, action_plan, status, expires_at
            FROM pending_actions WHERE id = $1 AND tenant_id = $2""",
-        uuid_mod.UUID(pending_action_id), tenant_id
+        uuid_mod.UUID(pending_action_id),
+        tenant_id,
     )
 
     if not row:
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text="Action tidak ditemukan.",
-            data={"success": False}
+            data={"success": False},
         )
 
     if row["status"] != "PENDING":
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text=f"Action sudah {row['status'].lower()}.",
-            data={"success": False}
+            data={"success": False},
         )
 
     from datetime import datetime, timezone
-    if row["expires_at"] and row["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+
+    if row["expires_at"] and row["expires_at"].replace(
+        tzinfo=timezone.utc
+    ) < datetime.now(timezone.utc):
         await pool.execute(
             "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1",
-            uuid_mod.UUID(pending_action_id)
+            uuid_mod.UUID(pending_action_id),
         )
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text="Action sudah kedaluwarsa. Silakan buat ulang.",
-            data={"success": False}
+            data={"success": False},
         )
 
     action_key = row["action_id"]
     action_plan_raw = row["action_plan"]
-    payload = json.loads(action_plan_raw) if isinstance(action_plan_raw, str) else action_plan_raw
+    payload = (
+        json.loads(action_plan_raw)
+        if isinstance(action_plan_raw, str)
+        else action_plan_raw
+    )
     if payload_overrides:
         payload.update(payload_overrides)
     config = get_direct_action(action_key)
@@ -1441,13 +1715,13 @@ async def _confirm_direct_action(
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text=f"Konfigurasi untuk '{action_key}' tidak ditemukan.",
-            data={"success": False}
+            data={"success": False},
         )
 
     # Mark as executing
     await pool.execute(
         "UPDATE pending_actions SET status = 'EXECUTING', confirmed_at = NOW() WHERE id = $1",
-        uuid_mod.UUID(pending_action_id)
+        uuid_mod.UUID(pending_action_id),
     )
 
     # Forward tenant JWT for auth
@@ -1457,17 +1731,23 @@ async def _confirm_direct_action(
     try:
         # --- Bug Fix 1: Resolve path parameters (e.g. {id}) from payload ---
         endpoint = config.rest_endpoint
-        if '{' in endpoint:
+        if "{" in endpoint:
             try:
                 endpoint = endpoint.format(**payload)
             except KeyError:
-                if '{id}' in endpoint:
-                    entity_id = payload.get('id') or payload.get('account_id') or payload.get(f'{config.entity_type}_id', '')
-                    endpoint = endpoint.replace('{id}', str(entity_id))
+                if "{id}" in endpoint:
+                    entity_id = (
+                        payload.get("id")
+                        or payload.get("account_id")
+                        or payload.get(f"{config.entity_type}_id", "")
+                    )
+                    endpoint = endpoint.replace("{id}", str(entity_id))
 
         # Strip display_only fields (context for user, not needed by REST endpoint)
         display_only_names = {f.name for f in config.fields if f.display_only}
-        clean_payload = {k: v for k, v in payload.items() if k not in display_only_names}
+        clean_payload = {
+            k: v for k, v in payload.items() if k not in display_only_names
+        }
 
         # Bill payment: transform flat payload → allocations[] format for POST /api/bill-payments
         if action_key == "create_bill_payment":
@@ -1491,6 +1771,7 @@ async def _confirm_direct_action(
             allocations = payload.get("allocations", [])
             if isinstance(allocations, str):
                 import json as json_lib
+
                 allocations = json_lib.loads(allocations)
             clean_payload = {
                 "customer_id": payload["customer_id"],
@@ -1499,7 +1780,9 @@ async def _confirm_direct_action(
                 "bank_account_id": payload["bank_account_id"],
                 "total_amount": int(payload.get("total_amount", 0)),
                 "allocations": allocations,
-                "reference_number": payload.get("invoice_numbers", payload.get("reference_number", "")),
+                "reference_number": payload.get(
+                    "invoice_numbers", payload.get("reference_number", "")
+                ),
                 "notes": "Pembayaran dari rekonsiliasi bank",
             }
             if payload.get("session_id"):
@@ -1517,8 +1800,8 @@ async def _confirm_direct_action(
 
         # For DELETE/path-param requests, strip ID fields from body to avoid endpoint rejections
         request_body = clean_payload
-        if config.rest_method.upper() == 'DELETE':
-            id_keys = {'id', 'account_id', f'{config.entity_type}_id'}
+        if config.rest_method.upper() == "DELETE":
+            id_keys = {"id", "account_id", f"{config.entity_type}_id"}
             request_body = {k: v for k, v in clean_payload.items() if k not in id_keys}
             if not request_body:
                 request_body = None  # Send no body for empty DELETE
@@ -1544,13 +1827,19 @@ async def _confirm_direct_action(
                    SET status = 'COMPLETED', executed_at = NOW(),
                        result = $1
                    WHERE id = $2""",
-                json.dumps(result_data), uuid_mod.UUID(pending_action_id)
+                json.dumps(result_data),
+                uuid_mod.UUID(pending_action_id),
             )
 
             success_msg = config.get_success_message(payload)
 
             # Recon actions: signal frontend to auto-continue workflow
-            recon_actions = {"confirm_single_match", "categorize_statement", "create_bill_payment", "create_receive_payment"}
+            recon_actions = {
+                "confirm_single_match",
+                "categorize_statement",
+                "create_bill_payment",
+                "create_receive_payment",
+            }
             is_recon = action_key in recon_actions
 
             # Task G: Short acknowledgment for recon actions
@@ -1568,7 +1857,8 @@ async def _confirm_direct_action(
                             """UPDATE bank_statement_lines_v2
                                SET match_status = 'matched', updated_at = NOW()
                                WHERE id = $1 AND tenant_id = $2""",
-                            uuid_mod.UUID(_sl_id), tenant_id
+                            uuid_mod.UUID(_sl_id),
+                            tenant_id,
                         )
                         # Update session matched/unmatched counts
                         await pool.execute(
@@ -1583,11 +1873,37 @@ async def _confirm_direct_action(
                                    ),
                                    updated_at = NOW()
                                WHERE id = $1 AND tenant_id = $2""",
-                            uuid_mod.UUID(_sess_id), tenant_id
+                            uuid_mod.UUID(_sess_id),
+                            tenant_id,
                         )
-                        logger.info(f"[DirectAction] Marked statement line {_sl_id} as matched (session {_sess_id})")
+                        logger.info(
+                            f"[DirectAction] Marked statement line {_sl_id} as matched (session {_sess_id})"
+                        )
                     except Exception as _mark_err:
-                        logger.warning(f"[DirectAction] Failed to mark statement line matched: {_mark_err}")
+                        logger.warning(
+                            f"[DirectAction] Failed to mark statement line matched: {_mark_err}"
+                        )
+
+            # ── Tutorial auto-advance on data-changed ──
+            try:
+                _ta_active = await get_active_tutorial(pool, user_id)
+                if _ta_active and _ta_active.status == "active":
+                    _ta_step = _get_tutorial_step(
+                        _ta_active.tutorial_key, _ta_active.current_step
+                    )
+                    if (
+                        _ta_step
+                        and _ta_step.completion_trigger
+                        == f"data_changed:{config.entity_type}"
+                    ):
+                        _ta_next = await _advance_tutorial_step(
+                            pool, user_id, tenant_id, _ta_active.tutorial_key
+                        )
+                        logger.info(
+                            f"[Tutorial] Auto-advanced {_ta_active.tutorial_key} -> step {_ta_next}"
+                        )
+            except Exception as _ta_err:
+                logger.warning(f"[Tutorial] Auto-advance failed: {_ta_err}")
 
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
@@ -1604,7 +1920,9 @@ async def _confirm_direct_action(
             error_detail = response.text
             try:
                 error_json = response.json()
-                error_detail = error_json.get("detail", error_json.get("message", response.text))
+                error_detail = error_json.get(
+                    "detail", error_json.get("message", response.text)
+                )
             except Exception:
                 pass
 
@@ -1613,13 +1931,14 @@ async def _confirm_direct_action(
                    SET status = 'FAILED', executed_at = NOW(),
                        error_message = $1
                    WHERE id = $2""",
-                str(error_detail), uuid_mod.UUID(pending_action_id)
+                str(error_detail),
+                uuid_mod.UUID(pending_action_id),
             )
 
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
                 text=f"Gagal: {error_detail}",
-                data={"success": False}
+                data={"success": False},
             )
 
     except Exception as e:
@@ -1628,18 +1947,20 @@ async def _confirm_direct_action(
                SET status = 'FAILED', executed_at = NOW(),
                    error_message = $1
                WHERE id = $2""",
-            str(e), uuid_mod.UUID(pending_action_id)
+            str(e),
+            uuid_mod.UUID(pending_action_id),
         )
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text=f"Error: {str(e)}",
-            data={"success": False}
+            data={"success": False},
         )
 
 
 # =============================================================================
 # POST /confirm — Confirm pending action → execute via ActionExecutor
 # =============================================================================
+
 
 @router.post("/confirm", response_model=ChatMessageResponse)
 async def confirm_action(request: Request, body: ConfirmActionRequest):
@@ -1655,25 +1976,34 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
             da_pool = await get_session_db_pool()
             is_direct = await da_pool.fetchval(
                 "SELECT is_direct FROM pending_actions WHERE id = $1 AND tenant_id = $2",
-                uuid_mod.UUID(body.pending_action_id), ctx["tenant_id"]
+                uuid_mod.UUID(body.pending_action_id),
+                ctx["tenant_id"],
             )
         except Exception as da_err:
-            logger.warning(f"[Confirm] Direct action check failed (non-fatal): {da_err}")
+            logger.warning(
+                f"[Confirm] Direct action check failed (non-fatal): {da_err}"
+            )
             is_direct = False
 
         if is_direct:
             # Direct action — execute via REST
             da_pool2 = await get_session_db_pool()
             return await _confirm_direct_action(
-                body.pending_action_id, ctx["tenant_id"], ctx["user_id"],
-                da_pool2, request, payload_overrides=body.payload_overrides
+                body.pending_action_id,
+                ctx["tenant_id"],
+                ctx["user_id"],
+                da_pool2,
+                request,
+                payload_overrides=body.payload_overrides,
             )
 
         # FSM: AWAITING_CONFIRMATION -> EXECUTING
         try:
             if body.session_id:
                 db_pool = await get_session_db_pool()
-                sm_fsm = SessionManager(db_pool=db_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                sm_fsm = SessionManager(
+                    db_pool=db_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                )
                 await sm_fsm.transition_fsm(body.session_id, FSMState.EXECUTING.value)
         except Exception as fsm_err:
             logger.warning(f"[Confirm] FSM transition failed (non-fatal): {fsm_err}")
@@ -1693,7 +2023,11 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
             try:
                 if body.session_id:
                     db_pool = await get_session_db_pool()
-                    sm = SessionManager(db_pool=db_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                    sm = SessionManager(
+                        db_pool=db_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
                     # Get action_type from current session state (set during propose)
                     state = await sm.get_state(body.session_id)
                     action_type = state.last_action_type or "UNKNOWN"
@@ -1724,7 +2058,11 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
             try:
                 if body.session_id:
                     db_pool_fail = await get_session_db_pool()
-                    sm_fail = SessionManager(db_pool=db_pool_fail, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                    sm_fail = SessionManager(
+                        db_pool=db_pool_fail,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
                     await sm_fail.transition_fsm(body.session_id, FSMState.FAILED.value)
                     await sm_fail.transition_fsm(body.session_id, FSMState.IDLE.value)
             except Exception as fsm_err:
@@ -1747,6 +2085,7 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
 # POST /cancel — Cancel pending action
 # =============================================================================
 
+
 @router.post("/cancel", response_model=ChatMessageResponse)
 async def cancel_action(request: Request, body: CancelActionRequest):
     """Cancel a pending action. Clears the pending state."""
@@ -1754,7 +2093,7 @@ async def cancel_action(request: Request, body: CancelActionRequest):
 
     try:
         executor = get_action_executor_client()
-        result = await executor.cancel_action(
+        _result = await executor.cancel_action(
             pending_action_id=body.pending_action_id,
             tenant_id=ctx["tenant_id"],
             user_id=ctx["user_id"],
@@ -1764,7 +2103,11 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         try:
             if body.session_id:
                 db_pool_fsm = await get_session_db_pool()
-                sm_fsm = SessionManager(db_pool=db_pool_fsm, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                sm_fsm = SessionManager(
+                    db_pool=db_pool_fsm,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                )
                 await sm_fsm.transition_fsm(body.session_id, FSMState.IDLE.value)
         except Exception as fsm_err:
             logger.warning(f"[Cancel] FSM transition failed (non-fatal): {fsm_err}")
@@ -1773,13 +2116,13 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         try:
             if body.session_id:
                 db_pool = await get_session_db_pool()
-                sm = SessionManager(db_pool=db_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                sm = SessionManager(
+                    db_pool=db_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                )
                 # Get action_type from current session state (set during propose)
                 state = await sm.get_state(body.session_id)
                 action_type = state.last_action_type or "UNKNOWN"
-                await StateUpdateHooks.after_reject(
-                    sm, body.session_id, action_type
-                )
+                await StateUpdateHooks.after_reject(sm, body.session_id, action_type)
                 logger.info(
                     f"[Cancel] Layer 2 updated: session={body.session_id[:8]} "
                     f"action={action_type} status=rejected"
@@ -1792,6 +2135,7 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         try:
             if body.session_id:
                 from ..services.unified_agent.workflow_engine import WorkflowEngine
+
                 _pool = await get_session_db_pool()
                 _eng = WorkflowEngine(
                     db_pool=_pool,
@@ -1804,11 +2148,13 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                     _summary = _wf.data.get("summary", {})
                     _unmatched = _summary.get("unmatched_count", 0)
                     _reviewed = _wf.data.get("reviewed_count", 0)
-                    _remaining = max(0, _unmatched - _reviewed - 1)  # -1 for the one just cancelled
+                    _remaining = max(
+                        0, _unmatched - _reviewed - 1
+                    )  # -1 for the one just cancelled
                     if _remaining > 0:
                         cancel_text = f"Ok, dilewati. Masih ada {_remaining} transaksi lagi yang perlu review."
                     else:
-                        cancel_text = "Ok, dilewati. Itu item terakhir — ketik \"lanjut\" untuk selesaikan rekonsiliasi."
+                        cancel_text = 'Ok, dilewati. Itu item terakhir — ketik "lanjut" untuk selesaikan rekonsiliasi.'
         except Exception:
             pass  # Fall back to simple message
 
@@ -1827,6 +2173,7 @@ async def cancel_action(request: Request, body: CancelActionRequest):
 # =============================================================================
 # GET /status/{pending_action_id} — Poll action status
 # =============================================================================
+
 
 @router.get("/status/{pending_action_id}", response_model=ActionStatusResponse)
 async def get_action_status(request: Request, pending_action_id: str):
@@ -1856,6 +2203,7 @@ async def get_action_status(request: Request, pending_action_id: str):
 # GET /history — Get conversation history
 # =============================================================================
 
+
 # DEPRECATED: Replaced by chat_history.py
 # @router.get("/history")
 async def _get_history_old(
@@ -1882,19 +2230,23 @@ async def _get_history_old(
 
         messages = []
         for msg in resp.messages:
-            messages.append({
-                "id": msg.message_id,
-                "role": "user",
-                "content": msg.message,
-                "timestamp": msg.timestamp,
-            })
-            if msg.response:
-                messages.append({
-                    "id": f"{msg.message_id}_resp",
-                    "role": "assistant",
-                    "content": msg.response,
+            messages.append(
+                {
+                    "id": msg.message_id,
+                    "role": "user",
+                    "content": msg.message,
                     "timestamp": msg.timestamp,
-                })
+                }
+            )
+            if msg.response:
+                messages.append(
+                    {
+                        "id": f"{msg.message_id}_resp",
+                        "role": "assistant",
+                        "content": msg.response,
+                        "timestamp": msg.timestamp,
+                    }
+                )
 
         return {"messages": messages, "count": len(messages)}
 
