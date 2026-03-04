@@ -231,11 +231,22 @@ async def list_receive_payments(
                 param_idx += 1
 
             if search:
-                outer_conditions.append(
-                    f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    outer_conditions.append(
+                        f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    outer_conditions.append(f"({' AND '.join(word_conds)})")
 
             if date_from:
                 outer_conditions.append(f"q.payment_date >= ${param_idx}")

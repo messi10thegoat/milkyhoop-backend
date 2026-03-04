@@ -84,16 +84,36 @@ async def autocomplete_customers(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            query = """
+            # Multi-word AND split + similarity fallback
+            words = q.strip().split()
+            params: list = [ctx["tenant_id"]]
+            word_clauses = []
+            for word in words:
+                idx = len(params) + 1
+                word_clauses.append(
+                    f"(nama ILIKE ${idx} OR nomor_member ILIKE ${idx} OR company_name ILIKE ${idx} OR display_name ILIKE ${idx} OR telepon ILIKE ${idx})"
+                )
+                params.append(f"%{word}%")
+            where_search = " AND ".join(word_clauses) if word_clauses else "TRUE"
+            limit_idx = len(params) + 1
+            params.append(limit)
+            query = f"""
                 SELECT id, nama, nomor_member, telepon, company_name, display_name
                 FROM customers
                 WHERE tenant_id = $1
                   AND is_active = true
-                  AND (nama ILIKE $2 OR nomor_member ILIKE $2 OR company_name ILIKE $2 OR display_name ILIKE $2 OR telepon ILIKE $2)
+                  AND {where_search}
                 ORDER BY nama ASC
-                LIMIT $3
+                LIMIT ${limit_idx}
             """
-            rows = await conn.fetch(query, ctx["tenant_id"], f"%{q}%", limit)
+            rows = await conn.fetch(query, *params)
+            if not rows:
+                rows = await conn.fetch("""
+                    SELECT id, nama, nomor_member, telepon, company_name, display_name
+                    FROM customers
+                    WHERE tenant_id = $1 AND is_active = true AND similarity(nama, $2) > 0.25
+                    ORDER BY similarity(nama, $2) DESC LIMIT $3
+                """, ctx["tenant_id"], q, limit)
 
             items = [
                 {

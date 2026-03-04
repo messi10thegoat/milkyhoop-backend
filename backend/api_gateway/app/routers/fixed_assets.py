@@ -301,8 +301,17 @@ async def list_fixed_assets(
             param_idx += 1
 
         if search:
-            where_clauses.append(f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})")
-            params.append(f"%{search}%")
+            words = search.strip().split()
+            if len(words) == 1:
+                where_clauses.append(f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})")
+                params.append(f"%{words[0]}%")
+                param_idx += 1
+            else:
+                word_conds = []
+                for word in words:
+                    where_clauses.append(f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})")
+                    params.append(f"%{word}%")
+                    param_idx += 1
             param_idx += 1
 
         where_sql = " AND ".join(where_clauses)

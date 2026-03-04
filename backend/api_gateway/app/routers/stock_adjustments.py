@@ -179,8 +179,18 @@ async def list_stock_adjustments(
                 param_idx += 1
 
             if search:
-                conditions.append(f"adjustment_number ILIKE ${param_idx}")
-                params.append(f"%{search}%")
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(f"adjustment_number ILIKE ${param_idx}")
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(f"adjustment_number ILIKE ${param_idx}")
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
                 param_idx += 1
 
             if date_from:

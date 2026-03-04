@@ -258,11 +258,22 @@ async def list_invoices(
             param_idx = 2
 
             if search:
-                conditions.append(
-                    f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             # Status filter (with dynamic overdue calculation like bills)
             if status:
@@ -958,6 +969,28 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         raise HTTPException(
                             status_code=400, detail="Invalid customer_id format"
                         )
+
+                # BUG-02 fix: Resolve customer_id from customer_name when missing
+                if not customer_id_str and body.customer_name:
+                    # Exact match first (customers.nama is Bahasa Indonesia column)
+                    resolved_id = await conn.fetchval(
+                        """SELECT id FROM customers
+                           WHERE tenant_id = $1 AND nama = $2
+                             AND is_active = true AND deleted_at IS NULL
+                           LIMIT 1""",
+                        ctx["tenant_id"], body.customer_name
+                    )
+                    # Fallback: case-insensitive ILIKE match
+                    if not resolved_id:
+                        resolved_id = await conn.fetchval(
+                            """SELECT id FROM customers
+                               WHERE tenant_id = $1 AND nama ILIKE $2
+                                 AND is_active = true AND deleted_at IS NULL
+                               LIMIT 1""",
+                            ctx["tenant_id"], body.customer_name
+                        )
+                    if resolved_id:
+                        customer_id_str = str(resolved_id)
 
                 # Insert invoice
                 invoice_id = await conn.fetchval(
@@ -2524,6 +2557,8 @@ from datetime import datetime, timedelta
 from fastapi.responses import StreamingResponse
 from ..services.pdf_service import get_pdf_service
 from ..services.storage_service import get_storage_service
+import base64
+from pathlib import Path as _Path
 
 
 @router.get("/{invoice_id}/pdf")
@@ -2587,6 +2622,29 @@ async def get_invoice_pdf(
             else:
                 pdf_amount_paid = 0
 
+
+            # Fetch tenant info for PDF header
+            tenant_row = await conn.fetchrow(
+                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                ctx["tenant_id"],
+            )
+            tenant_info = {
+                "name": tenant_row["display_name"] if tenant_row else ctx["tenant_id"],
+                "address": tenant_row["address"] if tenant_row else None,
+                "phone": tenant_row["phone"] if tenant_row else None,
+                "logo_url": tenant_row["logo_url"] if tenant_row else None,
+            } if tenant_row else {"name": ctx["tenant_id"], "address": None, "phone": None, "logo_url": None}
+
+            # Resolve logo to base64 data URI for PDF embedding
+            _logo_data = None
+            _logo_filename = tenant_info.get("logo_url")
+            if _logo_filename:
+                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                if _logo_path.exists():
+                    with open(_logo_path, "rb") as _lf:
+                        _logo_b64 = base64.b64encode(_lf.read()).decode()
+                    _logo_data = f"data:image/png;base64,{_logo_b64}"
+            tenant_info["logo_data"] = _logo_data
             # Convert to dict for template
             invoice_data = {
                 "id": str(invoice["id"]),
@@ -2611,6 +2669,7 @@ async def get_invoice_pdf(
                 "total_amount": invoice["total_amount"],
                 "amount_paid": pdf_amount_paid,
                 "status": invoice["status"],
+                "tenant": tenant_info,
                 "items": [
                     {
                         "id": str(item["id"]),

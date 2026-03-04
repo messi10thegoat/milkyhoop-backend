@@ -399,15 +399,22 @@ async def list_expenses(
                     conditions.append("billed_invoice_id IS NOT NULL")
 
             if search:
-                conditions.append(
-                    f"""
-                    (expense_number ILIKE ${param_idx}
-                     OR vendor_name ILIKE ${param_idx}
-                     OR notes ILIKE ${param_idx})
-                """
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(expense_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx} OR notes ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(expense_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx} OR notes ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             where_clause = " AND ".join(conditions)
 

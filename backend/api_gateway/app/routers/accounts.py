@@ -114,11 +114,22 @@ async def get_account_dropdown(
                 param_idx += 1
 
             if search:
-                conditions.append(
-                    f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             where_clause = " AND ".join(conditions)
 
@@ -248,11 +259,22 @@ async def list_accounts(
             param_idx = 2
 
             if search:
-                conditions.append(
-                    f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(account_code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             if type:
                 conditions.append(f"account_type = ${param_idx}")

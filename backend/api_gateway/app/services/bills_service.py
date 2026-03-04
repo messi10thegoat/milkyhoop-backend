@@ -268,11 +268,22 @@ class BillsService:
 
             # Search filter
             if search:
-                conditions.append(
-                    f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+                words = search.strip().split()
+                if len(words) == 1:
+                    conditions.append(
+                        f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
+                    )
+                    params.append(f"%{words[0]}%")
+                    param_idx += 1
+                else:
+                    word_conds = []
+                    for word in words:
+                        word_conds.append(
+                            f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
+                        )
+                        params.append(f"%{word}%")
+                        param_idx += 1
+                    conditions.append(f"({' AND '.join(word_conds)})")
 
             # Date range filter
             if due_date_from:
@@ -793,18 +804,6 @@ class BillsService:
                         )
 
                         logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
-
-                        # Sync persediaan cache (add stock on purchase)
-                        await conn.execute("""
-                            INSERT INTO persediaan (id, tenant_id, produk_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at)
-                            VALUES (gen_random_uuid()::text, $1, $2::text, $2::uuid, 'gudang_utama', $3, $4, $5, NOW(), NOW(), NOW())
-                            ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
-                            DO UPDATE SET
-                                jumlah = persediaan.jumlah + $3,
-                                total_nilai = (persediaan.jumlah + $3) * EXCLUDED.nilai_per_unit,
-                                last_movement_at = NOW(),
-                                updated_at = NOW()
-                        """, tenant_id, str(product_id), float(quantity), float(unit_cost), float(quantity) * float(unit_cost))
 
                 else:
                     # Accounting kernel not available - this is a configuration error
@@ -2260,18 +2259,6 @@ class BillsService:
 
                             logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
 
-                            # Sync persediaan cache (add stock on purchase)
-                            await conn.execute("""
-                                INSERT INTO persediaan (id, tenant_id, produk_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at)
-                                VALUES (gen_random_uuid()::text, $1, $2::text, $2::uuid, 'gudang_utama', $3, $4, $5, NOW(), NOW(), NOW())
-                                ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
-                                DO UPDATE SET
-                                    jumlah = persediaan.jumlah + $3,
-                                    total_nilai = (persediaan.jumlah + $3) * EXCLUDED.nilai_per_unit,
-                                    last_movement_at = NOW(),
-                                    updated_at = NOW()
-                            """, tenant_id, str(product_id), float(quantity), float(unit_cost), float(quantity) * float(unit_cost))
-
                     else:
                         # Log warning but allow draft-like behavior
                         logger.warning(
@@ -2495,18 +2482,6 @@ class BillsService:
                     )
 
                     logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
-
-                    # Sync persediaan cache (add stock on purchase)
-                    await conn.execute("""
-                        INSERT INTO persediaan (id, tenant_id, produk_id, product_id, lokasi_gudang, jumlah, nilai_per_unit, total_nilai, last_movement_at, created_at, updated_at)
-                        VALUES (gen_random_uuid()::text, $1, $2::text, $2::uuid, 'gudang_utama', $3, $4, $5, NOW(), NOW(), NOW())
-                        ON CONFLICT (tenant_id, product_id, lokasi_gudang) WHERE product_id IS NOT NULL
-                        DO UPDATE SET
-                            jumlah = persediaan.jumlah + $3,
-                            total_nilai = (persediaan.jumlah + $3) * EXCLUDED.nilai_per_unit,
-                            last_movement_at = NOW(),
-                            updated_at = NOW()
-                    """, tenant_id, str(product_id), float(quantity), float(unit_cost), float(quantity) * float(unit_cost))
 
                 logger.info(f"Bill posted: {bill_id}")
 
