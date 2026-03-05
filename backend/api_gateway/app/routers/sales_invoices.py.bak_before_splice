@@ -1681,25 +1681,19 @@ async def post_invoice(
 async def record_payment(
     request: Request, invoice_id: UUID, body: InvoicePaymentCreate
 ):
-    """
-    Record payment for a sales invoice.
-    Creates receive_payments + receive_payment_allocations (ARAP Rule 1).
-    Journal source_type='RECEIVE_PAYMENT', source_id=receive_payments.id
-    """
+    """Record a payment for the invoice."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
-
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"INVOICE_PAYMENT:{str(invoice_id)}"
                 )
-
+                
                 # Law 14: Idempotency check
                 idem_key = get_idempotency_key(
                     request, f"INVOICE_PAYMENT:{invoice_id}:{body.amount}"
@@ -1711,22 +1705,30 @@ async def record_payment(
                 if existing_idem and existing_idem['result']:
                     import json as json_mod
                     return json_mod.loads(existing_idem['result'])
-
-                # Fetch invoice (FOR UPDATE)
-                invoice = await conn.fetchrow("""
-                    SELECT id, invoice_number, customer_id, customer_name,
-                           status, total_amount, amount_paid, ar_id
+                
+                
+                # Check invoice exists and is posted (FOR UPDATE = row-level lock)
+                invoice = await conn.fetchrow(
+                    """
+                    SELECT id, status, total_amount, ar_id
                     FROM sales_invoices
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
-                """, invoice_id, ctx["tenant_id"])
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
 
                 if not invoice:
                     raise HTTPException(status_code=404, detail="Invoice not found")
-                if invoice["status"] not in ("posted", "partial", "overdue"):
-                    raise HTTPException(status_code=400, detail="Invoice must be posted before recording payment")
 
-                # Law 16: journal-derived remaining (same CTE as original)
+                if invoice["status"] not in ("posted", "partial", "overdue"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invoice must be posted before recording payment",
+                    )
+
+                # Pure Ledger: derive remaining from journal (Law 16)
                 journal_remaining = await conn.fetchval("""
                     SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
                     FROM journal_lines jl
@@ -1736,33 +1738,39 @@ async def record_payment(
                         AND coa.account_code = '1-10400'
                         AND je.tenant_id = $2
                         AND (
+                            -- Original invoice journal (AR debit)
                             (je.source_type = 'INVOICE' AND je.source_id = $1)
+                            -- Receive payment journals (via allocations)
                             OR (je.source_type IN ('RECEIVE_PAYMENT', 'PAYMENT_RECEIVED') AND EXISTS (
                                 SELECT 1 FROM receive_payment_allocations rpa
                                 WHERE rpa.invoice_id = $1 AND rpa.payment_id = je.source_id
                             ))
+                            -- PAYMENT_RECEIVED orphan journals (description-based fallback)
                             OR (je.source_type = 'PAYMENT_RECEIVED'
                                 AND je.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $1) || '%%'
                                 AND NOT EXISTS(
                                     SELECT 1 FROM receive_payment_allocations rpa2
                                     WHERE rpa2.payment_id = je.source_id AND rpa2.tenant_id = $2
                                 ))
+                            -- Credit note application journals
                             OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
                                 SELECT 1 FROM credit_note_applications cna
                                 WHERE cna.invoice_id = $1 AND cna.credit_note_id = je.source_id
                             ))
+                            -- Customer deposit application journals
                             OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
                                 SELECT 1 FROM customer_deposit_applications cda
                                 WHERE cda.invoice_id = $1 AND cda.deposit_id = je.source_id
                             ))
+                            -- Invoice reversal (partial void)
                             OR (je.source_type = 'INVOICE_REVERSAL' AND je.source_id = $1)
+                            -- Inline payments from sales_invoices.py
                             OR (je.id IN (
                                 SELECT sip.journal_id FROM sales_invoice_payments sip
                                 WHERE sip.invoice_id = $1
                             ))
                         )
                 """, invoice_id, ctx["tenant_id"])
-
                 remaining = int(journal_remaining or 0)
                 if body.amount > remaining:
                     raise HTTPException(
@@ -1770,205 +1778,198 @@ async def record_payment(
                         detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}",
                     )
 
-                # --- Resolve bank account ---
-                # Frontend sends account_id (CoA UUID). May also send bank_account_id.
-                # bank_accounts schema: id (UUID PK), coa_id (UUID FK to CoA), account_name (varchar)
+                # Insert payment
                 account_uuid = UUID(body.account_id)
-                bank_account_uuid = None
-                bank_account_name = ""
-                bank_coa_id = account_uuid  # fallback: treat as CoA directly
-
+                # Use bank_account_id if provided, otherwise check if account_id is a bank account
                 if body.bank_account_id:
-                    bank_row = await conn.fetchrow(
-                        "SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.bank_account_id), ctx["tenant_id"],
-                    )
-                    if bank_row:
-                        bank_account_uuid = bank_row["id"]
-                        bank_account_name = bank_row["account_name"]
-                        bank_coa_id = bank_row["coa_id"]
+                    bank_account_uuid = UUID(body.bank_account_id)
                 else:
-                    # Try: account_id is coa_id → reverse lookup bank_account
-                    bank_row = await conn.fetchrow(
-                        "SELECT id, coa_id, account_name FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
-                        account_uuid, ctx["tenant_id"],
+                    # Check if account_id is a bank account
+                    bank_check = await conn.fetchrow(
+                        "SELECT id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        account_uuid,
+                        ctx["tenant_id"],
                     )
-                    if bank_row:
-                        bank_account_uuid = bank_row["id"]
-                        bank_account_name = bank_row["account_name"]
-                        bank_coa_id = bank_row["coa_id"]
-                    else:
-                        # Try: account_id IS a bank_accounts.id
-                        bank_row = await conn.fetchrow(
-                            "SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                            account_uuid, ctx["tenant_id"],
-                        )
-                        if bank_row:
-                            bank_account_uuid = bank_row["id"]
-                            bank_account_name = bank_row["account_name"]
-                            bank_coa_id = bank_row["coa_id"]
+                    bank_account_uuid = account_uuid if bank_check else None
 
-                if not bank_account_uuid:
-                    raise HTTPException(status_code=400, detail="Could not resolve bank account from account_id")
-
-                # Resolve AR account (Law 27)
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10400')
-
-                # Map payment_method: receive_payments CHECK allows only 'cash' or 'bank_transfer'
-                pm = body.payment_method
-                if pm not in ('cash', 'bank_transfer'):
-                    pm = 'bank_transfer'
-
-                # Generate payment number via DB function (same as golden pattern)
-                payment_number = await conn.fetchval(
-                    "SELECT generate_receive_payment_number($1)", ctx["tenant_id"]
+                payment_id = await conn.fetchval(
+                    """
+                    INSERT INTO sales_invoice_payments (
+                        invoice_id, amount, payment_date, payment_method,
+                        account_id, bank_account_id, reference, notes, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                """,
+                    invoice_id,
+                    body.amount,
+                    body.payment_date,
+                    body.payment_method,
+                    account_uuid,
+                    bank_account_uuid,
+                    body.reference,
+                    body.notes,
+                    ctx["user_id"],
                 )
 
+                # Update AR if exists
+                if invoice["ar_id"]:
+                    await conn.execute(
+                        """
+                        UPDATE accounts_receivable
+                        SET amount_paid = amount_paid + $2,
+                            status = CASE
+                                WHEN amount - (amount_paid + $2) <= 0 THEN 'PAID'
+                                ELSE 'PARTIAL'
+                            END,
+                            updated_at = NOW()
+                        WHERE id = $1
+                    """,
+                        invoice["ar_id"],
+                        body.amount,
+                    )
+
+                # Update sales_invoices amount_paid and status (Iron Law 3: append-only)
+                await conn.execute(
+                    """
+                    UPDATE sales_invoices
+                    SET amount_paid = amount_paid + $1,
+                        status = CASE
+                            WHEN total_amount <= (amount_paid + $1) THEN 'paid'
+                            ELSE 'partial'
+                        END,
+                        updated_at = NOW()
+                    WHERE id = $2 AND tenant_id = $3
+                    """,
+                    body.amount,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
                 import uuid as uuid_module
-                pay_amount = body.amount  # int from InvoicePaymentCreate schema
 
-                # === INSERT receive_payments ===
-                # NOT NULL cols: id, tenant_id, payment_number, customer_name, payment_date,
-                #   payment_method, bank_account_id, bank_account_name, source_type,
-                #   total_amount, allocated_amount, unapplied_amount, discount_amount
-                rp_id = uuid_module.uuid4()
-                await conn.execute("""
-                    INSERT INTO receive_payments (
-                        id, tenant_id, payment_number, customer_id, customer_name,
-                        payment_date, payment_method, bank_account_id, bank_account_name,
-                        source_type, total_amount, allocated_amount, unapplied_amount,
-                        discount_amount, reference_number, notes, status, created_by
-                    ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        $6, $7, $8, $9,
-                        'cash', $10, $11, 0,
-                        0, $12, $13, 'draft', $14
-                    )
-                """,
-                    rp_id, ctx["tenant_id"], payment_number,
-                    str(invoice['customer_id']) if invoice['customer_id'] else None,
-                    invoice['customer_name'],
-                    body.payment_date, pm, bank_account_uuid, bank_account_name,
-                    pay_amount, pay_amount,
-                    body.reference, body.notes, ctx["user_id"],
-                )
-
-                # === INSERT receive_payment_allocations ===
-                # NOT NULL cols: tenant_id, payment_id, invoice_id, invoice_number,
-                #   invoice_amount, remaining_before, amount_applied, remaining_after
-                await conn.execute("""
-                    INSERT INTO receive_payment_allocations (
-                        tenant_id, payment_id, invoice_id, invoice_number,
-                        invoice_amount, remaining_before, amount_applied, remaining_after
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                    ctx["tenant_id"], rp_id, invoice_id,
-                    invoice['invoice_number'],
-                    int(invoice['total_amount']),
-                    remaining,
-                    pay_amount,
-                    remaining - pay_amount,
-                )
-
-                # === Create journal: Dr. Bank, Cr. AR ===
-                # Law 20: DRAFT → lines → POSTED
+                # CREATE JOURNAL ENTRY (Iron Law 8: No Silent Mutation)
+                # Journal: Dr. Cash/Bank, Cr. Accounts Receivable
+                # =========================================================
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
+
+                # Get journal number
                 journal_number = await conn.fetchval(
                     "SELECT get_next_journal_number($1, $2)", ctx["tenant_id"], "RCV"
                 )
                 if not journal_number:
-                    journal_number = f"JRN-PAY-{rp_id}"
+                    journal_number = f"JRN-PAY-{payment_id}"
 
-                inv_number = invoice['invoice_number']
+                # Get invoice number for description
+                inv_number = await conn.fetchval(
+                    "SELECT invoice_number FROM sales_invoices WHERE id = $1",
+                    invoice_id,
+                )
 
-                # source_type='RECEIVE_PAYMENT', source_id=rp_id (UUID)
-                await conn.execute("""
+                # Resolve bank_account_id to chart_of_accounts.id (coa_id)
+                bank_coa_id = (
+                    account_uuid  # default: use account_id (which is a COA id)
+                )
+                if bank_account_uuid:
+                    bank_acct = await conn.fetchrow(
+                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        bank_account_uuid,
+                        ctx["tenant_id"],
+                    )
+                    if bank_acct and bank_acct["coa_id"]:
+                        bank_coa_id = bank_acct["coa_id"]
+
+                # Get AR account
+                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10400')
+
+                # Create journal entry header
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'RECEIVE_PAYMENT', $6, $7, 'DRAFT', $8, $8, $9)
-                """,
-                    journal_id, ctx["tenant_id"], journal_number, body.payment_date,
-                    f"Penerimaan Pembayaran Faktur {inv_number}",
-                    rp_id, str(trace_id), pay_amount, ctx["user_id"],
+                    ) VALUES ($1, $2, $3, $4, $5, 'PAYMENT_RECEIVED', $6, $7, 'DRAFT', $8, $8, $9)
+                    """,
+                    journal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    body.payment_date,
+                    f"Penerimaan Pembayaran Faktur {inv_number or invoice_id}",
+                    payment_id,
+                    str(trace_id),
+                    int(body.amount),
+                    ctx["user_id"],
                 )
 
-                # Dr. Bank/Kas (line 1)
-                await conn.execute("""
+                # Journal line 1: Dr. Cash/Bank
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                """,
-                    uuid_module.uuid4(), journal_id, bank_coa_id,
-                    pay_amount, f"Terima Pembayaran - {inv_number}",
+                    """,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    bank_coa_id,
+                    int(body.amount),
+                    f"Terima Pembayaran - {inv_number or invoice_id}",
                 )
 
-                # Cr. Piutang / AR (line 2)
-                await conn.execute("""
+                # Journal line 2: Cr. Accounts Receivable
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                """,
-                    uuid_module.uuid4(), journal_id, ar_account_id,
-                    pay_amount, f"Pelunasan Piutang - {inv_number}",
+                    """,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    ar_account_id,
+                    int(body.amount),
+                    f"Pelunasan Piutang - {inv_number or invoice_id}",
                 )
-
-                # DRAFT → POSTED (triggers hash chain)
+                
+                # Law 20: DRAFT->POSTED triggers hash chain
                 await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id
                 )
 
-                # Link journal to receive_payments + mark posted
-                await conn.execute("""
-                    UPDATE receive_payments
-                    SET journal_id = $1, journal_number = $2, status = 'posted',
-                        posted_at = NOW(), posted_by = $3,
-                        operational_status = 'CONFIRMED', accounting_status = 'POSTED'
-                    WHERE id = $4
-                """, journal_id, journal_number, ctx["user_id"], rp_id)
+                # Update payment record with journal_id
+                await conn.execute(
+                    "UPDATE sales_invoice_payments SET journal_id = $1 WHERE id = $2",
+                    journal_id,
+                    payment_id,
+                )
 
-                # Update invoice cache (Law 21: write-side only)
-                await conn.execute("""
-                    UPDATE sales_invoices
-                    SET amount_paid = amount_paid + $1,
-                        status = CASE WHEN total_amount <= (amount_paid + $1) THEN 'paid' ELSE 'partial' END,
-                        updated_at = NOW()
-                    WHERE id = $2 AND tenant_id = $3
-                """, pay_amount, invoice_id, ctx["tenant_id"])
-
-                # Update AR cache if exists
-                if invoice["ar_id"]:
-                    await conn.execute("""
-                        UPDATE accounts_receivable
-                        SET amount_paid = amount_paid + $2,
-                            status = CASE WHEN amount - (amount_paid + $2) <= 0 THEN 'PAID' ELSE 'PARTIAL' END,
-                            updated_at = NOW()
-                        WHERE id = $1
-                    """, invoice["ar_id"], pay_amount)
-
-                # Bank transaction (BankSync Rule 1: atomic journal + bank_txn)
+                # Create bank transaction to update bank balance (if bank_account_id provided)
                 if bank_account_uuid:
                     bank_tx_id = uuid_module.uuid4()
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO bank_transactions (
                             id, tenant_id, bank_account_id, transaction_date,
                             transaction_type, amount, running_balance,
                             reference_type, reference_id, description,
                             payee_payer, journal_id, created_by
                         ) VALUES ($1, $2, $3, $4, 'payment_received', $5, 0, 'invoice', $6, $7, $8, $9, $10)
-                    """,
-                        bank_tx_id, ctx["tenant_id"], bank_account_uuid,
-                        body.payment_date, pay_amount,
-                        invoice_id, f"Payment received for {inv_number}",
+                        """,
+                        bank_tx_id,
+                        ctx["tenant_id"],
+                        bank_account_uuid,
+                        body.payment_date,
+                        body.amount,  # Positive = inflow
+                        invoice_id,
+                        "Payment received for invoice",
                         body.reference or "Customer Payment",
-                        journal_id, ctx["user_id"],
+                        journal_id,
+                        ctx["user_id"],
                     )
-                    await conn.execute(
-                        "UPDATE receive_payments SET bank_transaction_id = $1 WHERE id = $2",
-                        bank_tx_id, rp_id,
-                    )
+
+                logger.info(
+                    f"Payment recorded: {payment_id} for invoice {invoice_id}, "
+                    f"journal={journal_id}"
+                )
 
                 # Law 14: Store idempotency
                 import json as json_mod
@@ -1976,24 +1977,19 @@ async def record_payment(
                     "success": True,
                     "message": "Payment recorded successfully",
                     "data": {
-                        "status": "posted",
-                        "id": str(rp_id),
+                        "status": "draft",
+                        "id": str(payment_id),
                         "invoice_id": str(invoice_id),
-                        "amount": pay_amount,
+                        "amount": body.amount,
                         "journal_id": str(journal_id),
                         "journal_number": journal_number,
-                        "payment_number": payment_number,
                     },
                 }
                 await conn.execute(
                     """INSERT INTO idempotency_keys (key, tenant_id, source_type, result, result_status, expires_at)
-                    VALUES ($1, $2, 'RECEIVE_PAYMENT', $3, 'SUCCESS', NOW() + interval '24 hours')
+                    VALUES ($1, $2, 'PAYMENT_RECEIVED', $3, 'SUCCESS', NOW() + interval '24 hours')
                     ON CONFLICT (tenant_id, key) DO NOTHING""",
                     idem_key, ctx["tenant_id"], json_mod.dumps(result_payload, default=str)
-                )
-
-                logger.info(
-                    f"Payment recorded via receive_payments: {rp_id} for invoice {invoice_id}, journal={journal_id}"
                 )
                 return result_payload
 
@@ -2002,7 +1998,6 @@ async def record_payment(
     except Exception as e:
         logger.error(f"Error recording payment for {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to record payment")
-
 
 
 # =============================================================================

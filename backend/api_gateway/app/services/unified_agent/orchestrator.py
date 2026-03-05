@@ -995,36 +995,115 @@ class UnifiedAgent:
                 _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors", "update_document_context"})
                 _has_action_tool = bool(_tool_names_used & {"propose_direct_action", "propose_action"})
                 _has_doc_update = "update_document_context" in _tool_names_used
+
+                # ── DOC-REPROPOSE: Build DIRECT_ACTION_PREVIEW deterministically from updated doc ──
+                if _has_doc_update and not _has_action_tool and tool_executor.session_manager and tool_executor.session_id:
+                    try:
+                        _rp_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                        _rp_doc = getattr(_rp_state, "document_context", None)
+                        if _rp_doc and _rp_doc.get("document_id"):
+                            logger.warning(f"[DOC-REPROPOSE] Building re-proposal from corrected document_context")
+                            # Apply edits to base data
+                            _rp_edits = _rp_doc.get("edits", {})
+                            _rp_vendor = _rp_edits.get("vendor_name", _rp_doc.get("vendor_name", ""))
+                            _rp_total = float(_rp_edits.get("total_amount", _rp_doc.get("total_amount", 0)))
+                            _rp_tax = float(_rp_edits.get("tax_amount", _rp_doc.get("tax_amount", 0)))
+                            _rp_items = _rp_doc.get("items", [])
+                            # Apply item edits
+                            _item_edits = _rp_edits.get("items", {})
+                            for _idx_str, _ie in _item_edits.items():
+                                _idx = int(_idx_str)
+                                if 0 <= _idx < len(_rp_items):
+                                    _rp_items[_idx] = {**_rp_items[_idx], **_ie}
+
+                            # Build preview payload
+                            import uuid as _rp_uuid
+                            _rp_pending_id = str(_rp_uuid.uuid4())
+                            _rp_preview = {
+                                "pending_action_id": _rp_pending_id,
+                                "action_type": "CONFIRM_DOCUMENT_DRAFT",
+                                "action_key": "confirm_document_draft",
+                                "display_name": "Konfirmasi Dokumen",
+                                "confirmation_table": (
+                                    f"| Field | Value |\n|---|---|\n"
+                                    f"| Vendor | {_rp_vendor} |\n"
+                                    f"| No. Dokumen | {_rp_doc.get('document_number', '-')} |\n"
+                                    f"| Tanggal | {_rp_doc.get('document_date', '-')} |\n"
+                                    f"| Total | Rp {_rp_total:,.0f} |\n"
+                                    f"| Pajak | Rp {_rp_tax:,.0f} |\n"
+                                ),
+                                "payload": {
+                                    "document_id": _rp_doc.get("document_id"),
+                                    "vendor_name": _rp_vendor,
+                                    "document_number": _rp_doc.get("document_number"),
+                                    "document_date": _rp_doc.get("document_date"),
+                                    "total_amount": _rp_total,
+                                    "tax_amount": _rp_tax,
+                                    "items": _rp_items,
+                                },
+                                "replaces_action_id": _rp_doc.get("pending_action_id"),
+                                "loading_message": f"Memproses dokumen dari {_rp_vendor}...",
+                                "entity_type": "document",
+                            }
+
+                            # Store pending action
+                            from datetime import datetime, timedelta, timezone
+                            _rp_expires = datetime.now(timezone.utc) + timedelta(seconds=300)
+                            try:
+                                from .db_utils import get_session_db_pool as _rp_get_pool
+                                _rp_pool = await _rp_get_pool()
+                                await _rp_pool.execute(
+                                    """INSERT INTO pending_actions (id, tenant_id, user_id, action_key, payload, status, expires_at)
+                                       VALUES ($1, $2, $3, $4, $5, 'PENDING', $6)""",
+                                    _rp_uuid.UUID(_rp_pending_id),
+                                    context.tenant_id,
+                                    context.user_id,
+                                    "confirm_document_draft",
+                                    _json_helpers.dumps(_rp_preview["payload"]),
+                                    _rp_expires,
+                                )
+                            except Exception as _rp_db_err:
+                                logger.warning(f"[DOC-REPROPOSE] Failed to store pending: {_rp_db_err}")
+
+                            # Update document_context with new pending_action_id
+                            _rp_doc["pending_action_id"] = _rp_pending_id
+                            await tool_executor.session_manager.update_state(
+                                tool_executor.session_id, document_context=_rp_doc
+                            )
+
+                            return AgentResponse(
+                                message_type="DIRECT_ACTION_PREVIEW",
+                                content=f"Data dokumen dikoreksi. Vendor diubah menjadi {_rp_vendor}.",
+                                preview=_rp_preview,
+                                pending_action_id=_rp_pending_id,
+                                expires_at=_rp_expires.isoformat(),
+                                iterations=iteration + 1,
+                                tool_calls_made=tool_calls_log,
+                                model_used=current_model,
+                                total_latency_ms=int((time.time() - start_time) * 1000),
+                                thinking_stages=thinking_stages + ["Menyiapkan konfirmasi ulang"],
+                                usage=accumulated_usage,
+                            )
+                    except Exception as _rp_err:
+                        logger.warning(f"[DOC-REPROPOSE] Failed: {_rp_err}")
+                # ── END DOC-REPROPOSE ──
+
                 _should_nudge = (
-                    (
-                        _intent in ("ACTION",)
-                        and iteration >= 1
-                        and _has_data_tools
-                        and not _has_action_tool
-                    )
-                    or (
-                        _has_doc_update
-                        and not _has_action_tool
-                    )
+                    _intent in ("ACTION",)
+                    and iteration >= 1
+                    and _has_data_tools
+                    and not _has_action_tool
                 )
                 if _should_nudge and not locals().get("_nudge_done"):
                     _nudge_done = True
-                    if _has_doc_update:
-                        _nudge_text = (
-                            "Koreksi dokumen sudah diterapkan via update_document_context. "
-                            "Sekarang LANGSUNG panggil propose_direct_action() dengan data dokumen yang sudah dikoreksi. "
-                            "Ambil data dari document_context yang sudah di-update. JANGAN tanya user lagi."
-                        )
-                        logger.warning(f"[NUDGE-DOC] Document corrected, nudging to re-propose at iter={iteration}")
-                    else:
-                        _nudge_text = (
+                    logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
+                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
+                    messages.append(LLMMessage(role="user", content=(
                             "Jangan tanya konfirmasi via text. "
                             "LANGSUNG panggil propose_direct_action() dengan data yang sudah kamu dapatkan. "
                             "Kamu sudah punya semua data yang dibutuhkan dari tool calls sebelumnya."
                         )
-                        logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
-                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
-                    messages.append(LLMMessage(role="user", content=_nudge_text))
+                    ))
                     thinking_stages.append("Menyiapkan konfirmasi")
                     continue  # Go back to loop for another LLM call
                 # ── END NUDGE ──
@@ -1121,10 +1200,13 @@ class UnifiedAgent:
             # cause LLM to call search_vendors instead of update_document_context.
             # Deterministic intercept: replace the tool call before execution.
             _doc_intercept_map = {"search_vendors": "vendor_name", "search_customers": "vendor_name"}
+            _di_tool_names = [tc.function_name for tc in all_tool_calls]
+            _di_has_search = any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
+            logger.info(f"[DOC-INTERCEPT-CHECK] tools={_di_tool_names} has_search={_di_has_search} has_sm={bool(tool_executor.session_manager)} has_sid={bool(tool_executor.session_id)}")
             if (
                 tool_executor.session_manager
                 and tool_executor.session_id
-                and any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
+                and _di_has_search
             ):
                 try:
                     _di_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
@@ -1135,7 +1217,7 @@ class UnifiedAgent:
                         for tc in all_tool_calls:
                             if tc.function_name in _doc_intercept_map and not _intercepted:
                                 _edit_field = _doc_intercept_map[tc.function_name]
-                                _search_q = (tc.arguments or {}).get("query") or (tc.arguments or {}).get("search") or (tc.arguments or {}).get("name", "")
+                                _search_q = (tc.arguments or {}).get("q") or (tc.arguments or {}).get("query") or (tc.arguments or {}).get("search") or (tc.arguments or {}).get("name", "")
                                 if _search_q:
                                     logger.warning(f"[DOC-INTERCEPT] Redirecting {tc.function_name}('{_search_q}') -> update_document_context(edits={{{_edit_field}: '{_search_q}'}})")
                                     tc.function_name = "update_document_context"
