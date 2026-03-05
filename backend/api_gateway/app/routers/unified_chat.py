@@ -1773,7 +1773,7 @@ async def _propose_document_draft(
 
 
     # -- Check dependencies (vendor/items existence) --
-    from app.services.chat_document_bridge import check_draft_dependencies
+    from ..services.chat_document_bridge import check_draft_dependencies
     async with pool.acquire() as _dep_conn:
         await _dep_conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
         deps = await check_draft_dependencies(_dep_conn, draft_plan, ctx["tenant_id"])
