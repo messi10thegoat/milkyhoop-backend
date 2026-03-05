@@ -358,7 +358,6 @@ Tutorial keys: onboarding, tutorial_invoicing, tutorial_bank_recon, tutorial_exp
 Narasi singkat 2-3 kalimat per step. Satu step per turn."""
 
 
-
 # =============================================================================
 # Phase 3A: PROMPT SEGMENTATION
 # =============================================================================
@@ -369,6 +368,7 @@ Narasi singkat 2-3 kalimat per step. Satu step per turn."""
 
 from enum import Enum
 
+
 class PromptSegment(str, Enum):
     IDENTITY_ONLY = "identity_only"
     BASE = "base"
@@ -378,6 +378,7 @@ class PromptSegment(str, Enum):
     RECON = "recon"
     CHARTS = "charts"
     TUTORIAL = "tutorial"
+
 
 # ── Segment: IDENTITY_ONLY (~500 tokens) ──────────────────────────────────────
 # Minimal prompt for chitchat/greetings. No tools needed.
@@ -721,10 +722,25 @@ INTENT_TO_SEGMENTS = {
     "CHART": [SEG_BASE, SEG_CHARTS, SEG_QUERY_ENGINE],
     "RECON": [SEG_BASE, SEG_RECON, SEG_ACTIONS],
     "TUTORIAL": [SEG_BASE, SEG_TUTORIAL],
-    "WORKFLOW_CONTINUE": [SEG_BASE, SEG_RECON, SEG_ACTIONS, SEG_DIRECT_ACTIONS, SEG_TRANSACTIONS],
+    "WORKFLOW_CONTINUE": [
+        SEG_BASE,
+        SEG_RECON,
+        SEG_ACTIONS,
+        SEG_DIRECT_ACTIONS,
+        SEG_TRANSACTIONS,
+    ],
     "FOLLOWUP": [SEG_BASE, SEG_ACTIONS, SEG_DIRECT_ACTIONS, SEG_QUERY_ENGINE],
-    "FULL": [SEG_BASE, SEG_ACTIONS, SEG_DIRECT_ACTIONS, SEG_TRANSACTIONS,
-             SEG_RECON, SEG_CHARTS, SEG_QUERY_ENGINE, SEG_TUTORIAL, SEG_CONTOH],
+    "FULL": [
+        SEG_BASE,
+        SEG_ACTIONS,
+        SEG_DIRECT_ACTIONS,
+        SEG_TRANSACTIONS,
+        SEG_RECON,
+        SEG_CHARTS,
+        SEG_QUERY_ENGINE,
+        SEG_TUTORIAL,
+        SEG_CONTOH,
+    ],
 }
 
 
@@ -742,35 +758,91 @@ def _infer_intent(user_text: str) -> str:
     # Strip conversational acknowledgment prefixes before classifying.
     # "ok, minta rincian faktur..." → classify "minta rincian faktur..." not "ok,..."
     _ack_prefixes = [
-        "ok, ", "ok,", "oke, ", "oke,", "baik, ", "baik,",
-        "siap, ", "siap,", "well, ", "well,",
-        "halo, ", "halo,", "hai, ", "hai,", "hi, ", "hi,",
-        "hey, ", "hey,", "hello, ", "hello,",
+        "ok, ",
+        "ok,",
+        "oke, ",
+        "oke,",
+        "baik, ",
+        "baik,",
+        "siap, ",
+        "siap,",
+        "well, ",
+        "well,",
+        "halo, ",
+        "halo,",
+        "hai, ",
+        "hai,",
+        "hi, ",
+        "hi,",
+        "hey, ",
+        "hey,",
+        "hello, ",
+        "hello,",
     ]
     for _pfx in _ack_prefixes:
         if text.startswith(_pfx):
-            _rest = text[len(_pfx):].strip()
+            _rest = text[len(_pfx) :].strip()
             if _rest:  # has substantive content after prefix
                 text = _rest
             break
 
     # Chitchat detection — greetings, thanks, identity questions
-    chitchat_exact = ["halo", "hai", "hi", "hello", "hey", "terima kasih",
-                      "thanks", "ok", "oke", "siap", "mantap", "makasih",
-                      "good", "bagus", "top", "nice", "yoi", "sip",
-                      "makasih ya", "terima kasih ya", "thanks ya",
-                      "oke siap", "oke terima kasih", "oke makasih"]
-    if any(text == w or text.startswith(w + " ") or text.startswith(w + ",") or text.startswith(w + "!") for w in chitchat_exact):
+    chitchat_exact = [
+        "halo",
+        "hai",
+        "hi",
+        "hello",
+        "hey",
+        "terima kasih",
+        "thanks",
+        "ok",
+        "oke",
+        "siap",
+        "mantap",
+        "makasih",
+        "good",
+        "bagus",
+        "top",
+        "nice",
+        "yoi",
+        "sip",
+        "makasih ya",
+        "terima kasih ya",
+        "thanks ya",
+        "oke siap",
+        "oke terima kasih",
+        "oke makasih",
+    ]
+    if any(
+        text == w
+        or text.startswith(w + " ")
+        or text.startswith(w + ",")
+        or text.startswith(w + "!")
+        for w in chitchat_exact
+    ):
         return "CHITCHAT"
 
     # Identity/about-bot questions
-    identity_patterns = ["siapa kamu", "kamu siapa", "apa kamu", "who are you",
-                         "kamu itu apa", "kamu bisa apa", "apa yang bisa kamu"]
+    identity_patterns = [
+        "siapa kamu",
+        "kamu siapa",
+        "apa kamu",
+        "who are you",
+        "kamu itu apa",
+        "kamu bisa apa",
+        "apa yang bisa kamu",
+    ]
     if any(p in text for p in identity_patterns):
         return "CHITCHAT"
 
     # Recon
-    recon_words = ["rekonsiliasi", "rekon", "reconcil", "rekening koran", "statement bank"]
+    recon_words = [
+        "rekonsiliasi",
+        "rekon",
+        "reconcil",
+        "rekening koran",
+        "statement bank",
+    ]
     if any(w in text for w in recon_words):
         return "RECON"
 
@@ -785,28 +857,73 @@ def _infer_intent(user_text: str) -> str:
         return "TUTORIAL"
 
     # Action (mutation requests) — word boundary matching
-    action_words = ["buat ", "buatkan", "bikin", "create", "tambah", "catat ",
-                     "bayar ", "bayarkan", "terima pembayaran", "posting",
-                     "void", "hapus", "reverse", "transfer ", "kirim",
-                     "edit ", "ubah", "ganti", "koreksi"]
+    action_words = [
+        "buat ",
+        "buatkan",
+        "bikin",
+        "create",
+        "tambah",
+        "catat ",
+        "bayar ",
+        "bayarkan",
+        "terima pembayaran",
+        "posting",
+        "void",
+        "hapus",
+        "reverse",
+        "transfer ",
+        "kirim",
+        "edit ",
+        "ubah",
+        "ganti",
+        "koreksi",
+    ]
     if any(f" {w}" in f" {text}" for w in action_words):
         return "ACTION"
 
     # Complex read (multi-entity or comparison)
-    complex_words = ["bandingkan", "perbandingan", "tren", "trend", "analisis",
-                      "evaluasi", "margin", "rasio", "ratio", "budget"]
+    complex_words = [
+        "bandingkan",
+        "perbandingan",
+        "tren",
+        "trend",
+        "analisis",
+        "evaluasi",
+        "margin",
+        "rasio",
+        "ratio",
+        "budget",
+    ]
     if any(w in text for w in complex_words):
         return "COMPLEX_READ"
 
     # Simple read (single lookup / question)
-    read_words = ["berapa", "tampilkan", "lihat", "total", "saldo", "hitung", "laporan",
-                   "aging", "outstanding", "cari", "search"]
+    read_words = [
+        "berapa",
+        "tampilkan",
+        "lihat",
+        "total",
+        "saldo",
+        "hitung",
+        "laporan",
+        "aging",
+        "outstanding",
+        "cari",
+        "search",
+    ]
     if any(w in text for w in read_words):
         return "SIMPLE_READ"
 
     # Followup / continuation
-    followup_words = ["lanjut", "next", "lagi", "selanjutnya", "terus",
-                       "yang tadi", "sebelumnya"]
+    followup_words = [
+        "lanjut",
+        "next",
+        "lagi",
+        "selanjutnya",
+        "terus",
+        "yang tadi",
+        "sebelumnya",
+    ]
     if any(w in text for w in followup_words):
         return "FOLLOWUP"
 
