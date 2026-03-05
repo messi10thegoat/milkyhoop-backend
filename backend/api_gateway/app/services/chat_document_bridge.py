@@ -483,7 +483,7 @@ async def check_draft_dependencies(conn, draft_plan: dict, tenant_id: str) -> di
         if not item_name.strip():
             continue
         product = await conn.fetchrow(
-            "SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) AND is_active = true",
+            "SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2)",
             tenant_id, item_name.strip(),
         )
         if not product:
