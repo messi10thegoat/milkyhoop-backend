@@ -1392,6 +1392,20 @@ async def send_message_with_files(
             if _file_intent == "financial_doc":
                 _dp_pool = await get_session_db_pool()
 
+                # Ensure session_id exists for Layer 2 persistence
+                if not session_id:
+                    import uuid as _sess_uuid
+                    _sm_doc = SessionManager(
+                        db_pool=_dp_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                    )
+                    try:
+                        _conv_uuid = str(_sess_uuid.UUID(conversation_id))
+                    except (ValueError, AttributeError):
+                        _conv_uuid = str(_sess_uuid.uuid4())
+                    _doc_sess = await _sm_doc.get_or_create_session(_conv_uuid)
+                    session_id = str(_doc_sess.session_id) if hasattr(_doc_sess, "session_id") else str(_doc_sess)
+                    logger.info(f"[DocPipeline] Created session {session_id} for Layer 2")
+
                 if len(file_metas) == 1:
                     # SYNC: Single document — process inline and return draft
                     _fm = file_metas[0]
