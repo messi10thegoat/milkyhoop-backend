@@ -413,6 +413,8 @@ class ToolExecutor:
                 return await self._execute_session_tool(tool_name, params)
             elif tool_name == "propose_direct_action":
                 return await self._execute_propose_direct(params)
+            elif tool_name == "update_document_context":
+                return await self._execute_update_document_context(params)
             elif tool_name == "execute_query":
                 return await self._execute_query(params)
             elif tool_name == "propose_action":

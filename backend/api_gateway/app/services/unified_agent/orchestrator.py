@@ -529,6 +529,7 @@ MUST_SEQUENTIAL_TOOLS = {
     "propose_action",
     "simulate_action",
     "propose_direct_action",  # ACTION tools
+    "update_document_context",  # Document context edit
     "start_workflow",
     "review_next_unmatched",  # WORKFLOW tools
 }
