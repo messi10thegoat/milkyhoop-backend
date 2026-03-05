@@ -1203,9 +1203,6 @@ class UnifiedAgent:
             # cause LLM to call search_vendors instead of update_document_context.
             # Deterministic intercept: replace the tool call before execution.
             _doc_intercept_map = {"search_vendors": "vendor_name", "search_customers": "vendor_name"}
-            _di_tool_names = [tc.function_name for tc in all_tool_calls]
-            _di_has_search = any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
-            logger.info(f"[DOC-INTERCEPT-CHECK] tools={_di_tool_names} has_search={_di_has_search} has_sm={bool(tool_executor.session_manager)} has_sid={bool(tool_executor.session_id)}")
             if (
                 tool_executor.session_manager
                 and tool_executor.session_id

@@ -1277,12 +1277,13 @@ async def get_bill_activity(request: Request, bill_id: UUID):
             payments = await conn.fetch(
                 """
                 SELECT 
-                    bp.id, bp.amount, bp.payment_date, bp.payment_method,
-                    bp.reference, bp.notes, bp.created_at, bp.created_by,
+                    bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
+                    bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
                     u.name as payer_name, u.fullname as payer_fullname
-                FROM bill_payments bp
+                FROM bill_payments_v2 bp
+                JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
                 LEFT JOIN "User" u ON bp.created_by::text = u.id
-                WHERE bp.bill_id = $1
+                WHERE bp.status != 'voided'
                 ORDER BY bp.created_at ASC
                 """,
                 bill_id
