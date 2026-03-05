@@ -1816,6 +1816,38 @@ async def _propose_document_draft(
             True,
         )
 
+    # -- Persist OCR data to Layer 2 (document_context) --
+    _line_items_summary = []
+    for _li in (draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []):
+        _line_items_summary.append({
+            "description": _li.get("description", ""),
+            "qty": _li.get("quantity") or _li.get("qty"),
+            "unit_price": _li.get("unit_price"),
+            "total": _li.get("total_price") or _li.get("total") or _li.get("amount"),
+        })
+
+    _doc_context = {
+        "document_id": document_id,
+        "doc_type": draft_plan.get("transaction_type") or draft_plan.get("action_type") or "unknown",
+        "confidence": float(draft_plan.get("confidence") or 0),
+        "document_number": draft_plan.get("document_number"),
+        "document_date": draft_plan.get("document_date"),
+        "vendor_name": draft_plan.get("counterparty_name") or draft_plan.get("counterparty"),
+        "total_amount": float(draft_plan.get("total_debit") or draft_plan.get("total_amount") or 0),
+        "tax_amount": float(draft_plan.get("tax_amount") or 0),
+        "items": _line_items_summary,
+        "pending_action_id": pending_id,
+        "edits": {},
+    }
+
+    try:
+        from .unified_agent.session_manager import SessionManager as _DocSM
+        _doc_sm = _DocSM(db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+        await _doc_sm.update_state(session_id, document_context=_doc_context)
+        logger.info(f"[DocDraft] Persisted document_context to Layer 2 for session {session_id}")
+    except Exception as _e:
+        logger.warning(f"[DocDraft] Failed to persist document_context to Layer 2: {_e}")
+
     # -- Build preview data matching orchestrator format --
     preview_data = {
         "pending_action_id": pending_id,
@@ -1874,6 +1906,7 @@ async def _confirm_direct_action(
     pool,
     http_request,
     payload_overrides: dict = None,
+    session_id: str = None,
 ) -> ChatMessageResponse:
     """Execute a direct action by calling the REST endpoint."""
     import httpx
@@ -2048,6 +2081,15 @@ async def _confirm_direct_action(
             )
 
             success_msg = config.get_success_message(payload)
+
+            # Clear document_context from Layer 2 (only for document actions)
+            if action_key == "confirm_document_draft" and session_id:
+                try:
+                    from .unified_agent.session_manager import SessionManager as _ClearSM
+                    _clear_sm = _ClearSM(db_pool=pool, tenant_id=tenant_id, user_id=user_id)
+                    await _clear_sm.update_state(session_id, document_context=None)
+                except Exception as _e:
+                    logger.warning(f"[DocConfirm] Failed to clear document_context: {_e}")
 
             # Recon actions: signal frontend to auto-continue workflow
             recon_actions = {

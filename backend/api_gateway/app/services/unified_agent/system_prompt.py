@@ -503,7 +503,17 @@ SEG_ACTIONS = """
 | "Bayar listrik 2 juta" | create_expense | No bill, direct expense |
 | "Terima pembayaran INV-001" | create_receive_payment | Ada obligation (invoice) |
 | "Terima transfer 5 juta" | Tanya: ada invoice? | Perlu disambiguasi |
-| "Transfer antar bank" | bank_transfer | Bukan payment |"""
+| "Transfer antar bank" | bank_transfer | Bukan payment |
+
+## Konteks Dokumen Aktif (document_context)
+Jika ada "Dokumen aktif:" di konteks sesi:
+- User sedang review dokumen. JAWAB pertanyaan dari context (vendor, items, total, tanggal, dll).
+- JANGAN tanya ulang data yang sudah ada di document_context.
+- Jika user koreksi data, panggil update_document_context(edits={"field": "new_value"}).
+  Contoh: "vendornya bukan Nirwana" -> update_document_context(edits={"vendor_name": "PT Sumber Makmur"})
+  Contoh: "totalnya 5 juta" -> update_document_context(edits={"total_amount": 5000000})
+- Setelah update, LANGSUNG panggil propose_direct_action untuk mengajukan ulang konfirmasi dengan data terkoreksi.
+- Jawab ringkas: "Berapa totalnya?" -> "Total Rp 5.500.000, 3 item dari PT Nirwana."""
 
 
 # ── Segment: DIRECT_ACTIONS (~800 tokens) ─────────────────────────────────────

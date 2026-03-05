@@ -453,16 +453,24 @@ class ToolExecutor:
             from .db_utils import get_session_db_pool
             pool = await get_session_db_pool()
             tenant_id = self.context.tenant_id
+        except Exception as e:
+            logger.warning(f"[resolve_entity_names] pool init failed: {e}")
+            return
 
-            if action_key == "create_bill_payment" and not payload.get("vendor_name") and payload.get("vendor_id"):
+        # Vendor name (vendors.id = uuid)
+        if action_key == "create_bill_payment" and not payload.get("vendor_name") and payload.get("vendor_id"):
+            try:
                 row = await pool.fetchrow(
                     "SELECT name FROM vendors WHERE id = $1::uuid AND tenant_id = $2",
                     str(payload["vendor_id"]), tenant_id
                 )
                 if row:
                     payload["vendor_name"] = row["name"]
-                # Also resolve bill_number
-                if not payload.get("bill_number") and payload.get("bill_id"):
+            except Exception as e:
+                logger.warning(f"[resolve_entity_names] vendor lookup: {e}")
+            # Also resolve bill_number
+            if not payload.get("bill_number") and payload.get("bill_id"):
+                try:
                     brow = await pool.fetchrow(
                         "SELECT invoice_number, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
                         str(payload["bill_id"]), tenant_id
@@ -470,26 +478,32 @@ class ToolExecutor:
                     if brow:
                         payload.setdefault("bill_number", brow["invoice_number"])
                         payload.setdefault("vendor_name", brow["vendor_name"])
+                except Exception as e:
+                    logger.warning(f"[resolve_entity_names] bill lookup: {e}")
 
-            elif action_key == "create_receive_payment" and not payload.get("customer_name") and payload.get("customer_id"):
+        # Customer name (customers.id = varchar, NOT uuid)
+        if action_key == "create_receive_payment" and not payload.get("customer_name") and payload.get("customer_id"):
+            try:
                 row = await pool.fetchrow(
-                    "SELECT nama FROM customers WHERE id = $1::uuid AND tenant_id = $2",
+                    "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2",
                     str(payload["customer_id"]), tenant_id
                 )
                 if row:
                     payload["customer_name"] = row["nama"]
+            except Exception as e:
+                logger.warning(f"[resolve_entity_names] customer lookup: {e}")
 
-            # Also resolve bank_account_name
-            if not payload.get("bank_account_name") and payload.get("bank_account_id"):
+        # Bank account name (bank_accounts.id = uuid)
+        if not payload.get("bank_account_name") and payload.get("bank_account_id"):
+            try:
                 row = await pool.fetchrow(
                     "SELECT account_name FROM bank_accounts WHERE id = $1::uuid AND tenant_id = $2",
                     str(payload["bank_account_id"]), tenant_id
                 )
                 if row:
                     payload["bank_account_name"] = row["account_name"]
-
-        except Exception as e:
-            logger.warning(f"[resolve_entity_names] Non-critical: {e}")
+            except Exception as e:
+                logger.warning(f"[resolve_entity_names] bank lookup: {e}")
 
     # --- Tutorial Tool Execution ---
 
@@ -4481,6 +4495,72 @@ def _build_journal_preview(
 
 
 # ─── Tool Stage Labels (Thinking Indicator) ────────────────────────────────────
+
+
+    # --- Update Document Context (Layer 2 document edit) ---
+
+    async def _execute_update_document_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle user corrections to active document context.
+        Merges edits into Layer 2 document_context, expires old pending action.
+        """
+        import uuid as _uuid
+        edits = params.get("edits", {})
+        if not edits:
+            return {"success": False, "error": "No edits provided"}
+
+        if not self.session_manager or not self.session_id:
+            return {"success": False, "error": "No session context available"}
+
+        state = await self.session_manager.get_state(self.session_id)
+        doc_ctx = getattr(state, "document_context", None)
+        if not doc_ctx:
+            return {"success": False, "error": "Tidak ada dokumen aktif. User belum upload dokumen."}
+
+        # Deep-merge edits
+        existing_edits = doc_ctx.get("edits", {})
+        for key, value in edits.items():
+            if key == "items" and isinstance(value, dict):
+                existing_items_edits = existing_edits.get("items", {})
+                for idx_str, item_edits in value.items():
+                    if idx_str in existing_items_edits:
+                        existing_items_edits[idx_str] = {**existing_items_edits[idx_str], **item_edits}
+                    else:
+                        existing_items_edits[idx_str] = item_edits
+                existing_edits["items"] = existing_items_edits
+            else:
+                existing_edits[key] = value
+        doc_ctx["edits"] = existing_edits
+
+        # Expire old pending action
+        old_pending_id = doc_ctx.get("pending_action_id")
+        if old_pending_id:
+            try:
+                from .db_utils import get_session_db_pool
+                pool = await get_session_db_pool()
+                await pool.execute(
+                    "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1 AND tenant_id = $2",
+                    _uuid.UUID(str(old_pending_id)), self.context.tenant_id,
+                )
+            except Exception as e:
+                logger.warning(f"[UpdateDocCtx] Failed to expire old pending action: {e}")
+
+        # Update Layer 2
+        await self.session_manager.update_state(self.session_id, document_context=doc_ctx)
+
+        # Build summary
+        edit_parts = []
+        for k, v in edits.items():
+            if k != "items":
+                edit_parts.append(f"{k}={v}")
+        if "items" in edits:
+            edit_parts.append(f"{len(edits['items'])} item dikoreksi")
+
+        return {
+            "success": True,
+            "message": f"Koreksi diterapkan: {', '.join(edit_parts)}. Data dokumen sudah diperbarui.",
+            "replaces_action_id": old_pending_id,
+            "document_id": doc_ctx.get("document_id"),
+        }
 
 TOOL_STAGE_LABELS: dict[str, str] = {
     # === Kas & Bank ===
