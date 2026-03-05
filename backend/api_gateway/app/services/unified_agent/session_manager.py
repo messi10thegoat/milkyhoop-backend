@@ -102,6 +102,7 @@ class StructuredState:
             parts.append(f"   Confidence: {int(confidence * 100)}%")
             parts.append(f"   Items: {len(items)} item, total Rp {total:,.0f}" + (f" (PPN Rp {tax:,.0f})" if tax else ""))
             parts.append(f"   Status: Menunggu konfirmasi user")
+            parts.append(f"   >> Jika user koreksi data dokumen ini, WAJIB panggil update_document_context(edits={{...}}). JANGAN search_vendors/search_customers.")
 
             if edits:
                 edit_lines = []
