@@ -1377,222 +1377,211 @@ async def send_message_with_files(
     if _recon_shortcut_result:
         return _recon_shortcut_result
 
-    # ── Document Pipeline Shortcut: route financial docs to Intelligence Layer ──
+    # ── Document Pipeline: Single gpt-4o vision call for financial docs ──
     _doc_pipeline_result = None
     if file_metas and not _recon_shortcut_result:
-        try:
-            from ..services.chat_document_bridge import (
-                detect_upload_intent,
-                upload_chat_file_to_pipeline,
-                process_document_sync,
-                build_draft_proposal,
-            )
+        _has_image = any(
+            fm.get("content_type", "").startswith("image/")
+            or fm.get("extension", "").lower() == ".pdf"
+            for fm in file_metas
+        )
+        if _has_image:
+            try:
+                from ..services.ocr_providers.openai_provider import OpenAIOCRProvider
+                from ..services.unified_agent.db_utils import get_session_db_pool as _get_ocr_pool
+                import uuid as _ocr_uuid
+                import json as _ocr_json
+                from datetime import datetime as _ocr_dt, timedelta as _ocr_td, timezone as _ocr_tz
+                from openai import AsyncOpenAI as _OCR_OpenAI
 
-            _file_intent = detect_upload_intent(text, file_metas)
-            logger.info(
-                f"[DocPipeline] Intent detected: {_file_intent} for {len(file_metas)} file(s)"
-            )
+                _ocr_pool = await _get_ocr_pool()
 
-            if _file_intent == "financial_doc":
-                _dp_pool = await get_session_db_pool()
-
-                # Ensure session_id exists for Layer 2 persistence
+                # Ensure session
                 if not session_id:
-                    import uuid as _sess_uuid
-                    _sm_doc = SessionManager(
-                        db_pool=_dp_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                    _sm_ocr = SessionManager(
+                        db_pool=_ocr_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
                     )
                     try:
-                        _conv_uuid = str(_sess_uuid.UUID(conversation_id))
+                        _conv_uuid = str(_ocr_uuid.UUID(conversation_id))
                     except (ValueError, AttributeError):
-                        _conv_uuid = str(_sess_uuid.uuid4())
-                    _doc_sess = await _sm_doc.get_or_create_session(_conv_uuid)
-                    session_id = str(_doc_sess.session_id) if hasattr(_doc_sess, "session_id") else str(_doc_sess)
-                    logger.info(f"[DocPipeline] Created session {session_id} for Layer 2")
+                        _conv_uuid = str(_ocr_uuid.uuid4())
+                    _ocr_sess = await _sm_ocr.get_or_create_session(_conv_uuid)
+                    session_id = str(_ocr_sess.session_id) if hasattr(_ocr_sess, "session_id") else str(_ocr_sess)
 
-                if len(file_metas) == 1:
-                    # SYNC: Single document — process inline and return draft
-                    _fm = file_metas[0]
-                    _stored_path = _fm.get("stored_path", "")
-
-                    # Read file content from stored chat path
-                    if _stored_path and os.path.exists(_stored_path):
-                        with open(_stored_path, "rb") as _fp:
-                            _file_content = _fp.read()
-                    else:
-                        raise ValueError(f"File not found at {_stored_path}")
-
-                    # Upload to document intake system
-                    async with _dp_pool.acquire() as _dp_conn:
-                        async with _dp_conn.transaction():
-                            await _dp_conn.execute(
-                                "SELECT set_config('app.tenant_id', $1, true)",
-                                ctx["tenant_id"],
-                            )
-                            _doc_record = await upload_chat_file_to_pipeline(
-                                conn=_dp_conn,
-                                file_content=_file_content,
-                                filename=_fm.get("filename", "unnamed"),
-                                content_type=_fm.get(
-                                    "content_type", "application/octet-stream"
-                                ),
-                                tenant_id=ctx["tenant_id"],
-                                user_id=ctx["user_id"],
-                            )
-
-                    if not _doc_record:
-                        logger.warning(
-                            "[DocPipeline] File type not supported for pipeline"
-                        )
-                        # Fall through to LLM vision path
-                    elif _doc_record.get("is_duplicate") and _doc_record.get(
-                        "draft_plan"
-                    ):
-                        # Already processed — build proposal from existing draft
-                        _proposal = build_draft_proposal(
-                            draft_plan=_doc_record["draft_plan"],
-                            document={
-                                "id": _doc_record["id"],
-                                "filename": _doc_record["filename"],
-                                "classification": _doc_record.get("doc_type"),
-                            },
-                        )
-                        _doc_pipeline_result = await _propose_document_draft(
-                            proposal=_proposal,
-                            pool=_dp_pool,
-                            ctx=ctx,
-                            session_id=session_id,
-                            conversation_id=conversation_id,
-                            file_metas=file_metas,
-                        )
-                    else:
-                        # Process through pipeline (sync — waits for completion)
-                        logger.info(
-                            f"[DocPipeline] Processing doc {_doc_record['id']} through pipeline"
-                        )
-                        _pipeline_result = await process_document_sync(
-                            pool=_dp_pool,
-                            doc_id=_doc_record["id"],
-                            tenant_id=ctx["tenant_id"],
-                        )
-
-                        if _pipeline_result["status"] == "draft_ready":
-                            _proposal = build_draft_proposal(
-                                draft_plan=_pipeline_result["draft_plan"],
-                                document=_pipeline_result["document"],
-                                analysis_result=_pipeline_result.get("analysis_result"),
-                            )
-                            _doc_pipeline_result = await _propose_document_draft(
-                                proposal=_proposal,
-                                pool=_dp_pool,
-                                ctx=ctx,
-                                session_id=session_id,
-                                conversation_id=conversation_id,
-                                file_metas=file_metas,
-                            )
-                        elif _pipeline_result["status"] in (
-                            "extraction_failed",
-                            "classification_failed",
-                            "analysis_failed",
-                            "draft_failed",
-                            "pipeline_error",
-                        ):
-                            _doc_pipeline_result = ChatMessageResponse(
-                                message_type="TEXT",
-                                text=(
-                                    f"Maaf, saya kesulitan membaca dokumen ini. "
-                                    f"{_pipeline_result.get('error', '')} "
-                                    f"Coba upload ulang dengan kualitas lebih baik, "
-                                    f"atau proses manual di Review Inbox."
-                                ),
-                                session_id=session_id,
-                            )
-                        else:
-                            # Unknown status — let user know
-                            _doc_pipeline_result = ChatMessageResponse(
-                                message_type="TEXT",
-                                text=(
-                                    f"Proses dokumen belum selesai (status: {_pipeline_result['status']}). "
-                                    f"Cek hasilnya di halaman Review Inbox nanti ya."
-                                ),
-                                session_id=session_id,
-                            )
-
-                else:
-                    # ASYNC: Multiple files — batch upload, process in background
-                    _batch_doc_ids = []
-                    for _fm in file_metas:
-                        _stored_path = _fm.get("stored_path", "")
-                        if not _stored_path or not os.path.exists(_stored_path):
-                            continue
-                        # Only pipeline-compatible files (images + PDF)
-                        _ext = _fm.get("extension", "").lower()
-                        if _ext not in (
-                            ".jpg",
-                            ".jpeg",
-                            ".png",
-                            ".webp",
-                            ".heic",
-                            ".heif",
-                            ".pdf",
-                        ):
-                            continue
-
-                        with open(_stored_path, "rb") as _fp:
-                            _file_content = _fp.read()
-
-                        async with _dp_pool.acquire() as _dp_conn:
-                            async with _dp_conn.transaction():
-                                await _dp_conn.execute(
-                                    "SELECT set_config('app.tenant_id', $1, true)",
-                                    ctx["tenant_id"],
-                                )
-                                _doc_record = await upload_chat_file_to_pipeline(
-                                    conn=_dp_conn,
-                                    file_content=_file_content,
-                                    filename=_fm.get("filename", "unnamed"),
-                                    content_type=_fm.get(
-                                        "content_type", "application/octet-stream"
-                                    ),
-                                    tenant_id=ctx["tenant_id"],
-                                    user_id=ctx["user_id"],
-                                )
-                        if _doc_record and not _doc_record.get("is_duplicate"):
-                            _batch_doc_ids.append(_doc_record["id"])
-
-                    if _batch_doc_ids:
-                        # Fire background processing for each document
-                        import asyncio as _bg_asyncio
-
-                        for _bg_doc_id in _batch_doc_ids:
-                            _bg_asyncio.create_task(
-                                _process_document_background(
-                                    _dp_pool, _bg_doc_id, ctx["tenant_id"]
-                                )
-                            )
-
-                        _doc_pipeline_result = ChatMessageResponse(
-                            message_type="TEXT",
-                            text=(
-                                f"Saya proses {len(_batch_doc_ids)} dokumen di background. "
-                                f"Cek hasilnya di halaman Review Inbox nanti ya."
-                            ),
-                            session_id=session_id,
-                        )
-
-            elif _file_intent == "data_import":
-                _doc_pipeline_result = ChatMessageResponse(
-                    message_type="TEXT",
-                    text=(
-                        "Untuk import data CSV/Excel, gunakan fitur Import di halaman terkait. "
-                        "Atau ketik 'rekonsiliasi' jika ini rekening koran."
-                    ),
-                    session_id=session_id,
+                # Read first image file
+                _fm = next(
+                    (fm for fm in file_metas if fm.get("content_type", "").startswith("image/") or fm.get("extension", "").lower() == ".pdf"),
+                    file_metas[0]
                 )
+                _stored_path = _fm.get("stored_path", "")
+                if _stored_path and os.path.exists(_stored_path):
+                    import base64 as _b64
+                    with open(_stored_path, "rb") as _img_f:
+                        _img_bytes = _img_f.read()
+                    _img_b64 = _b64.b64encode(_img_bytes).decode()
+                    _mime = _fm.get("content_type", "image/jpeg")
 
-        except Exception as _doc_err:
-            logger.error(f"[DocPipeline] Failed: {_doc_err}", exc_info=True)
-            # Fall through to normal LLM path
+                    # Single gpt-4o call: OCR + extract + understand user intent
+                    _ocr_client = _OCR_OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+                    _ocr_prompt = f"""Kamu adalah asisten akuntansi. User upload foto dokumen keuangan dengan pesan: "{text}"
+
+Tugas:
+1. Baca semua teks di gambar (OCR)
+2. Ekstrak data terstruktur
+3. Perhatikan instruksi user (misal: jenis dokumen, nama vendor/customer)
+
+Return JSON ONLY (tanpa markdown):
+{{
+  "doc_type": "purchase_invoice|sales_invoice|receipt|bank_transfer|expense|unknown",
+  "vendor_name": "nama vendor/supplier",
+  "customer_name": "nama customer (jika ada)",
+  "document_number": "nomor faktur/dokumen",
+  "document_date": "YYYY-MM-DD",
+  "items": [
+    {{"description": "deskripsi item", "qty": 1, "unit_price": 0, "total": 0}}
+  ],
+  "subtotal": 0,
+  "tax_amount": 0,
+  "total_amount": 0,
+  "notes": "catatan tambahan",
+  "confidence": 0.9
+}}
+
+PENTING:
+- Jika user bilang "faktur pembelian" → doc_type = "purchase_invoice"
+- Jika user sebut nama vendor, pakai nama itu
+- Semua angka dalam Rupiah tanpa desimal
+- confidence 0-1 berdasarkan kejelasan dokumen"""
+
+                    _ocr_response = await _ocr_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": _ocr_prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:{_mime};base64,{_img_b64}", "detail": "high"}},
+                            ],
+                        }],
+                        max_tokens=2000,
+                        temperature=0.1,
+                    )
+
+                    _ocr_text = _ocr_response.choices[0].message.content or "{}"
+                    # Strip markdown code blocks if present
+                    if _ocr_text.startswith("```"):
+                        _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
+                    _ocr_data = _ocr_json.loads(_ocr_text)
+                    logger.info(f"[DocSimple] gpt-4o extracted: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}")
+
+                    # Build DIRECT_ACTION_PREVIEW
+                    _pending_id = str(_ocr_uuid.uuid4())
+                    _doc_type = _ocr_data.get("doc_type", "unknown")
+                    _vendor = _ocr_data.get("vendor_name") or _ocr_data.get("customer_name") or "Unknown"
+                    _total = float(_ocr_data.get("total_amount", 0))
+                    _tax = float(_ocr_data.get("tax_amount", 0))
+                    _items = _ocr_data.get("items", [])
+                    _doc_number = _ocr_data.get("document_number", "-")
+                    _doc_date = _ocr_data.get("document_date", "-")
+                    _confidence = float(_ocr_data.get("confidence", 0))
+
+                    _type_labels = {
+                        "purchase_invoice": "Faktur Pembelian",
+                        "sales_invoice": "Faktur Penjualan",
+                        "receipt": "Kwitansi",
+                        "bank_transfer": "Transfer Bank",
+                        "expense": "Biaya/Pengeluaran",
+                    }
+                    _type_display = _type_labels.get(_doc_type, _doc_type)
+
+                    # Build confirmation table
+                    _table_lines = ["| Field | Value |", "|---|---|"]
+                    _table_lines.append(f"| Tipe | {_type_display} |")
+                    _table_lines.append(f"| Vendor | {_vendor} |")
+                    if _doc_number != "-":
+                        _table_lines.append(f"| No. Dokumen | {_doc_number} |")
+                    if _doc_date != "-":
+                        _table_lines.append(f"| Tanggal | {_doc_date} |")
+                    if _items:
+                        _table_lines.append(f"| Items | {len(_items)} item |")
+                    _table_lines.append(f"| Total | Rp {_total:,.0f} |".replace(",", "."))
+                    if _tax > 0:
+                        _table_lines.append(f"| Pajak | Rp {_tax:,.0f} |".replace(",", "."))
+                    _table_lines.append(f"| Confidence | {_confidence*100:.0f}% |")
+
+                    _preview = {
+                        "pending_action_id": _pending_id,
+                        "action_type": "CONFIRM_DOCUMENT_DRAFT",
+                        "action_key": "confirm_document_draft",
+                        "display_name": f"Konfirmasi {_type_display}",
+                        "confirmation_table": "\n".join(_table_lines),
+                        "payload": {
+                            "document_id": _fm.get("file_hash", str(_ocr_uuid.uuid4())),
+                            "doc_type": _doc_type,
+                            "vendor_name": _vendor,
+                            "document_number": _doc_number,
+                            "document_date": _doc_date,
+                            "total_amount": _total,
+                            "tax_amount": _tax,
+                            "items": _items,
+                        },
+                        "loading_message": f"Memproses {_type_display.lower()} dari {_vendor}...",
+                        "entity_type": "document",
+                    }
+
+                    # Store pending action
+                    _expires = _ocr_dt.now(_ocr_tz.utc) + _ocr_td(seconds=300)
+                    try:
+                        await _ocr_pool.execute(
+                            """INSERT INTO pending_actions (id, tenant_id, user_id, action_id, action_type, action_category, action_plan, status, expires_at)
+                               VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)""",
+                            _ocr_uuid.UUID(_pending_id),
+                            ctx["tenant_id"],
+                            ctx["user_id"],
+                            "confirm_document_draft",
+                            "CONFIRM_DOCUMENT_DRAFT",
+                            "DOCUMENT",
+                            _ocr_json.dumps(_preview["payload"]),
+                            _expires,
+                        )
+                    except Exception as _pa_err:
+                        logger.warning(f"[DocSimple] Failed to store pending: {_pa_err}")
+
+                    # Persist to Layer 2 document_context
+                    try:
+                        _sm_persist = SessionManager(
+                            db_pool=_ocr_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                        )
+                        _doc_ctx = {
+                            "document_id": _preview["payload"]["document_id"],
+                            "doc_type": _doc_type,
+                            "confidence": _confidence,
+                            "document_number": _doc_number,
+                            "document_date": _doc_date,
+                            "vendor_name": _vendor,
+                            "total_amount": _total,
+                            "tax_amount": _tax,
+                            "items": _items,
+                            "pending_action_id": _pending_id,
+                            "edits": {},
+                        }
+                        await _sm_persist.update_state(session_id, document_context=_doc_ctx)
+                        logger.info(f"[DocSimple] Persisted document_context to Layer 2")
+                    except Exception as _l2_err:
+                        logger.warning(f"[DocSimple] Failed to persist Layer 2: {_l2_err}")
+
+                    _narration = f"Saya baca {_type_display.lower()} dari **{_vendor}**. Total Rp {_total:,.0f}.".replace(",", ".")
+
+                    _doc_pipeline_result = ChatMessageResponse(
+                        message_type="DIRECT_ACTION_PREVIEW",
+                        text=_narration,
+                        data=_preview,
+                        pending_action_id=_pending_id,
+                        session_id=session_id,
+                    )
+
+            except Exception as _doc_err:
+                logger.error(f"[DocSimple] Failed: {_doc_err}", exc_info=True)
+                # Fall through to normal LLM path
 
     if _doc_pipeline_result:
         return _doc_pipeline_result

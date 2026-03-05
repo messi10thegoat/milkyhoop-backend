@@ -599,6 +599,13 @@ async def get_dashboard_summary(
                               AND bpv2.tenant_id = $1
                               AND bpv2.status = 'posted'
                               AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -939,6 +946,13 @@ async def get_hutang_detail(
                               AND bpv2.tenant_id = $1
                               AND bpv2.status = 'posted'
                               AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1478,6 +1492,13 @@ async def get_overdue_bills(request: Request):
                               AND bpv2.tenant_id = $1
                               AND bpv2.status = 'posted'
                               AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1597,6 +1618,13 @@ async def get_reconciliation_status(request: Request):
                               AND bpv2.tenant_id = $1
                               AND bpv2.status = 'posted'
                               AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)
@@ -1844,6 +1872,13 @@ async def get_cash_flow_projection(request: Request):
                               AND bpv2.tenant_id = $1
                               AND bpv2.status = 'posted'
                               AND bpv2.journal_id IS NOT NULL
+                        ), 0) + COALESCE((
+                            SELECT SUM(bp_old.amount)
+                            FROM bill_payments bp_old
+                            JOIN journal_entries je_bp ON je_bp.id = bp_old.journal_id
+                            WHERE bp_old.bill_id = b.id
+                              AND bp_old.tenant_id = $1
+                              AND je_bp.status = 'POSTED'
                         ), 0) as payment_debit,
                         COALESCE((
                             SELECT SUM(jl2.debit)

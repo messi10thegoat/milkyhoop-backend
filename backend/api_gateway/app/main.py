@@ -736,14 +736,15 @@ async def list_payments(
                     SELECT
                         bp.id,
                         bp.payment_date,
-                        bp.amount,
+                        bp.total_amount as amount,
                         bp.payment_method,
                         b.invoice_number as reference_number,
                         'made' as payment_type,
                         bp.created_at
-                    FROM bill_payments bp
-                    JOIN bills b ON b.id = bp.bill_id
-                    WHERE b.tenant_id = $1 {date_filter} {type_filter_made}
+                    FROM bill_payments_v2 bp
+                    JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                    JOIN bills b ON b.id = bpa.bill_id
+                    WHERE bp.tenant_id = $1 AND bp.status = 'posted' {date_filter} {type_filter_made}
                 )
                 SELECT * FROM unified_payments
                 ORDER BY created_at DESC
@@ -760,9 +761,10 @@ async def list_payments(
                     JOIN sales_invoices si ON si.id = sip.invoice_id
                     WHERE si.tenant_id = $1 {date_filter} {type_filter_received}
                 ) + (
-                    SELECT COUNT(*) FROM bill_payments bp
-                    JOIN bills b ON b.id = bp.bill_id
-                    WHERE b.tenant_id = $1 {date_filter} {type_filter_made}
+                    SELECT COUNT(*) FROM bill_payments_v2 bp
+                    JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                    JOIN bills b ON b.id = bpa.bill_id
+                    WHERE bp.tenant_id = $1 AND bp.status = 'posted' {date_filter} {type_filter_made}
                 )
             """
             total = await conn.fetchval(

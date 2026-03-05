@@ -639,7 +639,7 @@ class KernelDocumentExecutor:
             "bill": ("bills", "journal_id"),
             "sales_invoice": ("sales_invoices", "journal_id"),
             "expense": ("expenses", "journal_id"),
-            "bill_payment": ("bill_payments", "journal_id"),
+            "bill_payment": ("bill_payments_v2", "journal_id"),
             "receive_payment": ("receive_payments", "journal_id"),
             "journal_entry": ("journal_entries", "id"),
         }

@@ -796,6 +796,23 @@ class ToolExecutor:
                     if "amount_applied" in first and "total_amount" not in payload:
                         payload["total_amount"] = first["amount_applied"]
 
+            # Auto-resolve vendor_id from bill_id when LLM sends non-UUID vendor_id
+            if payload.get("bill_id"):
+                vid = str(payload.get("vendor_id", ""))
+                if not vid or len(vid) < 30:  # not a valid UUID
+                    try:
+                        from .db_utils import get_session_db_pool
+                        pool = await get_session_db_pool()
+                        bill_row = await pool.fetchrow(
+                            "SELECT vendor_id, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
+                            str(payload["bill_id"]), self.context.tenant_id
+                        )
+                        if bill_row:
+                            payload["vendor_id"] = str(bill_row["vendor_id"])
+                            payload.setdefault("vendor_name", bill_row["vendor_name"])
+                    except Exception as e:
+                        logger.warning(f"[create_bill_payment] vendor_id resolve from bill: {e}")
+
         # Normalize receive_payment field names
         if action_key == "create_receive_payment":
             if "payment_account_id" in payload and "bank_account_id" not in payload:

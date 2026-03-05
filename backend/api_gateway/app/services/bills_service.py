@@ -33,20 +33,7 @@ BILL_JOURNAL_PAID_CTE = """
             bill_id,
             COALESCE(SUM(paid), 0) AS journal_paid
         FROM (
-            -- Path 1: Old bill_payments table
-            SELECT bp.bill_id, SUM(jl.debit) AS paid
-            FROM bill_payments bp
-            JOIN journal_entries je ON je.id = bp.journal_id
-            JOIN journal_lines jl ON jl.journal_id = je.id
-            JOIN chart_of_accounts coa ON coa.id = jl.account_id
-            WHERE bp.tenant_id = $1
-              AND je.status = 'POSTED'
-              AND je.reversed_by_id IS NULL
-              AND coa.account_type = 'PAYABLE'
-              AND jl.debit > 0
-            GROUP BY bp.bill_id
-            UNION ALL
-            -- Path 2: New bill_payment_allocations + bill_payments_v2
+            -- Path 1: bill_payment_allocations + bill_payments_v2
             SELECT bpa.bill_id, SUM(jl.debit) AS paid
             FROM bill_payment_allocations bpa
             JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
@@ -1026,7 +1013,7 @@ class BillsService:
         Record a payment for a bill.
 
         Single-transaction pattern (Iron Law 23, ARAP Rule 1):
-        All operations (journal, bill_payments, bank_txn, cache updates)
+        All operations (journal, bill_payments_v2, bank_txn, cache updates)
         happen in ONE database transaction. No facade/ap_service.
 
         Account handling:
@@ -1091,11 +1078,7 @@ class BillsService:
                                   JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
                                   WHERE bpa.bill_id = $3 AND bp.journal_id = je.id
                               )
-                              -- Via legacy bill_payments
-                              OR EXISTS (
-                                  SELECT 1 FROM bill_payments bp
-                                  WHERE bp.bill_id = $3 AND bp.journal_id = je.id
-                              )
+
                               -- Via source_id match for PAYMENT_BILL or BILL_PAYMENT
                               -- source_type fallback removed: covered by bill_payments + bill_payment_allocations
                           )
@@ -1472,16 +1455,6 @@ class BillsService:
                 journal_paid = await conn.fetchval(
                     """
                     SELECT COALESCE(SUM(paid), 0) FROM (
-                        SELECT SUM(jl.debit) AS paid
-                        FROM bill_payments bp
-                        JOIN journal_entries je ON je.id = bp.journal_id
-                        JOIN journal_lines jl ON jl.journal_id = je.id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE bp.bill_id = $1 AND bp.tenant_id = $2
-                          AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
-                          AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
-                        UNION ALL
                         SELECT SUM(jl.debit) AS paid
                         FROM bill_payment_allocations bpa
                         JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
@@ -2886,9 +2859,13 @@ class BillsService:
 
             # Get payments
             payments_query = """
-                SELECT * FROM bill_payments
-                WHERE bill_id = $1
-                ORDER BY payment_date DESC
+                SELECT bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
+                       bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
+                       bp.payment_number, bp.status
+                FROM bill_payments_v2 bp
+                JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
+                WHERE bp.status != 'voided'
+                ORDER BY bp.created_at ASC
             """
             payments = await conn.fetch(payments_query, bill_id)
 

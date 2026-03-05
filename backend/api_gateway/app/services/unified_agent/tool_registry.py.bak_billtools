@@ -38,10 +38,6 @@ TOOL_ENDPOINTS: Dict[str, Dict[str, str]] = {
     "get_invoice_detail": {"method": "GET", "path": "/api/sales-invoices/{id}"},
     "get_bills": {"method": "GET", "path": "/api/bills"},
     "get_bill_detail": {"method": "GET", "path": "/api/bills/{id}"},
-    "get_bill_journals":          {"method": "GET", "path": "/api/bills/{id}/journals"},
-    "get_bill_activity":          {"method": "GET", "path": "/api/bills/{id}/activity"},
-    "get_bill_payment_detail":    {"method": "GET", "path": "/api/bill-payments/{id}"},
-    "get_bill_payment_journals":  {"method": "GET", "path": "/api/bill-payments/{id}/journal-entries"},
     "get_expenses": {"method": "GET", "path": "/api/expenses"},
     "get_expense_detail": {"method": "GET", "path": "/api/expenses/{id}"},
     "get_credit_notes": {"method": "GET", "path": "/api/credit-notes"},
@@ -495,42 +491,6 @@ READ_TOOLS: List[Dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {"id": {"type": "string", "description": "UUID tagihan"}},
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "get_bill_journals",
-        "description": "Daftar jurnal akuntansi terkait faktur pembelian.",
-        "parameters": {
-            "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID faktur"}},
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "get_bill_activity",
-        "description": "Riwayat aktivitas faktur pembelian (pembayaran, status change, dll).",
-        "parameters": {
-            "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID faktur"}},
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "get_bill_payment_detail",
-        "description": "Detail satu pembayaran keluar (bill payment) termasuk alokasi per faktur.",
-        "parameters": {
-            "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID pembayaran"}},
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "get_bill_payment_journals",
-        "description": "Jurnal akuntansi dari pembayaran keluar (Dr Hutang, Cr Bank).",
-        "parameters": {
-            "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID pembayaran"}},
             "required": ["id"],
         },
     },
@@ -1972,10 +1932,6 @@ TOOL_DOMAINS: dict = {
     # ── AP / BILLS ──
     "get_bills":              {"AP_BILLS"},
     "get_bill_detail":        {"AP_BILLS"},
-    "get_bill_journals":          {"AP_BILLS", "ACCOUNTING"},
-    "get_bill_activity":          {"AP_BILLS"},
-    "get_bill_payment_detail":    {"AP_BILLS"},
-    "get_bill_payment_journals":  {"AP_BILLS", "ACCOUNTING"},
     "get_vendor_bills":       {"AP_BILLS", "MASTER_DATA"},
     "get_bill_payments":      {"AP_BILLS"},
     "get_ap_aging":           {"AP_BILLS", "REPORTS"},

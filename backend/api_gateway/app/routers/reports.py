@@ -3006,11 +3006,11 @@ async def get_cash_flow_report(
             # Operating Activities - Outflows
             vendor_payments = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(amount), 0)
-                FROM bill_payments
-                WHERE tenant_id = $1
-                  AND payment_date BETWEEN $2 AND $3
-
+                SELECT COALESCE(SUM(bp.total_amount), 0)
+                FROM bill_payments_v2 bp
+                WHERE bp.tenant_id = $1
+                  AND bp.payment_date BETWEEN $2 AND $3
+                  AND bp.status = 'posted'
             """,
                 ctx["tenant_id"],
                 start_dt,

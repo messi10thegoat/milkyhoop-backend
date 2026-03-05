@@ -1024,11 +1024,11 @@ async def list_payment_out(
             rows = await conn.fetch(
                 """
                 SELECT
-                    bp.id, bp.payment_number, bp.payment_date, bp.amount,
+                    bp.id, bp.payment_number, bp.payment_date, bp.total_amount as amount,
                     bp.payment_method, bp.memo, bp.status,
                     v.name as vendor_name,
                     ba.account_name as payment_account_name
-                FROM bill_payments bp
+                FROM bill_payments_v2 bp
                 LEFT JOIN vendors v ON v.id = bp.vendor_id
                 LEFT JOIN bank_accounts ba ON ba.id = bp.payment_account_id
                 WHERE bp.tenant_id = $1
@@ -1058,7 +1058,7 @@ async def list_payment_out(
             ]
 
             total = await conn.fetchval(
-                "SELECT COUNT(*) FROM bill_payments WHERE tenant_id = $1",
+                "SELECT COUNT(*) FROM bill_payments_v2 WHERE tenant_id = $1",
                 ctx["tenant_id"],
             )
 
