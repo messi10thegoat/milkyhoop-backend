@@ -2391,71 +2391,153 @@ class BillsService:
     ) -> Dict[str, Any]:
         """
         Transition bill from draft to posted.
+        Single-transaction pattern (Iron Law 23, ARAP Rule 1).
 
-        This action:
-        - Creates an AP (Accounts Payable) record
-        - Creates a journal entry (DR Inventory/Expense, CR AP)
-        - Changes status_v2 from 'draft' to 'posted'
-
-        Returns:
-            {success: bool, message: str, data: {...}}
+        Creates in 1 transaction:
+        - Journal entry (DR Inventory/Expense + PPN, CR AP) via DRAFT→POSTED
+        - AP record in accounts_payable
+        - Bill status update
+        - Inventory ledger entries (for tracked goods)
         """
         async with self.pool.acquire() as conn:
-            # Get bill
-            bill = await conn.fetchrow(
-                """
-                SELECT id, status_v2, invoice_number, vendor_name, vendor_id,
-                       issue_date, due_date, grand_total, tax_amount
-                FROM bills
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bill_id,
-                tenant_id,
-            )
-
-            if not bill:
-                return {"success": False, "message": "Bill not found", "data": None}
-
-            if bill["status_v2"] != "draft":
-                return {
-                    "success": False,
-                    "message": f"Cannot post bill with status '{bill['status_v2']}'. Only draft bills can be posted.",
-                    "data": None,
-                }
-
             async with conn.transaction():
-                # Create AP and journal
-                ap_id = None
-                journal_id = None
+                # 0. RLS context
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
 
-                if self.accounting:
-                    bill_tax = Decimal(str(bill["tax_amount"] or 0))
-                    ap_result = await self.accounting.create_payable(
-                        tenant_id=tenant_id,
-                        supplier_name=bill["vendor_name"],
-                        supplier_id=bill["vendor_id"],
-                        bill_number=bill["invoice_number"],
-                        bill_date=bill["issue_date"],
-                        due_date=bill["due_date"],
-                        amount=Decimal(bill["grand_total"]),
-                        source_type="BILL",
-                        source_id=bill_id,
-                        tax_amount=bill_tax,
+                # 1. Advisory lock (Law 13)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BILL_POST:{str(bill_id)}",
+                )
+
+                # 2. Get bill with row lock
+                bill = await conn.fetchrow(
+                    """
+                    SELECT id, status_v2, invoice_number, vendor_name, vendor_id,
+                           issue_date, due_date, grand_total, tax_amount
+                    FROM bills
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    bill_id, tenant_id,
+                )
+
+                if not bill:
+                    return {"success": False, "message": "Bill not found", "data": None}
+
+                if bill["status_v2"] != "draft":
+                    return {
+                        "success": False,
+                        "message": f"Cannot post bill with status '{bill['status_v2']}'. Only draft bills can be posted.",
+                        "data": None,
+                    }
+
+                grand_total = Decimal(str(bill["grand_total"]))
+                bill_tax = Decimal(str(bill["tax_amount"] or 0))
+                subtotal = grand_total - bill_tax
+
+                # 3. Resolve accounts (Law 27 — no hardcoded codes)
+                ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
+                inventory_account_id = await resolve_account_id(conn, tenant_id, "1-10600")
+                vat_input_account_id = None
+                if bill_tax > 0:
+                    vat_input_account_id = await resolve_account_id(conn, tenant_id, "1-10800")
+
+                if not ap_account_id:
+                    return {"success": False, "message": "AP account (2-10100) not found", "data": None}
+                if not inventory_account_id:
+                    return {"success": False, "message": "Inventory account (1-10600) not found", "data": None}
+
+                # 4. Generate journal number
+                journal_number = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, 'PJ')", tenant_id
+                ) or f"PJ-{bill['issue_date'].strftime('%y%m')}-AUTO"
+
+                # 5. Create journal DRAFT (Law 20)
+                journal_id = uuid_module.uuid4()
+                trace_id = uuid_module.uuid4()
+
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date,
+                        description, source_type, source_id, trace_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'BILL', $6, $7, 'DRAFT', $8, $8, $9)
+                    """,
+                    journal_id, tenant_id, journal_number, bill["issue_date"],
+                    f"Bill dari {bill['vendor_name']} - {bill['invoice_number']}",
+                    bill_id, str(trace_id),
+                    grand_total, user_id,
+                )
+
+                # 6. Journal lines
+                line_number = 1
+
+                # Dr. Inventory/Expense (subtotal)
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
+                    """,
+                    uuid_module.uuid4(), journal_id, line_number,
+                    inventory_account_id, subtotal,
+                    f"Pembelian dari {bill['vendor_name']}",
+                )
+                line_number += 1
+
+                # Dr. PPN Masukan (if tax > 0)
+                if bill_tax > 0 and vat_input_account_id:
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        uuid_module.uuid4(), journal_id, line_number,
+                        vat_input_account_id, bill_tax,
+                        "PPN Masukan",
                     )
+                    line_number += 1
 
-                    if not ap_result.get("success"):
-                        raise ValueError(
-                            f"AP creation failed: {ap_result.get('error')}"
-                        )
+                # Cr. Hutang Usaha (grand_total)
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, 0, $5, $6)
+                    """,
+                    uuid_module.uuid4(), journal_id, line_number,
+                    ap_account_id, grand_total,
+                    f"Hutang ke {bill['vendor_name']}",
+                )
 
-                    ap_id = ap_result.get("ap_id")
-                    journal_id = ap_result.get("journal_id")
-                else:
-                    logger.warning(
-                        f"Accounting kernel not available. Bill {bill_id} posted without AP."
-                    )
+                # 7. DRAFT → POSTED (triggers hash chain, Law 20)
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
 
-                # Update bill status
+                # 8. Create AP record (same transaction)
+                ap_id = uuid_module.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO accounts_payable (
+                        id, tenant_id, supplier_id, supplier_name,
+                        bill_number, bill_date, due_date,
+                        amount, amount_paid, status,
+                        description, source_type, source_id, currency
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'OPEN', $9, 'BILL', $10, 'IDR')
+                    """,
+                    ap_id, tenant_id,
+                    bill["vendor_id"], bill["vendor_name"],
+                    bill["invoice_number"], bill["issue_date"], bill["due_date"],
+                    grand_total,
+                    f"AP for {bill['invoice_number']}",
+                    bill_id,
+                )
+
+                # 9. Update bill status
                 await conn.execute(
                     """
                     UPDATE bills
@@ -2469,15 +2551,11 @@ class BillsService:
                         posted_by = $3,
                         updated_at = NOW()
                     WHERE id = $4
-                """,
-                    ap_id,
-                    journal_id,
-                    user_id,
-                    bill_id,
+                    """,
+                    str(ap_id), str(journal_id), user_id, bill_id,
                 )
 
-                # UPDATE INVENTORY for inventory-tracked items
-                # Get bill items with product details
+                # 10. Inventory ledger updates (for tracked goods)
                 bill_items = await conn.fetch(
                     """
                     SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
@@ -2489,7 +2567,6 @@ class BillsService:
                     bill_id
                 )
 
-                # Get default warehouse for tenant
                 default_warehouse = await conn.fetchrow(
                     "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
                     tenant_id
@@ -2497,7 +2574,6 @@ class BillsService:
                 warehouse_id = default_warehouse["id"] if default_warehouse else None
 
                 for item in bill_items:
-                    # Only process inventory-tracked goods
                     if item["item_type"] != "goods" or not item.get("track_inventory", True):
                         continue
 
@@ -2506,7 +2582,6 @@ class BillsService:
                     unit_cost = Decimal(str(item["unit_price"]))
                     total_cost = quantity * unit_cost
 
-                    # Get current balance for this product
                     balance_row = await conn.fetchrow(
                         """
                         SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
@@ -2518,10 +2593,9 @@ class BillsService:
                     current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
                     new_balance = current_balance + quantity
 
-                    # Calculate weighted average cost
                     avg_cost_row = await conn.fetchrow(
                         """
-                        SELECT 
+                        SELECT
                             COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
                             COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
                         FROM inventory_ledger
@@ -2529,7 +2603,7 @@ class BillsService:
                         """,
                         tenant_id, product_id
                     )
-                    
+
                     if avg_cost_row and avg_cost_row["total_qty"] > 0:
                         old_value = Decimal(str(avg_cost_row["total_value"]))
                         old_qty = Decimal(str(avg_cost_row["total_qty"]))
@@ -2537,7 +2611,6 @@ class BillsService:
                     else:
                         new_avg_cost = unit_cost
 
-                    # Insert inventory_ledger entry
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (

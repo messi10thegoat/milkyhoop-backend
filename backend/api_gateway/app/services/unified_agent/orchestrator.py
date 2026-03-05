@@ -1206,7 +1206,7 @@ class UnifiedAgent:
             if (
                 tool_executor.session_manager
                 and tool_executor.session_id
-                and _di_has_search
+                and any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
             ):
                 try:
                     _di_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
