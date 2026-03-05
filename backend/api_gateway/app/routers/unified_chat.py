@@ -1793,7 +1793,7 @@ async def _propose_document_draft(
 
     async with pool.acquire() as conn:
         await conn.execute(
-            "SET LOCAL app.tenant_id = $1", ctx["tenant_id"]
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
         await conn.execute(
             """
