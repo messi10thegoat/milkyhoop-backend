@@ -994,22 +994,37 @@ class UnifiedAgent:
                 _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
                 _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors", "update_document_context"})
                 _has_action_tool = bool(_tool_names_used & {"propose_direct_action", "propose_action"})
-                if (
-                    _intent in ("ACTION",)
-                    and iteration >= 1
-                    and _has_data_tools
-                    and not _has_action_tool
-                    and not locals().get("_nudge_done")
-                ):
+                _has_doc_update = "update_document_context" in _tool_names_used
+                _should_nudge = (
+                    (
+                        _intent in ("ACTION",)
+                        and iteration >= 1
+                        and _has_data_tools
+                        and not _has_action_tool
+                    )
+                    or (
+                        _has_doc_update
+                        and not _has_action_tool
+                    )
+                )
+                if _should_nudge and not locals().get("_nudge_done"):
                     _nudge_done = True
-                    logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
-                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
-                    messages.append(LLMMessage(role="user", content=(
+                    if _has_doc_update:
+                        _nudge_text = (
+                            "Koreksi dokumen sudah diterapkan via update_document_context. "
+                            "Sekarang LANGSUNG panggil propose_direct_action() dengan data dokumen yang sudah dikoreksi. "
+                            "Ambil data dari document_context yang sudah di-update. JANGAN tanya user lagi."
+                        )
+                        logger.warning(f"[NUDGE-DOC] Document corrected, nudging to re-propose at iter={iteration}")
+                    else:
+                        _nudge_text = (
                             "Jangan tanya konfirmasi via text. "
                             "LANGSUNG panggil propose_direct_action() dengan data yang sudah kamu dapatkan. "
                             "Kamu sudah punya semua data yang dibutuhkan dari tool calls sebelumnya."
                         )
-                    ))
+                        logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
+                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
+                    messages.append(LLMMessage(role="user", content=_nudge_text))
                     thinking_stages.append("Menyiapkan konfirmasi")
                     continue  # Go back to loop for another LLM call
                 # ── END NUDGE ──
@@ -1100,6 +1115,37 @@ class UnifiedAgent:
 
             # Execute tool calls — parallel for READ tools, sequential for ACTION/WORKFLOW
             all_tool_calls = llm_response.tool_calls
+
+            # ── DOC-INTERCEPT: Redirect search_vendors/search_customers to update_document_context ──
+            # When document_context is active, user corrections like "vendornya PT X"
+            # cause LLM to call search_vendors instead of update_document_context.
+            # Deterministic intercept: replace the tool call before execution.
+            _doc_intercept_map = {"search_vendors": "vendor_name", "search_customers": "vendor_name"}
+            if (
+                tool_executor.session_manager
+                and tool_executor.session_id
+                and any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
+            ):
+                try:
+                    _di_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                    _di_doc_ctx = getattr(_di_state, "document_context", None)
+                    if _di_doc_ctx and _di_doc_ctx.get("document_id"):
+                        _new_tool_calls = []
+                        _intercepted = False
+                        for tc in all_tool_calls:
+                            if tc.function_name in _doc_intercept_map and not _intercepted:
+                                _edit_field = _doc_intercept_map[tc.function_name]
+                                _search_q = (tc.arguments or {}).get("query") or (tc.arguments or {}).get("search") or (tc.arguments or {}).get("name", "")
+                                if _search_q:
+                                    logger.warning(f"[DOC-INTERCEPT] Redirecting {tc.function_name}('{_search_q}') -> update_document_context(edits={{{_edit_field}: '{_search_q}'}})")
+                                    tc.function_name = "update_document_context"
+                                    tc.arguments = {"edits": {_edit_field: _search_q}}
+                                    _intercepted = True
+                            _new_tool_calls.append(tc)
+                        all_tool_calls = _new_tool_calls
+                except Exception as _di_err:
+                    logger.warning(f"[DOC-INTERCEPT] Failed to check document_context: {_di_err}")
+            # ── END DOC-INTERCEPT ──
             parallel_tcs = [
                 tc
                 for tc in all_tool_calls
