@@ -4301,6 +4301,72 @@ def _error(code: str, message: str) -> Dict[str, Any]:
     return {"success": False, "error": {"code": code, "message": message}}
 
 
+    # --- Update Document Context (Layer 2 document edit) ---
+
+    async def _execute_update_document_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle user corrections to active document context.
+        Merges edits into Layer 2 document_context, expires old pending action.
+        """
+        import uuid as _uuid
+        edits = params.get("edits", {})
+        if not edits:
+            return {"success": False, "error": "No edits provided"}
+
+        if not self.session_manager or not self.session_id:
+            return {"success": False, "error": "No session context available"}
+
+        state = await self.session_manager.get_state(self.session_id)
+        doc_ctx = getattr(state, "document_context", None)
+        if not doc_ctx:
+            return {"success": False, "error": "Tidak ada dokumen aktif. User belum upload dokumen."}
+
+        # Deep-merge edits
+        existing_edits = doc_ctx.get("edits", {})
+        for key, value in edits.items():
+            if key == "items" and isinstance(value, dict):
+                existing_items_edits = existing_edits.get("items", {})
+                for idx_str, item_edits in value.items():
+                    if idx_str in existing_items_edits:
+                        existing_items_edits[idx_str] = {**existing_items_edits[idx_str], **item_edits}
+                    else:
+                        existing_items_edits[idx_str] = item_edits
+                existing_edits["items"] = existing_items_edits
+            else:
+                existing_edits[key] = value
+        doc_ctx["edits"] = existing_edits
+
+        # Expire old pending action
+        old_pending_id = doc_ctx.get("pending_action_id")
+        if old_pending_id:
+            try:
+                from .db_utils import get_session_db_pool
+                pool = await get_session_db_pool()
+                await pool.execute(
+                    "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1 AND tenant_id = $2",
+                    _uuid.UUID(str(old_pending_id)), self.context.tenant_id,
+                )
+            except Exception as e:
+                logger.warning(f"[UpdateDocCtx] Failed to expire old pending action: {e}")
+
+        # Update Layer 2
+        await self.session_manager.update_state(self.session_id, document_context=doc_ctx)
+
+        # Build summary
+        edit_parts = []
+        for k, v in edits.items():
+            if k != "items":
+                edit_parts.append(f"{k}={v}")
+        if "items" in edits:
+            edit_parts.append(f"{len(edits['items'])} item dikoreksi")
+
+        return {
+            "success": True,
+            "message": f"Koreksi diterapkan: {', '.join(edit_parts)}. Data dokumen sudah diperbarui.",
+            "replaces_action_id": old_pending_id,
+            "document_id": doc_ctx.get("document_id"),
+        }
+
+
 def _is_valid_uuid(value: str) -> bool:
     return bool(UUID_PATTERN.match(value))
 
@@ -4511,71 +4577,6 @@ def _build_journal_preview(
 
 # ─── Tool Stage Labels (Thinking Indicator) ────────────────────────────────────
 
-
-    # --- Update Document Context (Layer 2 document edit) ---
-
-    async def _execute_update_document_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle user corrections to active document context.
-        Merges edits into Layer 2 document_context, expires old pending action.
-        """
-        import uuid as _uuid
-        edits = params.get("edits", {})
-        if not edits:
-            return {"success": False, "error": "No edits provided"}
-
-        if not self.session_manager or not self.session_id:
-            return {"success": False, "error": "No session context available"}
-
-        state = await self.session_manager.get_state(self.session_id)
-        doc_ctx = getattr(state, "document_context", None)
-        if not doc_ctx:
-            return {"success": False, "error": "Tidak ada dokumen aktif. User belum upload dokumen."}
-
-        # Deep-merge edits
-        existing_edits = doc_ctx.get("edits", {})
-        for key, value in edits.items():
-            if key == "items" and isinstance(value, dict):
-                existing_items_edits = existing_edits.get("items", {})
-                for idx_str, item_edits in value.items():
-                    if idx_str in existing_items_edits:
-                        existing_items_edits[idx_str] = {**existing_items_edits[idx_str], **item_edits}
-                    else:
-                        existing_items_edits[idx_str] = item_edits
-                existing_edits["items"] = existing_items_edits
-            else:
-                existing_edits[key] = value
-        doc_ctx["edits"] = existing_edits
-
-        # Expire old pending action
-        old_pending_id = doc_ctx.get("pending_action_id")
-        if old_pending_id:
-            try:
-                from .db_utils import get_session_db_pool
-                pool = await get_session_db_pool()
-                await pool.execute(
-                    "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1 AND tenant_id = $2",
-                    _uuid.UUID(str(old_pending_id)), self.context.tenant_id,
-                )
-            except Exception as e:
-                logger.warning(f"[UpdateDocCtx] Failed to expire old pending action: {e}")
-
-        # Update Layer 2
-        await self.session_manager.update_state(self.session_id, document_context=doc_ctx)
-
-        # Build summary
-        edit_parts = []
-        for k, v in edits.items():
-            if k != "items":
-                edit_parts.append(f"{k}={v}")
-        if "items" in edits:
-            edit_parts.append(f"{len(edits['items'])} item dikoreksi")
-
-        return {
-            "success": True,
-            "message": f"Koreksi diterapkan: {', '.join(edit_parts)}. Data dokumen sudah diperbarui.",
-            "replaces_action_id": old_pending_id,
-            "document_id": doc_ctx.get("document_id"),
-        }
 
 TOOL_STAGE_LABELS: dict[str, str] = {
     # === Kas & Bank ===
