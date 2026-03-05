@@ -794,6 +794,19 @@ class ToolExecutor:
                     if "amount_applied" in first and "total_amount" not in payload:
                         payload["total_amount"] = first["amount_applied"]
 
+        # Normalize receive_payment field names
+        if action_key == "create_receive_payment":
+            if "payment_account_id" in payload and "bank_account_id" not in payload:
+                payload["bank_account_id"] = payload.pop("payment_account_id")
+            if "invoice_id" in payload and "allocations" not in payload:
+                payload["allocations"] = [{"invoice_id": payload["invoice_id"], "amount_applied": payload.get("total_amount", payload.get("amount", 0))}]
+            if "allocations" in payload and "customer_id" not in payload:
+                allocs = payload.get("allocations", [])
+                if allocs and isinstance(allocs, list) and len(allocs) > 0:
+                    first = allocs[0] if isinstance(allocs[0], dict) else {}
+                    if "customer_id" in first:
+                        payload["customer_id"] = first["customer_id"]
+
         # === RESOLVE ENTITY NAMES (for success/loading messages) ===
         await self._resolve_entity_names(action_key, payload)
 

@@ -1832,22 +1832,40 @@ async def _propose_document_draft(
 
     # -- Persist OCR data to Layer 2 (document_context) --
     _line_items_summary = []
-    for _li in (draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []):
+    _inv_movements = draft_plan.get("inventory_movements") or []
+    _line_items_raw = draft_plan.get("line_items") or _inv_movements
+    for _li in _line_items_raw:
+        if not isinstance(_li, dict):
+            continue
         _line_items_summary.append({
-            "description": _li.get("description", ""),
+            "description": _li.get("description") or _li.get("product_name") or "",
             "qty": _li.get("quantity") or _li.get("qty"),
-            "unit_price": _li.get("unit_price"),
+            "unit_price": _li.get("unit_price") or _li.get("unit_cost"),
             "total": _li.get("total_price") or _li.get("total") or _li.get("amount"),
         })
 
+    # Extract totals from journal_draft if not at top level
+    _jd = draft_plan.get("journal_draft") or {}
+    _jd_lines = _jd.get("lines") or []
+    _total_debit = sum(float(l.get("debit") or 0) for l in _jd_lines if isinstance(l, dict))
+    _total_credit = sum(float(l.get("credit") or 0) for l in _jd_lines if isinstance(l, dict))
+
+    # Extract vendor/counterparty from multiple possible locations
+    _matched = draft_plan.get("matched_to") or {}
+    _vendor = (
+        draft_plan.get("counterparty_name")
+        or draft_plan.get("counterparty")
+        or (_matched.get("vendor_name") if isinstance(_matched, dict) else None)
+    )
+
     _doc_context = {
         "document_id": document_id,
-        "doc_type": draft_plan.get("transaction_type") or draft_plan.get("action_type") or "unknown",
-        "confidence": float(draft_plan.get("confidence") or 0),
+        "doc_type": draft_plan.get("action_type") or draft_plan.get("transaction_type") or "unknown",
+        "confidence": float(draft_plan.get("overall_confidence") or draft_plan.get("confidence") or 0),
         "document_number": draft_plan.get("document_number"),
         "document_date": draft_plan.get("document_date"),
-        "vendor_name": draft_plan.get("counterparty_name") or draft_plan.get("counterparty"),
-        "total_amount": float(draft_plan.get("total_debit") or draft_plan.get("total_amount") or 0),
+        "vendor_name": _vendor,
+        "total_amount": float(draft_plan.get("total_debit") or draft_plan.get("total_amount") or _total_debit or 0),
         "tax_amount": float(draft_plan.get("tax_amount") or 0),
         "items": _line_items_summary,
         "pending_action_id": pending_id,

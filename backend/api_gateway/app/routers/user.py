@@ -81,12 +81,12 @@ async def get_user_tenants(request: Request):
                 'SELECT display_name, alias, logo_url FROM "Tenant" WHERE id = $1',
                 tenant_id,
             )
-            name = row["display_name"] if row and row["display_name"] else (user_email or tenant_id)
+            name = (row["display_name"] if row and row["display_name"] else None) or (row["alias"] if row and row["alias"] else None) or tenant_id or user_email
             slug = row["alias"] if row and row["alias"] else tenant_id
             logo_url = row["logo_url"] if row else None
         except Exception as e:
             logger.error(f"[user/tenants] DB error: {e}")
-            name = user_email or tenant_id
+            name = tenant_id or user_email
             slug = tenant_id
             logo_url = None
         finally:
