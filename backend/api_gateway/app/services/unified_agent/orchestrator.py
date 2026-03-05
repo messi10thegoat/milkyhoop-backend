@@ -992,7 +992,7 @@ class UnifiedAgent:
 
                 # ── NUDGE: If ACTION intent, LLM has data but didn't call propose_direct_action ──
                 _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
-                _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors"})
+                _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors", "update_document_context"})
                 _has_action_tool = bool(_tool_names_used & {"propose_direct_action", "propose_action"})
                 if (
                     _intent in ("ACTION",)
