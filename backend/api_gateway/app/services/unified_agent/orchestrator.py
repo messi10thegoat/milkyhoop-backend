@@ -1054,12 +1054,14 @@ class UnifiedAgent:
                                 from .db_utils import get_session_db_pool as _rp_get_pool
                                 _rp_pool = await _rp_get_pool()
                                 await _rp_pool.execute(
-                                    """INSERT INTO pending_actions (id, tenant_id, user_id, action_key, payload, status, expires_at)
-                                       VALUES ($1, $2, $3, $4, $5, 'PENDING', $6)""",
+                                    """INSERT INTO pending_actions (id, tenant_id, user_id, action_id, action_type, action_category, action_plan, status, expires_at)
+                                       VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)""",
                                     _rp_uuid.UUID(_rp_pending_id),
                                     context.tenant_id,
                                     context.user_id,
                                     "confirm_document_draft",
+                                    "CONFIRM_DOCUMENT_DRAFT",
+                                    "DOCUMENT",
                                     _json_helpers.dumps(_rp_preview["payload"]),
                                     _rp_expires,
                                 )

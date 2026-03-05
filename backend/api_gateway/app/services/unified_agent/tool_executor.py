@@ -4297,9 +4297,6 @@ class ToolExecutor:
 # --- Helpers ---
 
 
-def _error(code: str, message: str) -> Dict[str, Any]:
-    return {"success": False, "error": {"code": code, "message": message}}
-
 
     # --- Update Document Context (Layer 2 document edit) ---
 
@@ -4366,6 +4363,9 @@ def _error(code: str, message: str) -> Dict[str, Any]:
             "document_id": doc_ctx.get("document_id"),
         }
 
+
+def _error(code: str, message: str) -> Dict[str, Any]:
+    return {"success": False, "error": {"code": code, "message": message}}
 
 def _is_valid_uuid(value: str) -> bool:
     return bool(UUID_PATTERN.match(value))
