@@ -1664,6 +1664,40 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_document_context",
+            "description": "Update data dokumen aktif berdasarkan koreksi user. Gunakan ketika user mengoreksi vendor, item, total, atau data lain dari dokumen yang sedang di-review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "object",
+                        "description": "Koreksi data dokumen. Contoh: {\"vendor_name\": \"PT X\"} atau {\"total_amount\": 5000000} atau {\"items\": {\"0\": {\"qty\": 5}}}"
+                    }
+                },
+                "required": ["edits"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_document_context",
+            "description": "Update data dokumen aktif berdasarkan koreksi user. Gunakan ketika user mengoreksi vendor, item, total, atau data lain dari dokumen yang sedang di-review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "object",
+                        "description": "Koreksi data dokumen. Contoh: {\"vendor_name\": \"PT X\"} atau {\"total_amount\": 5000000} atau {\"items\": {\"0\": {\"qty\": 5}}}"
+                    }
+                },
+                "required": ["edits"]
+            }
+        }
+    },
 ]
 
 
@@ -1987,6 +2021,8 @@ TOOL_DOMAINS: dict = {
     "propose_action":         {"ACTIONS"},
     "simulate_action":        {"ACTIONS"},
     "propose_direct_action":  {"ACTIONS"},
+    "update_document_context": {"ACTIONS"},
+    "update_document_context": {"ACTIONS"},
 
     # ── WORKFLOW ──
     "start_workflow":         {"WORKFLOW"},
