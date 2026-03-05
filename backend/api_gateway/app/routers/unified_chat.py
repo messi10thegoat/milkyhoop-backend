@@ -810,12 +810,16 @@ async def send_message(request: Request, body: ChatMessageRequest):
     )
 
     # Fetch conversation history for context
-    history = await _get_conversation_history(
-        user_id=ctx["user_id"],
-        tenant_id=ctx["tenant_id"],
-        conversation_id=body.conversation_id,
-        limit=10,
-    )
+    # When session_id is provided, let SessionAwareAgent build 4-layer context
+    # (Layer 2 structured state, Layer 3 events, Layer 4 summary)
+    history = None
+    if not body.session_id:
+        history = await _get_conversation_history(
+            user_id=ctx["user_id"],
+            tenant_id=ctx["tenant_id"],
+            conversation_id=body.conversation_id,
+            limit=10,
+        )
 
     # Run the agent loop
     agent_resp = await _agent.process_message(
