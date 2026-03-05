@@ -99,7 +99,17 @@ class OpenAIClient(LLMClient):
 
     def convert_messages(self, messages: List[LLMMessage]) -> List[Dict[str, Any]]:
         openai_msgs = []
-        for msg in messages:
+        for i, msg in enumerate(messages):
+            # Auto-convert dicts to LLMMessage
+            if isinstance(msg, dict):
+                import logging
+                logging.getLogger("unified_agent").warning(f"[WARN] messages[{i}] is dict: {list(msg.keys())}")
+                msg = LLMMessage(
+                    role=msg.get("role", "user"),
+                    content=msg.get("content", ""),
+                    tool_call_id=msg.get("tool_call_id"),
+                    tool_calls=msg.get("tool_calls"),
+                )
             if msg.role == "tool":
                 openai_msgs.append({
                     "role": "tool",

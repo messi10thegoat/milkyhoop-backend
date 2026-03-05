@@ -1712,143 +1712,98 @@ async def _propose_document_draft(
     file_metas: list,
 ) -> ChatMessageResponse:
     """
-    Deterministically construct DIRECT_ACTION_PREVIEW for document draft confirmation.
-    Bypasses ToolExecutor to avoid validation mismatch on confirm_document_draft.
+    Convert a document pipeline draft into a DirectAction proposal.
+    Uses existing confirm_document_draft DirectAction from registry.
     """
-    import uuid as _uuid
-    import json as _json_mod
-    from datetime import datetime as _dt, timedelta as _td
+    from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
+    from ..services.unified_agent.session_manager import SessionManager
 
-    draft_plan = proposal.get("draft_plan", {})
-    document_id = proposal.get("payload", {}).get("document_id") or proposal.get("document_id", "")
-    narration = proposal.get("narration", "Dokumen siap di-review.")
-
-    # -- Build confirmation table from draft_plan --
-    doc_type = draft_plan.get("doc_type") or proposal.get("action_type", "unknown")
-    counterparty = draft_plan.get("counterparty_name") or "Unknown"
-    journal_draft = draft_plan.get("journal_draft") or {}
-    total_debit = journal_draft.get("total_debit", "0")
-    confidence = draft_plan.get("overall_confidence", 0)
-
-    doc_type_labels = {
-        "invoice_purchase": "Faktur Pembelian",
-        "invoice_sales": "Faktur Penjualan",
-        "receipt": "Kwitansi",
-        "bank_transfer_out": "Transfer Keluar",
-        "bank_transfer_in": "Transfer Masuk",
-    }
-    doc_type_display = doc_type_labels.get(doc_type, doc_type)
-
-    lines = ["| Field | Value |", "|-------|-------|"]
-    lines.append(f"| Tipe | {doc_type_display} |")
-    lines.append(f"| Counterparty | {counterparty} |")
-
-    line_items = draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []
-    if line_items:
-        lines.append(f"| Items | {len(line_items)} item |")
-
-    try:
-        amount = int(float(total_debit))
-        formatted = f"Rp {amount:,}".replace(",", ".")
-    except (ValueError, TypeError):
-        formatted = f"Rp {total_debit}"
-    lines.append(f"| Total | {formatted} |")
-
-    conf_pct = float(confidence) * 100 if confidence else 0
-    lines.append(f"| Confidence | {conf_pct:.0f}% |")
-
-    # Journal preview
-    journal_lines = journal_draft.get("lines", [])
-    if journal_lines:
-        lines.append("")
-        lines.append("**Dampak Jurnal:**")
-        for jl in journal_lines:
-            debit = float(jl.get("debit", 0) or 0)
-            credit = float(jl.get("credit", 0) or 0)
-            name = jl.get("account_name", "?")
-            if debit > 0:
-                lines.append(f"- Dr. {name}: Rp {int(debit):,}".replace(",", "."))
-            if credit > 0:
-                lines.append(f"- Cr. {name}: Rp {int(credit):,}".replace(",", "."))
-
-
-    # -- Check dependencies (vendor/items existence) --
-    from app.services.chat_document_bridge import check_draft_dependencies
-    async with pool.acquire() as _dep_conn:
-        await _dep_conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-        deps = await check_draft_dependencies(_dep_conn, draft_plan, ctx["tenant_id"])
-    if not deps["all_resolved"]:
-        lines.append("")
-        lines.append("**Akan dibuat otomatis saat confirm:**")
-        if deps["vendor_missing"]:
-            lines.append(f"- Vendor baru: {deps['vendor_name']}")
-        for _missing_item in deps["missing_items"]:
-            lines.append(f"- Item baru: {_missing_item}")
-
-    confirmation_table = "\n".join(lines)
-
-    # -- Insert pending_actions record --
-    pending_id = str(_uuid.uuid4())
-    expires_at = _dt.utcnow() + _td(seconds=300)
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SET LOCAL app.tenant_id = $1", ctx["tenant_id"]
-        )
-        await conn.execute(
-            """
-            INSERT INTO pending_actions (
-                id, tenant_id, user_id, conversation_id,
-                action_id, action_type, action_category,
-                action_plan, status, expires_at, is_direct
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            """,
-            _uuid.UUID(pending_id),
-            ctx["tenant_id"],
-            ctx["user_id"],
-            conversation_id or "",
-            "confirm_document_draft",
-            "confirm_document_draft",
-            "DOCUMENT",
-            _json_mod.dumps({"document_id": document_id, "draft_plan": draft_plan}),
-            "PENDING",
-            expires_at,
-            True,
-        )
-
-    # -- Build preview data matching orchestrator format --
-    preview_data = {
-        "pending_action_id": pending_id,
-        "action_key": "confirm_document_draft",
-        "display_name": "Konfirmasi Draft Dokumen",
-        "payload": {"document_id": document_id},
-        "expires_at": expires_at.isoformat() + "Z",
-        "risk_level": "medium",
-        "confirmation_table": confirmation_table,
-        "loading_message": "Memproses dokumen...",
-        "success_message": "Dokumen berhasil diposting.",
-        "uploaded_files": [
-            {
-                "filename": fm["filename"],
-                "size": fm["size"],
-                "extension": fm["extension"],
-                "file_hash": fm["file_hash"],
-            }
-            for fm in file_metas
-        ],
-    }
-
-    content_text = narration
-    if confirmation_table:
-        content_text = f"{narration}\n\n{confirmation_table}"
-
-    return ChatMessageResponse(
-        message_type="DIRECT_ACTION_PREVIEW",
-        text=content_text,
-        session_id=session_id,
-        pending_action_id=pending_id,
-        data=preview_data,
+    _dp_sm = SessionManager(
+        db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
     )
+
+    # Ensure session exists
+    _dp_session_id = session_id
+    if not _dp_session_id:
+        import uuid as _uuid
+
+        try:
+            _conv_uuid = str(_uuid.UUID(conversation_id))
+        except (ValueError, AttributeError):
+            _conv_uuid = str(_uuid.uuid4())
+        _sess = await _dp_sm.get_or_create_session(_conv_uuid)
+        _dp_session_id = (
+            str(_sess.session_id) if hasattr(_sess, "session_id") else str(_sess)
+        )
+
+    _dp_tenant_ctx = TenantContext(
+        tenant_id=ctx["tenant_id"],
+        user_id=ctx["user_id"],
+        auth_token=ctx["auth_token"],
+        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+    )
+    _dp_te = ToolExecutor(
+        context=_dp_tenant_ctx,
+        session_manager=_dp_sm,
+        session_id=_dp_session_id,
+        user_text="",
+    )
+
+    # Use the existing propose_direct_action flow
+    narration = proposal.get("narration", "")
+    action_key = proposal.get("action_key", "confirm_document_draft")
+    payload = proposal.get("payload", {})
+
+    _propose_result = await _dp_te._execute_propose_direct(
+        {
+            "action_key": action_key,
+            "payload": payload,
+        }
+    )
+
+    if (
+        isinstance(_propose_result, dict)
+        and _propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW"
+    ):
+        _da_data = _propose_result.get("data", {})
+        _pa_id = _da_data.get("pending_action_id", "")
+
+        # Prepend narration to the confirmation content
+        _content = _propose_result.get("content", "")
+        if narration:
+            _content = f"{narration}\n\n{_content}"
+
+        # Attach file metadata
+        if isinstance(_da_data, dict):
+            _da_data["uploaded_files"] = [
+                {
+                    "filename": fm["filename"],
+                    "size": fm["size"],
+                    "extension": fm["extension"],
+                    "file_hash": fm["file_hash"],
+                }
+                for fm in file_metas
+            ]
+
+        return ChatMessageResponse(
+            message_type="DIRECT_ACTION_PREVIEW",
+            text=_content,
+            session_id=_dp_session_id,
+            pending_action_id=_pa_id,
+            data=_da_data,
+        )
+    else:
+        # Proposal failed — return as text with narration
+        error = (
+            _propose_result.get("error", "")
+            if isinstance(_propose_result, dict)
+            else ""
+        )
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text=f"{narration}\n\n{error}" if error else narration,
+            session_id=_dp_session_id,
+        )
 
 
 async def _process_document_background(pool, doc_id: str, tenant_id: str):

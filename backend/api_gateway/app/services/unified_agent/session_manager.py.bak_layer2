@@ -53,7 +53,6 @@ class StructuredState:
     last_action_result: Optional[Dict] = None
     pending_action_id: Optional[str] = None
     fsm_state: str = "IDLE"
-    document_context: Optional[Dict] = None
 
     def to_context_string(self) -> str:
         """Convert to minimal injection string for LLM context."""
@@ -86,36 +85,6 @@ class StructuredState:
         if self.fsm_state and self.fsm_state != "IDLE":
             parts.append(f"FSM state: {self.fsm_state}")
         
-        if self.document_context:
-            dc = self.document_context
-            edits = dc.get("edits", {})
-            vendor = edits.get("vendor_name", dc.get("vendor_name", "?"))
-            doc_num = dc.get("document_number", "")
-            doc_type = dc.get("doc_type", "unknown")
-            confidence = dc.get("confidence", 0)
-            items = dc.get("items", [])
-            total = dc.get("total_amount", 0)
-            tax = dc.get("tax_amount", 0)
-
-            doc_line = f"Dokumen aktif: {doc_type} {doc_num} dari {vendor}"
-            parts.append(doc_line)
-            parts.append(f"   Confidence: {int(confidence * 100)}%")
-            parts.append(f"   Items: {len(items)} item, total Rp {total:,.0f}" + (f" (PPN Rp {tax:,.0f})" if tax else ""))
-            parts.append(f"   Status: Menunggu konfirmasi user")
-
-            if edits:
-                edit_lines = []
-                for k, v in edits.items():
-                    if k != "items":
-                        edit_lines.append(f"{k} = \"{v}\"")
-                    elif isinstance(v, dict):
-                        for idx, item_edits in v.items():
-                            for ik, iv in item_edits.items():
-                                edit_lines.append(f"item[{idx}].{ik} = \"{iv}\"")
-                if edit_lines:
-                    joined = ", ".join(edit_lines)
-                    parts.append(f"   [User koreksi: {joined}]")
-
         if not parts:
             return ""
         return "## KONTEKS SESI AKTIF\n" + "\n".join(parts)
@@ -246,7 +215,6 @@ class SessionManager:
             last_action_result=json.loads(row["last_action_result"]) if isinstance(row["last_action_result"], str) and row["last_action_result"] else row["last_action_result"],
             pending_action_id=str(row["pending_action_id"]) if row["pending_action_id"] else None,
             fsm_state=row["fsm_state"] or "IDLE",
-            document_context=json.loads(row["document_context"]) if isinstance(row["document_context"], str) and row["document_context"] else row["document_context"],
         )
     
     async def update_state(self, session_id: str, **updates):
@@ -287,13 +255,7 @@ class SessionManager:
         
         if tool_name == "search_customers" and data:
             # Set first result as active customer (best match from search)
-            # API returns {"items": [...]} not {"customers": [...]}
-            if isinstance(data, dict):
-                customers = data.get("customers") or data.get("items") or [data]
-            elif isinstance(data, list):
-                customers = data
-            else:
-                customers = [data]
+            customers = data.get("customers", data) if isinstance(data, dict) else data
             items = customers if isinstance(customers, list) else [customers]
             if items:
                 await self.update_state(
@@ -303,12 +265,7 @@ class SessionManager:
                 )
         
         elif tool_name == "search_vendors" and data:
-            if isinstance(data, dict):
-                items = data.get("vendors") or data.get("items") or [data]
-            elif isinstance(data, list):
-                items = data
-            else:
-                items = [data]
+            items = data if isinstance(data, list) else [data]
             if items:
                 await self.update_state(
                     session_id,
@@ -317,12 +274,7 @@ class SessionManager:
                 )
         
         elif tool_name == "search_items" and data:
-            if isinstance(data, dict):
-                items = data.get("products") or data.get("items") or [data]
-            elif isinstance(data, list):
-                items = data
-            else:
-                items = [data]
+            items = data if isinstance(data, list) else [data]
             if items:
                 await self.update_state(
                     session_id,

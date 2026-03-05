@@ -42,15 +42,15 @@ def classify_document(ocr_result: Dict[str, Any]) -> Tuple[str, Decimal]:
 
     hint = (ocr_result.get("doc_type_hint") or "unknown").lower()
     ocr_confidence = _to_decimal(ocr_result.get("confidence", "0.5"))
-
+    
     has_line_items = bool(ocr_result.get("line_items"))
     has_counterparty = bool(ocr_result.get("counterparty_name"))
     has_due_date = bool(ocr_result.get("due_date"))
     has_bank_details = bool(ocr_result.get("bank_name") or ocr_result.get("bank_account_number"))
     has_reference = bool(ocr_result.get("reference_number"))
-
+    
     total_amount = _to_decimal(ocr_result.get("total_amount", "0"))
-
+    
     # Rule-based classification
     doc_type, confidence = _apply_rules(
         hint=hint,
@@ -62,34 +62,14 @@ def classify_document(ocr_result: Dict[str, Any]) -> Tuple[str, Decimal]:
         has_reference=has_reference,
         total_amount=total_amount,
         raw_text=(ocr_result.get("raw_text") or "").lower(),
-        ocr_result=ocr_result,
     )
-
-    # Tiered confidence thresholds
-    CONFIDENCE_LOW = Decimal("0.60")
-    CONFIDENCE_MEDIUM = Decimal("0.75")
-
-    if confidence < CONFIDENCE_LOW and doc_type not in ("unknown",):
-        logger.warning(
-            f"[Classifier] Low confidence {confidence} for {doc_type} — "
-            f"falling back to unknown (user will confirm type)"
-        )
-        doc_type = "unknown"
-
-    elif confidence < CONFIDENCE_MEDIUM and doc_type not in ("unknown",):
-        logger.info(
-            f"[Classifier] Medium confidence {confidence} for {doc_type} — "
-            f"flagging needs_user_confirmation"
-        )
-        # Flag is communicated via confidence range check
-        # The caller (document_processor.py) will check confidence range
-
+    
     logger.info(
         f"[Classifier] hint={hint} -> type={doc_type} "
         f"confidence={confidence} (line_items={has_line_items}, "
         f"counterparty={has_counterparty}, bank={has_bank_details})"
     )
-
+    
     return doc_type, confidence
 
 
@@ -104,7 +84,6 @@ def _apply_rules(
     has_reference: bool,
     total_amount: Decimal,
     raw_text: str,
-    ocr_result: Dict[str, Any],
 ) -> Tuple[str, Decimal]:
     """Apply classification rules. Returns (doc_type, confidence)."""
 
@@ -118,30 +97,15 @@ def _apply_rules(
                 return "invoice_sales", _boost(ocr_confidence, Decimal("0.10"))
             # Default: purchase invoice (more common in upload scenario)
             return "invoice_purchase", ocr_confidence
-
+        
         if has_counterparty and has_due_date:
             return "invoice_purchase", _reduce(ocr_confidence, Decimal("0.05"))
-
+        
         # Weak invoice signal
         return "invoice_purchase", _reduce(ocr_confidence, Decimal("0.15"))
 
     # ── Bank transfer detection ──────────────────────────────
     if hint == "bank_transfer":
-        # Negative signal: line_items with qty/unit_price = NOT a bank transfer
-        line_items = ocr_result.get("line_items") or []
-        has_itemized_lines = any(
-            item.get("quantity") and item.get("unit_price")
-            for item in line_items
-            if isinstance(item, dict)
-        )
-        if has_itemized_lines:
-            logger.info(
-                f"[Classifier] bank_transfer hint overridden — has {len(line_items)} "
-                f"line items with qty/price -> invoice_purchase"
-            )
-            confidence = max(_to_decimal(ocr_result.get("confidence", "0.5")) - Decimal("0.10"), Decimal("0.30"))
-            return "invoice_purchase", confidence
-
         if has_bank_details and has_reference:
             if _is_outgoing_transfer(raw_text):
                 return "bank_transfer_out", _boost(ocr_confidence, Decimal("0.05"))
@@ -149,10 +113,10 @@ def _apply_rules(
                 return "bank_transfer_in", _boost(ocr_confidence, Decimal("0.05"))
             # Default: outgoing (more common in upload scenario)
             return "bank_transfer_out", ocr_confidence
-
+        
         if has_bank_details:
             return "bank_transfer_out", _reduce(ocr_confidence, Decimal("0.10"))
-
+        
         return "bank_transfer_out", _reduce(ocr_confidence, Decimal("0.20"))
 
     # ── Receipt detection ────────────────────────────────────
@@ -166,11 +130,6 @@ def _apply_rules(
     # ── Bank statement detection ─────────────────────────────
     if hint == "bank_statement":
         return "bank_statement", ocr_confidence
-
-    # ── Quotation detection ──────────────────────────────────
-    if hint in ("quotation",):
-        # Quotations are treated as purchase invoices
-        return "invoice_purchase", ocr_confidence
 
     # ── Credit/debit note detection ──────────────────────────
     if hint in ("credit_note", "nota_kredit"):
@@ -207,19 +166,19 @@ def _infer_from_structure(
     raw_text: str,
 ) -> Tuple[str, Decimal]:
     """Infer doc_type purely from structural signals when hint is unknown."""
-
+    
     if has_line_items and has_counterparty and has_due_date:
         return "invoice_purchase", Decimal("0.55")
-
+    
     if has_bank_details and total_amount > 0:
         return "bank_transfer_out", Decimal("0.50")
-
+    
     if has_line_items and has_counterparty:
         return "invoice_purchase", Decimal("0.45")
-
+    
     if total_amount > 0 and not has_line_items:
         return "receipt", Decimal("0.40")
-
+    
     return "unknown", Decimal("0.20")
 
 

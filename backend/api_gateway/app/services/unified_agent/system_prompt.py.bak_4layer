@@ -126,22 +126,9 @@ Query sederhana (greeting, terima kasih) → langsung jawab tanpa tools.
 
 ## CONTOH SINGKAT
 
-### Action — Faktur Penjualan
+### Action
 User: "buatkan faktur penjualan ke Grapgrap, emas 24 karat 1 gram"
 → search_customers("grapgrap") → search_items("emas") → propose_direct_action("create_sales_invoice", {customer_id, items, auto_post:true})
-
-### Action — Bayar Tagihan (WAJIB IKUTI URUTAN INI)
-User: "bayar tagihan PB-2603-0001 sebesar 20 juta ke BCA"
-→ get_bills(search="PB-2603-0001") → dapatkan bill_id + vendor_id
-→ search_bank_accounts("BCA") → dapatkan bank_account_id
-→ propose_direct_action("create_bill_payment", {vendor_id, allocations: [{bill_id, amount_applied: 20000000}], total_amount: 20000000, payment_date: "2026-03-04", bank_account_id})
-⚠️ "ke BCA" = BANK TUJUAN (search_bank_accounts), BUKAN vendor!
-
-### Action — Terima Pembayaran
-User: "terima pembayaran dari Ain untuk INV-2602-0005 sebesar 5 juta"
-→ get_invoices(search="INV-2602-0005") → dapatkan invoice_id + customer_id
-→ search_bank_accounts (tanya user kalau belum sebut bank)
-→ propose_direct_action("create_receive_payment", {customer_id, allocations: [{invoice_id, amount_applied: 5000000}], total_amount: 5000000, payment_date, bank_account_id})
 
 ### Insight
 User: "berapa total piutang?"
@@ -177,13 +164,6 @@ User: "buatkan faktur ke PT Tidak Ada"
 - Search >1 result → tanya user pilih
 - Search 0 → tanya buat baru
 - Konfirmasi via UI button, BUKAN chat text
-
-### ATURAN PENTING: ACT FIRST, DON'T ASK
-Jika user sudah beri info cukup (nomor tagihan, jumlah, bank), JANGAN tanya balik.
-LANGSUNG panggil tool (get_bills, search_bank_accounts, dll) untuk resolve data, lalu propose.
-CONTOH SALAH: User bilang "bayar PB-001 20jt ke BCA" → bot tanya "apakah yakin?" ← SALAH!
-CONTOH BENAR: User bilang "bayar PB-001 20jt ke BCA" → get_bills(search="PB-001") → search_bank_accounts("BCA") → propose_direct_action ← BENAR!
-"ke BCA/Mandiri/BRI" = rekening bank tujuan pembayaran → search_bank_accounts, BUKAN search_vendors!
 
 ### MAPPING FIELD PELANGGAN:
 | User bilang | Field | BUKAN |
@@ -226,15 +206,6 @@ Backend enforce Iron Laws otomatis.
 - create_stock_adjustment: adjustment_date, adjustment_type, items [{product_id, quantity_adjustment, reason_detail}], notes
 - create_receive_payment: customer_id, allocations [{invoice_id, amount_applied}], total_amount, payment_date, bank_account_id
 - create_bill_payment: vendor_id, allocations [{bill_id, amount_applied}], total_amount, payment_date, bank_account_id
-
-### ⚠️ CRITICAL: JANGAN PERNAH TANYA "Apakah ingin melanjutkan?" atau konfirmasi via text!
-propose_direct_action() SUDAH MENAMPILKAN tabel konfirmasi dengan tombol Betul/Batal/Edit.
-Jadi setelah resolve data, LANGSUNG panggil propose_direct_action — TIDAK PERLU narasi ulang.
-
-BENAR: get_bills → search_bank_accounts → propose_direct_action("create_bill_payment", {...})
-SALAH: get_bills → search_bank_accounts → "Apakah Anda ingin melanjutkan?" ← DILARANG!
-
-Jika kamu punya semua data (vendor_id, bill_id, bank_account_id, amount), kamu WAJIB panggil propose_direct_action pada iterasi berikutnya. Tidak ada alasan untuk bertanya lagi.
 
 ### Payment Routing (Law 29/30)
 | User bilang | Action | Alasan |
@@ -479,13 +450,7 @@ Query sederhana (greeting, terima kasih) → langsung jawab tanpa tools.
 - "hutang" → WAJIB pakai AP tools. "piutang" → WAJIB pakai AR tools.
 
 ### Terminologi Indonesia
-current→Belum Jatuh Tempo, overdue→Jatuh Tempo, balance(piutang)→Sisa Piutang, balance(hutang)→Sisa Hutang, partial→Belum Lunas, paid→Lunas, bill→Tagihan Pembelian
-## Pola Pertanyaan What-If / Simulasi
-Jika user bertanya "kalau X gimana", "misalnya diubah jadi Y", "kalau harganya Z":
-- Ini BUKAN request untuk membuat transaksi baru
-- Ini request untuk RECALCULATE / SIMULATE
-- Jawab dengan hitungan ulang berdasarkan angka baru yang user sebutkan
-- JANGAN propose action kecuali user EKSPLISIT minta buat/ubah/hapus"""
+current→Belum Jatuh Tempo, overdue→Jatuh Tempo, balance(piutang)→Sisa Piutang, balance(hutang)→Sisa Hutang, partial→Belum Lunas, paid→Lunas, bill→Tagihan Pembelian"""
 
 
 # ── Segment: ACTIONS (~500 tokens) ────────────────────────────────────────────
@@ -525,8 +490,6 @@ SEG_DIRECT_ACTIONS = """
 - UPDATE/DELETE → SELALU resolve entity dulu via search
 - Search >1 result → tanya user pilih
 - Search 0 → tanya buat baru
-- ⚠️ ACT FIRST: Jika user sebut nomor tagihan + jumlah + bank, LANGSUNG panggil tool (get_bills, search_bank_accounts), JANGAN tanya balik!
-- ⚠️ "ke BCA/Mandiri/BRI" = rekening bank (search_bank_accounts), BUKAN vendor (search_vendors)!
 
 ### MAPPING FIELD PELANGGAN:
 | User bilang | Field | BUKAN |
@@ -668,22 +631,9 @@ Narasi singkat 2-3 kalimat per step. Satu step per turn."""
 # ── Segment: CONTOH (~200 tokens) ────────────────────────────────────────────
 SEG_CONTOH = """
 ## CONTOH SINGKAT
-### Action — Faktur
+### Action
 User: "buatkan faktur penjualan ke Grapgrap, emas 24 karat 1 gram"
-→ search_customers("grapgrap") → search_items("emas") → propose_direct_action("create_sales_invoice", ...)
-
-### Action — Bayar Tagihan (WAJIB IKUTI URUTAN)
-User: "bayar tagihan PB-2602-0001 sebesar 500 ribu ke BCA"
-→ get_bills(search="PB-2602-0001") → dapatkan bill_id + vendor_id
-→ search_bank_accounts("BCA") → dapatkan bank_account_id
-→ propose_direct_action("create_bill_payment", {vendor_id, allocations:[{bill_id, amount_applied}], total_amount, payment_date, bank_account_id})
-⚠️ "ke BCA" = BANK (search_bank_accounts), BUKAN vendor!
-
-### Action — Terima Pembayaran
-User: "terima pembayaran dari Ain untuk INV-2602-0005 sebesar 5 juta"
-→ get_invoices(search="INV-2602-0005") → invoice_id + customer_id
-→ search_bank_accounts("BCA") → bank_account_id
-→ propose_direct_action("create_receive_payment", ...)
+→ search_customers("grapgrap") → search_items("emas") → propose_direct_action
 
 ### Insight
 User: "berapa total piutang?"
@@ -750,7 +700,7 @@ def _infer_intent(user_text: str) -> str:
                       "good", "bagus", "top", "nice", "yoi", "sip",
                       "makasih ya", "terima kasih ya", "thanks ya",
                       "oke siap", "oke terima kasih", "oke makasih"]
-    if any(text == w or text.startswith(w + " ") or text.startswith(w + ",") or text.startswith(w + "!") for w in chitchat_exact):
+    if any(text.startswith(w) or text == w for w in chitchat_exact):
         return "CHITCHAT"
 
     # Identity/about-bot questions
@@ -789,7 +739,7 @@ def _infer_intent(user_text: str) -> str:
         return "COMPLEX_READ"
 
     # Simple read (single lookup / question)
-    read_words = ["berapa", "tampilkan", "lihat", "total", "saldo", "hitung", "laporan",
+    read_words = ["berapa", "tampilkan", "lihat", "total", "saldo", "laporan",
                    "aging", "outstanding", "cari", "search"]
     if any(w in text for w in read_words):
         return "SIMPLE_READ"

@@ -92,7 +92,7 @@
                     <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
                     {% endif %}
                 </td>
-                <td class="col-qty">{{ item.qty or item.quantity }}</td>
+                <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
                 <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
             </tr>

@@ -243,8 +243,7 @@ class DraftPlanGenerator:
         warnings: List[str] = []
         reasoning: List[str] = []
 
-        # For purchase docs, vendor = document issuer (the seller), not recipient (us)
-        counterparty = ocr_result.get("document_issuer") or ocr_result.get("counterparty_name") or "Unknown Vendor"
+        counterparty = ocr_result.get("counterparty_name") or "Unknown Vendor"
         doc_number = ocr_result.get("document_number") or ""
         doc_date = ocr_result.get("document_date") or ""
         total_amount = _safe_decimal(ocr_result.get("total_amount"))
@@ -260,14 +259,8 @@ class DraftPlanGenerator:
 
         for idx, item in enumerate(line_items):
             item_amount = _safe_decimal(item.get("total_price"))
-            unit_price = _safe_decimal(item.get("unit_price"))
-            quantity = _safe_decimal(item.get("quantity"))
-            calculated = unit_price * quantity
             if item_amount == 0:
-                item_amount = calculated
-            elif calculated > 0 and item_amount == unit_price and quantity > 1:
-                # OCR confused total_price with unit_price — use calculated
-                item_amount = calculated
+                item_amount = _safe_decimal(item.get("unit_price")) * _safe_decimal(item.get("quantity"))
             if item_amount == 0:
                 continue
 

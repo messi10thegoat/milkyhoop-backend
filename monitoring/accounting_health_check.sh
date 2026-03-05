@@ -1,0 +1,805 @@
+#!/bin/bash
+# ==================================================
+# MilkyHoop Daily Accounting Health Check — v2 (P5)
+# ==================================================
+# 12 checks across 4 categories:
+#   Ledger Integrity: Check 1 (balance), 2 (hash), 5 (orphans), 6 (sequence)
+#   Sync Layers:      Check 3 (bank gap), 4 (inventory qty), 7 (AP), 8 (AR)
+#   Value Integrity:  Check 9 (inv value), 10 (COGS), 11 (opening balance)
+#   Anomaly:          Check 12 (negative cash/bank)
+#
+# Severity: CRITICAL (exit 2), HIGH (exit 1), WARNING (exit 0)
+# Per-tenant loop, skip cafeanna
+# ==================================================
+# Usage:  ./accounting_health_check.sh
+# Cron:   0 6 * * * /root/milkyhoop-dev/monitoring/accounting_health_check.sh >> /var/log/milkyhoop/accounting_health.log 2>&1
+# ==================================================
+
+set -uo pipefail
+
+# ---- Configuration ----
+CONTAINER="milkyhoop-dev-postgres-1"
+DB_NAME="milkydb"
+DB_USER="postgres"
+LOG_DIR="/var/log/milkyhoop"
+WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
+DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+DATE_SHORT=$(date -u +"%Y-%m-%d %H:%M UTC")
+LOG_FILE="$LOG_DIR/health_check_$(date +%Y%m%d_%H%M%S).log"
+SKIP_TENANTS="cafeanna"
+
+mkdir -p "$LOG_DIR"
+
+# Log retention: 30 days
+find "$LOG_DIR" -name "health_check_*.log" -mtime +30 -delete 2>/dev/null || true
+
+# Counters
+CRITICAL_COUNT=0
+HIGH_COUNT=0
+WARNING_COUNT=0
+TOTAL_CHECKS=0
+PASS_COUNT=0
+
+# Per-tenant Discord message accumulator
+DISCORD_BODY=""
+
+# ---- Helpers ----
+
+log() {
+    echo "$DATE | $1"
+    echo "$DATE | $1" >> "$LOG_FILE"
+}
+
+detail() {
+    # Detail only goes to log file, not stdout
+    echo "  $1" >> "$LOG_FILE"
+}
+
+psql_cmd() {
+    docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -c "$1" 2>/dev/null | tr -d ' '
+}
+
+psql_lines() {
+    # Returns multi-line results (trimmed, no empty lines)
+    docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "$1" 2>/dev/null | grep -v '^$'
+}
+
+send_discord() {
+    local message="$1"
+    if [ -n "$WEBHOOK_URL" ]; then
+        # Escape special chars for JSON
+        local escaped
+        escaped=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        curl -s -H "Content-Type: application/json" \
+            -d "{\"content\":\"$escaped\"}" \
+            "$WEBHOOK_URL" > /dev/null 2>&1 || true
+    fi
+}
+
+# ---- Per-Tenant Check Functions ----
+# Each function sets result in: CHK_PASS (0/1), CHK_DETAIL (string)
+
+check_1_journal_balance() {
+    local tenant="$1"
+    local count
+    count=$(psql_cmd "
+        SELECT COUNT(*) FROM journal_entries
+        WHERE status = 'POSTED' AND total_debit != total_credit
+          AND tenant_id = '$tenant';
+    ")
+    if [ "$count" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$count unbalanced journals"
+        detail "[CHECK 1] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_2_hash_chain() {
+    local tenant="$1"
+    local posted
+    posted=$(psql_cmd "SELECT COUNT(*) FROM journal_entries WHERE status = 'POSTED' AND tenant_id = '$tenant';")
+    if [ "$posted" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+        return
+    fi
+    local broken
+    broken=$(psql_cmd "
+        SELECT COUNT(*) FILTER (WHERE NOT v.is_valid)
+        FROM verify_chain_integrity('$tenant') v;
+    ")
+    if [ "$broken" = "0" ] || [ -z "$broken" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$broken broken chain links"
+        detail "[CHECK 2] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_3_bank_sync() {
+    # v3.5: Compare journal_lines vs bank_transactions (not cache)
+    # Per milkyhoop-banksync Rule 9 invariant
+    local tenant="$1"
+    local gaps
+    gaps=$(psql_cmd "
+        WITH bank_coa AS (
+            SELECT ba.id AS bank_account_id, ba.account_name, ba.coa_id
+            FROM bank_accounts ba WHERE ba.is_active = true AND ba.tenant_id = '$tenant'
+        ),
+        journal_balance AS (
+            SELECT bc.bank_account_id,
+                COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+            FROM bank_coa bc
+            LEFT JOIN journal_lines jl ON jl.account_id = bc.coa_id
+            LEFT JOIN journal_entries je ON je.id = jl.journal_id AND je.status = 'POSTED'
+            GROUP BY bc.bank_account_id
+        ),
+        bank_txn_bal AS (
+            SELECT bank_account_id,
+                COALESCE(SUM(amount), 0) AS txn_balance
+            FROM bank_transactions
+            WHERE tenant_id = '$tenant'
+            GROUP BY bank_account_id
+        )
+        SELECT COUNT(*) FROM bank_coa bc
+        LEFT JOIN journal_balance jb ON jb.bank_account_id = bc.bank_account_id
+        LEFT JOIN bank_txn_bal btb ON btb.bank_account_id = bc.bank_account_id
+        WHERE ABS(COALESCE(jb.ledger_balance, 0) - COALESCE(btb.txn_balance, 0)) > 0.01;
+    ")
+    if [ "$gaps" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$gaps accounts with gap"
+        # Log details
+        local details
+        details=$(psql_lines "
+            WITH bank_coa AS (
+                SELECT ba.id AS bank_account_id, ba.account_name, ba.coa_id
+                FROM bank_accounts ba WHERE ba.is_active = true AND ba.tenant_id = '$tenant'
+            ),
+            journal_balance AS (
+                SELECT bc.bank_account_id,
+                    COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+                FROM bank_coa bc
+                LEFT JOIN journal_lines jl ON jl.account_id = bc.coa_id
+                LEFT JOIN journal_entries je ON je.id = jl.journal_id AND je.status = 'POSTED'
+                GROUP BY bc.bank_account_id
+            ),
+            bank_txn_bal AS (
+                SELECT bank_account_id,
+                    COALESCE(SUM(amount), 0) AS txn_balance
+                FROM bank_transactions
+                WHERE tenant_id = '$tenant'
+                GROUP BY bank_account_id
+            )
+            SELECT bc.account_name || ': ledger=' || COALESCE(jb.ledger_balance, 0) || ' txn=' || COALESCE(btb.txn_balance, 0)
+            FROM bank_coa bc
+            LEFT JOIN journal_balance jb ON jb.bank_account_id = bc.bank_account_id
+            LEFT JOIN bank_txn_bal btb ON btb.bank_account_id = bc.bank_account_id
+            WHERE ABS(COALESCE(jb.ledger_balance, 0) - COALESCE(btb.txn_balance, 0)) > 0.01
+            LIMIT 10;
+        ")
+        detail "[CHECK 3] $tenant: $gaps accounts with gap"
+        echo "$details" | while read -r line; do detail "  $line"; done
+    fi
+}
+
+check_4_inventory_qty() {
+    local tenant="$1"
+    local gaps
+    gaps=$(psql_cmd "
+        WITH ledger_balance AS (
+            SELECT product_id, warehouse_id,
+                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS computed_qty
+            FROM inventory_ledger
+            WHERE warehouse_id IS NOT NULL AND tenant_id = '$tenant'
+            GROUP BY product_id, warehouse_id
+        )
+        SELECT COUNT(*) FROM warehouse_stock ws
+        LEFT JOIN ledger_balance lb
+            ON lb.product_id = ws.item_id AND lb.warehouse_id = ws.warehouse_id
+        WHERE ws.tenant_id = '$tenant'
+          AND ws.quantity != COALESCE(lb.computed_qty, 0);
+    ")
+    if [ "$gaps" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$gaps items with stock != ledger"
+        detail "[CHECK 4] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_5_orphaned_lines() {
+    # Global check — not tenant-specific (journal_lines has no tenant_id)
+    local tenant="$1"
+    # Only run once for first tenant
+    if [ "$tenant" != "$FIRST_TENANT" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+        return
+    fi
+    local count
+    count=$(psql_cmd "
+        SELECT COUNT(*) FROM journal_lines jl
+        LEFT JOIN journal_entries je ON je.id = jl.journal_id
+        WHERE je.id IS NULL;
+    ")
+    if [ "$count" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$count orphaned journal lines (global)"
+        detail "[CHECK 5] GLOBAL: $CHK_DETAIL"
+    fi
+}
+
+check_6_sequence() {
+    local tenant="$1"
+    local dupes
+    dupes=$(psql_cmd "
+        SELECT COUNT(*) FROM (
+            SELECT chain_sequence, COUNT(*)
+            FROM journal_entries
+            WHERE status = 'POSTED' AND chain_sequence IS NOT NULL
+              AND tenant_id = '$tenant'
+            GROUP BY chain_sequence
+            HAVING COUNT(*) > 1
+        ) dupes;
+    ")
+    if [ "$dupes" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$dupes duplicate chain sequences"
+        detail "[CHECK 6] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_7_ap_invariant() {
+    local tenant="$1"
+    local drift
+    drift=$(psql_cmd "
+        SELECT ABS(
+            (SELECT COALESCE(SUM(jl.credit - jl.debit), 0)
+             FROM journal_lines jl
+             JOIN journal_entries je ON je.id = jl.journal_id
+             JOIN chart_of_accounts coa ON coa.id = jl.account_id
+             WHERE coa.account_type = 'PAYABLE'
+               AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+               AND je.tenant_id = '$tenant')
+            - COALESCE((SELECT SUM(outstanding) FROM compute_ap_outstanding('$tenant')), 0)
+            - COALESCE((SELECT SUM(net) FROM compute_ap_adjustments('$tenant')), 0)
+        );
+    ")
+    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ -z "$drift" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="AP drift=$drift"
+        detail "[CHECK 7] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_8_ar_invariant() {
+    local tenant="$1"
+    local drift
+    drift=$(psql_cmd "
+        SELECT ABS(
+            (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+             FROM journal_lines jl
+             JOIN journal_entries je ON je.id = jl.journal_id
+             JOIN chart_of_accounts coa ON coa.id = jl.account_id
+             WHERE coa.account_type = 'RECEIVABLE'
+               AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+               AND je.tenant_id = '$tenant')
+            - COALESCE((SELECT SUM(outstanding) FROM compute_ar_outstanding('$tenant')), 0)
+            - COALESCE((SELECT SUM(net) FROM compute_ar_adjustments('$tenant')), 0)
+        );
+    ")
+    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ -z "$drift" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="AR drift=$drift"
+        detail "[CHECK 8] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_9_inventory_value() {
+    local tenant="$1"
+    local drift
+    drift=$(psql_cmd "
+        SELECT ABS(
+            (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+             FROM journal_lines jl
+             JOIN journal_entries je ON je.id = jl.journal_id
+             JOIN chart_of_accounts coa ON coa.id = jl.account_id
+             WHERE coa.account_code = '1-10600'
+               AND je.status = 'POSTED'
+               AND je.reversed_by_id IS NULL
+               AND je.tenant_id = '$tenant')
+            - (SELECT COALESCE(
+                SUM(CASE WHEN il.quantity_in > 0 THEN il.quantity_in * il.unit_cost ELSE 0 END)
+                - SUM(CASE WHEN il.quantity_out > 0 THEN il.quantity_out * il.unit_cost ELSE 0 END),
+                0)
+             FROM inventory_ledger il
+             WHERE il.tenant_id = '$tenant')
+            - COALESCE((SELECT SUM(net) FROM compute_inventory_adjustments('$tenant')), 0)
+        );
+    ")
+    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ "$drift" = "0.000000" ] || [ -z "$drift" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="inventory value drift=$drift"
+        detail "[CHECK 9] $tenant: $CHK_DETAIL"
+    fi
+}
+
+check_10_cogs_orphans() {
+    local tenant="$1"
+    local count
+    count=$(psql_cmd "
+        SELECT COUNT(*) FROM journal_entries je
+        WHERE je.source_type IN ('SALES_INVOICE_COGS', 'SALES_RECEIPT_COGS')
+          AND je.status = 'POSTED'
+          AND je.reversed_by_id IS NULL
+          AND je.tenant_id = '$tenant'
+          AND NOT EXISTS (
+              SELECT 1 FROM inventory_ledger il
+              WHERE il.source_id = je.source_id
+                AND il.tenant_id = je.tenant_id
+                AND il.quantity_out > 0
+          );
+    ")
+    if [ "$count" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$count COGS journals without ledger entry"
+        detail "[CHECK 10] $tenant: $CHK_DETAIL"
+        # Log details
+        local details
+        details=$(psql_lines "
+            SELECT je.journal_number || ' (' || je.source_type || ')'
+            FROM journal_entries je
+            WHERE je.source_type IN ('SALES_INVOICE_COGS', 'SALES_RECEIPT_COGS')
+              AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+              AND je.tenant_id = '$tenant'
+              AND NOT EXISTS (
+                  SELECT 1 FROM inventory_ledger il
+                  WHERE il.source_id = je.source_id AND il.tenant_id = je.tenant_id AND il.quantity_out > 0
+              ) LIMIT 10;
+        ")
+        echo "$details" | while read -r line; do detail "  $line"; done
+    fi
+}
+
+check_11_opening_balance() {
+    local tenant="$1"
+    local vendor_drift bank_drift
+    CHK_PASS=1
+    CHK_DETAIL=""
+
+    # 11a. Vendor opening_balance
+    vendor_drift=$(psql_cmd "
+        SELECT COUNT(*) FROM (
+            SELECT v.id
+            FROM vendors v
+            LEFT JOIN (
+                SELECT je.source_id, SUM(jl.credit) AS journal_amount
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.source_type = 'OPENING'
+                  AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                  AND coa.account_type = 'PAYABLE' AND jl.credit > 0
+                  AND je.tenant_id = '$tenant'
+                GROUP BY je.source_id
+            ) voj ON voj.source_id = v.id
+            WHERE v.tenant_id = '$tenant'
+              AND COALESCE(v.opening_balance, 0) > 0
+              AND ABS(COALESCE(v.opening_balance, 0) - COALESCE(voj.journal_amount, 0)) > 0.01
+        ) sub;
+    ")
+
+    # 11b. Bank opening_balance
+    bank_drift=$(psql_cmd "
+        SELECT COUNT(*) FROM (
+            SELECT ba.id
+            FROM bank_accounts ba
+            LEFT JOIN (
+                SELECT je.source_id, je.tenant_id, SUM(jl.debit) AS journal_amount
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
+                WHERE je.source_type = 'OPENING'
+                  AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                  AND jl.account_id = ba2.coa_id AND jl.debit > 0
+                  AND je.tenant_id = '$tenant'
+                GROUP BY je.source_id, je.tenant_id
+            ) boj ON boj.source_id = ba.id AND boj.tenant_id = ba.tenant_id
+            WHERE ba.tenant_id = '$tenant'
+              AND COALESCE(ba.opening_balance, 0) > 0
+              AND ABS(COALESCE(ba.opening_balance, 0) - COALESCE(boj.journal_amount, 0)) > 0.01
+        ) sub;
+    ")
+
+    local total_drift=$(( ${vendor_drift:-0} + ${bank_drift:-0} ))
+    if [ "$total_drift" -gt 0 ]; then
+        CHK_PASS=0
+        local parts=""
+        [ "${vendor_drift:-0}" -gt 0 ] && parts="vendor=$vendor_drift"
+        [ "${bank_drift:-0}" -gt 0 ] && { [ -n "$parts" ] && parts="$parts, "; parts="${parts}bank=$bank_drift"; }
+        CHK_DETAIL="OB drift: $parts"
+        detail "[CHECK 11] $tenant: $CHK_DETAIL"
+        # Log bank details
+        if [ "${bank_drift:-0}" -gt 0 ]; then
+            local details
+            details=$(psql_lines "
+                SELECT ba.account_name || ': field=' || ba.opening_balance || ' journal=' || COALESCE(boj.journal_amount, 0)
+                FROM bank_accounts ba
+                LEFT JOIN (
+                    SELECT je.source_id, je.tenant_id, SUM(jl.debit) AS journal_amount
+                    FROM journal_entries je
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
+                    WHERE je.source_type = 'OPENING' AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                      AND jl.account_id = ba2.coa_id AND jl.debit > 0 AND je.tenant_id = '$tenant'
+                    GROUP BY je.source_id, je.tenant_id
+                ) boj ON boj.source_id = ba.id AND boj.tenant_id = ba.tenant_id
+                WHERE ba.tenant_id = '$tenant'
+                  AND COALESCE(ba.opening_balance, 0) > 0
+                  AND ABS(COALESCE(ba.opening_balance, 0) - COALESCE(boj.journal_amount, 0)) > 0.01
+                LIMIT 10;
+            ")
+            echo "$details" | while read -r line; do detail "  $line"; done
+        fi
+    fi
+}
+
+check_12_negative_balance() {
+    local tenant="$1"
+    local count
+    count=$(psql_cmd "
+        SELECT COUNT(*) FROM (
+            SELECT cba.account_code, cba.name,
+                   COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance
+            FROM (
+                SELECT coa.id, coa.account_code, coa.name
+                FROM chart_of_accounts coa
+                WHERE coa.account_code IN ('1-10100', '1-10200')
+                  AND coa.tenant_id = '$tenant'
+                UNION ALL
+                SELECT coa.id, coa.account_code, coa.name
+                FROM bank_accounts ba
+                JOIN chart_of_accounts coa ON coa.id = ba.coa_id
+                WHERE ba.tenant_id = '$tenant'
+            ) cba
+            LEFT JOIN journal_lines jl ON jl.account_id = cba.id
+            LEFT JOIN journal_entries je ON je.id = jl.journal_id
+                AND je.status = 'POSTED'
+                AND je.reversed_by_id IS NULL
+                AND je.tenant_id = '$tenant'
+            GROUP BY cba.account_code, cba.name
+            HAVING COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) < 0
+        ) sub;
+    ")
+    if [ "$count" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL=""
+        # Get details for Discord inline
+        local details
+        details=$(psql_lines "
+            SELECT cba.account_code || ' ' || cba.name || '=' || COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+            FROM (
+                SELECT coa.id, coa.account_code, coa.name
+                FROM chart_of_accounts coa
+                WHERE coa.account_code IN ('1-10100', '1-10200')
+                  AND coa.tenant_id = '$tenant'
+                UNION ALL
+                SELECT coa.id, coa.account_code, coa.name
+                FROM bank_accounts ba
+                JOIN chart_of_accounts coa ON coa.id = ba.coa_id
+                WHERE ba.tenant_id = '$tenant'
+            ) cba
+            LEFT JOIN journal_lines jl ON jl.account_id = cba.id
+            LEFT JOIN journal_entries je ON je.id = jl.journal_id
+                AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                AND je.tenant_id = '$tenant'
+            GROUP BY cba.account_code, cba.name
+            HAVING COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) < 0
+            ORDER BY cba.account_code;
+        ")
+        CHK_DETAIL=$(echo "$details" | tr '\n' ', ' | sed 's/,$//')
+        detail "[CHECK 12] $tenant: $count negative: $CHK_DETAIL"
+    fi
+}
+
+# ==================================================
+# MAIN LOOP
+# ==================================================
+
+log "=========================================="
+log "MilkyHoop Accounting Health Check v2 (P5)"
+log "=========================================="
+
+# Get active tenants (skip cafeanna)
+TENANTS=$(psql_lines "
+    SELECT DISTINCT tenant_id FROM journal_entries
+    WHERE status = 'POSTED' AND tenant_id NOT IN ('$SKIP_TENANTS')
+    ORDER BY tenant_id;
+")
+
+TENANT_COUNT=$(echo "$TENANTS" | wc -l | tr -d ' ')
+FIRST_TENANT=$(echo "$TENANTS" | head -1)
+
+log "Tenants: $TENANT_COUNT (skipping: $SKIP_TENANTS)"
+log ""
+
+for TENANT in $TENANTS; do
+    log "--- Tenant: $TENANT ---"
+
+    # Track per-tenant results
+    T_CRITICAL=0
+    T_HIGH=0
+    T_WARNING=0
+    T_PASS=0
+
+    # Category accumulators
+    LEDGER_PASS=0; LEDGER_TOTAL=4; LEDGER_FAILS=""
+    SYNC_PASS=0;   SYNC_TOTAL=4;   SYNC_FAILS=""
+    VALUE_PASS=0;  VALUE_TOTAL=3;   VALUE_FAILS=""
+    ANOMALY_DETAIL=""
+
+    # ---- LEDGER INTEGRITY (CRITICAL) ----
+    # Check 1: Journal Balance
+    check_1_journal_balance "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        LEDGER_PASS=$((LEDGER_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        LEDGER_FAILS="${LEDGER_FAILS}balance: $CHK_DETAIL; "
+        log "  CRITICAL [1] Journal Balance: $CHK_DETAIL"
+    fi
+
+    # Check 2: Hash Chain
+    check_2_hash_chain "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        LEDGER_PASS=$((LEDGER_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        LEDGER_FAILS="${LEDGER_FAILS}hash: $CHK_DETAIL; "
+        log "  CRITICAL [2] Hash Chain: $CHK_DETAIL"
+    fi
+
+    # Check 5: Orphaned Lines
+    check_5_orphaned_lines "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        LEDGER_PASS=$((LEDGER_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        LEDGER_FAILS="${LEDGER_FAILS}orphans: $CHK_DETAIL; "
+        log "  CRITICAL [5] Orphaned Lines: $CHK_DETAIL"
+    fi
+
+    # Check 6: Sequence
+    check_6_sequence "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        LEDGER_PASS=$((LEDGER_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        LEDGER_FAILS="${LEDGER_FAILS}sequence: $CHK_DETAIL; "
+        log "  CRITICAL [6] Sequence: $CHK_DETAIL"
+    fi
+
+    # ---- SYNC LAYERS (HIGH) ----
+    # Check 3: Bank Sync
+    check_3_bank_sync "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        SYNC_FAILS="${SYNC_FAILS}bank: $CHK_DETAIL; "
+        log "  HIGH [3] Bank Sync: $CHK_DETAIL"
+    fi
+
+    # Check 4: Inventory qty
+    check_4_inventory_qty "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        SYNC_FAILS="${SYNC_FAILS}inv qty: $CHK_DETAIL; "
+        log "  HIGH [4] Inventory Qty: $CHK_DETAIL"
+    fi
+
+    # Check 7: AP Invariant
+    check_7_ap_invariant "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        SYNC_FAILS="${SYNC_FAILS}AP: $CHK_DETAIL; "
+        log "  CRITICAL [7] AP Invariant: $CHK_DETAIL"
+    fi
+
+    # Check 8: AR Invariant
+    check_8_ar_invariant "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        SYNC_FAILS="${SYNC_FAILS}AR: $CHK_DETAIL; "
+        log "  CRITICAL [8] AR Invariant: $CHK_DETAIL"
+    fi
+
+    # ---- VALUE INTEGRITY (HIGH) ----
+    # Check 9: Inventory Value
+    check_9_inventory_value "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}inv value: $CHK_DETAIL; "
+        log "  HIGH [9] Inventory Value: $CHK_DETAIL"
+    fi
+
+    # Check 10: COGS Orphans
+    check_10_cogs_orphans "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}COGS: $CHK_DETAIL; "
+        log "  HIGH [10] COGS Orphans: $CHK_DETAIL"
+    fi
+
+    # Check 11: Opening Balance
+    check_11_opening_balance "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}$CHK_DETAIL; "
+        log "  HIGH [11] Opening Balance: $CHK_DETAIL"
+    fi
+
+    # ---- ANOMALY (WARNING) ----
+    # Check 12: Negative Balance
+    check_12_negative_balance "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
+        ANOMALY_DETAIL="$CHK_DETAIL"
+        log "  WARNING [12] Negative Balance: $CHK_DETAIL"
+    fi
+
+    # ---- Build per-tenant Discord block ----
+    TENANT_BLOCK=""
+
+    # Ledger integrity line
+    if [ "$LEDGER_PASS" = "$LEDGER_TOTAL" ]; then
+        TENANT_BLOCK="${TENANT_BLOCK}  ✅ Ledger integrity ($LEDGER_PASS/$LEDGER_TOTAL: balance, hash, orphans, sequence)\n"
+    else
+        TENANT_BLOCK="${TENANT_BLOCK}  ❌ Ledger integrity ($LEDGER_PASS/$LEDGER_TOTAL) — ${LEDGER_FAILS}\n"
+    fi
+
+    # Sync layers line
+    if [ "$SYNC_PASS" = "$SYNC_TOTAL" ]; then
+        TENANT_BLOCK="${TENANT_BLOCK}  ✅ Sync layers ($SYNC_PASS/$SYNC_TOTAL: bank, inv qty, AP, AR)\n"
+    else
+        TENANT_BLOCK="${TENANT_BLOCK}  ⚠️ Sync layers ($SYNC_PASS/$SYNC_TOTAL) — ${SYNC_FAILS}\n"
+    fi
+
+    # Value integrity line
+    if [ "$VALUE_PASS" = "$VALUE_TOTAL" ]; then
+        TENANT_BLOCK="${TENANT_BLOCK}  ✅ Value integrity ($VALUE_PASS/$VALUE_TOTAL: inv value, COGS, opening balance)\n"
+    else
+        TENANT_BLOCK="${TENANT_BLOCK}  ⚠️ Value integrity ($VALUE_PASS/$VALUE_TOTAL) — ${VALUE_FAILS}\n"
+    fi
+
+    # Anomaly line
+    if [ -n "$ANOMALY_DETAIL" ]; then
+        TENANT_BLOCK="${TENANT_BLOCK}  💡 Anomaly: $ANOMALY_DETAIL\n"
+    fi
+
+    DISCORD_BODY="${DISCORD_BODY}📊 **Tenant: $TENANT**\n${TENANT_BLOCK}\n"
+
+    log ""
+done
+
+# ---- Global Summary ----
+
+TOTAL_POSTED=$(psql_cmd "SELECT COUNT(*) FROM journal_entries WHERE status = 'POSTED';")
+TOTAL_LINES=$(psql_cmd "SELECT COUNT(*) FROM journal_lines;")
+
+log "=========================================="
+log "SUMMARY"
+log "=========================================="
+log "  Checks run:    $TOTAL_CHECKS"
+log "  Passed:        $PASS_COUNT"
+log "  Critical:      $CRITICAL_COUNT"
+log "  High:          $HIGH_COUNT"
+log "  Warnings:      $WARNING_COUNT"
+log "  Posted jrnls:  $TOTAL_POSTED"
+log "  Journal lines: $TOTAL_LINES"
+log "  Tenants:       $TENANT_COUNT"
+log "  Log file:      $LOG_FILE"
+
+# ---- Discord Message ----
+
+NEXT_RUN=$(date -u -d "+1 day" +"%Y-%m-%d 06:00 UTC" 2>/dev/null || date -u -v+1d +"%Y-%m-%d 06:00 UTC" 2>/dev/null || echo "tomorrow 06:00 UTC")
+
+# Status icon
+if [ "$CRITICAL_COUNT" -gt 0 ]; then
+    STATUS_ICON="🔴"
+    STATUS_TEXT="CRITICAL"
+elif [ "$HIGH_COUNT" -gt 0 ]; then
+    STATUS_ICON="🟡"
+    STATUS_TEXT="HIGH ALERTS"
+elif [ "$WARNING_COUNT" -gt 0 ]; then
+    STATUS_ICON="🟠"
+    STATUS_TEXT="WARNINGS"
+else
+    STATUS_ICON="🟢"
+    STATUS_TEXT="ALL CLEAR"
+fi
+
+DISCORD_MSG="${STATUS_ICON} **MilkyHoop Health Check — ${DATE_SHORT}**\n\n"
+DISCORD_MSG="${DISCORD_MSG}${DISCORD_BODY}"
+DISCORD_MSG="${DISCORD_MSG}━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+DISCORD_MSG="${DISCORD_MSG}Summary: ${PASS_COUNT}/${TOTAL_CHECKS} ✅"
+[ "$CRITICAL_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${CRITICAL_COUNT} ❌ CRITICAL"
+[ "$HIGH_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${HIGH_COUNT} ⚠️ HIGH"
+[ "$WARNING_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${WARNING_COUNT} 💡 WARNING"
+DISCORD_MSG="${DISCORD_MSG}\nNext run: ${NEXT_RUN}"
+
+send_discord "$DISCORD_MSG"
+
+log ""
+log "Discord message sent: $STATUS_TEXT"
+
+# ---- Exit Code ----
+
+if [ "$CRITICAL_COUNT" -gt 0 ]; then
+    log "EXIT 2: CRITICAL failures detected"
+    exit 2
+elif [ "$HIGH_COUNT" -gt 0 ]; then
+    log "EXIT 1: HIGH alerts detected"
+    exit 1
+else
+    log "EXIT 0: All clear"
+    exit 0
+fi

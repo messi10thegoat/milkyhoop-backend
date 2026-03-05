@@ -451,16 +451,14 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         reference, subject,
                         subtotal, discount_type, discount_value, discount_amount,
                         tax_amount, total_amount, status,
-                        notes, terms, footer, opening_text, closing_text,
-                        payment_bank_name, payment_account_number, payment_account_holder, created_by
+                        notes, terms, footer, opening_text, closing_text, created_by
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8,
                         $9, $10,
                         $11, $12, $13, $14,
                         $15, $16, 'draft',
-                        $17, $18, $19, $20, $21,
-                        $22, $23, $24, $25
+                        $17, $18, $19, $20, $21, $22
                     )
                 """,
                     quote_id, ctx['tenant_id'], quote_number, body.quote_date, body.expiry_date,
@@ -468,8 +466,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     body.reference, body.subject,
                     totals['subtotal'], body.discount_type, body.discount_value, totals['discount_amount'],
                     totals['tax_amount'], totals['total_amount'],
-                    body.notes, body.terms, body.footer, body.opening_text, body.closing_text,
-                    body.payment_bank_name, body.payment_account_number, body.payment_account_holder, ctx['user_id']
+                    body.notes, body.terms, body.footer, body.opening_text, body.closing_text, ctx['user_id']
                 )
 
                 # Create items
@@ -1317,9 +1314,6 @@ async def get_quote_pdf(
                 "notes": quote["notes"],
                 "terms": quote["terms"],
                 "footer": quote["footer"],
-                "payment_bank_name": quote.get("payment_bank_name"),
-                "payment_account_number": quote.get("payment_account_number"),
-                "payment_account_holder": quote.get("payment_account_holder"),
                 "items": [
                     {
                         "id": str(item["id"]),

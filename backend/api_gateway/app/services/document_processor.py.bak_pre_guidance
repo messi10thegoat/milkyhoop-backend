@@ -61,19 +61,6 @@ CLASSIFICATION GUIDANCE for doc_type_hint:
 
 CRITICAL: If the document has line_items (multiple items with quantity and unit_price), it is almost certainly an "invoice" or "quotation", NOT a "bank_transfer". Bank transfers do not have itemized line items.
 
-COUNTERPARTY GUIDANCE:
-- "document_issuer": The company/person who ISSUED this document (printed their letterhead/logo)
-- "document_recipient": The company/person this document is addressed TO (the buyer/customer)
-- "counterparty_name": Keep as-is (the other party in the transaction)
-- For purchase invoices/quotations FROM a vendor: document_issuer = the vendor, document_recipient = us (the buyer)
-- IMPORTANT: Do NOT confuse the buyer with the seller. The letterhead/logo indicates the ISSUER.
-
-LINE ITEM GUIDANCE:
-- For each line item, extract: description, quantity, unit_price, total_price
-- total_price should be the SUB TOTAL / JUMLAH for that line (qty × unit_price), NOT the unit_price repeated
-- If a "SUB TOTAL" or "JUMLAH" column exists, use that value for total_price
-- If total_price equals unit_price but quantity > 1, something is wrong — recalculate as qty × unit_price
-
 Output JSON (strictly this schema, no extra fields):
 {
   "doc_type_hint": "invoice" | "quotation" | "receipt" | "bank_transfer" | "bank_statement" | "credit_note" | "debit_note" | "tax_document" | "unknown",
@@ -82,8 +69,6 @@ Output JSON (strictly this schema, no extra fields):
   "document_date": "2026-02-25" or null,
   "due_date": "2026-03-25" or null,
   "counterparty_name": "PT Maju Jaya" or null,
-  "document_issuer": "PT Vendor Corp" or null,
-  "document_recipient": "PT Our Company" or null,
   "counterparty_tax_id": "01.234.567.8-901.000" or null,
   "currency": "IDR",
   "subtotal": "1000000" or null,

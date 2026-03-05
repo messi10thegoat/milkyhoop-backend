@@ -186,6 +186,7 @@ services:
     - ./backend/api_gateway:/app/backend/api_gateway:ro
     - ./backend/services/accounting_kernel:/app/backend/services/accounting_kernel:ro
     - ./logs/api_gateway:/var/log
+    - ./data/logos:/app/backend/api_gateway/app/static/logos
     healthcheck:
       test:
       - CMD

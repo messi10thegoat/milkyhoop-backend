@@ -1,0 +1,507 @@
+#!/bin/bash
+# ==================================================
+# MilkyHoop Daily Accounting Health Check
+# Law 4 (balance), Law 20 (hash chain), AP/AR invariant,
+# banksync Rule 9 (bank gap), Inventory Invariant 1
+# ==================================================
+# Usage: ./accounting_health_check.sh
+# Cron:  0 6 * * * /root/milkyhoop-dev/monitoring/accounting_health_check.sh >> /var/log/milkyhoop/accounting_health.log 2>&1
+# ==================================================
+
+set -uo pipefail
+
+# Configuration
+CONTAINER="milkyhoop-dev-postgres-1"
+DB_NAME="milkydb"
+DB_USER="postgres"
+LOG_DIR="/var/log/milkyhoop"
+WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
+DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+mkdir -p "$LOG_DIR"
+
+OVERALL="HEALTHY"
+FAILURES=""
+
+# ---- Helpers ----
+
+log() {
+    echo "$DATE | $1"
+}
+
+psql_cmd() {
+    docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -c "$1" 2>/dev/null | tr -d ' '
+}
+
+send_alert() {
+    local severity="$1"
+    local title="$2"
+    local message="$3"
+
+    if [ -n "$WEBHOOK_URL" ]; then
+        local color
+        case "$severity" in
+            critical) color="15158332" ;;
+            warning)  color="15105570" ;;
+            pass)     color="3066993" ;;
+            *)        color="8421504" ;;
+        esac
+
+        curl -s -H "Content-Type: application/json" \
+            -d "{\"embeds\":[{\"title\":\"$title\",\"description\":\"$message\",\"color\":$color,\"footer\":{\"text\":\"MilkyHoop Accounting Health\"}}]}" \
+            "$WEBHOOK_URL" > /dev/null 2>&1 || true
+    fi
+}
+
+# ---- Check 1: Journal Balance (Law 4) ----
+
+log "CHECK 1: Journal Balance (Law 4)"
+UNBALANCED=$(psql_cmd "
+    SELECT COUNT(*) FROM journal_entries
+    WHERE status = 'POSTED' AND total_debit != total_credit;
+")
+
+if [ "$UNBALANCED" = "0" ]; then
+    log "  PASS: All posted journals balanced"
+else
+    log "  FAIL: $UNBALANCED unbalanced journals"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}Journal balance: $UNBALANCED unbalanced\n"
+fi
+
+# ---- Check 2: Hash Chain Integrity (Law 20) ----
+
+log "CHECK 2: Hash Chain Integrity (Law 20)"
+TENANT_COUNT=$(psql_cmd "SELECT COUNT(DISTINCT tenant_id) FROM journal_entries WHERE status = 'POSTED';")
+
+if [ "$TENANT_COUNT" = "0" ]; then
+    log "  SKIP: No posted journals (empty system)"
+else
+    CHAIN_BROKEN=$(psql_cmd "
+        SELECT COALESCE(SUM(broken_count), 0) FROM (
+            SELECT COUNT(*) FILTER (WHERE NOT v.is_valid) AS broken_count
+            FROM (SELECT DISTINCT tenant_id FROM journal_entries WHERE status = 'POSTED') t
+            LEFT JOIN LATERAL verify_chain_integrity(t.tenant_id) v ON true
+            GROUP BY t.tenant_id
+        ) sub;
+    ")
+
+    if [ "$CHAIN_BROKEN" = "0" ]; then
+        log "  PASS: $TENANT_COUNT tenant chains valid"
+    else
+        log "  FAIL: $CHAIN_BROKEN broken chain links across tenants"
+        OVERALL="ALERT"
+        FAILURES="${FAILURES}Hash chain: $CHAIN_BROKEN broken links\n"
+    fi
+fi
+
+# ---- Check 3: Bank Sync Gap (banksync Rule 9) ----
+
+log "CHECK 3: Bank Sync Gap (banksync Rule 9)"
+BANK_GAPS=$(psql_cmd "
+    WITH bank_coa AS (
+        SELECT ba.id AS bank_account_id, ba.account_name, ba.coa_id
+        FROM bank_accounts ba WHERE ba.is_active = true
+    ),
+    journal_balance AS (
+        SELECT bc.bank_account_id,
+            COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
+        FROM bank_coa bc
+        LEFT JOIN journal_lines jl ON jl.account_id = bc.coa_id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_id AND je.status = 'POSTED'
+        GROUP BY bc.bank_account_id
+    ),
+    bank_bal AS (
+        SELECT ba.id AS bank_account_id, ba.current_balance
+        FROM bank_accounts ba WHERE ba.is_active = true
+    )
+    SELECT COUNT(*) FROM bank_coa bc
+    LEFT JOIN journal_balance jb ON jb.bank_account_id = bc.bank_account_id
+    LEFT JOIN bank_bal bb ON bb.bank_account_id = bc.bank_account_id
+    WHERE COALESCE(jb.ledger_balance, 0) != COALESCE(bb.current_balance, 0);
+")
+
+if [ "$BANK_GAPS" = "0" ]; then
+    log "  PASS: All bank accounts in sync"
+else
+    log "  WARN: $BANK_GAPS bank accounts with ledger != cached balance"
+    # Warning, not critical — current_balance is trigger-maintained cache
+    if [ "$OVERALL" != "ALERT" ]; then
+        OVERALL="WARNING"
+    fi
+    FAILURES="${FAILURES}Bank sync: $BANK_GAPS accounts with gap\n"
+fi
+
+# ---- Check 4: Inventory Integrity (Invariant 1) ----
+
+log "CHECK 4: Inventory Integrity"
+INVENTORY_GAPS=$(psql_cmd "
+    WITH ledger_balance AS (
+        SELECT product_id, warehouse_id,
+            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS computed_qty
+        FROM inventory_ledger
+        WHERE warehouse_id IS NOT NULL
+        GROUP BY product_id, warehouse_id
+    )
+    SELECT COUNT(*) FROM warehouse_stock ws
+    LEFT JOIN ledger_balance lb
+        ON lb.product_id = ws.item_id AND lb.warehouse_id = ws.warehouse_id
+    WHERE ws.quantity != COALESCE(lb.computed_qty, 0);
+")
+
+if [ "$INVENTORY_GAPS" = "0" ]; then
+    log "  PASS: warehouse_stock matches inventory_ledger"
+else
+    log "  WARN: $INVENTORY_GAPS items with stock != ledger"
+    if [ "$OVERALL" != "ALERT" ]; then
+        OVERALL="WARNING"
+    fi
+    FAILURES="${FAILURES}Inventory: $INVENTORY_GAPS items with gap\n"
+fi
+
+# ---- Check 5: Orphaned Journal Lines ----
+
+log "CHECK 5: Orphaned Journal Lines"
+ORPHANED=$(psql_cmd "
+    SELECT COUNT(*) FROM journal_lines jl
+    LEFT JOIN journal_entries je ON je.id = jl.journal_id
+    WHERE je.id IS NULL;
+")
+
+if [ "$ORPHANED" = "0" ]; then
+    log "  PASS: No orphaned journal lines"
+else
+    log "  FAIL: $ORPHANED orphaned journal lines"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}Orphaned lines: $ORPHANED\n"
+fi
+
+# ---- Check 6: Sequence Monotonicity (Law 22) ----
+
+log "CHECK 6: Sequence Monotonicity (Law 22)"
+SEQ_DUPES=$(psql_cmd "
+    SELECT COUNT(*) FROM (
+        SELECT tenant_id, chain_sequence, COUNT(*)
+        FROM journal_entries
+        WHERE status = 'POSTED' AND chain_sequence IS NOT NULL
+        GROUP BY tenant_id, chain_sequence
+        HAVING COUNT(*) > 1
+    ) dupes;
+")
+
+if [ "$SEQ_DUPES" = "0" ]; then
+    log "  PASS: No duplicate chain sequences"
+else
+    log "  FAIL: $SEQ_DUPES duplicate chain sequences"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}Sequence dupes: $SEQ_DUPES\n"
+fi
+
+# ---- Check 7: AP Invariant (raw ledger = per-bill + adjustments) ----
+
+log "CHECK 7: AP Invariant (raw ledger = per-bill + adjustments)"
+AP_DRIFT=$(psql_cmd "
+    SELECT COALESCE(SUM(drift), 0) FROM (
+        SELECT t.tenant_id,
+            ABS(
+                (SELECT COALESCE(SUM(jl.credit - jl.debit), 0)
+                 FROM journal_lines jl
+                 JOIN journal_entries je ON je.id = jl.journal_id
+                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                 WHERE coa.account_type = 'PAYABLE'
+                   AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                   AND je.tenant_id = t.tenant_id)
+                - COALESCE((SELECT SUM(outstanding) FROM compute_ap_outstanding(t.tenant_id)), 0)
+                - COALESCE((SELECT SUM(net) FROM compute_ap_adjustments(t.tenant_id)), 0)
+            ) AS drift
+        FROM (SELECT DISTINCT tenant_id FROM journal_entries WHERE status = 'POSTED') t
+    ) sub;
+")
+
+if [ "$AP_DRIFT" = "0" ] || [ "$AP_DRIFT" = "0.00" ]; then
+    log "  PASS: AP invariant holds for all tenants"
+else
+    log "  FAIL: AP drift = $AP_DRIFT across tenants"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}AP invariant drift: $AP_DRIFT\n"
+fi
+
+# ---- Check 8: AR Invariant (raw ledger = per-invoice + adjustments) ----
+
+log "CHECK 8: AR Invariant (raw ledger = per-invoice + adjustments)"
+AR_DRIFT=$(psql_cmd "
+    SELECT COALESCE(SUM(drift), 0) FROM (
+        SELECT t.tenant_id,
+            ABS(
+                (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+                 FROM journal_lines jl
+                 JOIN journal_entries je ON je.id = jl.journal_id
+                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                 WHERE coa.account_type = 'RECEIVABLE'
+                   AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                   AND je.tenant_id = t.tenant_id)
+                - COALESCE((SELECT SUM(outstanding) FROM compute_ar_outstanding(t.tenant_id)), 0)
+                - COALESCE((SELECT SUM(net) FROM compute_ar_adjustments(t.tenant_id)), 0)
+            ) AS drift
+        FROM (SELECT DISTINCT tenant_id FROM journal_entries WHERE status = 'POSTED') t
+    ) sub;
+")
+
+if [ "$AR_DRIFT" = "0" ] || [ "$AR_DRIFT" = "0.00" ]; then
+    log "  PASS: AR invariant holds for all tenants"
+else
+    log "  FAIL: AR drift = $AR_DRIFT across tenants"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}AR invariant drift: $AR_DRIFT\n"
+fi
+
+# ---- Check 9: Inventory Value Drift (GL vs inventory_ledger) ----
+
+log "CHECK 9: Inventory Value Drift (GL vs inventory_ledger)"
+INV_DRIFT=$(psql_cmd "
+    SELECT COALESCE(SUM(ABS(drift)), 0) FROM (
+        SELECT t.tenant_id,
+            (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+             FROM journal_lines jl
+             JOIN journal_entries je ON je.id = jl.journal_id
+             JOIN chart_of_accounts coa ON coa.id = jl.account_id
+             WHERE coa.account_code = '1-10600'
+               AND je.status = 'POSTED'
+               AND je.reversed_by_id IS NULL
+               AND je.tenant_id = t.tenant_id)
+            - (SELECT COALESCE(
+                SUM(CASE WHEN il.quantity_in > 0 THEN il.quantity_in * il.unit_cost ELSE 0 END)
+                - SUM(CASE WHEN il.quantity_out > 0 THEN il.quantity_out * il.unit_cost ELSE 0 END),
+                0)
+             FROM inventory_ledger il
+             WHERE il.tenant_id = t.tenant_id)
+            - COALESCE((SELECT SUM(net) FROM compute_inventory_adjustments(t.tenant_id)), 0)
+            AS drift
+        FROM (SELECT DISTINCT tenant_id FROM journal_entries WHERE status = 'POSTED') t
+    ) sub;
+")
+
+if [ "$INV_DRIFT" = "0" ] || [ "$INV_DRIFT" = "0.00" ] || [ "$INV_DRIFT" = "0.000000" ]; then
+    log "  PASS: Inventory value invariant holds for all tenants"
+else
+    log "  FAIL: Inventory value drift = $INV_DRIFT across tenants"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}Inventory value drift: $INV_DRIFT\n"
+fi
+
+# ---- Check 10: COGS Journal Orphans ----
+
+log "CHECK 10: COGS Journal Orphans"
+COGS_ORPHANS=$(psql_cmd "
+    SELECT COUNT(*) FROM journal_entries je
+    WHERE je.source_type IN ('SALES_INVOICE_COGS', 'SALES_RECEIPT_COGS')
+      AND je.status = 'POSTED'
+      AND je.reversed_by_id IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM inventory_ledger il
+          WHERE il.source_id = je.source_id
+            AND il.tenant_id = je.tenant_id
+            AND il.quantity_out > 0
+      );
+")
+
+if [ "$COGS_ORPHANS" = "0" ]; then
+    log "  PASS: No COGS journal orphans"
+else
+    ORPHAN_LIST=$(psql_cmd "
+        SELECT je.tenant_id || : || je.journal_number
+        FROM journal_entries je
+        WHERE je.source_type IN ('SALES_INVOICE_COGS', 'SALES_RECEIPT_COGS')
+          AND je.status = 'POSTED'
+          AND je.reversed_by_id IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM inventory_ledger il
+              WHERE il.source_id = je.source_id
+                AND il.tenant_id = je.tenant_id
+                AND il.quantity_out > 0
+          )
+        LIMIT 10;
+    ")
+    log "  FAIL: $COGS_ORPHANS COGS journals without inventory_ledger entry"
+    log "  Orphans: $ORPHAN_LIST"
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}COGS orphans: $COGS_ORPHANS ($ORPHAN_LIST)\n"
+fi
+
+# ---- Check 11: Opening Balance Consistency ----
+
+log "CHECK 11: Opening Balance Consistency"
+OB_DRIFT_TOTAL=0
+
+# 11a. Vendor opening_balance vs OPENING journal credit to PAYABLE
+VENDOR_OB_DRIFT=$(psql_cmd "
+    SELECT COUNT(*) FROM (
+        SELECT v.id
+        FROM vendors v
+        LEFT JOIN (
+            SELECT je.source_id, SUM(jl.credit) AS journal_amount
+            FROM journal_entries je
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE je.source_type = 'OPENING'
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND coa.account_type = 'PAYABLE'
+              AND jl.credit > 0
+            GROUP BY je.source_id
+        ) voj ON voj.source_id = v.id
+        WHERE COALESCE(v.opening_balance, 0) > 0
+          AND ABS(COALESCE(v.opening_balance, 0) - COALESCE(voj.journal_amount, 0)) > 0.01
+    ) sub;
+")
+
+if [ "$VENDOR_OB_DRIFT" = "0" ]; then
+    log "  11a. Vendor OB: PASS"
+else
+    log "  11a. Vendor OB: FAIL — $VENDOR_OB_DRIFT vendors with drift"
+    OB_DRIFT_TOTAL=$((OB_DRIFT_TOTAL + VENDOR_OB_DRIFT))
+fi
+
+# 11b. Bank opening_balance vs OPENING journal debit to bank CoA
+BANK_OB_DRIFT=$(psql_cmd "
+    SELECT COUNT(*) FROM (
+        SELECT ba.id
+        FROM bank_accounts ba
+        LEFT JOIN (
+            SELECT je.source_id, je.tenant_id, SUM(jl.debit) AS journal_amount
+            FROM journal_entries je
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
+            WHERE je.source_type = 'OPENING'
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND jl.account_id = ba2.coa_id
+              AND jl.debit > 0
+            GROUP BY je.source_id, je.tenant_id
+        ) boj ON boj.source_id = ba.id AND boj.tenant_id = ba.tenant_id
+        WHERE COALESCE(ba.opening_balance, 0) > 0
+          AND ABS(COALESCE(ba.opening_balance, 0) - COALESCE(boj.journal_amount, 0)) > 0.01
+    ) sub;
+")
+
+if [ "$BANK_OB_DRIFT" = "0" ]; then
+    log "  11b. Bank OB: PASS"
+else
+    BANK_OB_DETAILS=$(psql_cmd "
+        SELECT ba.tenant_id || ':' || ba.account_name || '(field=' || ba.opening_balance || ',journal=' || COALESCE(boj.journal_amount, 0) || ')'
+        FROM bank_accounts ba
+        LEFT JOIN (
+            SELECT je.source_id, je.tenant_id, SUM(jl.debit) AS journal_amount
+            FROM journal_entries je
+            JOIN journal_lines jl ON jl.journal_id = je.id
+            JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
+            WHERE je.source_type = 'OPENING'
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND jl.account_id = ba2.coa_id
+              AND jl.debit > 0
+            GROUP BY je.source_id, je.tenant_id
+        ) boj ON boj.source_id = ba.id AND boj.tenant_id = ba.tenant_id
+        WHERE COALESCE(ba.opening_balance, 0) > 0
+          AND ABS(COALESCE(ba.opening_balance, 0) - COALESCE(boj.journal_amount, 0)) > 0.01
+        LIMIT 10;
+    ")
+    log "  11b. Bank OB: FAIL — $BANK_OB_DRIFT accounts with drift"
+    log "  Details: $BANK_OB_DETAILS"
+    OB_DRIFT_TOTAL=$((OB_DRIFT_TOTAL + BANK_OB_DRIFT))
+fi
+
+if [ "$OB_DRIFT_TOTAL" -gt 0 ]; then
+    OVERALL="ALERT"
+    FAILURES="${FAILURES}Opening balance drift: vendor=$VENDOR_OB_DRIFT, bank=$BANK_OB_DRIFT\n"
+fi
+
+# ---- Check 12: Cash/Bank Negative Balance Detection ----
+
+log "CHECK 12: Cash/Bank Negative Balance Detection"
+NEG_BALANCE_COUNT=$(psql_cmd "
+    SELECT COUNT(*) FROM (
+        SELECT t.tenant_id, cba.account_code, cba.name, cba.category,
+               COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance
+        FROM (SELECT DISTINCT tenant_id FROM journal_entries
+              WHERE status = 'POSTED' AND tenant_id != 'cafeanna') t
+        CROSS JOIN LATERAL (
+            SELECT coa.id, coa.account_code, coa.name, 'KAS' AS category
+            FROM chart_of_accounts coa
+            WHERE coa.account_code IN ('1-10100', '1-10200')
+              AND coa.tenant_id = t.tenant_id
+            UNION ALL
+            SELECT coa.id, coa.account_code, coa.name, 'BANK' AS category
+            FROM bank_accounts ba
+            JOIN chart_of_accounts coa ON coa.id = ba.coa_id
+            WHERE ba.tenant_id = t.tenant_id
+        ) cba
+        LEFT JOIN journal_lines jl ON jl.account_id = cba.id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_id
+            AND je.status = 'POSTED'
+            AND je.reversed_by_id IS NULL
+            AND je.tenant_id = t.tenant_id
+        GROUP BY t.tenant_id, cba.account_code, cba.name, cba.category
+        HAVING COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) < 0
+    ) sub;
+")
+
+if [ "$NEG_BALANCE_COUNT" = "0" ]; then
+    log "  PASS: No negative cash/bank balances"
+else
+    NEG_DETAILS=$(psql_cmd "
+        SELECT t.tenant_id || ':' || cba.account_code || ' ' || cba.name || '=' || COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+        FROM (SELECT DISTINCT tenant_id FROM journal_entries
+              WHERE status = 'POSTED' AND tenant_id != 'cafeanna') t
+        CROSS JOIN LATERAL (
+            SELECT coa.id, coa.account_code, coa.name, 'KAS' AS category
+            FROM chart_of_accounts coa
+            WHERE coa.account_code IN ('1-10100', '1-10200')
+              AND coa.tenant_id = t.tenant_id
+            UNION ALL
+            SELECT coa.id, coa.account_code, coa.name, 'BANK' AS category
+            FROM bank_accounts ba
+            JOIN chart_of_accounts coa ON coa.id = ba.coa_id
+            WHERE ba.tenant_id = t.tenant_id
+        ) cba
+        LEFT JOIN journal_lines jl ON jl.account_id = cba.id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_id
+            AND je.status = 'POSTED'
+            AND je.reversed_by_id IS NULL
+            AND je.tenant_id = t.tenant_id
+        GROUP BY t.tenant_id, cba.account_code, cba.name, cba.category
+        HAVING COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) < 0
+        ORDER BY t.tenant_id, cba.account_code
+        LIMIT 10;
+    ")
+    log "  WARN: $NEG_BALANCE_COUNT accounts with negative balance"
+    log "  Details: $NEG_DETAILS"
+    if [ "$OVERALL" != "ALERT" ]; then
+        OVERALL="WARNING"
+    fi
+    FAILURES="${FAILURES}Negative cash/bank: $NEG_BALANCE_COUNT accounts ($NEG_DETAILS)\n"
+fi
+
+# ---- Summary ----
+
+TOTAL_POSTED=$(psql_cmd "SELECT COUNT(*) FROM journal_entries WHERE status = 'POSTED';")
+TOTAL_LINES=$(psql_cmd "SELECT COUNT(*) FROM journal_lines;")
+
+log ""
+log "=== OVERALL: $OVERALL ==="
+log "  Posted journals: $TOTAL_POSTED"
+log "  Journal lines:   $TOTAL_LINES"
+log "  Tenants:         $TENANT_COUNT"
+
+if [ "$OVERALL" = "ALERT" ]; then
+    send_alert "critical" "Accounting Health ALERT" \
+        "System: $DATE\nJournals: $TOTAL_POSTED posted\n\nFailures:\n$FAILURES"
+    exit 1
+elif [ "$OVERALL" = "WARNING" ]; then
+    send_alert "warning" "Accounting Health WARNING" \
+        "System: $DATE\nJournals: $TOTAL_POSTED posted\n\nWarnings:\n$FAILURES"
+    exit 0
+fi
+
+# Only log healthy — no Discord noise for daily PASS
+log "  All checks passed"

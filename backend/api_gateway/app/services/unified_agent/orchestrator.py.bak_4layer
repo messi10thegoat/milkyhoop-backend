@@ -517,7 +517,7 @@ MAX_ITERATIONS_BY_INTENT = {
     "CHITCHAT": 1,
     "SIMPLE_READ": 3,
     "COMPLEX_READ": 3,
-    "ACTION": 6,
+    "ACTION": 4,
     "CHART": 2,
     "RECON": 5,
     "FOLLOWUP": 3,
@@ -594,7 +594,8 @@ async def _summarize_history(older_messages: list, llm_router) -> str:
     summarize_prompt = (
         "Ringkas percakapan berikut menjadi summary singkat (maks 3 kalimat). "
         "Fokus pada: entity yang dibahas (customer/vendor/item), "
-        "aksi yang sudah dilakukan, angka/nominal penting, dan konteks kunci.\n\n"
+        "aksi yang sudah dilakukan, dan konteks penting. "
+        "Jangan sertakan detail angka kecuali penting.\n\n"
         f"{history_text}"
     )
 
@@ -811,12 +812,31 @@ class UnifiedAgent:
             for msg in system_msgs
         ]
 
-        # Conversation history injection
+        # Phase 3C: Conversation history pruning
+        # If history exceeds threshold, summarize older messages
         if conversation_history:
-            if chat_session_id:
-                # SessionAwareAgent already assembled 4-layer context
-                # with token budget management. Add as-is — no re-pruning.
-                for msg in conversation_history:
+            needs_summary, older, recent, older_hash = _prune_history(
+                conversation_history,
+            )
+
+            if needs_summary and older:
+                # Summarize older messages (async, ~100ms with gpt-4o-mini)
+                summary = await _summarize_history(older, self.router)
+                logger.warning(
+                    "[Phase3C] Summarized %d older messages (%d chars) -> %d chars",
+                    len(older),
+                    sum(len(m.get("content", "")) for m in older),
+                    len(summary),
+                )
+                # Prepend summary as system message
+                messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=f"Ringkasan percakapan sebelumnya:\n{summary}",
+                    )
+                )
+                # Add recent messages verbatim
+                for msg in recent:
                     messages.append(
                         LLMMessage(
                             role=msg.get("role", "user"),
@@ -824,39 +844,14 @@ class UnifiedAgent:
                         )
                     )
             else:
-                # Fallback: no session manager, use pruning
-                needs_summary, older, recent, older_hash = _prune_history(
-                    conversation_history,
-                )
-                if needs_summary and older:
-                    summary = await _summarize_history(older, self.router)
-                    logger.warning(
-                        "[Phase3C] Summarized %d older messages (%d chars) -> %d chars",
-                        len(older),
-                        sum(len(m.get("content", "")) for m in older),
-                        len(summary),
-                    )
+                # History within threshold — add last 10 as-is
+                for msg in conversation_history[-10:]:
                     messages.append(
                         LLMMessage(
-                            role="system",
-                            content=f"Ringkasan percakapan sebelumnya:\n{summary}",
+                            role=msg.get("role", "user"),
+                            content=msg.get("content", ""),
                         )
                     )
-                    for msg in recent:
-                        messages.append(
-                            LLMMessage(
-                                role=msg.get("role", "user"),
-                                content=msg.get("content", ""),
-                            )
-                        )
-                else:
-                    for msg in conversation_history[-10:]:
-                        messages.append(
-                            LLMMessage(
-                                role=msg.get("role", "user"),
-                                content=msg.get("content", ""),
-                            )
-                        )
 
         # Vision: use content block array for THIS turn only (ephemeral)
         if image_content:
@@ -989,31 +984,6 @@ class UnifiedAgent:
 
             # Case 1: LLM returns text (no tool calls) → final answer
             if llm_response.finish_reason == "stop" or not llm_response.tool_calls:
-
-                # ── NUDGE: If ACTION intent, LLM has data but didn't call propose_direct_action ──
-                _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
-                _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors"})
-                _has_action_tool = bool(_tool_names_used & {"propose_direct_action", "propose_action"})
-                if (
-                    _intent in ("ACTION",)
-                    and iteration >= 1
-                    and _has_data_tools
-                    and not _has_action_tool
-                    and not locals().get("_nudge_done")
-                ):
-                    _nudge_done = True
-                    logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
-                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
-                    messages.append(LLMMessage(role="user", content=(
-                            "Jangan tanya konfirmasi via text. "
-                            "LANGSUNG panggil propose_direct_action() dengan data yang sudah kamu dapatkan. "
-                            "Kamu sudah punya semua data yang dibutuhkan dari tool calls sebelumnya."
-                        )
-                    ))
-                    thinking_stages.append("Menyiapkan konfirmasi")
-                    continue  # Go back to loop for another LLM call
-                # ── END NUDGE ──
-
                 content = llm_response.content or ""
 
                 # --- SSE: Emit THINKING_DONE ---

@@ -69,6 +69,9 @@ class UpdateProfileRequest(BaseModel):
 async def get_user_tenants(request: Request):
     """Get list of tenants the current user has access to."""
     tenant_id = get_tenant_id(request)
+    # Extract email for fallback display name
+    user = getattr(request.state, "user", {})
+    user_email = user.get("email", "") if isinstance(user, dict) else getattr(user, "email", "")
 
     if tenant_id:
         # Fetch real display_name and logo_url from Tenant table
@@ -78,12 +81,12 @@ async def get_user_tenants(request: Request):
                 'SELECT display_name, alias, logo_url FROM "Tenant" WHERE id = $1',
                 tenant_id,
             )
-            name = row["display_name"] if row and row["display_name"] else tenant_id
+            name = row["display_name"] if row and row["display_name"] else (user_email or tenant_id)
             slug = row["alias"] if row and row["alias"] else tenant_id
             logo_url = row["logo_url"] if row else None
         except Exception as e:
             logger.error(f"[user/tenants] DB error: {e}")
-            name = tenant_id
+            name = user_email or tenant_id
             slug = tenant_id
             logo_url = None
         finally:

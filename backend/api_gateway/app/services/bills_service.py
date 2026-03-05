@@ -1074,7 +1074,7 @@ class BillsService:
                         WHERE je.tenant_id = $1 AND je.status = 'POSTED'
                           AND je.reversed_by_id IS NULL
                           AND coa.account_type = 'PAYABLE' AND jl.credit > 0
-                          AND je.source_type = 'BILL' AND je.source_id = $2::text
+                          AND je.source_type = 'BILL' AND je.source_id = $2
                     ),
                     bill_payments_settled AS (
                         SELECT COALESCE(SUM(jl.debit), 0) AS total_debit
@@ -1089,21 +1089,21 @@ class BillsService:
                               EXISTS (
                                   SELECT 1 FROM bill_payment_allocations bpa
                                   JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
-                                  WHERE bpa.bill_id = $2 AND bp.journal_id = je.id
+                                  WHERE bpa.bill_id = $3 AND bp.journal_id = je.id
                               )
                               -- Via legacy bill_payments
                               OR EXISTS (
                                   SELECT 1 FROM bill_payments bp
-                                  WHERE bp.bill_id = $2 AND bp.journal_id = je.id
+                                  WHERE bp.bill_id = $3 AND bp.journal_id = je.id
                               )
                               -- Via source_id match for PAYMENT_BILL or BILL_PAYMENT
-                              OR (je.source_type IN ('PAYMENT_BILL', 'BILL_PAYMENT'))
+                              -- source_type fallback removed: covered by bill_payments + bill_payment_allocations
                           )
                     )
                     SELECT GREATEST(0, bo.total_credit - bps.total_debit)
                     FROM bill_obligation bo, bill_payments_settled bps
                     """,
-                    tenant_id, str(bill_id),
+                    tenant_id, str(bill_id), bill_id,
                 )
                 remaining = int(journal_remaining or 0)
 

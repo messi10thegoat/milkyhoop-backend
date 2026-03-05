@@ -447,6 +447,50 @@ class ToolExecutor:
 
     # --- Direct Action Execution ---
 
+    async def _resolve_entity_names(self, action_key: str, payload: dict):
+        """Resolve display names (vendor_name, customer_name etc.) from IDs when LLM omits them."""
+        try:
+            from .db_utils import get_session_db_pool
+            pool = await get_session_db_pool()
+            tenant_id = self.context.tenant_id
+
+            if action_key == "create_bill_payment" and not payload.get("vendor_name") and payload.get("vendor_id"):
+                row = await pool.fetchrow(
+                    "SELECT name FROM vendors WHERE id = $1::uuid AND tenant_id = $2",
+                    str(payload["vendor_id"]), tenant_id
+                )
+                if row:
+                    payload["vendor_name"] = row["name"]
+                # Also resolve bill_number
+                if not payload.get("bill_number") and payload.get("bill_id"):
+                    brow = await pool.fetchrow(
+                        "SELECT invoice_number, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
+                        str(payload["bill_id"]), tenant_id
+                    )
+                    if brow:
+                        payload.setdefault("bill_number", brow["invoice_number"])
+                        payload.setdefault("vendor_name", brow["vendor_name"])
+
+            elif action_key == "create_receive_payment" and not payload.get("customer_name") and payload.get("customer_id"):
+                row = await pool.fetchrow(
+                    "SELECT nama FROM customers WHERE id = $1::uuid AND tenant_id = $2",
+                    str(payload["customer_id"]), tenant_id
+                )
+                if row:
+                    payload["customer_name"] = row["nama"]
+
+            # Also resolve bank_account_name
+            if not payload.get("bank_account_name") and payload.get("bank_account_id"):
+                row = await pool.fetchrow(
+                    "SELECT account_name FROM bank_accounts WHERE id = $1::uuid AND tenant_id = $2",
+                    str(payload["bank_account_id"]), tenant_id
+                )
+                if row:
+                    payload["bank_account_name"] = row["account_name"]
+
+        except Exception as e:
+            logger.warning(f"[resolve_entity_names] Non-critical: {e}")
+
     # --- Tutorial Tool Execution ---
 
     async def _execute_tutorial_tool(
@@ -720,6 +764,24 @@ class ToolExecutor:
                         )
                         payload[target] = payload.pop(alt)
                         break
+
+        # Normalize bill_payment field names
+        if action_key == "create_bill_payment":
+            # LLM sends payment_account_id → we need bank_account_id
+            if "payment_account_id" in payload and "bank_account_id" not in payload:
+                payload["bank_account_id"] = payload.pop("payment_account_id")
+            # LLM sends allocations array → extract bill_id from first allocation
+            if "allocations" in payload and "bill_id" not in payload:
+                allocs = payload.get("allocations", [])
+                if allocs and isinstance(allocs, list) and len(allocs) > 0:
+                    first = allocs[0] if isinstance(allocs[0], dict) else {}
+                    if "bill_id" in first:
+                        payload["bill_id"] = first["bill_id"]
+                    if "amount_applied" in first and "total_amount" not in payload:
+                        payload["total_amount"] = first["amount_applied"]
+
+        # === RESOLVE ENTITY NAMES (for success/loading messages) ===
+        await self._resolve_entity_names(action_key, payload)
 
         # Validate required fields
         is_valid, missing = validate_payload(action_key, payload)

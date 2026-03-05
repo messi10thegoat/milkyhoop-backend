@@ -3,10 +3,10 @@
 
 @page {
     size: A4;
-    margin: 2.2cm 2.5cm;
+    margin: 1.1cm 1.25cm 2.2cm 1.25cm;
     @bottom-right {
         content: "Halaman " counter(page) " dari " counter(pages);
-        font-family: 'DejaVu Sans', sans-serif;
+        font-family: 'Inter', 'DejaVu Sans', sans-serif;
         font-size: 8pt;
         color: #1a1a1a;
     }
@@ -15,7 +15,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: 'DejaVu Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-family: 'Inter', 'DejaVu Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
     font-size: 10pt;
     color: #1a1a1a;
     line-height: 1.5;
@@ -38,6 +38,7 @@ body {
     color: #1a1a1a;
     letter-spacing: -0.02em;
     line-height: 1.1;
+    white-space: nowrap;
 }
 
 .doc-subtitle {
@@ -48,8 +49,8 @@ body {
 }
 
 .company-logo {
-    max-height: 52px;
-    max-width: 130px;
+    max-height: 94px;
+    max-width: 234px;
     object-fit: contain;
 }
 
@@ -141,8 +142,12 @@ body {
     color: #1a1a1a;
     padding: 10px 0;
     border-bottom: 1px solid #1a1a1a;
-    text-align: left;
 }
+
+.items-table thead th.col-desc { text-align: left; }
+.items-table thead th.col-qty { text-align: center; }
+.items-table thead th.col-price { text-align: right; }
+.items-table thead th.col-amount { text-align: right; }
 
 .items-table tbody td {
     font-size: 9.5pt;

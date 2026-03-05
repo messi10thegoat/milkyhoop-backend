@@ -457,3 +457,37 @@ def build_draft_proposal(
         "action_type": action_type,
         "draft_plan": draft_plan,
     }
+
+
+async def check_draft_dependencies(conn, draft_plan: dict, tenant_id: str) -> dict:
+    """Check if vendor and items from draft_plan exist in DB."""
+    result = {"vendor_missing": False, "vendor_name": None, "missing_items": [], "all_resolved": True}
+
+    counterparty = draft_plan.get("counterparty_name") or ""
+    if counterparty.strip():
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+        vendor = await conn.fetchrow(
+            "SELECT id FROM vendors WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) AND is_active = true",
+            tenant_id, counterparty.strip(),
+        )
+        if not vendor:
+            result["vendor_missing"] = True
+            result["vendor_name"] = counterparty.strip()
+            result["all_resolved"] = False
+
+    line_items = draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []
+    for item in line_items:
+        if not isinstance(item, dict):
+            continue
+        item_name = item.get("description") or item.get("nama_produk") or item.get("product_name") or ""
+        if not item_name.strip():
+            continue
+        product = await conn.fetchrow(
+            "SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) AND is_active = true",
+            tenant_id, item_name.strip(),
+        )
+        if not product:
+            result["missing_items"].append(item_name.strip())
+            result["all_resolved"] = False
+
+    return result

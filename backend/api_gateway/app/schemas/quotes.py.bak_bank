@@ -87,9 +87,6 @@ class CreateQuoteRequest(BaseModel):
     footer: Optional[str] = Field(None, description="Footer text")
     opening_text: Optional[str] = Field(None, description="Opening text shown before line items")
     closing_text: Optional[str] = Field(None, description="Closing text shown after line items")
-    payment_bank_name: Optional[str] = Field(None, max_length=100, description="Bank name for payment")
-    payment_account_number: Optional[str] = Field(None, max_length=50, description="Bank account number")
-    payment_account_holder: Optional[str] = Field(None, max_length=100, description="Account holder name")
     items: List[QuoteItemCreate] = Field(..., min_length=1, description="Quote line items")
 
     @field_validator('customer_name')
@@ -124,9 +121,6 @@ class UpdateQuoteRequest(BaseModel):
     footer: Optional[str] = None
     opening_text: Optional[str] = None
     closing_text: Optional[str] = None
-    payment_bank_name: Optional[str] = Field(None, max_length=100)
-    payment_account_number: Optional[str] = Field(None, max_length=50)
-    payment_account_holder: Optional[str] = Field(None, max_length=100)
     items: Optional[List[QuoteItemUpdate]] = None
 
 
@@ -222,9 +216,6 @@ class QuoteDetail(BaseModel):
     footer: Optional[str] = None
     opening_text: Optional[str] = None
     closing_text: Optional[str] = None
-    payment_bank_name: Optional[str] = None
-    payment_account_number: Optional[str] = None
-    payment_account_holder: Optional[str] = None
     items: List[QuoteItemResponse] = []
     created_at: str
     updated_at: str

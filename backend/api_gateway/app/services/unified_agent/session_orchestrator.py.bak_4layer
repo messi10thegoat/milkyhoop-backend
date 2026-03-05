@@ -65,7 +65,7 @@ class SessionAwareAgent:
         # Uses full 4-layer context assembly with token budget management
         if not conversation_history:
             conversation_history = await self._assemble_session_context(
-                session_manager, session_id, user_text, token_budget=8000
+                session_manager, session_id, user_text
             )
 
         # === Create session-aware ToolExecutor (Phase B) ===
@@ -308,7 +308,7 @@ class SessionAwareAgent:
         # (Sequential — depends on token budget from L2/L3/L4 above)
         context_tokens = sum(len(m.get("content", "")) for m in messages) // 4
         user_tokens = len(user_text) // 4
-        remaining = token_budget - context_tokens - user_tokens - 3000 - 500
+        remaining = token_budget - context_tokens - user_tokens - 1750 - 500
 
         window = []
         if remaining > 0:

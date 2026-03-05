@@ -1088,8 +1088,8 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                         id, tenant_id, bank_account_id, transaction_date,
                         transaction_type, amount, running_balance,
                         reference_type, reference_id, description,
-                        payee_payer, created_by
-                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'expense', $6, $7, $8, $9)
+                        payee_payer, created_by, journal_id
+                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'expense', $6, $7, $8, $9, $10)
                     """,
                     bank_tx_id,
                     ctx["tenant_id"],
@@ -1099,7 +1099,8 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     expense_id,
                     f"Expense: {expense_number}",
                     body.vendor_name or "Expense",
-                    ctx["user_id"]
+                    ctx["user_id"],
+                    str(journal_id)
                 )
 
                 # Link attachments via document_attachments

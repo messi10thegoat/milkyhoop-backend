@@ -110,7 +110,7 @@
                     <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
                     {% endif %}
                 </td>
-                <td class="col-qty">{{ item.quantity }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+                <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
                 <td class="col-price">Rp {{ item.unit_price | currency }}</td>
                 <td class="col-amount">Rp {{ item.line_total | currency }}</td>
             </tr>
@@ -155,6 +155,18 @@
             </tr>
         </table>
     </div>
+
+    <!-- Rekening Pembayaran -->
+    {% if quote.payment_bank_name or quote.payment_account_number %}
+    <div class="notes-section">
+        <div class="notes-label">Rekening Pembayaran</div>
+        <div class="notes-text">
+            {% if quote.payment_bank_name %}{{ quote.payment_bank_name }}<br>{% endif %}
+            {% if quote.payment_account_number %}{{ quote.payment_account_number }}<br>{% endif %}
+            {% if quote.payment_account_holder %}a.n. {{ quote.payment_account_holder }}{% endif %}
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Closing text -->
     {% if quote.closing_text %}

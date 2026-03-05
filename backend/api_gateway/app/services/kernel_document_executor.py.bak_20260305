@@ -250,21 +250,6 @@ class KernelDocumentExecutor:
                 error=f"Transformer: {e}",
             )
 
-        # ── Phase 2b: Pre-resolve vendor for bill/expense ─────
-        if transaction_type in ("bill", "expense"):
-            vendor_name_val = payload.get("vendor_name")
-            if vendor_name_val and not payload.get("vendor_id"):
-                async with self.pool.acquire() as conn2:
-                    resolved_vendor_id = await self._find_or_create_vendor(
-                        conn2, tenant_id, vendor_name_val
-                    )
-                    if resolved_vendor_id:
-                        payload["vendor_id"] = resolved_vendor_id
-                        logger.info(
-                            f"[KDE] Pre-resolved vendor for doc {document_id}: "
-                            f"{vendor_name_val} -> {resolved_vendor_id}"
-                        )
-
         # ── Phase 3: Call REST endpoint ───────────────────────────
         headers = {
             "Content-Type": "application/json",
@@ -916,36 +901,6 @@ class KernelDocumentExecutor:
             )
             ledger_ids.append(str(row["id"]))
         return ledger_ids
-
-
-    async def _find_or_create_vendor(self, conn, tenant_id: str, vendor_name: str) -> str:
-        """Find vendor by name, create if not found. Returns vendor_id or None."""
-        if not vendor_name or not vendor_name.strip():
-            return None
-
-        vendor_name = vendor_name.strip()
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-
-        vendor = await conn.fetchrow(
-            "SELECT id FROM vendors WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) AND is_active = true",
-            tenant_id, vendor_name,
-        )
-        if vendor:
-            return str(vendor["id"])
-
-        # Auto-create minimal vendor
-        try:
-            vendor_id = uuid.uuid4()
-            await conn.execute(
-                """INSERT INTO vendors (id, tenant_id, name, is_active, created_at)
-                   VALUES ($1, $2, $3, true, NOW())""",
-                vendor_id, tenant_id, vendor_name,
-            )
-            logger.info(f"[KDE] Auto-created vendor: {vendor_name} -> {vendor_id}")
-            return str(vendor_id)
-        except Exception as e:
-            logger.warning(f"[KDE] Failed to auto-create vendor {vendor_name}: {e}")
-            return None
 
     async def _find_or_create_product(self, conn, tenant_id, mv):
         """Find or create product from movement data (legacy path)."""
