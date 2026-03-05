@@ -1841,7 +1841,7 @@ async def _propose_document_draft(
     }
 
     try:
-        from .unified_agent.session_manager import SessionManager as _DocSM
+        from ..services.unified_agent.session_manager import SessionManager as _DocSM
         _doc_sm = _DocSM(db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
         await _doc_sm.update_state(session_id, document_context=_doc_context)
         logger.info(f"[DocDraft] Persisted document_context to Layer 2 for session {session_id}")
@@ -2085,7 +2085,7 @@ async def _confirm_direct_action(
             # Clear document_context from Layer 2 (only for document actions)
             if action_key == "confirm_document_draft" and session_id:
                 try:
-                    from .unified_agent.session_manager import SessionManager as _ClearSM
+                    from ..services.unified_agent.session_manager import SessionManager as _ClearSM
                     _clear_sm = _ClearSM(db_pool=pool, tenant_id=tenant_id, user_id=user_id)
                     await _clear_sm.update_state(session_id, document_context=None)
                 except Exception as _e:
