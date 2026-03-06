@@ -23,7 +23,7 @@ class BillItemRequest(BaseModel):
     description: Optional[str] = None
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = None
-    unit_price: int = Field(..., gt=0)
+    unit_price: float = Field(..., gt=0)
 
     @field_validator("quantity")
     @classmethod
@@ -83,6 +83,8 @@ class RecordPaymentRequest(BaseModel):
     )
     reference: Optional[str] = None
     notes: Optional[str] = None
+    pph_tax_code_id: Optional[str] = None
+    pph_amount: Optional[int] = 0
 
     @model_validator(mode="after")
     def validate_account(self):
@@ -157,17 +159,20 @@ class BillItemResponse(BaseModel):
     description: Optional[str] = None
     quantity: float
     unit: Optional[str] = None
-    unit_price: int
-    subtotal: int
+    unit_price: float
+    subtotal: float
 
 
 class BillPaymentResponse(BaseModel):
     """Payment record in bill response."""
 
     id: UUID
-    amount: int
+    payment_number: Optional[str] = None
+    amount: str
+    total_amount: Optional[str] = None
     payment_date: date
     payment_method: str
+    status: Optional[str] = None
     reference: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime
@@ -201,6 +206,9 @@ class BillListItem(BaseModel):
     due_date: date
     created_at: datetime
     updated_at: datetime
+    operational_status: Optional[str] = None
+    doc_status: Optional[str] = None
+    accounting_status: Optional[str] = None
 
 
 class BillListResponse(BaseModel):
@@ -323,7 +331,7 @@ class BillItemRequestV2(BaseModel):
     product_name: str = Field(..., min_length=1, description="Product name for display")
     qty: int = Field(..., gt=0, description="Quantity (must be > 0)")
     unit: Optional[str] = Field(None, max_length=20, description="Unit of measure")
-    price: int = Field(..., gt=0, description="Unit price in Rupiah")
+    price: float = Field(..., gt=0, description="Unit price in Rupiah (2 decimal)")
     discount_percent: Decimal = Field(
         Decimal("0"), ge=0, le=100, description="Item discount %"
     )
@@ -373,13 +381,14 @@ class CreateBillRequestV2(BaseModel):
     )
     issue_date: Optional[date] = Field(None, description="Bill date (default: today)")
     due_date: date = Field(..., description="Payment due date")
-    tax_rate: Literal[0, 11, 12] = Field(11, description="Tax rate: 0%, 11%, or 12%")
+    tax_rate: float = Field(0, ge=0, le=100, description="Tax rate percentage")
+    tax_code_id: Optional[UUID] = Field(None, description="Tax code UUID from tax_codes table")
     tax_inclusive: bool = Field(False, description="True if prices include tax")
     invoice_discount_percent: Decimal = Field(Decimal("0"), ge=0, le=100)
-    invoice_discount_amount: int = Field(0, ge=0)
+    invoice_discount_amount: float = Field(0, ge=0)
     cash_discount_percent: Decimal = Field(Decimal("0"), ge=0, le=100)
-    cash_discount_amount: int = Field(0, ge=0)
-    dpp_manual: Optional[int] = Field(
+    cash_discount_amount: float = Field(0, ge=0)
+    dpp_manual: Optional[float] = Field(
         None, ge=0, description="Manual DPP override (null = auto)"
     )
     notes: Optional[str] = None
@@ -407,7 +416,8 @@ class UpdateBillRequestV2(BaseModel):
     vendor_name: Optional[str] = None
     ref_no: Optional[str] = None
     due_date: Optional[date] = None
-    tax_rate: Optional[Literal[0, 11, 12]] = None
+    tax_rate: Optional[float] = None
+    tax_code_id: Optional[UUID] = None
     tax_inclusive: Optional[bool] = None
     invoice_discount_percent: Optional[Decimal] = None
     invoice_discount_amount: Optional[int] = None
@@ -426,15 +436,15 @@ class UpdateBillRequestV2(BaseModel):
 class BillCalculationResult(BaseModel):
     """Calculated totals for a bill."""
 
-    subtotal: int = Field(..., description="Sum of (qty * price) for all items")
-    item_discount_total: int = Field(..., description="Sum of item-level discounts")
-    invoice_discount_total: int = Field(
+    subtotal: float = Field(..., description="Sum of (qty * price) for all items")
+    item_discount_total: float = Field(..., description="Sum of item-level discounts")
+    invoice_discount_total: float = Field(
         ..., description="Invoice-level discount amount"
     )
-    cash_discount_total: int = Field(..., description="Cash/early payment discount")
-    dpp: int = Field(..., description="Dasar Pengenaan Pajak (tax base)")
-    tax_amount: int = Field(..., description="Calculated tax (dpp * tax_rate / 100)")
-    grand_total: int = Field(..., description="Final total (dpp + tax_amount)")
+    cash_discount_total: float = Field(..., description="Cash/early payment discount")
+    dpp: float = Field(..., description="Dasar Pengenaan Pajak (tax base)")
+    tax_amount: float = Field(..., description="Calculated tax (dpp * tax_rate / 100)")
+    grand_total: float = Field(..., description="Final total (dpp + tax_amount)")
 
 
 class BillItemResponseV2(BaseModel):
@@ -446,10 +456,10 @@ class BillItemResponseV2(BaseModel):
     product_name: Optional[str] = None
     qty: int
     unit: Optional[str] = None
-    price: int
+    price: float
     discount_percent: float
-    discount_amount: int
-    total: int
+    discount_amount: float
+    total: float
     batch_no: Optional[str] = None
     exp_date: Optional[str] = None
     bonus_qty: int
@@ -494,6 +504,8 @@ class BillActivity(BaseModel):
     old_value: Optional[str] = None
     new_value: Optional[str] = None
     amount: Optional[int] = None
+    payment_method: Optional[str] = None
+    bank_account_name: Optional[str] = None
     details: Optional[str] = None
 
 

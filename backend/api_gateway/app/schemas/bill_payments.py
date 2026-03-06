@@ -104,6 +104,8 @@ class CreateBillPaymentRequest(BaseModel):
 
     reference_number: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
+    pph_tax_code_id: Optional[str] = None
+    pph_amount: Optional[int] = 0
     tags: List[str] = Field(default_factory=list)
     allocations: List[BillAllocationInput] = Field(default_factory=list)
     save_as_draft: bool = Field(

@@ -176,6 +176,8 @@ async def create_bill_payment_journal(
     source_type: str = "cash",
     source_deposit_id=None,
     unapplied_amount: int = 0,
+    pph_tax_code_id=None,
+    pph_amount: int = 0,
 ) -> tuple:
     """
     Create journal entry for bill payment.
@@ -185,6 +187,7 @@ async def create_bill_payment_journal(
     - Dr. Biaya Bank (expense) = bank_fee_amount (expense for bank fees)
     - Cr. Bank/Cash Account = total_amount + bank_fee_amount (money out)
     - Cr. Potongan Pembelian (5-10200) = discount_amount (discount received from vendor)
+    - Cr. Utang Pajak (2-10300) = pph_amount (PPh withheld by buyer, if any)
 
     Returns: (journal_id, journal_number)
     """
@@ -217,6 +220,16 @@ async def create_bill_payment_journal(
     vendor_deposit_account_id = None
     if unapplied_amount > 0:
         vendor_deposit_account_id = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
+
+    # Resolve PPh CoA (Fase 2.3) — Utang Pajak
+    pph_coa_id = None
+    if pph_amount > 0 and pph_tax_code_id:
+        pph_coa_id = await conn.fetchval(
+            "SELECT coa_id FROM tax_codes WHERE id = $1",
+            pph_tax_code_id if isinstance(pph_tax_code_id, UUID) else UUID(str(pph_tax_code_id)),
+        )
+        if not pph_coa_id:
+            pph_coa_id = await resolve_account_id(conn, ctx["tenant_id"], "2-10300")
 
     # Generate journal number using database function
     journal_number = await conn.fetchval(
@@ -307,8 +320,8 @@ async def create_bill_payment_journal(
             f"Uang muka vendor - {vendor_name}",
         )
 
-    # Cr. Bank/Cash (money going out)
-    cash_out = total_amount + bank_fee_amount
+    # Cr. Bank/Cash (money going out) — reduced by PPh (Phase E: actual transfer)
+    cash_out = total_amount + bank_fee_amount - pph_amount
     if cash_out > 0 and bank_coa_id:
         line_number += 1
         await conn.execute(
@@ -356,6 +369,22 @@ async def create_bill_payment_journal(
             else UUID(str(purchase_discount_account_id)),
             discount_amount,
             "Potongan pembelian",
+        )
+
+    # Cr. Utang Pajak / PPh Withheld (Fase 2.3 — PPh rider)
+    if pph_amount > 0 and pph_coa_id:
+        line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            pph_coa_id,
+            pph_amount,
+            "PPh dipotong dari pembayaran vendor",
         )
 
     # Law 20: DRAFT->POSTED after all journal lines inserted
@@ -744,8 +773,8 @@ async def get_bill_payment(request: Request, payment_id: str):
                             "source_type": "cash",
                             "bank_account_id": "",
                             "bank_account_name": "",
-                            "total_amount": float(settlement_amount),
-                            "allocated_amount": float(settlement_amount),
+                            "total_amount": str(settlement_amount),
+                            "allocated_amount": str(settlement_amount),
                             "unapplied_amount": 0,
                             "discount_amount": 0,
                             "discount_account_id": "",
@@ -767,7 +796,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                             "is_journal_only": True,
                             "currency_code": "IDR",
                             "exchange_rate": 1,
-                            "amount_in_base_currency": float(settlement_amount),
+                            "amount_in_base_currency": str(settlement_amount),
                             "bank_fee_amount": 0,
                             "bank_fee_account_id": "",
                             "check_number": "",
@@ -831,7 +860,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                 if payment.get("bank_fee_account_id")
                 else None,
                 currency_code=payment.get("currency_code") or "IDR",
-                exchange_rate=float(payment.get("exchange_rate") or 1.0),
+                exchange_rate=str(payment.get("exchange_rate") or 1.0),
                 amount_in_base_currency=payment.get("amount_in_base_currency")
                 or payment["total_amount"]
                 or 0,
@@ -897,12 +926,16 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Law 13: Advisory lock on bill payment creation
-                if payload.idempotency_key:
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext($1))",
-                        f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.idempotency_key}",
-                    )
+                # Law 13: Advisory lock — UNCONDITIONAL (ARAP Rule 1, BankSync Rule 4)
+                lock_key = (
+                    f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.idempotency_key}"
+                    if payload.idempotency_key
+                    else f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.vendor_id}:{payload.payment_date}"
+                )
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    lock_key,
+                )
 
                 # Idempotency check (Law 14)
                 if payload.idempotency_key:
@@ -986,13 +1019,15 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
                         amount_in_base_currency, check_number, check_due_date, check_bank_name,
                         source_type, source_deposit_id, reference_number, notes, tags, status,
-                        created_by, created_at, updated_at, posted_at, posted_by, idempotency_key
+                        created_by, created_at, updated_at, posted_at, posted_by, idempotency_key,
+                        pph_tax_code_id, pph_amount
                     ) VALUES (
                         $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
                         $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
                         $29, NOW(), NOW(),
                         CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
-                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30
+                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30,
+                        $31::uuid, $32
                     )""",
                     payment_id,
                     ctx["tenant_id"],
@@ -1024,6 +1059,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     status,
                     ctx["user_id"],
                     payload.idempotency_key,
+                    UUID(payload.pph_tax_code_id) if payload.pph_tax_code_id else None,
+                    payload.pph_amount or 0,
                 )
 
                 for alloc in payload.allocations:
@@ -1091,6 +1128,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         source_type=payload.source_type,
                         source_deposit_id=payload.source_deposit_id,
                         unapplied_amount=unapplied_amount,
+                        pph_tax_code_id=payload.pph_tax_code_id,
+                        pph_amount=payload.pph_amount or 0,
                     )
 
                     # Update payment with journal info
@@ -1102,6 +1141,87 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         journal_number,
                         payment_id,
                     )
+
+                    # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
+                    if (payload.pph_amount or 0) > 0 and payload.pph_tax_code_id:
+                        pph_tc = await conn.fetchrow(
+                            "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
+                            UUID(payload.pph_tax_code_id),
+                        )
+                        vendor_npwp = None  # vendors table has no npwp column yet
+                        pph_rate = Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
+                        pph_dpp = int(Decimal(str(payload.pph_amount)) / pph_rate * 100) if pph_rate > 0 else 0
+                        tax_period = payload.payment_date.strftime("%Y%m") if hasattr(payload.payment_date, "strftime") else str(payload.payment_date)[:7].replace("-", "")
+
+                        await conn.execute(
+                            """
+                            INSERT INTO withholding_tax_records (
+                                id, tenant_id, direction, tax_code_id,
+                                document_type, document_id, payment_id, journal_id,
+                                vendor_id, npwp, tax_period,
+                                base_amount, tax_amount, status
+                            ) VALUES (
+                                $1, $2, 'cut', $3,
+                                'BILL_PAYMENT', $4, $5, $6,
+                                $7, $8, $9,
+                                $10, $11, 'recorded'
+                            )
+                            """,
+                            uuid_module.uuid4(), ctx["tenant_id"],
+                            UUID(payload.pph_tax_code_id),
+                            payment_id, payment_id, journal_id,
+                            UUID(payload.vendor_id) if payload.vendor_id else None,
+                            vendor_npwp, tax_period,
+                            pph_dpp, payload.pph_amount,
+                        )
+
+                    # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
+                    if payload.bank_account_id:
+                        bank_acct = await conn.fetchrow(
+                            "SELECT id, account_name, account_type FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                            validate_uuid(str(payload.bank_account_id), "bank_account_id"),
+                            ctx["tenant_id"],
+                        )
+                        if bank_acct:
+                            pph_amt = payload.pph_amount or 0
+                            actual_transfer = payload.total_amount - pph_amt
+                            if bank_acct["account_type"] == "credit_card":
+                                bt_amount = actual_transfer
+                                bt_type = "charge"
+                            else:
+                                bt_amount = -actual_transfer
+                                bt_type = "payment_made"
+
+                            await conn.execute(
+                                """
+                                INSERT INTO bank_transactions (
+                                    id, tenant_id, bank_account_id, transaction_date,
+                                    transaction_type, amount, running_balance,
+                                    reference_type, reference_id, reference_number,
+                                    description, payee_payer, journal_id,
+                                    status, origin_type, source_module,
+                                    created_by, posted_by, posted_at
+                                ) VALUES (
+                                    $1, $2, $3, $4, $5, $6, 0,
+                                    'bill_payment', $7::uuid, $8,
+                                    $9, $10, $11,
+                                    'POSTED', 'MANUAL', 'bill_payment',
+                                    $12, $12, NOW()
+                                )
+                                """,
+                                uuid_module.uuid4(),
+                                ctx["tenant_id"],
+                                bank_acct["id"],
+                                payload.payment_date,
+                                bt_type,
+                                bt_amount,
+                                payment_id,
+                                payment_number,
+                                f"Payment to {vendor_name}",
+                                vendor_name,
+                                journal_id,
+                                ctx["user_id"],
+                            )
 
                 return BillPaymentResponse(
                     success=True,
@@ -1241,6 +1361,8 @@ async def post_bill_payment(request: Request, payment_id: str):
                     source_type=full_payment.get("source_type") or "cash",
                     source_deposit_id=full_payment.get("source_deposit_id"),
                     unapplied_amount=full_payment["unapplied_amount"] or 0,
+                    pph_tax_code_id=str(full_payment["pph_tax_code_id"]) if full_payment.get("pph_tax_code_id") else None,
+                    pph_amount=full_payment.get("pph_amount") or 0,
                 )
 
                 await conn.execute(
