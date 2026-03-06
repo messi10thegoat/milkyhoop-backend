@@ -177,7 +177,7 @@ async def create_bill_payment_journal(
     source_deposit_id=None,
     unapplied_amount: int = 0,
     pph_tax_code_id=None,
-    pph_amount: int = 0,
+    pph_amount: Decimal = Decimal("0"),
 ) -> tuple:
     """
     Create journal entry for bill payment.
@@ -1062,7 +1062,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     ctx["user_id"],
                     payload.idempotency_key,
                     UUID(payload.pph_tax_code_id) if payload.pph_tax_code_id else None,
-                    payload.pph_amount or 0,
+                    Decimal(str(payload.pph_amount or 0)),
                 )
 
                 for alloc in payload.allocations:
@@ -1152,7 +1152,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         )
                         vendor_npwp = None  # vendors table has no npwp column yet
                         pph_rate = Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
-                        pph_dpp = int(Decimal(str(payload.pph_amount)) / pph_rate * 100) if pph_rate > 0 else 0
+                        pph_dpp = (Decimal(str(payload.pph_amount)) / pph_rate * 100).quantize(Decimal("1")) if pph_rate > 0 else Decimal("0")
                         tax_period = payload.payment_date.strftime("%Y%m") if hasattr(payload.payment_date, "strftime") else str(payload.payment_date)[:7].replace("-", "")
 
                         await conn.execute(
@@ -1619,36 +1619,36 @@ async def void_bill_payment(
             """, payment_id, ctx["tenant_id"])
 
             # Update payment status and link void journal
-                await conn.execute(
-                    """
-                    UPDATE bill_payments_v2
-                    SET status = 'voided',
-                        void_journal_id = $1,
-                        voided_at = NOW(),
-                        voided_by = $2,
-                        void_reason = $3,
-                        updated_at = NOW()
-                    WHERE id = $4::uuid
-                    """,
-                    void_journal_id,
-                    ctx["user_id"],
-                    payload.void_reason,
-                    payment_id,
-                )
+            await conn.execute(
+                """
+                UPDATE bill_payments_v2
+                SET status = 'voided',
+                    void_journal_id = $1,
+                    voided_at = NOW(),
+                    voided_by = $2,
+                    void_reason = $3,
+                    updated_at = NOW()
+                WHERE id = $4::uuid
+                """,
+                void_journal_id,
+                ctx["user_id"],
+                payload.void_reason,
+                payment_id,
+            )
 
-                logger.info(
-                    f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
-                )
+            logger.info(
+                f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
+            )
 
-                return BillPaymentResponse(
-                    success=True,
-                    message=f"Payment {payment['payment_number']} voided",
-                    data={
-                        "id": payment_id,
-                        "status": "voided",
-                        "void_journal_id": str(void_journal_id),
-                    },
-                )
+            return BillPaymentResponse(
+                success=True,
+                message=f"Payment {payment['payment_number']} voided",
+                data={
+                    "id": payment_id,
+                    "status": "voided",
+                    "void_journal_id": str(void_journal_id),
+                },
+            )
     except HTTPException:
         raise
     except Exception as e:

@@ -1199,7 +1199,7 @@ class BillsService:
                 if remaining == 0 and bill["amount_paid"] == 0 and bill["amount"] > 0:
                     remaining = int(bill["amount"] - bill["amount_paid"])
 
-                payment_amount = int(request["amount"])
+                payment_amount = _Dec(str(request["amount"]))
 
                 if payment_amount <= 0:
                     return {"success": False, "message": "Payment amount must be positive", "data": None}
@@ -1217,7 +1217,7 @@ class BillsService:
 
                 # Fase 2.3: PPh withholding
                 pph_tax_code_id = request.get("pph_tax_code_id")
-                pph_amount = int(request.get("pph_amount") or 0)
+                pph_amount = _Dec(str(request.get("pph_amount") or 0))
 
                 # 4. Resolve bank account → coa_id (BankSync Rule 2)
                 bank_account_id = request.get("bank_account_id")
@@ -1429,7 +1429,7 @@ class BillsService:
                     )
                     vendor_npwp = None  # vendors table has no npwp column yet
                     pph_rate = _Dec(str(pph_tc["rate"])) if pph_tc else _Dec("2")
-                    pph_dpp = int(_Dec(str(pph_amount)) / pph_rate * 100) if pph_rate > 0 else 0
+                    pph_dpp = (_Dec(str(pph_amount)) / pph_rate * 100).quantize(_Dec("1")) if pph_rate > 0 else _Dec("0")
                     tax_period = payment_date.strftime("%Y%m")
 
                     await conn.execute(
