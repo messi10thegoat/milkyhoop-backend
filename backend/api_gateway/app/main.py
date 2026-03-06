@@ -26,7 +26,7 @@ from .routers import invoices
 from .routers import bills
 from .routers import vendors
 from .routers import customers
-from .routers import tax_codes
+from .routers import tax_codes, tax_reports
 from .routers import accounts
 from .routers import sales_invoices
 from .routers import credit_notes
@@ -342,6 +342,7 @@ app.include_router(customers.router, prefix="/api/customers", tags=["customers"]
 
 # Tax Codes router (Tax Master Data)
 app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"])
+app.include_router(tax_reports.router, prefix="/api/tax-reports", tags=["tax-reports"])
 
 # Chart of Accounts router (CoA CRUD)
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
