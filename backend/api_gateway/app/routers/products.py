@@ -224,7 +224,7 @@ async def get_product_by_barcode(request: Request, barcode: str):
                     and last_tx["hpp_per_unit"] > 0
                     and last_tx["last_price"]
                 ):
-                    computed = last_tx["last_price"] / last_tx["hpp_per_unit"]
+                    computed = float(last_tx["last_price"]) / float(last_tx["hpp_per_unit"])
                     if computed >= 1:
                         units_per_pack = int(round(computed))
 
@@ -854,7 +854,7 @@ async def search_products_for_kulakan(
                         and last_tx["hpp_per_unit"]
                         and last_tx["hpp_per_unit"] > 0
                     ):
-                        computed = last_tx["last_price"] / last_tx["hpp_per_unit"]
+                        computed = float(last_tx["last_price"]) / float(last_tx["hpp_per_unit"])
                         if computed >= 1:
                             product.units_per_pack = int(round(computed))
                     # Use harga_jual from last transaction (not from products table)

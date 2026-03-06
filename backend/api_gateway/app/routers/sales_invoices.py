@@ -5,6 +5,7 @@ CRUD endpoints for managing sales invoices with accounting kernel integration.
 Handles draft -> posted -> paid lifecycle with AR and journal entry creation.
 """
 
+from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
@@ -85,26 +86,41 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         )
 
 
+def _d(v) -> Decimal:
+    """Convert any numeric to Decimal for PSAK/IFRS precision."""
+    if isinstance(v, Decimal):
+        return v
+    return Decimal(str(v)) if v else Decimal("0")
+
+
+def _r2(v: Decimal) -> float:
+    """Round Decimal to 2 decimal places, return float for JSON/DB."""
+    return float(v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def calculate_item_totals(item: dict) -> dict:
-    """Calculate line item totals."""
-    subtotal = int(item["quantity"] * item["unit_price"])
-    discount = item.get("discount_amount", 0)
+    """Calculate line item totals with Decimal precision (PSAK/IFRS)."""
+    qty = _d(item["quantity"])
+    price = _d(item["unit_price"])
+    subtotal = qty * price
+
+    discount = _d(item.get("discount_amount", 0))
     if item.get("discount_percent", 0) > 0:
-        discount = int(subtotal * item["discount_percent"] / 100)
+        discount = subtotal * _d(item["discount_percent"]) / Decimal("100")
 
     after_discount = subtotal - discount
-    tax_amount = 0
+    tax_amount = Decimal("0")
     if item.get("tax_rate", 0) > 0:
-        tax_amount = int(after_discount * item["tax_rate"] / 100)
+        tax_amount = after_discount * _d(item["tax_rate"]) / Decimal("100")
 
     total = after_discount + tax_amount
 
     return {
         **item,
-        "subtotal": subtotal,
-        "discount_amount": discount,
-        "tax_amount": tax_amount,
-        "total": total,
+        "subtotal": _r2(subtotal),
+        "discount_amount": _r2(discount),
+        "tax_amount": _r2(tax_amount),
+        "total": _r2(total),
     }
 
 
@@ -167,8 +183,8 @@ async def get_invoice_summary(request: Request):
                     "partial_count": row["partial_count"],
                     "paid_count": row["paid_count"],
                     "overdue_count": row["overdue_count"],
-                    "total_outstanding": int(row["total_outstanding"]),
-                    "total_overdue": int(row["total_overdue"]),
+                    "total_outstanding": float(row["total_outstanding"]),
+                    "total_overdue": float(row["total_overdue"]),
                 },
             }
 
@@ -205,7 +221,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         # Invoice-level discount
         invoice_discount = body.discount_amount
         if body.discount_percent > 0:
-            invoice_discount = int(subtotal * body.discount_percent / 100)
+            invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
 
         # Total
         total_amount = subtotal - total_item_discount - invoice_discount + total_tax
@@ -415,9 +431,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
             """, ctx["tenant_id"], invoice_id)
             # If no row from function: invoice is fully paid (outstanding=0) or draft/void
             if ar_row:
-                journal_amount_paid = int(invoice["total_amount"] - ar_row["outstanding"])
+                journal_amount_paid = float(invoice["total_amount"] - ar_row["outstanding"])
             elif invoice["status"] in ("paid",):
-                journal_amount_paid = int(invoice["total_amount"])
+                journal_amount_paid = float(invoice["total_amount"])
             else:
                 journal_amount_paid = 0
 
@@ -952,7 +968,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 # Invoice-level discount
                 invoice_discount = body.discount_amount
                 if body.discount_percent > 0:
-                    invoice_discount = int(subtotal * body.discount_percent / 100)
+                    invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
 
                 total_amount = (
                     subtotal - total_item_discount - invoice_discount + total_tax
@@ -1203,7 +1219,7 @@ async def update_invoice(
                     # Update invoice totals
                     invoice_discount = body.discount_amount or 0
                     if body.discount_percent and body.discount_percent > 0:
-                        invoice_discount = int(subtotal * body.discount_percent / 100)
+                        invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
 
                     total_amount = (
                         subtotal - total_item_discount - invoice_discount + total_tax
@@ -1864,7 +1880,7 @@ async def record_payment(
                 """,
                     ctx["tenant_id"], rp_id, invoice_id,
                     invoice['invoice_number'],
-                    int(invoice['total_amount']),
+                    float(invoice['total_amount']),
                     remaining,
                     pay_amount,
                     remaining - pay_amount,
@@ -2621,9 +2637,9 @@ async def get_invoice_pdf(
             """, ctx["tenant_id"], invoice_id)
             # If no row from function: invoice is fully paid (outstanding=0) or draft/void
             if pdf_ar_row:
-                pdf_amount_paid = int(invoice["total_amount"] - pdf_ar_row["outstanding"])
+                pdf_amount_paid = float(invoice["total_amount"] - pdf_ar_row["outstanding"])
             elif invoice["status"] in ("paid",):
-                pdf_amount_paid = int(invoice["total_amount"])
+                pdf_amount_paid = float(invoice["total_amount"])
             else:
                 pdf_amount_paid = 0
 

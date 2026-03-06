@@ -149,6 +149,11 @@ body {
 .items-table thead th.col-price { text-align: right; }
 .items-table thead th.col-amount { text-align: right; }
 
+.items-table tbody tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
 .items-table tbody td {
     font-size: 9.5pt;
     color: #1a1a1a;

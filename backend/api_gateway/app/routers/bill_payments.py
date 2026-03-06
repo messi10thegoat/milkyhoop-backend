@@ -906,6 +906,8 @@ async def get_bill_payment(request: Request, payment_id: str):
                 created_by=str(payment["created_by"])
                 if payment.get("created_by")
                 else None,
+                pph_tax_code_id=str(payment["pph_tax_code_id"]) if payment.get("pph_tax_code_id") else None,
+                pph_amount=int(payment["pph_amount"] or 0),
             )
 
             return BillPaymentDetailResponse(success=True, data=detail)
@@ -1608,7 +1610,15 @@ async def void_bill_payment(
                         alloc["bill_id"],
                     )
 
-                # Update payment status and link void journal
+                # Fase 2.3: Void withholding_tax_records linked to this payment
+            await conn.execute("""
+                UPDATE withholding_tax_records
+                SET status = 'void', updated_at = NOW()
+                WHERE payment_id = $1::uuid AND tenant_id = $2
+                  AND status != 'void'
+            """, payment_id, ctx["tenant_id"])
+
+            # Update payment status and link void journal
                 await conn.execute(
                     """
                     UPDATE bill_payments_v2

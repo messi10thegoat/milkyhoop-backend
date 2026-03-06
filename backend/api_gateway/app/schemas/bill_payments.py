@@ -267,6 +267,8 @@ class BillPaymentDetail(BaseModel):
     created_by: Optional[str] = None
 
     # Journal-only flag (Law 29)
+    pph_tax_code_id: Optional[str] = None
+    pph_amount: Optional[int] = 0
     is_journal_only: Optional[bool] = None
 
 

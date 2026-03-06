@@ -231,22 +231,11 @@ async def list_receive_payments(
                 param_idx += 1
 
             if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    outer_conditions.append(
-                        f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    outer_conditions.append(f"({' AND '.join(word_conds)})")
+                outer_conditions.append(
+                    f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx})"
+                )
+                params.append(f"%{search}%")
+                param_idx += 1
 
             if date_from:
                 outer_conditions.append(f"q.payment_date >= ${param_idx}")
@@ -297,7 +286,6 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
-                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -368,7 +356,6 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
-                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -1788,58 +1775,6 @@ async def void_receive_payment(
                     """,
                         payment["journal_id"],
                         void_journal_id,
-                    )
-
-
-                # ── Bank mirror reversal (BankSync Rule 3) ──
-                orig_bank_txn = await conn.fetchrow(
-                    """
-                    SELECT * FROM bank_transactions
-                    WHERE reference_type = 'receive_payment'
-                      AND reference_id = $1
-                      AND tenant_id = $2
-                      AND status != 'void'
-                    """,
-                    payment_id,
-                    ctx["tenant_id"],
-                )
-                if orig_bank_txn:
-                    mirror_type = (
-                        "debit" if orig_bank_txn["transaction_type"] == "credit" else "credit"
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO bank_transactions (
-                            id, tenant_id, bank_account_id, transaction_date,
-                            transaction_type, amount, description,
-                            reference_type, reference_id, journal_id,
-                            status, origin_type, source_module,
-                            created_by, created_at
-                        ) VALUES (
-                            gen_random_uuid(), $1, $2, $3,
-                            $4, $5, $6,
-                            $7, $8, $9,
-                            $10, $11, $12,
-                            $13, NOW()
-                        )
-                        """,
-                        ctx["tenant_id"],
-                        orig_bank_txn["bank_account_id"],
-                        payment["payment_date"],
-                        mirror_type,
-                        abs(orig_bank_txn["amount"]),
-                        f"[VOID] {orig_bank_txn['description'] or ''}",
-                        "receive_payment",
-                        payment_id,
-                        void_journal_id,
-                        "posted",
-                        "system",
-                        "receive_payment",
-                        ctx.get("user_id"),
-                    )
-                    await conn.execute(
-                        "UPDATE bank_transactions SET status = 'void', voided_at = NOW() WHERE id = $1",
-                        orig_bank_txn["id"],
                     )
 
                 # Restore invoice balances
