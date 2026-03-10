@@ -1,6 +1,21 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Faktur {{ bill.invoice_number or '-' }}</title></head>
+<head><meta charset="UTF-8"><title>Faktur {{ bill.invoice_number or '-' }}</title>
+<style>
+/* Bill-specific: pharma column widths (only applied when pharma data exists) */
+.bill-table thead th { font-size: 8pt; }
+.bill-table tbody td { font-size: 9pt; }
+.bill-table .col-desc   { width: 28%; text-align: left; }
+.bill-table .col-unit   { width: 7%; text-align: center; }
+.bill-table .col-batch  { width: 10%; text-align: center; }
+.bill-table .col-exp    { width: 9%; text-align: center; }
+.bill-table .col-qty    { width: 7%; text-align: center; }
+.bill-table .col-disc   { width: 7%; text-align: center; }
+.bill-table .col-bonus  { width: 7%; text-align: center; }
+.bill-table .col-price  { width: 13%; text-align: right; }
+.bill-table .col-amount { width: 12%; text-align: right; }
+</style>
+</head>
 <body>
 <div class="invoice">
 
@@ -8,7 +23,6 @@
     <div class="header">
         <div>
             <h1 class="doc-title">Faktur Pembelian</h1>
-            
         </div>
         {% if bill.tenant and bill.tenant.logo_data %}
         <img src="{{ bill.tenant.logo_data }}" class="company-logo" alt="">
@@ -70,7 +84,52 @@
 
     <div style="height: 28px;"></div>
 
-    <!-- 5. Line Items -->
+    <!-- 5. Line Items — detect pharma columns -->
+    {% set ns = namespace(has_unit=false, has_batch=false, has_exp=false, has_disc=false, has_bonus=false) %}
+    {% for item in bill["items"] %}
+        {% if item.unit %}{% set ns.has_unit = true %}{% endif %}
+        {% if item.batch_no %}{% set ns.has_batch = true %}{% endif %}
+        {% if item.exp_date %}{% set ns.has_exp = true %}{% endif %}
+        {% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.has_disc = true %}{% endif %}
+        {% if item.bonus_qty and item.bonus_qty|int > 0 %}{% set ns.has_bonus = true %}{% endif %}
+    {% endfor %}
+
+    {% set has_pharma = ns.has_unit or ns.has_batch or ns.has_exp or ns.has_bonus %}
+
+    {% if has_pharma %}
+    <!-- Pharma layout: separate columns for unit/batch/exp/disc/bonus -->
+    <table class="items-table bill-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Deskripsi</th>
+                {% if ns.has_unit %}<th class="col-unit">Satuan</th>{% endif %}
+                {% if ns.has_batch %}<th class="col-batch">Batch</th>{% endif %}
+                {% if ns.has_exp %}<th class="col-exp">Exp</th>{% endif %}
+                <th class="col-qty">Qty</th>
+                {% if ns.has_disc %}<th class="col-disc">Disk%</th>{% endif %}
+                {% if ns.has_bonus %}<th class="col-bonus">Bonus</th>{% endif %}
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in bill["items"] %}
+            <tr>
+                <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
+                {% if ns.has_unit %}<td class="col-unit">{{ item.unit or '-' }}</td>{% endif %}
+                {% if ns.has_batch %}<td class="col-batch">{{ item.batch_no or '-' }}</td>{% endif %}
+                {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date or '-' }}</td>{% endif %}
+                <td class="col-qty text-center">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                {% if ns.has_disc %}<td class="col-disc text-center">{{ item.discount_percent|default(0) }}%</td>{% endif %}
+                {% if ns.has_bonus %}<td class="col-bonus text-center">{{ item.bonus_qty|default(0) }}</td>{% endif %}
+                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
+                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <!-- Standard layout: 4 columns (no pharma data) -->
     <table class="items-table">
         <thead>
             <tr>
@@ -83,15 +142,7 @@
         <tbody>
             {% for item in bill["items"] %}
             <tr>
-                <td class="col-desc">
-                    {{ item.product_name or item.description or '-' }}
-                    {% if item.batch_no %}
-                    <br><span class="text-muted">Batch: {{ item.batch_no }}</span>
-                    {% endif %}
-                    {% if item.discount_percent and item.discount_percent|float > 0 %}
-                    <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
-                    {% endif %}
-                </td>
+                <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
                 <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
                 <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
@@ -99,6 +150,7 @@
             {% endfor %}
         </tbody>
     </table>
+    {% endif %}
 
     <!-- 6. Summary -->
     <div class="summary">

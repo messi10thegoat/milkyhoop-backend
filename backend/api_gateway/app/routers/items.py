@@ -142,6 +142,7 @@ async def list_items(
     stock_status: Optional[str] = Query(
         None, description="Filter by stock status: in_stock, low_stock, out_of_stock"
     ),
+    status: Optional[str] = Query(None, description="Filter by status: active, inactive"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -228,6 +229,11 @@ async def list_items(
             params.append(kategori)
             param_idx += 1
 
+        if status:
+            query_parts.append(f"AND p.status = ${param_idx}")
+            params.append(status)
+            param_idx += 1
+
         if search:
             # Split search into words — each word must match name or barcode
             # "kaos oblong 24s" matches "Kaos Oblong + Sablon, Lengan Pendek 24s"
@@ -308,6 +314,9 @@ async def list_items(
                     kategori=row.get("kategori"),
                     deskripsi=row.get("deskripsi"),
                     is_returnable=row.get("is_returnable", True),
+                    track_batches=row.get("track_batches", False),
+                    track_expiry=row.get("track_expiry", False),
+                    default_expiry_days=row.get("default_expiry_days"),
                     sales_price=row.get("sales_price") or row.get("harga_jual"),
                     purchase_price=row.get("purchase_price"),
                     image_url=row.get("image_url"),
@@ -320,6 +329,7 @@ async def list_items(
                     vendor_name=row.get("vendor_name"),
                     sales_tax=row.get("sales_tax"),
                     purchase_tax=row.get("purchase_tax"),
+                    status=row.get("status", "active"),
                     item_code=row.get("item_code"),
                     sku=row.get("sku"),
                     costing_method=row.get("costing_method", "weighted_average"),
@@ -475,6 +485,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                     item_code, sku, inventory_account_id, cogs_account_id,
                     costing_method, opening_stock, opening_stock_rate, opening_stock_date,
                     for_sales, for_purchases, warehouse_id,
+                    track_batches, track_expiry, default_expiry_days,
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -486,6 +497,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                     $23, $24, $25, $26,
                     $27, $28, $29, $30,
                     $31, $32, $33,
+                    $34, $35, $36,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -525,6 +537,9 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.for_sales,
                 body.for_purchases,
                 body.warehouse_id,
+                body.track_batches,
+                body.track_expiry,
+                body.default_expiry_days,
             )
 
             # Insert unit conversions (goods only)
@@ -731,6 +746,9 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 "for_sales": "for_sales",
                 "for_purchases": "for_purchases",
                 "warehouse_id": "warehouse_id",
+                "track_batches": "track_batches",
+                "track_expiry": "track_expiry",
+                "default_expiry_days": "default_expiry_days",
             }
 
             body_dict = body.model_dump(exclude_unset=True, exclude={"conversions"})
@@ -1492,7 +1510,7 @@ async def autocomplete_items(
 
             rows = await conn.fetch(
                 f"""
-                SELECT id, item_code as code, nama_produk as name, item_type, base_unit as unit, sales_price as selling_price, purchase_price
+                SELECT id, item_code as code, nama_produk as name, item_type, base_unit as unit, sales_price as selling_price, purchase_price, track_batches, track_expiry
                 FROM products
                 WHERE tenant_id = $1
                   AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
@@ -1513,7 +1531,7 @@ async def autocomplete_items(
                     "type": row["item_type"],
                     "unit": row["unit"],
                     "sales_price": row["selling_price"], "selling_price": row["selling_price"],
-                    "purchase_price": row["purchase_price"],
+                    "purchase_price": row["purchase_price"], "track_batches": row.get("track_batches", False), "track_expiry": row.get("track_expiry", False),
                 }
                 for row in rows
             ]
@@ -1823,6 +1841,7 @@ async def update_item_status(request: Request, item_id: str):
 async def get_item_activity(
     request: Request,
     item_id: UUID,
+    status: Optional[str] = Query(None, description="Filter by status: active, inactive"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -2092,6 +2111,9 @@ async def get_item(request: Request, item_id: UUID):
                 "kategori": row.get("kategori"),
                 "deskripsi": row.get("deskripsi"),
                 "is_returnable": row.get("is_returnable", True),
+                "track_batches": row.get("track_batches", False), "track_expiry": row.get("track_expiry", False),
+                "track_expiry": row.get("track_expiry", False),
+                "default_expiry_days": row.get("default_expiry_days"),
                 "image_url": row.get("image_url"),
                 "reorder_level": row["reorder_level"]
                 if row.get("reorder_level")

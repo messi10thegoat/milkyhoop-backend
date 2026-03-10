@@ -566,7 +566,7 @@ async def get_low_stock_alerts(
                     COALESCE(stock.current_stock, 0) as current_stock,
                     COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) as minimum_stock,
                     COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) - COALESCE(stock.current_stock, 0) as shortfall,
-                    EXTRACT(DAY FROM (CURRENT_DATE - stock.last_movement))::int as days_since_movement
+                    (CURRENT_DATE - stock.last_movement::date)::int as days_since_movement
                 FROM public.products p
                 LEFT JOIN LATERAL (
                     SELECT

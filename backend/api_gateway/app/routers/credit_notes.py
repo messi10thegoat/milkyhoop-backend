@@ -1233,11 +1233,24 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                         detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})"
                     )
 
-                # Validate account
+                # Validate account — resolve from bank_account_id if provided
+                if body.bank_account_id:
+                    bank_acc = await conn.fetchrow(
+                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        UUID(body.bank_account_id), ctx["tenant_id"]
+                    )
+                    if not bank_acc:
+                        raise HTTPException(status_code=400, detail="Bank account not found")
+                    resolved_account_id = bank_acc["coa_id"]
+                elif body.account_id:
+                    resolved_account_id = UUID(body.account_id)
+                else:
+                    raise HTTPException(status_code=400, detail="Either account_id or bank_account_id is required")
+
                 account = await conn.fetchrow("""
                     SELECT id, account_code as code, name FROM chart_of_accounts
                     WHERE id = $1 AND tenant_id = $2
-                """, UUID(body.account_id), ctx["tenant_id"])
+                """, resolved_account_id, ctx["tenant_id"])
 
                 if not account:
                     raise HTTPException(status_code=400, detail="Payment account not found")
@@ -1505,3 +1518,43 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
     except Exception as e:
         logger.error(f"Error voiding credit note {credit_note_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void credit note")
+
+
+@router.post("/{credit_note_id}/create-tax-invoice")
+async def create_tax_invoice_from_cn(request: Request, credit_note_id: str):
+    """Create faktur pajak retur keluaran dari credit note."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        tid = ctx["tenant_id"]
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+        cn = await conn.fetchrow(
+            "SELECT id, status, tax_invoice_id FROM credit_notes "
+            "WHERE id = $1 AND tenant_id = $2",
+            credit_note_id, ctx["tenant_id"]
+        )
+        if not cn:
+            raise HTTPException(404, "Credit note tidak ditemukan")
+        if cn["status"] == "draft":
+            raise HTTPException(400, "Credit note belum di-post")
+        if cn["tax_invoice_id"]:
+            raise HTTPException(400, "Credit note sudah punya faktur pajak")
+
+    # Delegate to main tax-invoices create endpoint via internal HTTP
+    import httpx
+    auth_header = request.headers.get("authorization", "")
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.post(
+            "http://localhost:8000/api/tax-invoices",
+            json={"source_type": "credit_note", "source_ids": [credit_note_id]},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            timeout=30.0
+        )
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+    return resp.json()

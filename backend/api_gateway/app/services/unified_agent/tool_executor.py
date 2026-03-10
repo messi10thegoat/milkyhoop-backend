@@ -700,10 +700,70 @@ class ToolExecutor:
                         f"Journal preview HTTP {resp.status_code} for {config.action_key}"
                     )
                     return None
-                return resp.json()
+                data = resp.json()
+                # Extract journal_lines list from response dict
+                if isinstance(data, dict) and "journal_lines" in data:
+                    return data["journal_lines"]
+                return data
         except Exception as e:
             logger.warning(f"Journal preview failed for {config.action_key}: {e}")
             return None
+
+    def _normalize_payload(self, action_key: str, payload: dict) -> dict:
+        """
+        Generic field normalization based on FieldSpec.aliases.
+        
+        GPT-4o-mini sends "logical" but wrong field names. Instead of
+        manual if-blocks per action_key, aliases are declared in FieldSpec.
+        
+        Supported patterns:
+        - Simple rename: aliases=["payment_account_id"] -> name="bank_account_id"  
+        - Array extraction: aliases=["EXTRACT:allocations.bill_id"] -> name="bill_id"
+        
+        To add normalization for new module: just add aliases to FieldSpec in registry.
+        No need to edit this file.
+        """
+        from .direct_action_registry import DIRECT_ACTIONS
+        config = DIRECT_ACTIONS.get(action_key)
+        if not config or not config.fields:
+            return payload
+        
+        for field_spec in config.fields:
+            if not hasattr(field_spec, 'aliases') or not field_spec.aliases:
+                continue
+            # Skip if canonical name already present
+            if field_spec.name in payload:
+                continue
+            
+            for alias in field_spec.aliases:
+                if alias.startswith("EXTRACT:"):
+                    # Array extraction: "EXTRACT:allocations.bill_id"
+                    parts = alias[len("EXTRACT:"):].split(".", 1)
+                    if len(parts) == 2:
+                        array_field, nested_key = parts
+                        items = payload.get(array_field, [])
+                        if items and isinstance(items, list) and len(items) > 0:
+                            first = items[0] if isinstance(items[0], dict) else {}
+                            if nested_key in first:
+                                payload[field_spec.name] = first[nested_key]
+                                break
+                elif alias in payload:
+                    # Simple rename
+                    payload[field_spec.name] = payload.pop(alias)
+                    break
+        
+        # Indonesian label -> API value mapping (for user-facing options in registry)
+        _LABEL_TO_API = {
+            "item_type": {"persediaan": "goods", "jasa": "service", "non-persediaan": "non_inventory",
+                          "barang": "goods", "goods": "goods", "service": "service", "non_inventory": "non_inventory"},
+        }
+        for field_name, mapping in _LABEL_TO_API.items():
+            if field_name in payload and isinstance(payload[field_name], str):
+                mapped = mapping.get(payload[field_name].lower().strip())
+                if mapped:
+                    payload[field_name] = mapped
+
+        return payload
 
     async def _execute_propose_direct(self, params: dict) -> dict:
         """Execute a direct action proposal - validate, store pending, return preview."""
@@ -733,90 +793,29 @@ class ToolExecutor:
             return {"message_type": "TEXT", "text": msg}
 
         # === JOURNAL PREVIEW ===
-        journal_preview = None
-        if config.creates_journal and hasattr(config, "journal_preview_endpoint"):
-            journal_preview = await self._get_journal_preview(config, payload)
+        # === GENERIC NORMALIZATION (replaces all manual if-blocks) ===
+        payload = self._normalize_payload(action_key, payload)
 
-        # Normalize legacy/variant field names before validation
-        if action_key in ("create_account", "update_account"):
-            if "account_code" in payload and "code" not in payload:
-                payload["code"] = payload.pop("account_code")
-            if "account_type" in payload and "type" not in payload:
-                payload["type"] = payload.pop("account_type")
-            if "account_type_coa" in payload and "type" not in payload:
-                payload["type"] = payload.pop("account_type_coa")
+        # === POST-NORMALIZATION: domain-specific ID resolution ===
+        # Auto-resolve vendor_id from bill_id when LLM sends non-UUID vendor_id
+        if action_key == "create_bill_payment" and payload.get("bill_id"):
+            vid = str(payload.get("vendor_id", ""))
+            if not vid or len(vid) < 30:  # not a valid UUID
+                try:
+                    from .db_utils import get_session_db_pool
+                    pool = await get_session_db_pool()
+                    bill_row = await pool.fetchrow(
+                        "SELECT vendor_id, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
+                        str(payload["bill_id"]), self.context.tenant_id
+                    )
+                    if bill_row:
+                        payload["vendor_id"] = str(bill_row["vendor_id"])
+                        payload.setdefault("vendor_name", bill_row["vendor_name"])
+                except Exception as e:
+                    logger.warning(f"[create_bill_payment] vendor_id resolve from bill: {e}")
 
-        # Normalize expense field names (paid_through_id, account_id)
-        if action_key == "create_expense":
-            if "bank_account_id" in payload and "paid_through_id" not in payload:
-                payload["paid_through_id"] = payload.pop("bank_account_id")
-            if "payment_account_id" in payload and "paid_through_id" not in payload:
-                payload["paid_through_id"] = payload.pop("payment_account_id")
-            if "expense_account_id" in payload and "account_id" not in payload:
-                payload["account_id"] = payload.pop("expense_account_id")
-
-        # Normalize journal field names (entry_date, description)
-        if action_key == "create_journal_entry":
-            if "journal_date" in payload and "entry_date" not in payload:
-                payload["entry_date"] = payload.pop("journal_date")
-            if "memo" in payload and "description" not in payload:
-                payload["description"] = payload.pop("memo")
-
-        # Normalize void field names
-        if action_key in ("void_receive_payment", "void_bill_payment"):
-            if "reason" in payload and "void_reason" not in payload:
-                payload["void_reason"] = payload.pop("reason")
-
-        # Normalize void/reverse: LLM often puts reason text in 'description'
-        if action_key.startswith("void_") or action_key == "reverse_journal":
-            if "reason" not in payload and "void_reason" not in payload:
-                for alt in ("description", "alasan", "note", "notes", "keterangan"):
-                    if alt in payload:
-                        target = (
-                            "void_reason"
-                            if action_key
-                            in ("void_receive_payment", "void_bill_payment")
-                            else "reason"
-                        )
-                        payload[target] = payload.pop(alt)
-                        break
-
-        # Normalize bill_payment field names
-        if action_key == "create_bill_payment":
-            # LLM sends payment_account_id → we need bank_account_id
-            if "payment_account_id" in payload and "bank_account_id" not in payload:
-                payload["bank_account_id"] = payload.pop("payment_account_id")
-            # LLM sends allocations array → extract bill_id from first allocation
-            if "allocations" in payload and "bill_id" not in payload:
-                allocs = payload.get("allocations", [])
-                if allocs and isinstance(allocs, list) and len(allocs) > 0:
-                    first = allocs[0] if isinstance(allocs[0], dict) else {}
-                    if "bill_id" in first:
-                        payload["bill_id"] = first["bill_id"]
-                    if "amount_applied" in first and "total_amount" not in payload:
-                        payload["total_amount"] = first["amount_applied"]
-
-            # Auto-resolve vendor_id from bill_id when LLM sends non-UUID vendor_id
-            if payload.get("bill_id"):
-                vid = str(payload.get("vendor_id", ""))
-                if not vid or len(vid) < 30:  # not a valid UUID
-                    try:
-                        from .db_utils import get_session_db_pool
-                        pool = await get_session_db_pool()
-                        bill_row = await pool.fetchrow(
-                            "SELECT vendor_id, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
-                            str(payload["bill_id"]), self.context.tenant_id
-                        )
-                        if bill_row:
-                            payload["vendor_id"] = str(bill_row["vendor_id"])
-                            payload.setdefault("vendor_name", bill_row["vendor_name"])
-                    except Exception as e:
-                        logger.warning(f"[create_bill_payment] vendor_id resolve from bill: {e}")
-
-        # Normalize receive_payment field names
+        # Auto-extract customer_id from allocations for receive_payment
         if action_key == "create_receive_payment":
-            if "payment_account_id" in payload and "bank_account_id" not in payload:
-                payload["bank_account_id"] = payload.pop("payment_account_id")
             if "invoice_id" in payload and "allocations" not in payload:
                 payload["allocations"] = [{"invoice_id": payload["invoice_id"], "amount_applied": payload.get("total_amount", payload.get("amount", 0))}]
             if "allocations" in payload and "customer_id" not in payload:
@@ -832,14 +831,38 @@ class ToolExecutor:
         # Validate required fields
         is_valid, missing = validate_payload(action_key, payload)
         if not is_valid:
+            # Build helpful message with field descriptions
+            from .direct_action_registry import DIRECT_ACTIONS
+            field_hints = []
+            da_config = DIRECT_ACTIONS.get(action_key)
+            if da_config:
+                field_map = {f.name: f for f in da_config.fields}
+                for m in missing:
+                    f = field_map.get(m)
+                    if f and f.options:
+                        opts = ", ".join(f.options)
+                        field_hints.append(f"**{f.label}** ({opts})")
+                    elif f and f.description:
+                        field_hints.append(f"**{f.label}** ({f.description})")
+                    elif f:
+                        field_hints.append(f"**{f.label}**")
+                    else:
+                        field_hints.append(f"**{m}**")
+            hint_str = ", ".join(field_hints) if field_hints else ", ".join(missing)
             return {
                 "success": False,
-                "error": f"Field berikut belum diisi: {', '.join(missing)}. Mohon lengkapi dulu.",
+                "error": f"Saya perlu info tambahan untuk melanjutkan: {hint_str}. Bisa tolong lengkapi? 😊",
                 "error_type": "VALIDATION_ERROR",
+                "missing_fields": missing,
             }
 
         # Apply defaults
         payload = apply_defaults(action_key, payload)
+
+        # === JOURNAL PREVIEW (after normalization + validation + defaults) ===
+        journal_preview = None
+        if config.creates_journal and config.journal_preview_endpoint:
+            journal_preview = await self._get_journal_preview(config, payload)
 
         # Store pending action
         pending_id = str(uuid.uuid4())
@@ -874,7 +897,7 @@ class ToolExecutor:
             return _error("DB_ERROR", f"Gagal menyimpan action: {str(e)[:200]}")
 
         # Build confirmation table + structured review card
-        confirmation_table = build_confirmation_table(action_key, payload)
+        confirmation_table = build_confirmation_table(action_key, payload, journal_preview)
         review_card = build_review_card_payload(action_key, payload, journal_preview)
 
         response_data = {
@@ -884,7 +907,7 @@ class ToolExecutor:
             "data": {
                 "pending_action_id": pending_id,
                 "action_key": action_key,
-                "display_name": config.display_name,
+                "display_name": f"{config.display_name}: {payload.get('name') or payload.get('entity_name') or ''}" .strip(': ') if action_key.startswith("update_") and (payload.get('name') or payload.get('entity_name')) else config.display_name,
                 "payload": payload,
                 "expires_at": expires_at.isoformat(),
                 "risk_level": config.risk_level,

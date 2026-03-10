@@ -44,6 +44,7 @@ class OpenAIClient(LLMClient):
         model: str,
         temperature: float = 0.1,
         max_tokens: int = 4096,
+        response_format=None,
     ) -> LLMResponse:
         openai_messages = self.convert_messages(messages)
         openai_tools = self.convert_tools(tools)
@@ -54,7 +55,10 @@ class OpenAIClient(LLMClient):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if openai_tools:
+        if response_format:
+            # Structured output mode — cannot combine with tools
+            payload["response_format"] = response_format
+        elif openai_tools:
             payload["tools"] = openai_tools
             payload["tool_choice"] = "auto"
 

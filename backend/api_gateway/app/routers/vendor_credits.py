@@ -256,13 +256,13 @@ async def list_vendor_credits(
             items = [
                 {
                     "id": str(row["id"]),
-                    "credit_number": row["credit_number"],
+                    "vendor_credit_number": row["credit_number"],
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
-                    "credit_date": row["credit_date"].isoformat(),
+                    "vendor_credit_date": row["credit_date"].isoformat(),
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
-                    "amount_received": row["amount_received"] or 0,
+                    "amount_refunded": row["amount_received"] or 0,
                     "remaining_amount": row["total_amount"] - (row["amount_applied"] or 0) - (row["amount_received"] or 0),
                     "status": row["status"],
                     "reason": row["reason"],
@@ -387,7 +387,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                 "success": True,
                 "data": {
                     "id": str(vc["id"]),
-                    "credit_number": vc["credit_number"],
+                    "vendor_credit_number": vc["credit_number"],
                     "vendor_id": str(vc["vendor_id"]) if vc["vendor_id"] else None,
                     "vendor_name": vc["vendor_name"],
                     "original_bill_id": str(vc["original_bill_id"]) if vc["original_bill_id"] else None,
@@ -399,10 +399,10 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "tax_amount": vc["tax_amount"] or 0,
                     "total_amount": vc["total_amount"],
                     "amount_applied": vc["amount_applied"] or 0,
-                    "amount_received": vc["amount_received"] or 0,
+                    "amount_refunded": vc["amount_received"] or 0,
                     "remaining_amount": remaining,
                     "status": vc["status"],
-                    "credit_date": vc["credit_date"].isoformat(),
+                    "vendor_credit_date": vc["credit_date"].isoformat(),
                     "reason": vc["reason"],
                     "reason_detail": vc["reason_detail"],
                     "ref_no": vc["ref_no"],
@@ -425,8 +425,6 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                             "tax_amount": item["tax_amount"] or 0,
                             "subtotal": item["subtotal"],
                             "total": item["total"],
-                            "batch_no": item["batch_no"],
-                            "exp_date": item["exp_date"].isoformat() if item["exp_date"] else None,
                             "line_number": item["line_number"],
                         }
                         for item in items
@@ -493,7 +491,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
             async with conn.transaction():
                 # Generate vendor credit number
                 vc_number = await conn.fetchval(
-                    "SELECT generate_credit_number($1, 'VC')",
+                    "SELECT generate_vendor_credit_number($1, 'VC')",
                     ctx["tenant_id"]
                 )
 
@@ -552,7 +550,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                     body.tax_rate,
                     overall_tax,
                     total_amount,
-                    body.credit_date,
+                    body.vendor_credit_date,
                     body.reason,
                     body.reason_detail,
                     body.ref_no,
@@ -568,8 +566,8 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
                             tax_code, tax_rate, tax_amount,
-                            subtotal, total, batch_no, exp_date, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                            subtotal, total, line_number
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         vc_id,
                         UUID(item['item_id']) if item.get('item_id') else None,
@@ -585,8 +583,6 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                         item.get('tax_amount', 0),
                         item['subtotal'],
                         item['total'],
-                        item.get('batch_no'),
-                        item.get('exp_date'),
                         idx
                     )
 
@@ -597,7 +593,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                     "message": "Vendor credit created successfully",
                     "data": {
                         "id": str(vc_id),
-                        "credit_number": vc_number,
+                        "vendor_credit_number": vc_number,
                         "total_amount": total_amount,
                         "status": "draft"
                     }
@@ -703,8 +699,8 @@ async def update_vendor_credit(request: Request, vendor_credit_id: UUID, body: U
                                 quantity, unit, unit_price,
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
-                                subtotal, total, batch_no, exp_date, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                                subtotal, total, line_number
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         """,
                             vendor_credit_id,
                             UUID(item['item_id']) if item.get('item_id') else None,
@@ -720,8 +716,6 @@ async def update_vendor_credit(request: Request, vendor_credit_id: UUID, body: U
                             item.get('tax_amount', 0),
                             item['subtotal'],
                             item['total'],
-                            item.get('batch_no'),
-                            item.get('exp_date'),
                             idx
                         )
 
@@ -812,7 +806,7 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID):
                 "message": "Vendor credit deleted successfully",
                 "data": {
                     "id": str(vendor_credit_id),
-                    "credit_number": vc["credit_number"]
+                    "vendor_credit_number": vc["credit_number"]
                 }
             }
 
@@ -904,9 +898,9 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        memo, source_type, source_id,
-                        status, total_debit, total_credit, created_by, updated_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT', $6, 'DRAFT', $7, $7, $8, $8)
+                        description, source_type, source_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT', $6, 'DRAFT', $7, $7, $8)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -1211,11 +1205,24 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                         detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})"
                     )
 
-                # Validate account
+                # Validate account — resolve from bank_account_id if provided
+                if body.bank_account_id:
+                    bank_acc = await conn.fetchrow(
+                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                        UUID(body.bank_account_id), ctx["tenant_id"]
+                    )
+                    if not bank_acc:
+                        raise HTTPException(status_code=400, detail="Bank account not found")
+                    resolved_account_id = bank_acc["coa_id"]
+                elif body.account_id:
+                    resolved_account_id = UUID(body.account_id)
+                else:
+                    raise HTTPException(status_code=400, detail="Either account_id or bank_account_id is required")
+
                 account = await conn.fetchrow("""
                     SELECT id, account_code as code, name FROM chart_of_accounts
                     WHERE id = $1 AND tenant_id = $2
-                """, UUID(body.account_id), ctx["tenant_id"])
+                """, resolved_account_id, ctx["tenant_id"])
 
                 if not account:
                     raise HTTPException(status_code=400, detail="Payment account not found")
@@ -1248,9 +1255,9 @@ async def receive_refund(request: Request, vendor_credit_id: UUID, body: Receive
                 await conn.execute("""
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        memo, source_type, source_id,
-                        status, total_debit, total_credit, created_by, updated_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT_REFUND', $6, 'DRAFT', $7, $7, $8, $8)
+                        description, source_type, source_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT_REFUND', $6, 'DRAFT', $7, $7, $8)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -1422,9 +1429,9 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
                     await conn.execute("""
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
-                            memo, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by, updated_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_CREDIT', $5, $6, 'DRAFT', $7, $7, $8, $8)
+                            description, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_CREDIT', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1486,3 +1493,43 @@ async def void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Voi
     except Exception as e:
         logger.error(f"Error voiding vendor credit {vendor_credit_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void vendor credit")
+
+
+@router.post("/{vendor_credit_id}/create-tax-invoice")
+async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str):
+    """Create faktur pajak retur masukan dari vendor credit."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        tid = ctx["tenant_id"]
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+        vc = await conn.fetchrow(
+            "SELECT id, status, tax_invoice_id FROM vendor_credits "
+            "WHERE id = $1 AND tenant_id = $2",
+            vendor_credit_id, ctx["tenant_id"]
+        )
+        if not vc:
+            raise HTTPException(404, "Vendor credit tidak ditemukan")
+        if vc["status"] == "draft":
+            raise HTTPException(400, "Vendor credit belum di-post")
+        if vc["tax_invoice_id"]:
+            raise HTTPException(400, "Vendor credit sudah punya faktur pajak")
+
+    # Delegate to main tax-invoices create endpoint via internal HTTP
+    import httpx
+    auth_header = request.headers.get("authorization", "")
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.post(
+            "http://localhost:8000/api/tax-invoices",
+            json={"source_type": "vendor_credit", "source_ids": [vendor_credit_id]},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            timeout=30.0
+        )
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+    return resp.json()

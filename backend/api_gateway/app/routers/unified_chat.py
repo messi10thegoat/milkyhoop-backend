@@ -375,6 +375,7 @@ class CancelActionRequest(BaseModel):
     pending_action_id: str = Field(
         ..., description="ID of the pending action to cancel"
     )
+    is_edit: bool = Field(False, description="If true, preserve pending_payload and set editing_mode")
 
 
 class ChatMessageResponse(BaseModel):
@@ -608,17 +609,17 @@ async def send_message(request: Request, body: ChatMessageRequest):
     """
     ctx = _get_user_context(request)
 
-    # FSM Guard: If awaiting confirmation, warn user
+    # Pending Action Guard: check pending_actions table (single source of truth)
+    # No more FSM state sync — pending_actions row is always accurate.
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            sm_guard = SessionManager(
-                db_pool=db_pool_guard,
-                tenant_id=ctx["tenant_id"],
-                user_id=ctx["user_id"],
+            has_pending = await db_pool_guard.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+                body.session_id,
             )
-            guard_state = await sm_guard.get_state(body.session_id)
-            if guard_state.fsm_state == "AWAITING_CONFIRMATION":
+            if has_pending:
                 return ChatMessageResponse(
                     message_type="TEXT",
                     text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
@@ -947,17 +948,16 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
     """
     ctx = _get_user_context(request)
 
-    # FSM Guard: If awaiting confirmation, return immediately (not streamed)
+    # Pending Action Guard (streaming endpoint)
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            sm_guard = SessionManager(
-                db_pool=db_pool_guard,
-                tenant_id=ctx["tenant_id"],
-                user_id=ctx["user_id"],
+            _has_pending_stream = await db_pool_guard.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+                body.session_id,
             )
-            guard_state = await sm_guard.get_state(body.session_id)
-            if guard_state.fsm_state == "AWAITING_CONFIRMATION":
+            if _has_pending_stream:
                 # Return as a single SSE event
                 async def _guard_gen():
                     _resp = {
@@ -1143,8 +1143,12 @@ async def send_message_with_files(
                 tenant_id=ctx["tenant_id"],
                 user_id=ctx["user_id"],
             )
-            guard_state = await sm_guard.get_state(session_id)
-            if guard_state.fsm_state == "AWAITING_CONFIRMATION":
+            _has_pending_upload = await db_pool_guard.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+                session_id,
+            )
+            if _has_pending_upload:
                 return ChatMessageResponse(
                     message_type="TEXT",
                     text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
@@ -2188,14 +2192,24 @@ async def _confirm_direct_action(
             except Exception as _ta_err:
                 logger.warning(f"[Tutorial] Auto-advance failed: {_ta_err}")
 
+            # Response composer: inject CTA buttons
+            from ..services.unified_agent.response_composer import compose_confirm_response
+            _composed = compose_confirm_response(
+                action_key=action_key,
+                success_message=success_msg,
+                payload=payload,
+                action_result=result_data,
+            )
+
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
-                text=success_msg,
+                text=_composed["text"],
                 data={
                     "success": True,
                     "action_type": action_key.upper(),
                     "entity_id": str(entity_id),
                     "entity_type": config.entity_type,
+                    "next_actions": _composed.get("next_actions"),
                 },
                 workflow_continuation=True if is_recon else None,
             )
@@ -2317,12 +2331,42 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
                     await StateUpdateHooks.after_confirm(
                         sm, body.session_id, action_type, result
                     )
+                    # Clear pending payload + FSM → IDLE on successful confirm
+                    await sm.update_state(body.session_id, pending_payload={}, pending_intent="", editing_mode=False)
+                    await sm.transition_fsm(body.session_id, FSMState.IDLE.value)
                     logger.info(
                         f"[Confirm] Layer 2 updated: session={body.session_id[:8]} "
-                        f"action={action_type} status=confirmed"
+                        f"action={action_type} status=confirmed fsm=IDLE"
                     )
+
+                    # Cancel crud_form workflow if active
+                    try:
+                        from ..services.unified_agent.workflow_engine import WorkflowEngine
+                        _wf_db_confirm = await get_session_db_pool()
+                        _wf_eng_confirm = WorkflowEngine(
+                            _wf_db_confirm, ctx["tenant_id"], ctx["user_id"], "",
+                        )
+                        _wf_confirm = await _wf_eng_confirm.get_state(body.session_id, "crud_form")
+                        if _wf_confirm and _wf_confirm.status == "active":
+                            await _wf_eng_confirm.cancel(body.session_id, "crud_form")
+                            logger.info("[Confirm] Cancelled crud_form workflow after confirm success")
+                    except Exception as _wf_err:
+                        logger.warning("[Confirm] crud_form cancel failed (non-fatal): %s", _wf_err)
+
             except Exception as hook_err:
                 logger.warning(f"[Confirm] Layer 2 hook failed (non-fatal): {hook_err}")
+
+            # Fallback: ensure FSM is IDLE even if hooks failed
+            if body.session_id:
+                try:
+                    _fb_pool = await get_session_db_pool()
+                    _fb_sm = SessionManager(db_pool=_fb_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                    _fb_state = await _fb_sm.get_state(body.session_id)
+                    if _fb_state.fsm_state != "IDLE":
+                        await _fb_sm.transition_fsm(body.session_id, FSMState.IDLE.value)
+                        logger.warning("[Confirm] Fallback FSM→IDLE (was %s)", _fb_state.fsm_state)
+                except Exception:
+                    pass
 
             text = (
                 "Dokumen berhasil disimpan sebagai draft."
@@ -2384,14 +2428,24 @@ async def cancel_action(request: Request, body: CancelActionRequest):
 
         # FSM: AWAITING_CONFIRMATION -> IDLE
         try:
+            db_pool_fsm = await get_session_db_pool()
+            sm_fsm = SessionManager(
+                db_pool=db_pool_fsm,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+            )
             if body.session_id:
-                db_pool_fsm = await get_session_db_pool()
-                sm_fsm = SessionManager(
-                    db_pool=db_pool_fsm,
-                    tenant_id=ctx["tenant_id"],
-                    user_id=ctx["user_id"],
-                )
                 await sm_fsm.transition_fsm(body.session_id, FSMState.IDLE.value)
+            else:
+                # Fallback: clear ALL AWAITING_CONFIRMATION for this user
+                await db_pool_fsm.execute(
+                    """UPDATE chat_session_state
+                       SET fsm_state = 'IDLE'
+                       WHERE tenant_id = $1
+                         AND fsm_state = 'AWAITING_CONFIRMATION'""",
+                    ctx["tenant_id"],
+                )
+                logger.warning("[Cancel] No session_id — cleared all AWAITING_CONFIRMATION for user %s", ctx["user_id"])
         except Exception as fsm_err:
             logger.warning(f"[Cancel] FSM transition failed (non-fatal): {fsm_err}")
 
@@ -2412,6 +2466,55 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 )
         except Exception as hook_err:
             logger.warning(f"[Cancel] Layer 2 hook failed (non-fatal): {hook_err}")
+
+        # === Edit mode: preserve pending_payload and set editing_mode ===
+        if body.is_edit and body.session_id:
+            try:
+                db_pool_edit = await get_session_db_pool()
+                sm_edit = SessionManager(
+                    db_pool=db_pool_edit,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                )
+                # Set editing_mode=True, keep pending_payload and pending_intent
+                await sm_edit.update_state(body.session_id, editing_mode=True)
+                logger.warning("[Cancel-Edit] editing_mode=True for session=%s", body.session_id[:8])
+            except Exception as edit_err:
+                logger.warning("[Cancel-Edit] Failed to set editing_mode: %s", edit_err)
+
+            # Also rewind crud_form workflow to COLLECTING (keep payload)
+            try:
+                from ..services.unified_agent.workflow_engine import WorkflowEngine
+                _pool_edit = await get_session_db_pool()
+                _eng_edit = WorkflowEngine(
+                    db_pool=_pool_edit,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                    auth_token=ctx["auth_token"],
+                )
+                _wf_edit = await _eng_edit.get_state(body.session_id, "crud_form")
+                if _wf_edit and _wf_edit.status == "active":
+                    _wf_edit.current_state = "COLLECTING"
+                    await _eng_edit._save(_wf_edit)
+                    logger.warning("[Cancel-Edit] Rewound crud_form to COLLECTING for session=%s", body.session_id[:8])
+            except Exception as _wf_edit_err:
+                logger.warning("[Cancel-Edit] Workflow rewind failed (non-fatal): %s", _wf_edit_err)
+        elif not body.is_edit and body.session_id:
+            # Full cancel — also cancel any active crud_form workflow
+            try:
+                from ..services.unified_agent.workflow_engine import WorkflowEngine
+                _pool_cancel = await get_session_db_pool()
+                _eng_cancel = WorkflowEngine(
+                    db_pool=_pool_cancel,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                    auth_token=ctx["auth_token"],
+                )
+                _cancelled = await _eng_cancel.cancel(body.session_id, "crud_form")
+                if _cancelled:
+                    logger.warning("[Cancel] Cancelled crud_form workflow for session=%s", body.session_id[:8])
+            except Exception as _wf_cancel_err:
+                logger.warning("[Cancel] Workflow cancel failed (non-fatal): %s", _wf_cancel_err)
 
         # Build contextual cancel message with workflow info
         cancel_text = "Ok, dilewati."

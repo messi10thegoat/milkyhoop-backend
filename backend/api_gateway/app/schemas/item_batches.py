@@ -86,6 +86,7 @@ class ItemBatchData(BaseModel):
     item_id: UUID
     item_code: Optional[str] = None
     item_name: Optional[str] = None
+    base_unit: Optional[str] = None
     batch_number: str
     manufacture_date: Optional[date] = None
     expiry_date: Optional[date] = None

@@ -346,7 +346,7 @@ async def record_inventory_reversal(
         """
         SELECT id, product_id, product_code, product_name,
                quantity_in, quantity_out, unit_cost, total_cost,
-               warehouse_id, source_number
+               warehouse_id, source_number, batch_id
         FROM inventory_ledger
         WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3
         ORDER BY created_at
@@ -412,13 +412,13 @@ async def record_inventory_reversal(
                 movement_type, movement_date, source_type, source_id, source_number,
                 quantity_in, quantity_out, quantity_balance,
                 unit_cost, total_cost, average_cost,
-                warehouse_id, journal_id, created_by, notes
+                warehouse_id, journal_id, created_by, notes, batch_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9, $10,
                 $11, $12, $13,
                 $14, $15, $16,
-                $17, $18, $19, $20
+                $17, $18, $19, $20, $21
             )
             """,
             ledger_id, tenant_id, product_id,
@@ -429,7 +429,45 @@ async def record_inventory_reversal(
             unit_cost, total_cost, avg_cost,
             entry["warehouse_id"], reversal_journal_id, created_by,
             f"{notes_prefix} - inventory reversal",
+            entry["batch_id"],
         )
+
+        # Reverse batch quantities if batch_id present
+        batch_id = entry.get("batch_id") or entry["batch_id"] if entry["batch_id"] else None
+        if batch_id:
+            if orig_qty_in > 0:
+                # Was inbound (purchase) — reverse = reduce stock
+                qty_to_reverse = orig_qty_in
+                direction_multiplier = Decimal("-1")
+            else:
+                # Was outbound (sale) — reverse = restore stock
+                qty_to_reverse = orig_qty_out
+                direction_multiplier = Decimal("1")
+
+            batch_delta = qty_to_reverse * direction_multiplier
+
+            # Update batch_warehouse_stock
+            wh_id = entry.get("warehouse_id")
+            if wh_id:
+                await conn.execute("""
+                    UPDATE batch_warehouse_stock
+                    SET quantity = quantity + $3,
+                        last_movement_date = NOW(), updated_at = NOW()
+                    WHERE batch_id = $1 AND warehouse_id = $2
+                """, batch_id, wh_id, float(batch_delta))
+
+            # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
+
+            # Mark depleted if needed
+            await conn.execute("""
+                UPDATE item_batches SET status = 'depleted'
+                WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
+            """, batch_id)
+
+            logger.info(
+                f"Batch reversal: batch_id={batch_id} delta={batch_delta} "
+                f"warehouse={wh_id}"
+            )
 
         results.append({
             "product_id": product_id,

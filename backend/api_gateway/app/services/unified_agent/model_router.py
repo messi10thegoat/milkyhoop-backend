@@ -70,6 +70,11 @@ MODEL_CONFIG: dict[str, ModelTier] = {
         provider="openai",
         max_tokens=4096,
     ),
+    "capable": ModelTier(
+        model_id="gpt-4o-2024-08-06",
+        provider="openai",
+        max_tokens=4096,
+    ),
     "cheap": ModelTier(
         model_id="gpt-4o-mini",
         provider="openai",

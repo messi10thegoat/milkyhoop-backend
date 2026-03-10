@@ -5,7 +5,7 @@ Endpoints for managing expenses with auto journal posting.
 Supports single and itemized expenses with PPh withholding.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, Body, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, Dict, Any
 from uuid import UUID
@@ -88,6 +88,88 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
 # =============================================================================
 # HEALTH CHECK
 # =============================================================================
+
+
+# === Journal Preview (read-only, for DirectAction confirmation card) ===
+
+@router.post("/preview-journal")
+async def preview_journal(request: Request, body: dict = Body(...)):
+    """
+    Dry-run journal preview for expense. Returns debit/credit lines WITHOUT posting.
+    Used by DirectAction confirmation card to show accounting impact.
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+
+        amount = float(body.get("amount", 0) or 0)
+        tax_rate = float(body.get("tax_rate", 0) or 0)
+        paid_through_id = body.get("paid_through_id", "")
+        account_id = body.get("account_id", "")
+
+        subtotal = amount
+        tax_amount = subtotal * tax_rate / 100.0 if tax_rate else 0
+
+        lines = []
+
+        # Dr. Expense account
+        expense_name = "Beban"
+        expense_code = ""
+        if account_id:
+            try:
+                from uuid import UUID
+                row = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts WHERE id = $1::uuid AND tenant_id = $2",
+                    UUID(account_id), ctx["tenant_id"]
+                )
+                if row:
+                    expense_name = row["name"]
+                    expense_code = row["account_code"]
+            except Exception:
+                pass
+        lines.append({"account_name": expense_name, "account_code": expense_code, "debit": subtotal, "credit": 0})
+
+        # Dr. PPN Masukan (if tax)
+        if tax_amount > 0:
+            ppn_name = "PPN Masukan"
+            ppn_code = "1-10800"
+            try:
+                row = await conn.fetchrow(
+                    "SELECT name FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800' AND is_active = true",
+                    ctx["tenant_id"]
+                )
+                if row:
+                    ppn_name = row["name"]
+            except Exception:
+                pass
+            lines.append({"account_name": ppn_name, "account_code": ppn_code, "debit": tax_amount, "credit": 0})
+
+        # Cr. Bank/Kas
+        bank_name = "Bank/Kas"
+        bank_code = ""
+        if paid_through_id:
+            try:
+                from uuid import UUID
+                ba_row = await conn.fetchrow(
+                    """SELECT ba.coa_id, ca.name, ca.account_code
+                       FROM bank_accounts ba
+                       JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
+                       WHERE ba.id = $1::uuid AND ba.tenant_id = $2""",
+                    UUID(paid_through_id), ctx["tenant_id"]
+                )
+                if ba_row:
+                    bank_name = ba_row["name"]
+                    bank_code = ba_row["account_code"]
+            except Exception:
+                pass
+        total_credit = subtotal + tax_amount
+        lines.append({"account_name": bank_name, "account_code": bank_code, "debit": 0, "credit": total_credit})
+
+        return {"journal_lines": lines}
+
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint for the expenses service."""

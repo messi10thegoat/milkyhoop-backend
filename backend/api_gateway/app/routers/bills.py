@@ -928,49 +928,165 @@ async def upload_attachment(
     bill_id: UUID,
     file: UploadFile = File(..., description="Image or PDF file (max 5MB)"),
 ):
-    """
-    Upload an attachment to a bill.
-
-    Supported formats: JPEG, PNG, PDF (max 5MB)
-    """
+    """Upload an attachment to a bill (stored in MinIO)."""
     try:
         ctx = get_user_context(request)
-
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
         # Validate file size (5MB max)
-        MAX_SIZE = 5 * 1024 * 1024
         content = await file.read()
-        if len(content) > MAX_SIZE:
+        if len(content) > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+        await file.seek(0)
 
         # Validate file type
-        allowed_types = ["image/jpeg", "image/png", "application/pdf"]
+        allowed_types = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
         if file.content_type not in allowed_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"File type not allowed. Allowed: {', '.join(allowed_types)}",
+                detail=f"File type {file.content_type} not allowed. Use JPEG, PNG, WebP, or PDF.",
             )
 
-        # TODO: Implement file storage (S3, local, etc.)
-        # For now, return placeholder response
-        return {
-            "success": True,
-            "data": {
-                "id": str(bill_id),  # placeholder
-                "filename": file.filename,
-                "url": f"/attachments/{bill_id}/{file.filename}",  # placeholder
-            },
-        }
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx["user_id"]
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+
+            # Verify bill exists
+            bill = await conn.fetchrow(
+                "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2",
+                bill_id, tenant_id,
+            )
+            if not bill:
+                raise HTTPException(status_code=404, detail="Bill not found")
+
+            # Upload to MinIO
+            # storage_service already imported at top level
+            storage = get_storage_service()
+            result = await storage.upload_file(
+                file=file,
+                tenant_id=tenant_id,
+                category="bill-attachments",
+            )
+
+            # Insert into bill_attachments
+            import uuid as uuid_mod
+            attachment_id = uuid_mod.uuid4()
+            await conn.execute(
+                """INSERT INTO bill_attachments (id, bill_id, filename, file_path, file_size, mime_type, uploaded_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                attachment_id, bill_id, file.filename, result.file_path,
+                len(content), file.content_type, user_id,
+            )
+
+            return {
+                "success": True,
+                "data": {
+                    "id": str(attachment_id),
+                    "filename": file.filename,
+                    "url": result.url,
+                    "size": len(content),
+                    "mime_type": file.content_type,
+                },
+            }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error uploading attachment for bill {bill_id}: {e}", exc_info=True
-        )
+        logger.error(f"Error uploading attachment for bill {bill_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to upload attachment")
+
+
+# =============================================================================
+# LIST BILL ATTACHMENTS
+# =============================================================================
+@router.get("/{bill_id}/attachments")
+async def list_bill_attachments(
+    request: Request,
+    bill_id: UUID,
+):
+    """List attachments for a bill with signed URLs."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+
+        bill = await conn.fetchrow(
+            "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2",
+            bill_id, tenant_id,
+        )
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+
+        rows = await conn.fetch(
+            "SELECT id, filename, file_path, file_size, mime_type, uploaded_at FROM bill_attachments WHERE bill_id = $1 ORDER BY uploaded_at DESC",
+            bill_id,
+        )
+
+        # storage_service already imported at top level
+        storage = get_storage_service()
+
+        attachments = []
+        for r in rows:
+            try:
+                url = await storage.generate_signed_url(r["file_path"]) if r["file_path"] else None
+            except Exception:
+                url = None
+            attachments.append({
+                "id": str(r["id"]),
+                "filename": r["filename"],
+                "url": url,
+                "size": r["file_size"],
+                "mime_type": r["mime_type"],
+                "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+            })
+
+        return {"attachments": attachments}
+
+
+# =============================================================================
+# DELETE BILL ATTACHMENT
+# =============================================================================
+@router.delete("/{bill_id}/attachments/{attachment_id}")
+async def delete_bill_attachment(
+    request: Request,
+    bill_id: UUID,
+    attachment_id: UUID,
+):
+    """Delete a bill attachment from storage and database."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+
+        row = await conn.fetchrow(
+            """SELECT ba.id, ba.file_path FROM bill_attachments ba
+               JOIN bills b ON b.id = ba.bill_id
+               WHERE ba.id = $1 AND ba.bill_id = $2 AND b.tenant_id = $3""",
+            attachment_id, bill_id, tenant_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+
+        # Delete from MinIO
+        # storage_service already imported at top level
+        storage = get_storage_service()
+        try:
+            await storage.delete_file(row["file_path"])
+        except Exception:
+            pass  # File may already be gone
+
+        # Delete from DB
+        await conn.execute("DELETE FROM bill_attachments WHERE id = $1", attachment_id)
+
+        return {"success": True, "message": "Attachment deleted"}
 
 
 # =============================================================================
@@ -1351,3 +1467,48 @@ async def get_bill_activity(request: Request, bill_id: UUID):
     except Exception as e:
         logger.error(f"Error getting bill activity for {bill_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get bill activity")
+
+
+@router.get("/{bill_id}/attachments/{attachment_id}/download")
+async def download_bill_attachment(
+    request: Request,
+    bill_id: UUID,
+    attachment_id: UUID,
+):
+    """Proxy-download a bill attachment (avoids mixed-content HTTP→HTTPS)."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+        row = await conn.fetchrow(
+            """SELECT ba.filename, ba.file_path, ba.mime_type
+            FROM bill_attachments ba
+            JOIN bills b ON b.id = ba.bill_id
+            WHERE ba.id = $1 AND ba.bill_id = $2 AND b.tenant_id = $3""",
+            attachment_id, bill_id, tenant_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    storage = get_storage_service()
+    try:
+        obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
+        body = obj["Body"]
+
+        def iter_body():
+            while chunk := body.read(65536):
+                yield chunk
+            body.close()
+
+        return StreamingResponse(
+            iter_body(),
+            media_type=row["mime_type"] or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'inline; filename="{row["filename"]}"',
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error downloading attachment {attachment_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to download attachment")

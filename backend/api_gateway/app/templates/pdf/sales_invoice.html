@@ -76,7 +76,58 @@
 
     <div style="height: 28px;"></div>
 
-    <!-- 5. Line Items -->
+    <!-- 5. Line Items (adaptive pharma layout) -->
+    {% set ns = namespace(has_unit=false, has_batch=false, has_exp=false, has_disc=false) %}
+    {% for item in invoice["items"] %}
+        {% if item.unit %}{% set ns.has_unit = true %}{% endif %}
+        {% if item.batch_no %}{% set ns.has_batch = true %}{% endif %}
+        {% if item.exp_date %}{% set ns.has_exp = true %}{% endif %}
+        {% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.has_disc = true %}{% endif %}
+    {% endfor %}
+    {% set has_pharma = ns.has_unit or ns.has_batch or ns.has_exp %}
+
+    {% if has_pharma %}
+    <style>
+    .si-table thead th { font-size: 8pt; font-weight: 400; color: #1a1a1a; }
+    .si-table tbody td { font-size: 9pt; }
+    .si-table .col-desc   { width: 28%; text-align: left; }
+    .si-table .col-unit   { width: 8%; text-align: center; }
+    .si-table .col-batch  { width: 11%; text-align: center; }
+    .si-table .col-exp    { width: 10%; text-align: center; }
+    .si-table .col-qty    { width: 8%; text-align: center; }
+    .si-table .col-disc   { width: 8%; text-align: center; }
+    .si-table .col-price  { width: 14%; text-align: right; }
+    .si-table .col-amount { width: 13%; text-align: right; }
+    </style>
+    <table class="items-table si-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Deskripsi</th>
+                {% if ns.has_unit %}<th class="col-unit">Satuan</th>{% endif %}
+                {% if ns.has_batch %}<th class="col-batch">Batch</th>{% endif %}
+                {% if ns.has_exp %}<th class="col-exp">Exp</th>{% endif %}
+                <th class="col-qty">Qty</th>
+                {% if ns.has_disc %}<th class="col-disc">Disk%</th>{% endif %}
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in invoice["items"] %}
+            <tr>
+                <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
+                {% if ns.has_unit %}<td class="col-unit">{{ item.unit or '-' }}</td>{% endif %}
+                {% if ns.has_batch %}<td class="col-batch">{{ item.batch_no or '-' }}</td>{% endif %}
+                {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date | date_short if item.exp_date else '-' }}</td>{% endif %}
+                <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                {% if ns.has_disc %}<td class="col-disc">{{ item.discount_percent if item.discount_percent and item.discount_percent|float > 0 else '-' }}</td>{% endif %}
+                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
+                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
     <table class="items-table">
         <thead>
             <tr>
@@ -105,6 +156,7 @@
             {% endfor %}
         </tbody>
     </table>
+    {% endif %}
 
     <!-- 6. Summary -->
     <div class="summary">

@@ -4,7 +4,7 @@ Bill Payments Router - Pembayaran Keluar (Payment Out)
 Endpoints for managing vendor payments for purchase invoices (bills).
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
 import uuid as uuid_module
@@ -395,6 +395,66 @@ async def create_bill_payment_journal(
     logger.info(f"Bill payment journal created: {journal_id}, number: {journal_number}")
 
     return journal_id, journal_number
+
+
+
+
+# === Journal Preview (read-only, for DirectAction confirmation card) ===
+
+@router.post("/preview-journal")
+async def preview_journal(request: Request, body: dict = Body(...)):
+    """
+    Dry-run journal preview for bill payment. Returns debit/credit lines WITHOUT posting.
+    Used by DirectAction confirmation card to show accounting impact.
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+
+        total_amount = float(body.get("total_amount", 0) or 0)
+        bank_account_id = body.get("bank_account_id", "")
+
+        # Resolve bank account CoA (Law 27)
+        bank_name = "Bank/Kas"
+        bank_code = ""
+        if bank_account_id:
+            try:
+                from uuid import UUID
+                ba_row = await conn.fetchrow(
+                    """SELECT ba.coa_id, ca.name, ca.account_code
+                       FROM bank_accounts ba
+                       JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
+                       WHERE ba.id = $1::uuid AND ba.tenant_id = $2""",
+                    UUID(bank_account_id), ctx["tenant_id"]
+                )
+                if ba_row:
+                    bank_name = ba_row["name"]
+                    bank_code = ba_row["account_code"]
+            except Exception:
+                pass
+
+        # Resolve AP account (Law 27)
+        ap_name = "Hutang Usaha"
+        ap_code = AP_ACCOUNT
+        try:
+            ap_row = await conn.fetchrow(
+                "SELECT name, account_code FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
+                ctx["tenant_id"], AP_ACCOUNT
+            )
+            if ap_row:
+                ap_name = ap_row["name"]
+                ap_code = ap_row["account_code"]
+        except Exception:
+            pass
+
+        lines = [
+            {"account_name": ap_name, "account_code": ap_code, "debit": total_amount, "credit": 0},
+            {"account_name": bank_name, "account_code": bank_code, "debit": 0, "credit": total_amount},
+        ]
+
+        return {"journal_lines": lines}
 
 
 @router.get("", response_model=BillPaymentListResponse)

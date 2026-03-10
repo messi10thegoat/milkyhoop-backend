@@ -104,7 +104,7 @@ async def list_item_batches(
 
         rows = await conn.fetch(
             f"""
-            SELECT ib.*, i.sku as item_code, i.nama_produk as item_name
+            SELECT ib.*, i.sku as item_code, i.nama_produk as item_name, i.base_unit
             FROM item_batches ib
             LEFT JOIN products i ON ib.item_id = i.id
             WHERE {where_sql}
@@ -183,7 +183,7 @@ async def get_item_batch(request: Request, batch_id: UUID):
 
         row = await conn.fetchrow(
             """
-            SELECT ib.*, i.sku as item_code, i.nama_produk as item_name
+            SELECT ib.*, i.sku as item_code, i.nama_produk as item_name, i.base_unit
             FROM item_batches ib
             LEFT JOIN products i ON ib.item_id = i.id
             WHERE ib.id = $1 AND ib.tenant_id = $2

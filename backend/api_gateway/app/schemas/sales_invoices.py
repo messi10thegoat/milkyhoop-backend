@@ -30,9 +30,14 @@ class InvoiceItemCreate(BaseModel):
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: int = Field(..., ge=0)
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: float = Field(0, ge=0)
     tax_code: Optional[str] = Field(None, max_length=20)
     tax_rate: float = Field(0, ge=0, le=100)
+
+    # Batch/expiry tracking
+    batch_id: Optional[str] = None
+    batch_no: Optional[str] = None
+    exp_date: Optional[str] = None
 
 
 class InvoiceItemResponse(BaseModel):
@@ -45,13 +50,18 @@ class InvoiceItemResponse(BaseModel):
     unit: Optional[str] = None
     unit_price: int
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_code: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: int = 0
-    subtotal: int
+    tax_amount: float = 0
+    subtotal: float
     total: int
     line_number: int = 1
+
+    # Batch/expiry tracking
+    batch_id: Optional[str] = None
+    batch_no: Optional[str] = None
+    exp_date: Optional[str] = None
 
 
 # =============================================================================
@@ -101,7 +111,7 @@ class CreateInvoiceRequest(BaseModel):
 
     # Invoice-level discount
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: float = Field(0, ge=0)
 
     # Tax
     tax_rate: float = Field(0, ge=0, le=100)
@@ -158,8 +168,8 @@ class InvoiceListItem(BaseModel):
     customer_name: str
     invoice_date: str
     due_date: str
-    total_amount: int
-    amount_paid: int
+    total_amount: float
+    amount_paid: float
     status: str
     created_at: str
 
@@ -209,13 +219,13 @@ class InvoiceDetail(BaseModel):
     notes: Optional[str] = None
 
     # Amounts
-    subtotal: int
+    subtotal: float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_rate: float = 0
-    tax_amount: int = 0
-    total_amount: int
-    amount_paid: int = 0
+    tax_amount: float = 0
+    total_amount: float
+    amount_paid: float = 0
 
     # Status
     status: str
@@ -260,10 +270,10 @@ class InvoiceResponse(BaseModel):
 
 class InvoiceCalculation(BaseModel):
     """Invoice calculation preview."""
-    subtotal: int
-    discount_amount: int
-    tax_amount: int
-    total_amount: int
+    subtotal: float
+    discount_amount: float
+    tax_amount: float
+    total_amount: float
     items: List[Dict[str, Any]]
 
 

@@ -70,6 +70,8 @@ class KulakanProductItem(BaseModel):
     units_per_pack: Optional[int] = None  # Qty per wholesale unit
     content_unit: Optional[str] = None  # Retail unit (pcs, lembar, bungkus)
     purchase_price: Optional[int] = None  # Purchase price from product master data
+    track_batches: Optional[bool] = None  # Item requires batch tracking
+    track_expiry: Optional[bool] = None  # Item requires expiry tracking
 
 
 class KulakanSearchResponse(BaseModel):
@@ -746,6 +748,8 @@ async def search_products_for_kulakan(
                         COALESCE(p.harga_jual, 0)::int as harga_jual,
                         COALESCE(p.purchase_price, 0)::int as purchase_price,
                         p.content_unit,
+                        p.track_batches,
+                        p.track_expiry,
                         'products' as source,
                         CASE
                             WHEN LOWER(p.nama_produk) = LOWER($2) THEN 100
@@ -771,6 +775,8 @@ async def search_products_for_kulakan(
                         0 as harga_jual,
                         0 as purchase_price,
                         NULL as content_unit,
+                        NULL::boolean as track_batches,
+                        NULL::boolean as track_expiry,
                         'transaction' as source,
                         CASE
                             WHEN LOWER(bi.product_name) = LOWER($2) THEN 100
@@ -792,7 +798,7 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, purchase_price, content_unit, source, score
+                        id, name, barcode, category, harga_jual, purchase_price, content_unit, track_batches, track_expiry, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
@@ -840,6 +846,8 @@ async def search_products_for_kulakan(
                     category=row["category"],
                     harga_jual=row["harga_jual"] if row["harga_jual"] else None,
                     purchase_price=row["purchase_price"] if row["purchase_price"] else None,
+                    track_batches=row.get("track_batches"),
+                    track_expiry=row.get("track_expiry"),
                 )
 
                 if last_tx:

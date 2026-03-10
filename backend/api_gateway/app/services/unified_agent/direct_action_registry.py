@@ -28,6 +28,7 @@ class FieldSpec:
     description: str = ""
     hidden: bool = False         # In payload, NOT shown in confirmation table
     display_only: bool = False   # Shown in table, stripped before REST call
+    aliases: list[str] = field(default_factory=list)  # LLM variant names → normalized to `name`
 
 
 @dataclass
@@ -131,6 +132,7 @@ class DirectActionConfig:
     fields: list[FieldSpec] = field(default_factory=list)
 
     # --- Integration Metadata (auto-wires intent detection + event dispatch) ---
+    at_least_one_groups: list[dict] = field(default_factory=list)  # [{fields: [...], label: "..."}]
     action_type_key: str = ""        # uppercase key, e.g. "CREATE_BANK_ACCOUNT" (for event dispatch)
     signal_words: list[str] = field(default_factory=list)  # triggers DIRECT ACTION mode in intent_bias
 
@@ -340,6 +342,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         creates_journal=True,
         ttl_seconds=120,
         action_type_key="CREATE_BILL_PAYMENT",
+        journal_preview_endpoint="/api/bill-payments/preview-journal",
         signal_words=["bayar faktur", "bayar bill", "lunasi faktur", "pembayaran vendor"],
         entity_name_field="vendor_name",
         loading_message_template="Mencatat pembayaran ke {entity_name}…",
@@ -355,8 +358,10 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             # Hidden (backend needs, user does not see)
             FieldSpec(name="vendor_id", label="Vendor ID", required=True, hidden=True),
-            FieldSpec(name="bill_id", label="Bill ID", required=True, hidden=True),
-            FieldSpec(name="bank_account_id", label="Bank Account ID", required=True, hidden=True),
+            FieldSpec(name="bill_id", label="Bill ID", required=True, hidden=True,
+                      aliases=["EXTRACT:allocations.bill_id"]),
+            FieldSpec(name="bank_account_id", label="Bank Account ID", required=True, hidden=True,
+                      aliases=["payment_account_id", "account_id"]),
             FieldSpec(name="session_id", label="Session ID", hidden=True),
             FieldSpec(name="statement_line_id", label="Statement Line ID", hidden=True),
             # Display-only (user sees, stripped before REST call)
@@ -368,7 +373,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="amount_due", label="Sisa Tagihan", field_type="number", hidden=True),
             FieldSpec(name="statement_description", label="Mutasi Bank", hidden=True),
             # Regular (shown + sent to backend)
-            FieldSpec(name="total_amount", label="Jumlah Bayar", field_type="number", required=True),
+            FieldSpec(name="total_amount", label="Jumlah Bayar", field_type="number", required=True,
+                      aliases=["EXTRACT:allocations.amount_applied", "amount", "payment_amount"]),
             FieldSpec(name="payment_date", label="Tanggal", field_type="date", required=True),
             FieldSpec(name="payment_method", label="Metode", default="bank_transfer", hidden=True),
         ],
@@ -386,6 +392,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         creates_journal=True,
         ttl_seconds=120,
         action_type_key="CREATE_RECEIVE_PAYMENT",
+        journal_preview_endpoint="/api/receive-payments/preview-journal",
         signal_words=["terima pembayaran", "pembayaran pelanggan", "bayar piutang", "pelunasan faktur"],
         entity_name_field="customer_name",
         loading_message_template="Mencatat pembayaran dari {entity_name}…",
@@ -401,7 +408,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             # Hidden (backend needs, user does not see)
             FieldSpec(name="customer_id",        label="Customer ID",         required=True, hidden=True),
-            FieldSpec(name="bank_account_id",    label="Bank Account ID",     required=True, hidden=True),
+            FieldSpec(name="bank_account_id",    label="Bank Account ID",     required=True, hidden=True,
+                      aliases=["payment_account_id", "account_id"]),
             FieldSpec(name="session_id",         label="Session ID",          hidden=True),
             FieldSpec(name="statement_line_id",  label="Statement Line ID",   hidden=True),
             FieldSpec(name="allocations",        label="Allocations",         field_type="json", required=True, hidden=True),
@@ -432,7 +440,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             "bikin invoice", "jual ke", "tagih", "buat tagihan",
             "invoice baru", "faktur baru",
         ],
-        journal_preview_endpoint="",
+        journal_preview_endpoint="/api/sales-invoices/preview-journal",
         entity_name_field="customer_name",
         loading_message_template="Membuat faktur penjualan untuk {entity_name}\u2026",
         success_message_template="Faktur penjualan untuk '{entity_name}' berhasil dibuat.",
@@ -511,7 +519,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             "bayar listrik", "bayar sewa", "bayar internet",
             "biaya operasional", "pengeluaran", "expense", "keluar uang",
         ],
-        journal_preview_endpoint="",
+        journal_preview_endpoint="/api/expenses/preview-journal",
         entity_name_field="description",
         loading_message_template="Mencatat biaya: {entity_name}\u2026",
         success_message_template="Biaya '{entity_name}' berhasil dicatat.",
@@ -525,10 +533,12 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="expense_date", label="Tanggal", field_type="date", required=True),
             FieldSpec(name="paid_through_id", label="Dibayar Dari", required=True, hidden=True,
-                      description="UUID akun kas/bank — resolve via search_bank_accounts"),
+                      description="UUID akun kas/bank — resolve via search_bank_accounts",
+                      aliases=["bank_account_id", "payment_account_id"]),
             FieldSpec(name="paid_through_name", label="Dibayar Dari", display_only=True),
             FieldSpec(name="account_id", label="Akun Biaya", required=True, hidden=True,
-                      description="UUID akun biaya — resolve via search_accounts"),
+                      description="UUID akun biaya — resolve via search_accounts",
+                      aliases=["expense_account_id", "biaya_id"]),
             FieldSpec(name="account_name", label="Akun Biaya", display_only=True),
             FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
             FieldSpec(name="description", label="Deskripsi", required=True),
@@ -565,8 +575,10 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
         ],
         fields=[
-            FieldSpec(name="entry_date", label="Tanggal", field_type="date", required=True),
-            FieldSpec(name="description", label="Keterangan", required=True),
+            FieldSpec(name="entry_date", label="Tanggal", field_type="date", required=True,
+                      aliases=["journal_date", "date", "tanggal"]),
+            FieldSpec(name="description", label="Keterangan", required=True,
+                      aliases=["memo", "keterangan", "note"]),
             FieldSpec(name="lines", label="Baris Jurnal", field_type="json", required=True, hidden=True,
                       description="Array of {account_id, description, debit, credit}. "
                                   "Law 4: total debit HARUS = total credit. Min 2 lines."),
@@ -587,7 +599,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             "tambah stok", "kurangi stok", "penyesuaian persediaan",
             "stok opname", "stock opname",
         ],
-        journal_preview_endpoint="",
+        journal_preview_endpoint="/api/stock-adjustments/preview-journal",
         entity_name_field="adjustment_type",
         loading_message_template="Menyesuaikan stok\u2026",
         success_message_template="Penyesuaian stok berhasil dibuat.",
@@ -628,7 +640,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="invoice_number", label="No. Faktur", display_only=True),
-            FieldSpec(name="reason", label="Alasan", required=True),
+            FieldSpec(name="reason", label="Alasan", required=True,
+                      aliases=["void_reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "void_bill": DirectActionConfig(
@@ -648,7 +661,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="bill_number", label="No. Bill", display_only=True),
-            FieldSpec(name="reason", label="Alasan", required=True),
+            FieldSpec(name="reason", label="Alasan", required=True,
+                      aliases=["void_reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "post_bill": DirectActionConfig(
@@ -741,7 +755,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="payment_number", label="No. Pembayaran", display_only=True),
-            FieldSpec(name="void_reason", label="Alasan", required=True),
+            FieldSpec(name="void_reason", label="Alasan", required=True,
+                      aliases=["reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "void_bill_payment": DirectActionConfig(
@@ -761,7 +776,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="payment_number", label="No. Pembayaran", display_only=True),
-            FieldSpec(name="void_reason", label="Alasan", required=True),
+            FieldSpec(name="void_reason", label="Alasan", required=True,
+                      aliases=["reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "void_expense": DirectActionConfig(
@@ -781,7 +797,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="description", label="Deskripsi", display_only=True),
-            FieldSpec(name="reason", label="Alasan", required=True),
+            FieldSpec(name="reason", label="Alasan", required=True,
+                      aliases=["void_reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "reverse_journal": DirectActionConfig(
@@ -809,7 +826,8 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="id", label="ID Jurnal", required=True, hidden=True),
             FieldSpec(name="journal_number", label="No. Jurnal", display_only=True),
             FieldSpec(name="reversal_date", label="Tanggal Reversal", field_type="date", required=True),
-            FieldSpec(name="reason", label="Alasan Reversal", required=True),
+            FieldSpec(name="reason", label="Alasan Reversal", required=True,
+                      aliases=["void_reason", "description", "alasan", "note", "notes", "keterangan"]),
         ],
     ),
     "void_stock_adjustment": DirectActionConfig(
@@ -999,6 +1017,10 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         creates_journal=False,
         ttl_seconds=300,
         action_type_key="CREATE_ITEM",
+        at_least_one_groups=[
+            {"fields": ["sales_price", "purchase_price"],
+             "label": "Harga Jual atau Harga Beli (minimal salah satu)"},
+        ],
         signal_words=["barang baru", "item baru", "tambah barang", "tambah item",
                        "produk baru", "jasa baru", "tambah produk", "tambah jasa"],
         entity_name_field="name",
@@ -1006,12 +1028,16 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         success_message_template="Barang/jasa '{entity_name}' berhasil dibuat.",
         fields=[
             FieldSpec(name="name", label="Nama", required=True),
+            FieldSpec(name="item_type", label="Tipe", field_type="enum", required=True,
+                      options=["persediaan", "jasa", "non-persediaan"],
+                      description="goods=Barang (track stok), service=Jasa (tanpa stok), non_inventory=Barang tanpa stok"),
+            FieldSpec(name="base_unit", label="Satuan", required=True,
+                      description="Contoh: pcs, roll, meter, kg, box, tube"),
+            FieldSpec(name="sales_price", label="Harga Jual", field_type="number",
+                      aliases=["harga_jual", "unit_price", "selling_price"]),
+            FieldSpec(name="purchase_price", label="Harga Beli", field_type="number",
+                      aliases=["harga_beli", "buying_price", "cost_price"]),
             FieldSpec(name="sku", label="Kode/SKU"),
-            FieldSpec(name="base_unit", label="Satuan", description="Contoh: pcs, roll, meter, kg"),
-            FieldSpec(name="sales_price", label="Harga Jual", field_type="number"),
-            FieldSpec(name="purchase_price", label="Harga Beli", field_type="number"),
-            FieldSpec(name="item_type", label="Tipe", field_type="enum",
-                      options=["goods", "service", "non_inventory"], default="goods"),
             FieldSpec(name="description", label="Deskripsi"),
         ],
     ),
@@ -1032,12 +1058,14 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         success_message_template="Akun '{entity_name}' berhasil dibuat.",
         fields=[
             FieldSpec(name="code", label="Kode Akun", required=True,
-                      description="Contoh: 1-10700, 5-20100"),
+                      description="Contoh: 1-10700, 5-20100",
+                      aliases=["account_code", "kode_akun"]),
             FieldSpec(name="name", label="Nama Akun", required=True),
             FieldSpec(name="type", label="Tipe", field_type="enum", required=True,
                       options=["ASSET", "RECEIVABLE", "LIABILITY", "PAYABLE",
                                "EQUITY", "REVENUE", "COGS", "EXPENSE",
-                               "OTHER_INCOME", "OTHER_EXPENSE"]),
+                               "OTHER_INCOME", "OTHER_EXPENSE"],
+                      aliases=["account_type", "account_type_coa", "tipe"]),
             FieldSpec(name="normal_balance", label="Saldo Normal", field_type="enum",
                       options=["DEBIT", "CREDIT"],
                       description="Auto-derived: DEBIT untuk Aset/Beban, CREDIT untuk Liabilitas/Ekuitas/Pendapatan"),
@@ -1304,6 +1332,86 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="name", label="Nama", required=True),
+        ],
+    ),
+    # ============ ITEM MANAGEMENT ============
+    "toggle_item_status": DirectActionConfig(
+        action_key="toggle_item_status",
+        display_name="Ubah Status Barang",
+        rest_endpoint="/api/items/{id}/status",
+        rest_method="PATCH",
+        entity_type="item",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="TOGGLE_ITEM_STATUS",
+        signal_words=["nonaktifkan barang", "aktifkan barang", "disable item", "enable item",
+                       "matikan barang", "hidupkan barang", "nonaktifkan produk", "aktifkan produk"],
+        entity_name_field="name",
+        loading_message_template="Mengubah status {entity_name}\u2026",
+        success_message_template="Status '{entity_name}' berhasil diubah.",
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="name", label="Nama Barang", display_only=True),
+            FieldSpec(name="status", label="Status Baru", field_type="enum", options=["active", "inactive"], required=True),
+        ],
+    ),
+    "create_category": DirectActionConfig(
+        action_key="create_category",
+        display_name="Buat Kategori",
+        rest_endpoint="/api/items/categories",
+        rest_method="POST",
+        entity_type="item",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="CREATE_CATEGORY",
+        signal_words=["kategori baru", "tambah kategori", "buat kategori", "bikin kategori"],
+        entity_name_field="name",
+        loading_message_template="Membuat kategori {entity_name}\u2026",
+        success_message_template="Kategori '{entity_name}' berhasil dibuat.",
+        fields=[
+            FieldSpec(name="name", label="Nama Kategori", required=True),
+            FieldSpec(name="description", label="Deskripsi"),
+        ],
+    ),
+    "create_unit": DirectActionConfig(
+        action_key="create_unit",
+        display_name="Buat Satuan",
+        rest_endpoint="/api/items/units",
+        rest_method="POST",
+        entity_type="item",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="CREATE_UNIT",
+        signal_words=["satuan baru", "tambah satuan", "buat satuan", "bikin satuan", "unit baru"],
+        entity_name_field="name",
+        loading_message_template="Membuat satuan {entity_name}\u2026",
+        success_message_template="Satuan '{entity_name}' berhasil dibuat.",
+        fields=[
+            FieldSpec(name="name", label="Nama Satuan", required=True, description="Contoh: pcs, kg, meter, roll, lusin, box"),
+            FieldSpec(name="abbreviation", label="Singkatan", description="Contoh: pcs, kg, m"),
+        ],
+    ),
+    "duplicate_item": DirectActionConfig(
+        action_key="duplicate_item",
+        display_name="Duplikasi Barang",
+        rest_endpoint="/api/items/{id}/duplicate",
+        rest_method="POST",
+        entity_type="item",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="DUPLICATE_ITEM",
+        signal_words=["duplikasi barang", "copy barang", "gandakan barang", "duplikat produk", "copy item"],
+        entity_name_field="name",
+        loading_message_template="Menduplikasi {entity_name}\u2026",
+        success_message_template="'{entity_name}' berhasil diduplikasi.",
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="name", label="Dari Barang", required=True, display_only=True),
+            FieldSpec(name="new_name", label="Nama Baru", description="Nama untuk produk duplikat. Default: nama asli + ' (2)'"),
         ],
     ),
 }
@@ -1867,6 +1975,269 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
                        "analisis biaya", "chart produksi"],
         query_params=[QueryParam(name="order_id", label="Order ID", param_type="string", required=True)],
     ),
+    # ============ ITEM & INVENTORY QUERIES ============
+    "query_item_detail": QueryActionConfig(
+        action_key="query_item_detail",
+        display_name="Detail Barang",
+        rest_endpoint="/api/items/{id}",
+        response_format="summary",
+        description="Detail produk: stok, harga, WAC, nilai. Resolve item by name first.",
+        signal_words=["stok", "berapa stok", "stock", "persediaan", "harga barang", "detail barang", "info barang", "cek barang", "lihat barang"],
+        query_params=[QueryParam(name="id", label="Item ID", param_type="string", required=True)],
+    ),
+    "query_item_stock_card": QueryActionConfig(
+        action_key="query_item_stock_card",
+        display_name="Kartu Stok",
+        rest_endpoint="/api/items/{id}/history",
+        response_format="table",
+        description="Kartu stok / stock card: riwayat in/out per tanggal.",
+        signal_words=["kartu stok", "stock card", "riwayat stok", "mutasi stok", "pergerakan stok", "history stok"],
+        query_params=[
+            QueryParam(name="id", label="Item ID", param_type="string", required=True),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+        ],
+    ),
+    "query_item_transactions": QueryActionConfig(
+        action_key="query_item_transactions",
+        display_name="Transaksi Barang",
+        rest_endpoint="/api/items/{id}/transactions",
+        response_format="table",
+        description="Riwayat transaksi produk: pembelian, penjualan, adjustment.",
+        signal_words=["transaksi barang", "riwayat transaksi", "history pembelian", "history penjualan", "transaksi produk"],
+        query_params=[
+            QueryParam(name="id", label="Item ID", param_type="string", required=True),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+        ],
+    ),
+    "query_items_summary": QueryActionConfig(
+        action_key="query_items_summary",
+        display_name="Ringkasan Barang",
+        rest_endpoint="/api/items/summary",
+        response_format="summary",
+        description="Ringkasan: total produk aktif, nilai stok, dll.",
+        signal_words=["ringkasan barang", "ringkasan produk", "ringkasan inventory", "total barang", "berapa barang", "ada berapa produk", "summary barang", "statistik barang"],
+    ),
+    "query_items_low_stock": QueryActionConfig(
+        action_key="query_items_low_stock",
+        display_name="Stok Rendah",
+        rest_endpoint="/api/inventory/low-stock",
+        response_format="table",
+        description="Barang dengan stok di bawah reorder level.",
+        signal_words=["stok rendah", "low stock", "stok habis", "stok menipis", "barang hampir habis", "perlu restock", "reorder", "stok kritis"],
+    ),
+    "query_items_top_products": QueryActionConfig(
+        action_key="query_items_top_products",
+        display_name="Produk Terlaris",
+        rest_endpoint="/api/inventory/top-products",
+        response_format="table",
+        description="Produk terlaris berdasarkan qty terjual.",
+        signal_words=["barang terlaris", "produk terlaris", "top produk", "paling laku", "best seller", "terjual terbanyak"],
+        query_params=[
+            QueryParam(name="period", label="Periode", param_type="string", default="this_month"),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="5"),
+        ],
+    ),
+    "query_items_slow_moving": QueryActionConfig(
+        action_key="query_items_slow_moving",
+        display_name="Barang Lambat Terjual",
+        rest_endpoint="/api/inventory/slow-moving-products",
+        response_format="table",
+        description="Barang yang lambat terjual / dead stock.",
+        signal_words=["barang lambat", "slow moving", "tidak laku", "dead stock", "barang lama", "barang mati"],
+        query_params=[
+            QueryParam(name="days", label="Hari", param_type="number", default="30"),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+        ],
+    ),
+    "query_items_margins": QueryActionConfig(
+        action_key="query_items_margins",
+        display_name="Margin Produk",
+        rest_endpoint="/api/inventory/product-margins",
+        response_format="table",
+        description="Margin per produk: revenue, COGS, profit, margin %.",
+        signal_words=["margin produk", "keuntungan produk", "margin barang", "profit per produk", "margin per item"],
+        query_params=[
+            QueryParam(name="period", label="Periode", param_type="string", default="this_month"),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+            QueryParam(name="sort", label="Urutan", param_type="string", default="margin_desc"),
+        ],
+    ),
+    "query_warehouse_stock": QueryActionConfig(
+        action_key="query_warehouse_stock",
+        display_name="Stok per Gudang",
+        rest_endpoint="/api/warehouses/{id}/stock",
+        response_format="table",
+        description="Stok barang di gudang tertentu.",
+        signal_words=["stok gudang", "barang di gudang", "isi gudang", "stok di", "warehouse stock"],
+        query_params=[QueryParam(name="id", label="Warehouse ID", param_type="string", required=True)],
+    ),
+
+    # ─── Items Module: Additional Queries (wired 2026-03-09) ─────────────
+    "query_items_search": QueryActionConfig(
+        action_key="query_items_search",
+        display_name="Cari Barang",
+        rest_endpoint="/api/items",
+        response_format="table",
+        description="Cari barang berdasarkan nama, kode, atau barcode.",
+        signal_words=["cari barang", "cari produk", "search barang", "barang yang namanya", "ada barang", "produk apa saja"],
+        query_params=[
+            QueryParam(name="search", label="Kata kunci", param_type="string", required=True),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+            QueryParam(name="status", label="Status", param_type="string", default="active"),
+        ],
+    ),
+    "query_items_by_stock": QueryActionConfig(
+        action_key="query_items_by_stock",
+        display_name="Ranking Stok Barang",
+        rest_endpoint="/api/items?limit=50&status=active",
+        response_format="detail",
+        description="Ranking barang berdasarkan jumlah stok (terbanyak/tersedikit).",
+        signal_words=["stok paling banyak", "item terbanyak stoknya", "stok tertinggi", "urutan stok", "ranking stok", "stok terbanyak"],
+    ),
+    "query_items_units": QueryActionConfig(
+        action_key="query_items_units",
+        display_name="Daftar Satuan",
+        rest_endpoint="/api/items/units",
+        response_format="detail",
+        description="Daftar satuan produk (pcs, kg, box, dll).",
+        signal_words=["daftar satuan", "list satuan", "satuan apa saja", "unit apa saja", "ada satuan apa"],
+    ),
+    "query_items_stats": QueryActionConfig(
+        action_key="query_items_stats",
+        display_name="Statistik Barang",
+        rest_endpoint="/api/items/stats?status=active",
+        response_format="summary",
+        description="Statistik barang masuk/keluar.",
+        signal_words=["statistik barang", "stats barang", "barang masuk keluar", "pergerakan barang"],
+    ),
+    "query_items_inactive": QueryActionConfig(
+        action_key="query_items_inactive",
+        display_name="Barang Tidak Aktif",
+        rest_endpoint="/api/items?status=inactive",
+        response_format="detail",
+        description="Daftar barang yang sudah dinonaktifkan.",
+        signal_words=["item tidak aktif", "barang nonaktif", "produk dinonaktifkan", "item inactive", "barang tidak aktif", "item dinonaktifkan"],
+    ),
+        "query_inventory_summary": QueryActionConfig(
+        action_key="query_inventory_summary",
+        display_name="Ringkasan Inventory",
+        rest_endpoint="/api/inventory/summary",
+        response_format="summary",
+        description="Ringkasan inventory: total nilai stok, jumlah item, dll.",
+        signal_words=["ringkasan inventory", "inventory summary", "total stok", "nilai inventory", "nilai persediaan"],
+    ),
+    "query_stock_adjustments": QueryActionConfig(
+        action_key="query_stock_adjustments",
+        display_name="Daftar Penyesuaian Stok",
+        rest_endpoint="/api/stock-adjustments",
+        response_format="table",
+        description="Daftar penyesuaian stok (draft/posted/void).",
+        signal_words=["penyesuaian stok", "stock adjustment", "daftar adjustment", "riwayat penyesuaian", "opname"],
+        query_params=[
+            QueryParam(name="status", label="Status", param_type="string"),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+        ],
+    ),
+    "query_stock_adjustments_summary": QueryActionConfig(
+        action_key="query_stock_adjustments_summary",
+        display_name="Ringkasan Penyesuaian Stok",
+        rest_endpoint="/api/stock-adjustments/summary",
+        response_format="summary",
+        description="Ringkasan penyesuaian stok: jumlah draft/posted/void.",
+        signal_words=["ringkasan penyesuaian", "summary adjustment", "total penyesuaian"],
+    ),
+    "query_stock_transfers": QueryActionConfig(
+        action_key="query_stock_transfers",
+        display_name="Daftar Transfer Stok",
+        rest_endpoint="/api/stock-transfers",
+        response_format="table",
+        description="Daftar transfer stok antar gudang.",
+        signal_words=["transfer stok", "stock transfer", "daftar transfer", "pemindahan barang", "kirim barang antar gudang"],
+        query_params=[
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="10"),
+        ],
+    ),
+    "query_stock_in_transit": QueryActionConfig(
+        action_key="query_stock_in_transit",
+        display_name="Barang Dalam Perjalanan",
+        rest_endpoint="/api/stock-transfers/in-transit",
+        response_format="table",
+        description="Barang yang sedang dalam perjalanan antar gudang.",
+        signal_words=["dalam perjalanan", "in transit", "belum diterima", "barang kirim", "sedang dikirim"],
+    ),
+    "query_warehouses": QueryActionConfig(
+        action_key="query_warehouses",
+        display_name="Daftar Gudang",
+        rest_endpoint="/api/warehouses",
+        response_format="list",
+        description="Daftar gudang yang tersedia.",
+        signal_words=["daftar gudang", "list gudang", "ada gudang apa", "gudang apa saja", "warehouse"],
+    ),
+    "query_warehouse_stock_value": QueryActionConfig(
+        action_key="query_warehouse_stock_value",
+        display_name="Nilai Stok Gudang",
+        rest_endpoint="/api/warehouses/{id}/stock-value",
+        response_format="summary",
+        description="Total nilai stok di gudang tertentu.",
+        signal_words=["nilai stok gudang", "value gudang", "harga stok gudang", "total nilai gudang"],
+        query_params=[QueryParam(name="id", label="Warehouse ID", param_type="string", required=True)],
+    ),
+    "query_inventory_health": QueryActionConfig(
+        action_key="query_inventory_health",
+        display_name="Health Check Inventory",
+        rest_endpoint="/api/inventory/health",
+        response_format="summary",
+        description="Health check inventory: consistency, anomalies.",
+        signal_words=["health inventory", "cek inventory", "inventory sehat", "anomali stok", "konsistensi stok"],
+    ),
+    "query_item_journal": QueryActionConfig(
+        action_key="query_item_journal",
+        display_name="Jurnal Barang",
+        rest_endpoint="/api/items/{id}/journal-entries",
+        response_format="table",
+        description="Journal entries terkait barang tertentu.",
+        signal_words=["jurnal barang", "journal barang", "jurnal terkait", "ayat jurnal barang"],
+        query_params=[QueryParam(name="id", label="Item ID", param_type="string", required=True)],
+    ),
+
+    "query_item_activity": QueryActionConfig(
+        action_key="query_item_activity",
+        display_name="Aktivitas Barang",
+        rest_endpoint="/api/items/{id}/activity",
+        response_format="detail",
+        signal_words=["aktivitas barang", "log barang", "siapa edit", "history perubahan", "activity log"],
+        description="Log aktivitas/perubahan pada item. Resolve item by name first.",
+        query_params=[QueryParam(name="id", label="Item ID", param_type="string", required=True)],
+    ),
+
+    "query_item_related": QueryActionConfig(
+        action_key="query_item_related",
+        display_name="Dokumen Terkait Barang",
+        rest_endpoint="/api/items/{id}/related",
+        response_format="detail",
+        signal_words=["dokumen terkait", "faktur barang", "transaksi pakai barang", "invoice barang", "bill barang"],
+        description="Dokumen terkait item (faktur, tagihan, PO). Resolve item by name first.",
+        query_params=[QueryParam(name="id", label="Item ID", param_type="string", required=True)],
+    ),
+
+    "query_item_batches": QueryActionConfig(
+        action_key="query_item_batches",
+        display_name="Batch & Expiry Barang",
+        rest_endpoint="/api/item-batches",
+        response_format="detail",
+        signal_words=["batch", "expiry", "kadaluarsa", "lot number", "expired", "tanggal kedaluwarsa"],
+        description="Batch dan tanggal kadaluarsa item. Resolve item by name first.",
+        query_params=[QueryParam(name="item_id", label="Item ID", param_type="string", required=True)],
+    ),
+
+    "query_categories_list": QueryActionConfig(
+        action_key="query_categories_list",
+        display_name="Daftar Kategori",
+        rest_endpoint="/api/items/categories",
+        response_format="list",
+        description="Daftar kategori produk.",
+        signal_words=["daftar kategori", "list kategori", "kategori apa saja", "ada kategori apa"],
+    ),
 }
 
 
@@ -1903,6 +2274,16 @@ def validate_payload(action_key: str, payload: dict) -> tuple[bool, list[str]]:
     for f in config.fields:
         if f.required and not payload.get(f.name):
             missing.append(f.label)
+
+    # At-least-one group validation
+    if hasattr(config, "at_least_one_groups"):
+        for group in config.at_least_one_groups:
+            field_names = group["fields"]
+            group_label = group["label"]
+            has_any = any(payload.get(fn) for fn in field_names)
+            if not has_any:
+                missing.append(group_label)
+
     return len(missing) == 0, missing
 
 
@@ -1949,7 +2330,25 @@ def apply_defaults(action_key: str, payload: dict) -> dict:
     return result
 
 
-def build_confirmation_table(action_key: str, payload: dict) -> str:
+# Reverse mapping: API value -> Indonesian display label
+_API_TO_LABEL_MAP = {
+    "goods": "persediaan",
+    "service": "jasa",
+    "non_inventory": "non-persediaan",
+    "cash": "tunai",
+    "bank_transfer": "transfer bank",
+}
+
+def _build_api_to_label(options: list) -> dict:
+    """Build reverse mapping from API values to display labels using FieldSpec options + known mappings."""
+    result = dict(_API_TO_LABEL_MAP)
+    # Also map option values to themselves (identity) so Indonesian options pass through
+    for opt in options:
+        result[opt.lower()] = opt
+    return result
+
+
+def build_confirmation_table(action_key: str, payload: dict, journal_preview: list | None = None) -> str:
     """Build markdown confirmation table with trust context — fully config-driven."""
     config = DIRECT_ACTIONS.get(action_key)
     if not config:
@@ -1980,6 +2379,10 @@ def build_confirmation_table(action_key: str, payload: dict) -> str:
                     pass
             elif f.field_type == "boolean":
                 display_value = "Ya" if value else "Tidak"
+            # Reverse-map API values to Indonesian display labels
+            if f.options and isinstance(value, str):
+                _api_to_label = _build_api_to_label(f.options)
+                display_value = _api_to_label.get(str(value).lower(), display_value)
             lines.append(f"| {f.label} | {display_value} |")
 
     # Trust context: category (from config, not hardcoded)
@@ -1991,6 +2394,19 @@ def build_confirmation_table(action_key: str, payload: dict) -> str:
     impact_notes = config.get_impact_notes(payload)
     for note in impact_notes:
         lines.append(f"\n{note}")
+
+    # Journal preview section
+    if journal_preview and isinstance(journal_preview, list):
+        lines.append("")
+        lines.append("📒 **Dampak Jurnal:**")
+        for jl in journal_preview:
+            account = jl.get("account_name", "?")
+            debit = float(jl.get("debit", 0) or 0)
+            credit = float(jl.get("credit", 0) or 0)
+            if debit > 0:
+                lines.append(f"  Dr. {account}  Rp {int(debit):,}".replace(",", "."))
+            if credit > 0:
+                lines.append(f"  Cr. {account}  Rp {int(credit):,}".replace(",", "."))
 
     return "\n".join(lines)
 
@@ -2031,6 +2447,10 @@ def build_review_card_payload(action_key: str, payload: dict, journal_preview: l
                 pass
         elif f.field_type == "boolean":
             display_value = "Ya" if value else "Tidak"
+        # Reverse-map API values to Indonesian display labels
+        if f.options and isinstance(value, str):
+            _api_to_label = _build_api_to_label(f.options)
+            display_value = _api_to_label.get(str(value).lower(), display_value)
         header.append({
             "label": f.label,
             "value": display_value,

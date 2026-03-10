@@ -74,7 +74,8 @@ async def health_check():
 @router.get("/dropdown", response_model=TaxCodeDropdownResponse)
 async def get_tax_dropdown(
     request: Request,
-    tax_type: Optional[str] = Query(None, description="Filter by tax type (ppn, pph21, etc.)")
+    tax_type: Optional[str] = Query(None, description="Filter by tax type (ppn, pph21, etc.)"),
+    direction: Optional[str] = Query(None, description="Filter by direction: input (purchases) or output (sales)")
 ):
     """
     Get tax codes for dropdown/select components.
@@ -92,11 +93,17 @@ async def get_tax_dropdown(
             if tax_type:
                 conditions.append(f"tax_type = ${param_idx}")
                 params.append(tax_type)
+                param_idx += 1
+
+            if direction:
+                conditions.append(f"(direction = ${param_idx} OR (direction IS NULL AND tax_type = 'none'))")
+                params.append(direction)
+                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
             query = f"""
-                SELECT id, code, name, rate, is_default
+                SELECT id, code, name, rate, tax_type, direction, is_default
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY is_default DESC, rate ASC, name ASC
@@ -109,6 +116,8 @@ async def get_tax_dropdown(
                     "code": row["code"],
                     "name": row["name"],
                     "rate": float(row["rate"]),
+                    "tax_type": row["tax_type"],
+                    "direction": row["direction"],
                     "is_default": row["is_default"],
                 }
                 for row in rows

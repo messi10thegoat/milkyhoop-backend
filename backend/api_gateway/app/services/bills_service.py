@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
 from datetime import date, datetime
 from decimal import Decimal
+_Dec = Decimal
 
 import asyncpg
 import uuid as uuid_module
@@ -646,15 +647,7 @@ class BillsService:
                     }
                     for payment in payments
                 ],
-                "attachments": [
-                    {
-                        "id": str(att["id"]),
-                        "filename": att["filename"],
-                        "url": att["file_path"],  # TODO: Generate signed URL
-                        "uploaded_at": att["uploaded_at"].isoformat(),
-                    }
-                    for att in attachments
-                ],
+                "attachments": await self._map_attachments_with_urls(attachments),
                 "created_at": bill["created_at"].isoformat(),
                 "updated_at": bill["updated_at"].isoformat(),
             }
@@ -818,7 +811,7 @@ class BillsService:
                         # Check if product is inventory-tracked
                         product = await conn.fetchrow(
                             """
-                            SELECT id, nama_produk, item_code, track_inventory, item_type
+                            SELECT id, nama_produk, item_code, track_inventory, item_type, track_batches
                             FROM products WHERE id = $1
                             """,
                             product_id
@@ -870,13 +863,13 @@ class BillsService:
                                 movement_type, movement_date, source_type, source_id, source_number,
                                 quantity_in, quantity_out, quantity_balance,
                                 unit_cost, total_cost, average_cost,
-                                warehouse_id, journal_id, created_by, notes
+                                warehouse_id, journal_id, created_by, notes, batch_id
                             ) VALUES (
                                 $1, $2, $3, $4,
                                 'PURCHASE', $5, 'BILL', $6, $7,
                                 $8, 0, $9,
                                 $10, $11, $12,
-                                $13, $14, $15, $16
+                                $13, $14, $15, $16, $17
                             )
                             """,
                             tenant_id,
@@ -894,7 +887,8 @@ class BillsService:
                             warehouse_id,
                             journal_id,
                             user_id,
-                            f"Purchase from {vendor_name}"
+                            f"Purchase from {vendor_name}",
+                            None  # batch_id - legacy create_bill doesn't support batches
                         )
 
                         logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
@@ -1422,7 +1416,6 @@ class BillsService:
                 # 9.5 PPh rider: withholding_tax_records (Fase 2.3)
                 if pph_amount > 0 and pph_tax_code_id:
                     from uuid import UUID as _UUID
-                    from decimal import Decimal as _Dec
                     _pph_tc_id = _UUID(pph_tax_code_id) if isinstance(pph_tax_code_id, str) else pph_tax_code_id
                     pph_tc = await conn.fetchrow(
                         "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1", _pph_tc_id,
@@ -2405,7 +2398,9 @@ class BillsService:
                         bill_items_for_inv = await conn.fetch(
                             """
                             SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
-                                   p.nama_produk, p.item_code, p.track_inventory, p.item_type
+                                   bi.batch_no, bi.exp_date,
+                                   p.nama_produk, p.item_code, p.track_inventory, p.item_type,
+                                   p.track_batches
                             FROM bill_items bi
                             LEFT JOIN products p ON p.id = bi.product_id
                             WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
@@ -2461,6 +2456,45 @@ class BillsService:
                             else:
                                 new_avg_cost = unit_cost
 
+                            # --- Batch resolution (Tahap 1.2) ---
+                            batch_id = None
+                            if inv_item.get("track_batches") and inv_item.get("batch_no"):
+                                exp_date_val = inv_item.get("exp_date")  # Already a date from bill_items
+
+                                batch_row = await conn.fetchrow("""
+                                    INSERT INTO item_batches (
+                                        tenant_id, item_id, batch_number, expiry_date,
+                                        received_date, initial_quantity, current_quantity,
+                                        unit_cost, total_value, status, bill_id, created_by
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, 'active', $9, $10)
+                                    ON CONFLICT (tenant_id, item_id, batch_number)
+                                    DO UPDATE SET
+                                        current_quantity = item_batches.current_quantity + EXCLUDED.initial_quantity,
+                                        total_value = item_batches.total_value + EXCLUDED.total_value,
+                                        updated_at = NOW()
+                                    RETURNING id
+                                """, tenant_id, product_id, inv_item["batch_no"], exp_date_val,
+                                    issue_date, quantity, unit_cost, total_cost, bill_id, user_id)
+
+                                batch_id = batch_row["id"]
+
+                                if warehouse_id:
+                                    await conn.execute("""
+                                        INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
+                                        VALUES ($1, $2, $3, $4)
+                                        ON CONFLICT (batch_id, warehouse_id)
+                                        DO UPDATE SET
+                                            quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
+                                            last_movement_date = NOW(), updated_at = NOW()
+                                    """, tenant_id, batch_id, warehouse_id, quantity)
+
+                                await conn.execute("""
+                                    UPDATE bill_items SET batch_id = $1
+                                    WHERE bill_id = $2 AND product_id = $3 AND batch_no = $4
+                                """, batch_id, bill_id, product_id, inv_item["batch_no"])
+
+                                logger.info(f"Batch created/updated: {inv_item['batch_no']} for product {product_id}, batch_id={batch_id}")
+
                             # Insert inventory_ledger entry
                             await conn.execute(
                                 """
@@ -2469,13 +2503,13 @@ class BillsService:
                                     movement_type, movement_date, source_type, source_id, source_number,
                                     quantity_in, quantity_out, quantity_balance,
                                     unit_cost, total_cost, average_cost,
-                                    warehouse_id, journal_id, created_by, notes
+                                    warehouse_id, journal_id, created_by, notes, batch_id
                                 ) VALUES (
                                     $1, $2, $3, $4,
                                     'PURCHASE', $5, 'BILL', $6, $7,
                                     $8, 0, $9,
                                     $10, $11, $12,
-                                    $13, $14, $15, $16
+                                    $13, $14, $15, $16, $17
                                 )
                                 """,
                                 tenant_id,
@@ -2493,7 +2527,8 @@ class BillsService:
                                 warehouse_id,
                                 journal_id,
                                 user_id,
-                                f"Purchase from {vendor_name}"
+                                f"Purchase from {vendor_name}",
+                                batch_id
                             )
 
                             logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
@@ -2735,7 +2770,9 @@ class BillsService:
                 bill_items = await conn.fetch(
                     """
                     SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
-                           p.nama_produk, p.item_code, p.track_inventory, p.item_type
+                           bi.batch_no, bi.exp_date,
+                           p.nama_produk, p.item_code, p.track_inventory, p.item_type,
+                           p.track_batches
                     FROM bill_items bi
                     LEFT JOIN products p ON p.id = bi.product_id
                     WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
@@ -2787,6 +2824,50 @@ class BillsService:
                     else:
                         new_avg_cost = unit_cost
 
+                    # --- Batch resolution (Tahap 1.2) ---
+                    batch_id = None
+                    if item.get("track_batches") and item.get("batch_no"):
+                        exp_date_val = None
+                        if item.get("exp_date"):
+                            exp_date_val = item["exp_date"]  # Already a date from bill_items
+
+                        # UPSERT item_batches
+                        batch_row = await conn.fetchrow("""
+                            INSERT INTO item_batches (
+                                tenant_id, item_id, batch_number, expiry_date,
+                                received_date, initial_quantity, current_quantity,
+                                unit_cost, total_value, status, bill_id, created_by
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, 'active', $9, $10)
+                            ON CONFLICT (tenant_id, item_id, batch_number)
+                            DO UPDATE SET
+                                current_quantity = item_batches.current_quantity + EXCLUDED.initial_quantity,
+                                total_value = item_batches.total_value + EXCLUDED.total_value,
+                                updated_at = NOW()
+                            RETURNING id
+                        """, tenant_id, product_id, item["batch_no"], exp_date_val,
+                            bill["issue_date"], quantity, unit_cost, total_cost, bill_id, user_id)
+
+                        batch_id = batch_row["id"]
+
+                        # UPSERT batch_warehouse_stock
+                        if warehouse_id:
+                            await conn.execute("""
+                                INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
+                                VALUES ($1, $2, $3, $4)
+                                ON CONFLICT (batch_id, warehouse_id)
+                                DO UPDATE SET
+                                    quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
+                                    last_movement_date = NOW(), updated_at = NOW()
+                            """, tenant_id, batch_id, warehouse_id, quantity)
+
+                        # Link bill_items.batch_id
+                        await conn.execute("""
+                            UPDATE bill_items SET batch_id = $1
+                            WHERE bill_id = $2 AND product_id = $3 AND batch_no = $4
+                        """, batch_id, bill_id, product_id, item["batch_no"])
+
+                        logger.info(f"Batch created/updated: {item['batch_no']} for product {product_id}, batch_id={batch_id}")
+
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
@@ -2794,13 +2875,13 @@ class BillsService:
                             movement_type, movement_date, source_type, source_id, source_number,
                             quantity_in, quantity_out, quantity_balance,
                             unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, created_by, notes
+                            warehouse_id, journal_id, created_by, notes, batch_id
                         ) VALUES (
                             $1, $2, $3, $4,
                             'PURCHASE', $5, 'BILL', $6, $7,
                             $8, 0, $9,
                             $10, $11, $12,
-                            $13, $14, $15, $16
+                            $13, $14, $15, $16, $17
                         )
                         """,
                         tenant_id,
@@ -2818,7 +2899,8 @@ class BillsService:
                         warehouse_id,
                         journal_id,
                         user_id,
-                        f"Purchase from {bill['vendor_name']}"
+                        f"Purchase from {bill['vendor_name']}",
+                        batch_id
                     )
 
                     logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
@@ -3035,6 +3117,40 @@ class BillsService:
         """Convert money value to string with .00 suffix."""
         return cents_to_decimal_string(value or 0)
 
+
+    async def _map_attachments_with_urls(self, attachment_rows) -> list:
+        """Map attachment DB rows to response dicts with signed URLs."""
+        try:
+            from app.services.storage_service import get_storage_service
+            storage = get_storage_service()
+            result = []
+            for att in attachment_rows:
+                try:
+                    url = await storage.generate_signed_url(att["file_path"]) if att.get("file_path") else att.get("file_path")
+                except Exception:
+                    url = att.get("file_path")
+                result.append({
+                    "id": str(att["id"]),
+                    "filename": att["filename"],
+                    "url": url,
+                    "size": att.get("file_size"),
+                    "mime_type": att.get("mime_type"),
+                    "uploaded_at": att["uploaded_at"].isoformat() if att.get("uploaded_at") else None,
+                })
+            return result
+        except Exception:
+            # Fallback if storage service unavailable
+            return [
+                {
+                    "id": str(att["id"]),
+                    "filename": att["filename"],
+                    "url": att.get("file_path"),
+                    "size": att.get("file_size"),
+                    "mime_type": att.get("mime_type"),
+                    "uploaded_at": att["uploaded_at"].isoformat() if att.get("uploaded_at") else None,
+                }
+                for att in attachment_rows
+            ]
 
     async def get_bill_v2(
         self, tenant_id: str, bill_id: UUID

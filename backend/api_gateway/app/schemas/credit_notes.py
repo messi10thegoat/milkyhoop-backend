@@ -119,7 +119,7 @@ class RefundCreditNoteRequest(BaseModel):
     amount: int = Field(..., gt=0, description="Refund amount in IDR")
     refund_date: date
     payment_method: Literal["cash", "transfer", "check"]
-    account_id: str = Field(..., description="Kas/Bank account UUID")
+    account_id: Optional[str] = Field(None, description="CoA account UUID (legacy)")
     bank_account_id: Optional[str] = Field(None, description="Bank account UUID if transfer")
     reference: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None

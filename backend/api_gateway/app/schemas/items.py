@@ -116,6 +116,11 @@ class CreateItemRequest(BaseModel):
     # Warehouse
     warehouse_id: Optional[str] = Field(None, description="Default warehouse UUID")
 
+    # Lot/Batch and Expiry tracking
+    track_batches: bool = Field(False, description="Enable lot/batch tracking")
+    track_expiry: bool = Field(False, description="Enable expiry date tracking")
+    default_expiry_days: Optional[int] = Field(None, ge=1, description="Days before expiry to alert")
+
     # Unit conversions (goods only)
     conversions: List[UnitConversionInput] = Field(default_factory=list, description="Unit conversions")
 
@@ -199,6 +204,11 @@ class UpdateItemRequest(BaseModel):
     # Warehouse
     warehouse_id: Optional[str] = None
 
+    # Lot/Batch and Expiry tracking
+    track_batches: Optional[bool] = None
+    track_expiry: Optional[bool] = None
+    default_expiry_days: Optional[int] = None
+
     # Unit conversions (replace all)
     conversions: Optional[List[UnitConversionUpdate]] = None
 
@@ -250,6 +260,9 @@ class ItemListItem(BaseModel):
     kategori: Optional[str] = None
     deskripsi: Optional[str] = None
     is_returnable: bool
+    track_batches: bool = False
+    track_expiry: bool = False
+    default_expiry_days: Optional[int] = None
     sales_price: Optional[float] = None
     purchase_price: Optional[float] = None
     image_url: Optional[str] = None
@@ -261,6 +274,7 @@ class ItemListItem(BaseModel):
     # Item Code/SKU
     item_code: Optional[str] = None
     sku: Optional[str] = None
+    status: Optional[str] = "active"
     # Costing method
     costing_method: Optional[str] = None
     # Usage flags

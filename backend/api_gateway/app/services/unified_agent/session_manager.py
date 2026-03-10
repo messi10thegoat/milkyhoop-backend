@@ -54,6 +54,10 @@ class StructuredState:
     pending_action_id: Optional[str] = None
     fsm_state: str = "IDLE"
     document_context: Optional[Dict] = None
+    entity_graph: Dict = field(default_factory=dict)
+    pending_payload: Dict = field(default_factory=dict)
+    pending_intent: str = ""
+    editing_mode: bool = False
 
     def to_context_string(self) -> str:
         """Convert to minimal injection string for LLM context."""
@@ -116,6 +120,18 @@ class StructuredState:
                 if edit_lines:
                     joined = ", ".join(edit_lines)
                     parts.append(f"   [User koreksi: {joined}]")
+
+        # Entity graph summary
+        if self.entity_graph and self.entity_graph.get("nodes"):
+            from .entity_graph import to_context_summary
+            graph_summary = to_context_summary(self.entity_graph)
+            if graph_summary:
+                parts.append(graph_summary)
+
+        # Pending payload context (for multi-turn field collection)
+        if self.pending_intent and self.pending_payload:
+            collected = [k for k, v in self.pending_payload.items() if v is not None and k not in ("date",)]
+            parts.append(f"PENDING: {self.pending_intent} — sudah ada: {', '.join(collected[:8])}")
 
         if not parts:
             return ""
@@ -248,6 +264,10 @@ class SessionManager:
             pending_action_id=str(row["pending_action_id"]) if row["pending_action_id"] else None,
             fsm_state=row["fsm_state"] or "IDLE",
             document_context=json.loads(row["document_context"]) if isinstance(row["document_context"], str) and row["document_context"] else row["document_context"],
+            entity_graph=json.loads(row["entity_graph"]) if isinstance(row.get("entity_graph"), str) and row["entity_graph"] else (row.get("entity_graph") or {}),
+            pending_payload=json.loads(row["pending_payload"]) if isinstance(row.get("pending_payload"), str) and row["pending_payload"] else (row.get("pending_payload") or {}),
+            pending_intent=row.get("pending_intent") or "",
+            editing_mode=bool(row.get("editing_mode", False)),
         )
     
     async def update_state(self, session_id: str, **updates):
@@ -989,6 +1009,14 @@ class StateUpdateHooks:
             await session_manager.update_preferences_from_action(action_type, payload)
         except Exception as e:
             logger.warning(f"[PREFS] Failed to update preferences: {e}")
+
+        # Phase 2: Record action pattern for Action Memory
+        try:
+            await StateUpdateHooks.after_confirm_pattern(
+                session_manager, session_id, action_type, result.get("payload", result)
+            )
+        except Exception as e:
+            logger.warning(f"[ACTION_MEMORY] Hook failed: {e}")
     
     @staticmethod
     async def after_reject(
@@ -999,3 +1027,73 @@ class StateUpdateHooks:
         """Called by orchestrator/chat.py after user rejects."""
         await session_manager.update_state_from_action(session_id, action_type, "rejected")
         await session_manager.log_event(session_id, "reject", action_type)
+
+    @staticmethod
+    async def after_resolve(
+        session_manager,
+        session_id: str,
+        intent: str,
+        resolved_entities: dict,
+    ):
+        """Update entity graph with resolved entities after pipeline resolution."""
+        from .entity_graph import add_node, add_edge, _ensure_graph
+
+        try:
+            state = await session_manager.get_state(session_id)
+            graph = _ensure_graph(state.entity_graph or {})
+
+            node_keys = {}
+            for entity_type, resolved in resolved_entities.items():
+                if not resolved or not resolved.entity_id:
+                    continue
+                graph, key = add_node(
+                    graph, entity_type, resolved.entity_id, resolved.entity_name
+                )
+                node_keys[entity_type] = key
+
+            # Add relationship edges
+            if "customer" in node_keys:
+                if "invoice" in node_keys:
+                    graph = add_edge(graph, node_keys["customer"], node_keys["invoice"], "owns")
+                if "item" in node_keys:
+                    parent = node_keys.get("invoice", node_keys["customer"])
+                    graph = add_edge(graph, parent, node_keys["item"], "contains")
+            if "vendor" in node_keys:
+                if "bill" in node_keys:
+                    graph = add_edge(graph, node_keys["vendor"], node_keys["bill"], "owns")
+                if "item" in node_keys:
+                    parent = node_keys.get("bill", node_keys["vendor"])
+                    graph = add_edge(graph, parent, node_keys["item"], "contains")
+            if "bank_account" in node_keys:
+                for doc_type in ["invoice", "bill"]:
+                    if doc_type in node_keys:
+                        graph = add_edge(graph, node_keys[doc_type], node_keys["bank_account"], "paid_via")
+
+            await session_manager.update_state(session_id, entity_graph=graph)
+            logger.info(
+                "[GRAPH] Updated: session=%s nodes=%d edges=%d focus=%s",
+                session_id[:8], len(graph["nodes"]), len(graph["edges"]), graph.get("focus"),
+            )
+        except Exception as e:
+            logger.warning("[GRAPH] after_resolve failed (non-fatal): %s", e)
+
+    @staticmethod
+    async def after_confirm_pattern(
+        session_manager,
+        session_id: str,
+        action_type: str,
+        payload: dict,
+    ):
+        """Record action pattern after confirmed action for Action Memory."""
+        from .action_memory import ActionMemory
+
+        try:
+            am = ActionMemory(
+                session_manager.db,
+                session_manager.tenant_id,
+                session_manager.user_id,
+            )
+            intent = action_type.lower()
+            await am.record_pattern(intent, payload)
+        except Exception as e:
+            logger.warning("[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): %s", e)

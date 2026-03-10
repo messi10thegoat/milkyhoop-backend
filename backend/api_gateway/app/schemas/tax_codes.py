@@ -134,6 +134,7 @@ class TaxCodeDropdownItem(BaseModel):
     code: str
     name: str
     rate: float
+    tax_type: str = "custom"
     is_default: bool = False
 
 

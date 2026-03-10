@@ -6,7 +6,7 @@ Handles draft -> posted -> paid lifecycle with AR and journal entry creation.
 """
 
 from decimal import Decimal, ROUND_HALF_UP
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -382,7 +382,7 @@ async def list_invoices(
 # =============================================================================
 # GET INVOICE DETAIL
 # =============================================================================
-@router.get("/{invoice_id}", response_model=InvoiceDetailResponse)
+@router.get("/{invoice_id}")
 async def get_invoice(request: Request, invoice_id: UUID):
     """Get invoice detail with items and payments."""
     try:
@@ -413,14 +413,24 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 invoice_id,
             )
 
-            # Get payments
+            # Get payments from receive_payments (NOT deprecated sales_invoice_payments)
             payments = await conn.fetch(
                 """
-                SELECT * FROM sales_invoice_payments
-                WHERE invoice_id = $1
-                ORDER BY payment_date
+                SELECT rp.id, rp.payment_number, rp.total_amount AS amount,
+                       rp.payment_date, rp.payment_method,
+                       rp.bank_account_id, rp.reference_number AS reference,
+                       rp.notes, rp.journal_id, rp.created_at, rp.status,
+                       ba.account_name AS bank_account_name
+                FROM receive_payment_allocations rpa
+                JOIN receive_payments rp ON rp.id = rpa.payment_id
+                LEFT JOIN bank_accounts ba ON ba.id = rp.bank_account_id
+                WHERE rpa.invoice_id = $1
+                  AND rp.tenant_id = $2
+                  AND rp.status = 'posted'
+                ORDER BY rp.payment_date
             """,
                 invoice_id,
+                ctx["tenant_id"],
             )
 
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
@@ -458,6 +468,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
                     "amount_paid": journal_amount_paid,
+                    "amount_due": float(ar_row["outstanding"]) if ar_row else (0.0 if invoice["status"] in ("paid",) else float(invoice["total_amount"] or 0)),
                     "status": invoice["status"],
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",
@@ -470,7 +481,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "item_code": item["item_code"],
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
-                            "unit": item["unit"],
+                            "unit": item.get("unit"),
                             "unit_price": item["unit_price"],
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
@@ -480,6 +491,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
+                            "batch_id": str(item["batch_id"]) if item.get("batch_id") else None,
+                            "batch_no": item.get("batch_no"),
+                            "exp_date": item["exp_date"].isoformat() if item.get("exp_date") else None,
                         }
                         for item in items
                     ],
@@ -492,7 +506,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "item_code": item["item_code"],
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
-                            "unit": item["unit"],
+                            "unit": item.get("unit"),
                             "unit_price": item["unit_price"],
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
@@ -502,25 +516,26 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
+                            "batch_id": str(item["batch_id"]) if item.get("batch_id") else None,
+                            "batch_no": item.get("batch_no"),
+                            "exp_date": item["exp_date"].isoformat() if item.get("exp_date") else None,
                         }
                         for item in items
                     ],
                     "payments": [
                         {
                             "id": str(p["id"]),
-                            "amount": p["amount"],
-                            "payment_date": p["payment_date"].isoformat(),
-                            "payment_method": p["payment_method"],
-                            "account_id": str(p["account_id"]),
-                            "bank_account_id": str(p["bank_account_id"])
-                            if p["bank_account_id"]
-                            else None,
-                            "reference": p["reference"],
-                            "notes": p["notes"],
-                            "journal_id": str(p["journal_id"])
-                            if p["journal_id"]
-                            else None,
-                            "created_at": p["created_at"].isoformat(),
+                            "payment_number": p.get("payment_number") or "-",
+                            "amount": float(p["amount"] or 0),
+                            "payment_date": p["payment_date"].isoformat() if p["payment_date"] else None,
+                            "payment_method": p.get("payment_method"),
+                            "bank_account_id": str(p["bank_account_id"]) if p.get("bank_account_id") else None,
+                            "bank_account_name": p.get("bank_account_name"),
+                            "reference": p.get("reference"),
+                            "notes": p.get("notes"),
+                            "journal_id": str(p["journal_id"]) if p.get("journal_id") else None,
+                            "created_at": p["created_at"].isoformat() if p.get("created_at") else None,
+                            "status": p.get("status"),
                         }
                         for p in payments
                     ],
@@ -573,7 +588,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     invoice = await conn.fetchrow(
         """
         SELECT id, invoice_number, customer_id, customer_name, total_amount,
-               tax_amount, subtotal, invoice_date, due_date
+               tax_amount, subtotal, invoice_date, due_date, warehouse_id
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
         invoice_id,
@@ -711,7 +726,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Get invoice items
     items = await conn.fetch(
         """
-        SELECT id, item_id, item_code, description, quantity, unit_price
+        SELECT id, item_id, item_code, description, quantity, unit_price, batch_id, batch_no, exp_date
         FROM sales_invoice_items
         WHERE invoice_id = $1
         """,
@@ -730,7 +745,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         # Check if item is inventory tracked
         product = await conn.fetchrow(
             """
-            SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory
+            SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory, track_batches
             FROM products
             WHERE tenant_id = $1 AND id = $2
             """,
@@ -799,6 +814,34 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
             new_balance = float(current_balance or 0) - quantity
 
+            # Resolve warehouse_id for this posting
+            posting_warehouse_id = invoice.get("warehouse_id")
+            if not posting_warehouse_id:
+                # Fallback: get default warehouse for tenant
+                posting_warehouse_id = await conn.fetchval(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                    ctx["tenant_id"],
+                )
+
+            # Resolve batch_id (explicit or FEFO auto-allocation)
+            si_batch_id = item.get("batch_id")
+            if not si_batch_id and product.get("track_batches") and posting_warehouse_id:
+                # FEFO auto-allocation
+                fefo_batches = await conn.fetch(
+                    "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
+                    ctx["tenant_id"], item["item_id"], posting_warehouse_id, quantity
+                )
+                if fefo_batches:
+                    total_allocated = sum(float(r["quantity_to_use"]) for r in fefo_batches)
+                    if total_allocated >= quantity:
+                        si_batch_id = fefo_batches[0]["batch_id"]
+                    else:
+                        raise HTTPException(400,
+                            f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                else:
+                    raise HTTPException(400,
+                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+
             # Record inventory movement in ledger
             await conn.execute(
                 """
@@ -808,14 +851,14 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     source_type, source_id, source_number,
                     quantity_in, quantity_out, quantity_balance,
                     unit_cost, total_cost, average_cost,
-                    created_by, notes
+                    created_by, notes, warehouse_id, batch_id
                 ) VALUES (
                     $1, $2, $3, $4,
                     'SALE', $5,
                     'SALES_INVOICE', $6, $7,
                     0, $8, $9,
                     $10, $11, $10,
-                    $12, $13
+                    $12, $13, $14, $15
                 )
                 """,
                 ctx["tenant_id"],
@@ -831,7 +874,39 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 line_cogs,
                 ctx["user_id"],
                 f"Sale: {invoice_number}",
+                posting_warehouse_id,
+                si_batch_id,
             )
+
+            # Batch deduction (if batch tracking)
+            if si_batch_id:
+                # Row-level lock + validate
+                bws_row = await conn.fetchrow("""
+                    SELECT available_quantity FROM batch_warehouse_stock
+                    WHERE batch_id = $1 AND warehouse_id = $2
+                    FOR UPDATE
+                """, si_batch_id, posting_warehouse_id)
+
+                if bws_row is None or float(bws_row["available_quantity"]) < quantity:
+                    available = float(bws_row["available_quantity"]) if bws_row else 0
+                    raise HTTPException(400,
+                        f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}")
+
+                # Deduct batch_warehouse_stock
+                await conn.execute("""
+                    UPDATE batch_warehouse_stock
+                    SET quantity = quantity - $3,
+                        last_movement_date = NOW(), updated_at = NOW()
+                    WHERE batch_id = $1 AND warehouse_id = $2
+                """, si_batch_id, posting_warehouse_id, quantity)
+
+                # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
+
+                # Mark depleted if needed
+                await conn.execute("""
+                    UPDATE item_batches SET status = 'depleted'
+                    WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
+                """, si_batch_id)
 
 
     # Create COGS journal if there are inventory items
@@ -1046,6 +1121,34 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         except ValueError:
                             pass
 
+                    # Auto-populate batch_no/exp_date from item_batches if only batch_id provided
+                    item_batch_no = item.get("batch_no")
+                    item_exp_date = item.get("exp_date")
+                    # Parse exp_date string (e.g. "2026-04" or "2026-04-01") to date object
+                    if isinstance(item_exp_date, str):
+                        try:
+                            from datetime import date as _date
+                            parts = item_exp_date.split("-")
+                            if len(parts) == 2:  # "YYYY-MM" format
+                                item_exp_date = _date(int(parts[0]), int(parts[1]), 1)
+                            elif len(parts) == 3:  # "YYYY-MM-DD" format
+                                item_exp_date = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+                            else:
+                                item_exp_date = None
+                        except (ValueError, TypeError):
+                            item_exp_date = None
+                    item_batch_id = item.get("batch_id")
+                    if item_batch_id and (not item_batch_no or not item_exp_date):
+                        batch_info = await conn.fetchrow(
+                            "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
+                            UUID(item_batch_id) if isinstance(item_batch_id, str) else item_batch_id
+                        )
+                        if batch_info:
+                            if not item_batch_no:
+                                item_batch_no = batch_info["batch_number"]
+                            if not item_exp_date:
+                                item_exp_date = batch_info["expiry_date"]
+
                     await conn.execute(
                         """
                         INSERT INTO sales_invoice_items (
@@ -1053,8 +1156,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
                             tax_code, tax_rate, tax_amount,
-                            subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            subtotal, total, line_number,
+                            batch_id, batch_no, exp_date
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                     """,
                         invoice_id,
                         item_uuid,
@@ -1071,6 +1175,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         item["subtotal"],
                         item["total"],
                         item["line_number"],
+                        UUID(item_batch_id) if item_batch_id else None,
+                        item_batch_no,
+                        item_exp_date,
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -1111,7 +1218,13 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         "status": "draft",
                         "id": str(invoice_id),
                         "invoice_number": invoice_number,
-                        "total_amount": total_amount,
+                        "total_amount": float(total_amount),
+                        "amount_paid": 0,
+                        "customer_id": body.customer_id,
+                        "customer_name": body.customer_name,
+                        "invoice_date": str(body.invoice_date),
+                        "due_date": str(body.due_date),
+                        "created_at": None,
                     },
                 }
 
@@ -1189,6 +1302,34 @@ async def update_invoice(
                             except ValueError:
                                 pass
 
+                        # Auto-populate batch_no/exp_date from item_batches if only batch_id provided
+                        item_batch_no = item.batch_no
+                        item_exp_date = item.exp_date
+                        # Parse exp_date string (e.g. "2026-04" or "2026-04-01") to date object
+                        if isinstance(item_exp_date, str):
+                            try:
+                                from datetime import date as _date
+                                parts = item_exp_date.split("-")
+                                if len(parts) == 2:
+                                    item_exp_date = _date(int(parts[0]), int(parts[1]), 1)
+                                elif len(parts) == 3:
+                                    item_exp_date = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+                                else:
+                                    item_exp_date = None
+                            except (ValueError, TypeError):
+                                item_exp_date = None
+                        item_batch_id = item.batch_id
+                        if item_batch_id and (not item_batch_no or not item_exp_date):
+                            batch_info = await conn.fetchrow(
+                                "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
+                                UUID(item_batch_id) if isinstance(item_batch_id, str) else item_batch_id
+                            )
+                            if batch_info:
+                                if not item_batch_no:
+                                    item_batch_no = batch_info["batch_number"]
+                                if not item_exp_date:
+                                    item_exp_date = batch_info["expiry_date"]
+
                         await conn.execute(
                             """
                             INSERT INTO sales_invoice_items (
@@ -1196,8 +1337,9 @@ async def update_invoice(
                                 quantity, unit, unit_price,
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
-                                subtotal, total, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                subtotal, total, line_number,
+                                batch_id, batch_no, exp_date
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                         """,
                             invoice_id,
                             item_uuid,
@@ -1214,6 +1356,9 @@ async def update_invoice(
                             calc["subtotal"],
                             calc["total"],
                             calc["line_number"],
+                            UUID(item_batch_id) if item_batch_id else None,
+                            item_batch_no,
+                            item_exp_date,
                         )
 
                     # Update invoice totals
@@ -1265,10 +1410,26 @@ async def update_invoice(
 
                 logger.info(f"Invoice updated: {invoice_id}")
 
+                # Fetch updated invoice for response
+                updated = await conn.fetchrow(
+                    "SELECT id, invoice_number, total_amount, amount_paid, status, invoice_date, due_date, customer_id, customer_name, created_at FROM sales_invoices WHERE id = $1",
+                    invoice_id,
+                )
                 return {
                     "success": True,
                     "message": "Invoice updated successfully",
-                    "data": {"status": "draft", "id": str(invoice_id)},
+                    "data": {
+                        "id": str(updated["id"]),
+                        "invoice_number": updated["invoice_number"],
+                        "total_amount": float(updated["total_amount"] or 0),
+                        "amount_paid": float(updated["amount_paid"] or 0),
+                        "status": updated["status"] or "draft",
+                        "invoice_date": str(updated["invoice_date"]) if updated["invoice_date"] else None,
+                        "due_date": str(updated["due_date"]) if updated["due_date"] else None,
+                        "customer_id": str(updated["customer_id"]) if updated["customer_id"] else None,
+                        "customer_name": updated["customer_name"],
+                        "created_at": str(updated["created_at"]) if updated["created_at"] else None,
+                    },
                 }
 
     except HTTPException:
@@ -1303,7 +1464,7 @@ async def post_invoice(
             invoice = await conn.fetchrow(
                 """
                 SELECT id, invoice_number, customer_id, customer_name, total_amount,
-                       invoice_date, due_date, status
+                       invoice_date, due_date, status, warehouse_id
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -1325,7 +1486,7 @@ async def post_invoice(
             # Get invoice items
             items = await conn.fetch(
                 """
-                SELECT id, item_id, item_code, description, quantity, unit_price
+                SELECT id, item_id, item_code, description, quantity, unit_price, batch_id, batch_no, exp_date
                 FROM sales_invoice_items
                 WHERE invoice_id = $1
             """,
@@ -1453,7 +1614,7 @@ async def post_invoice(
                     # Check if item is inventory tracked
                     product = await conn.fetchrow(
                         """
-                        SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory
+                        SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory, track_batches
                         FROM products
                         WHERE tenant_id = $1 AND id = $2
                     """,
@@ -1526,6 +1687,32 @@ async def post_invoice(
 
                         new_balance = float(current_balance or 0) - quantity
 
+                        # Resolve warehouse_id for this posting
+                        posting_warehouse_id = invoice.get("warehouse_id")
+                        if not posting_warehouse_id:
+                            posting_warehouse_id = await conn.fetchval(
+                                "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                                ctx["tenant_id"],
+                            )
+
+                        # Resolve batch_id (explicit or FEFO auto-allocation)
+                        si_batch_id = item.get("batch_id")
+                        if not si_batch_id and product.get("track_batches") and posting_warehouse_id:
+                            fefo_batches = await conn.fetch(
+                                "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
+                                ctx["tenant_id"], item["item_id"], posting_warehouse_id, quantity
+                            )
+                            if fefo_batches:
+                                total_allocated = sum(float(r["quantity_to_use"]) for r in fefo_batches)
+                                if total_allocated >= quantity:
+                                    si_batch_id = fefo_batches[0]["batch_id"]
+                                else:
+                                    raise HTTPException(400,
+                                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                            else:
+                                raise HTTPException(400,
+                                    f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+
                         # Record inventory movement in ledger
                         await conn.execute(
                             """
@@ -1535,14 +1722,14 @@ async def post_invoice(
                                 source_type, source_id, source_number,
                                 quantity_in, quantity_out, quantity_balance,
                                 unit_cost, total_cost, average_cost,
-                                created_by, notes
+                                created_by, notes, warehouse_id, batch_id
                             ) VALUES (
                                 $1, $2, $3, $4,
                                 'SALE', $5,
                                 'SALES_INVOICE', $6, $7,
                                 0, $8, $9,
                                 $10, $11, $10,
-                                $12, $13
+                                $12, $13, $14, $15
                             )
                         """,
                             ctx["tenant_id"],
@@ -1558,10 +1745,38 @@ async def post_invoice(
                             line_cogs,
                             ctx["user_id"],
                             f"Sale: {invoice['invoice_number']}",
+                            posting_warehouse_id,
+                            si_batch_id,
                         )
 
+                        # Batch deduction (if batch tracking)
+                        if si_batch_id:
+                            bws_row = await conn.fetchrow("""
+                                SELECT available_quantity FROM batch_warehouse_stock
+                                WHERE batch_id = $1 AND warehouse_id = $2
+                                FOR UPDATE
+                            """, si_batch_id, posting_warehouse_id)
+
+                            if bws_row is None or float(bws_row["available_quantity"]) < quantity:
+                                available = float(bws_row["available_quantity"]) if bws_row else 0
+                                raise HTTPException(400,
+                                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}")
+
+                            await conn.execute("""
+                                UPDATE batch_warehouse_stock
+                                SET quantity = quantity - $3,
+                                    last_movement_date = NOW(), updated_at = NOW()
+                                WHERE batch_id = $1 AND warehouse_id = $2
+                            """, si_batch_id, posting_warehouse_id, quantity)
+
+                            # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
+
+                            await conn.execute("""
+                                UPDATE item_batches SET status = 'depleted'
+                                WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
+                            """, si_batch_id)
+
                         # Stock is tracked via inventory_ledger, not products.stock_quantity
-                        # The kartu_stok insert above already records the movement
 
                 # Create COGS journal if there are inventory items
                 cogs_journal_id = None
@@ -2285,75 +2500,21 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
                 # ============================================================
-                # 3. Restore Inventory via Ledger Entry
+                # 3. Restore Inventory via shared helper
                 # Iron Law 3: Append-Only - new entry to restore
+                # Uses record_inventory_reversal() (milkyhoop-inventory Rule 9)
                 # ============================================================
-                # Get invoice items to restore inventory
-                items = await conn.fetch(
-                    """
-                    SELECT sii.item_id, sii.item_code, sii.quantity, sii.unit_cost, sii.total_cost,
-                           p.nama_produk, p.track_inventory
-                    FROM sales_invoice_items sii
-                    LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
-                    WHERE sii.invoice_id = $1 AND sii.item_id IS NOT NULL
-                """,
-                    invoice_id,
-                    ctx["tenant_id"],
+                from ..services.inventory_helpers import record_inventory_reversal
+
+                await record_inventory_reversal(
+                    conn, ctx["tenant_id"],
+                    source_type='SALES_INVOICE',
+                    source_id=invoice_id,
+                    reversal_journal_id=cogs_reversal_journal_id or (reversal_journal_id if reversal_journal_id else invoice_id),
+                    created_by=ctx["user_id"],
+                    reversal_date=today,
+                    notes_prefix="VOID",
                 )
-
-                for item in items:
-                    if not item["item_id"] or not item.get("track_inventory", True):
-                        continue
-
-                    quantity = float(item["quantity"])
-                    unit_cost = item["unit_cost"] or 0
-                    total_cost = item["total_cost"] or 0
-
-                    # Get current inventory balance
-                    current_balance = await conn.fetchval(
-                        "SELECT get_inventory_balance($1, $2)",
-                        ctx["tenant_id"],
-                        item["item_id"],
-                    )
-                    new_balance = float(current_balance or 0) + quantity
-
-                    # Create inventory ledger entry to RESTORE stock
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date,
-                            source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            created_by, notes
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            'VOID_REVERSAL', $5,
-                            'SALES_INVOICE_VOID', $6, $7,
-                            $8, 0, $9,
-                            $10, $11, $10,
-                            $12, $13
-                        )
-                    """,
-                        ctx["tenant_id"],
-                        item["item_id"],
-                        item["item_code"],
-                        item["nama_produk"],
-                        today,
-                        invoice_id,
-                        invoice["invoice_number"],
-                        quantity,  # quantity_in (restore)
-                        new_balance,
-                        unit_cost,
-                        total_cost,
-                        ctx["user_id"],
-                        f"VOID: {invoice['invoice_number']} - Stock restored",
-                    )
-
-                    logger.info(
-                        f"Inventory restored for item {item['item_code']}: +{quantity}"
-                    )
 
 
                 # ============================================================
@@ -2706,6 +2867,9 @@ async def get_invoice_pdf(
                         "subtotal": item["subtotal"],
                         "total": item["total"],
                         "line_number": item["line_number"],
+                        "batch_no": item["batch_no"],
+                        "exp_date": item["exp_date"],
+                        "product_name": item["description"],
                     }
                     for item in items
                 ],
@@ -2772,17 +2936,16 @@ async def get_invoice_activity(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """Get activity log for a sales invoice."""
+    """Get activity log for a sales invoice — matches Bills pattern exactly."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         offset = (page - 1) * limit
 
         async with pool.acquire() as conn:
-            # Verify invoice exists and belongs to tenant
             invoice = await conn.fetchrow(
                 """
-                SELECT id, invoice_number, status, created_at, posted_at, voided_at,
+                SELECT id, invoice_number, status, total_amount, created_at, posted_at, voided_at,
                        voided_reason, created_by, posted_by
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
@@ -2790,125 +2953,97 @@ async def get_invoice_activity(
                 invoice_id,
                 ctx["tenant_id"],
             )
-
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
-            # Build activity from multiple sources
+            # Helper: resolve user name from user_id (table is "User" with capital U)
+            async def resolve_actor(user_id):
+                if not user_id:
+                    return None
+                try:
+                    user = await conn.fetchrow(
+                        'SELECT name, fullname FROM "User" WHERE id = $1',
+                        str(user_id),
+                    )
+                    if user:
+                        return user["fullname"] or user["name"] or None
+                    return None
+                except Exception:
+                    return None
+
             activities = []
 
-            # 1. Creation activity
-            activities.append(
-                {
-                    "id": f"created-{invoice_id}",
-                    "type": "CREATED",
-                    "description": f"Faktur {invoice['invoice_number']} dibuat",
-                    "timestamp": invoice["created_at"].isoformat()
-                    if invoice["created_at"]
-                    else None,
-                    "actor_id": str(invoice["created_by"])
-                    if invoice["created_by"]
-                    else None,
-                    "actor_name": None,
-                }
-            )
+            # 1. Created
+            created_actor = await resolve_actor(invoice["created_by"])
+            activities.append({
+                "id": f"{invoice_id}-created",
+                "type": "created",
+                "description": "Faktur dibuat",
+                "actor_name": created_actor,
+                "timestamp": invoice["created_at"].isoformat() if invoice["created_at"] else None,
+                "amount": float(invoice["total_amount"]) if invoice["total_amount"] else None,
+                "details": f"Invoice #{invoice['invoice_number']}",
+            })
 
-            # 2. Posted activity
+            # 2. Posted (diterbitkan)
             if invoice["posted_at"]:
-                activities.append(
-                    {
-                        "id": f"posted-{invoice_id}",
-                        "type": "POSTED",
-                        "description": f"Faktur {invoice['invoice_number']} diposting",
-                        "timestamp": invoice["posted_at"].isoformat(),
-                        "actor_id": str(invoice["posted_by"])
-                        if invoice["posted_by"]
-                        else None,
-                        "actor_name": None,
-                    }
-                )
+                posted_actor = await resolve_actor(invoice["posted_by"])
+                activities.append({
+                    "id": f"{invoice_id}-posted",
+                    "type": "status_changed",
+                    "description": "Faktur diterbitkan",
+                    "actor_name": posted_actor,
+                    "timestamp": invoice["posted_at"].isoformat(),
+                    "old_value": "draft",
+                    "new_value": "posted",
+                })
 
-            # 3. Voided activity
+            # 3. Voided (dibatalkan)
             if invoice["voided_at"]:
-                activities.append(
-                    {
-                        "id": f"voided-{invoice_id}",
-                        "type": "VOIDED",
-                        "description": f"Faktur {invoice['invoice_number']} dibatalkan: {invoice['voided_reason'] or 'Tidak ada alasan'}",
-                        "timestamp": invoice["voided_at"].isoformat(),
-                        "actor_id": None,
-                        "actor_name": None,
-                    }
-                )
+                activities.append({
+                    "id": f"{invoice_id}-voided",
+                    "type": "voided",
+                    "description": "Faktur dibatalkan",
+                    "actor_name": None,
+                    "timestamp": invoice["voided_at"].isoformat(),
+                    "details": invoice["voided_reason"] or None,
+                })
 
-            # 4. Payment activities
+            # 4. Payments from receive_payments (not deprecated sales_invoice_payments)
             payments = await conn.fetch(
                 """
-                SELECT id, amount, payment_date, payment_method, created_at, created_by
-                FROM sales_invoice_payments
-                WHERE invoice_id = $1
-                ORDER BY created_at DESC
+                SELECT rp.id, rp.total_amount as amount, rp.payment_date, rp.payment_method,
+                       rp.created_at, rp.created_by,
+                       ba.account_name as bank_account_name
+                FROM receive_payments rp
+                LEFT JOIN receive_payment_allocations rpa ON rpa.payment_id = rp.id
+                LEFT JOIN bank_accounts ba ON ba.id = rp.bank_account_id
+                WHERE rpa.invoice_id = $1 AND rp.status = 'posted'
+                ORDER BY rp.created_at DESC
             """,
                 invoice_id,
             )
             for p in payments:
-                activities.append(
-                    {
-                        "id": f"payment-{p['id']}",
-                        "type": "PAYMENT_RECEIVED",
-                        "description": f"Pembayaran diterima: Rp {p['amount']:,} via {p['payment_method'] or 'Transfer'}",
-                        "timestamp": p["created_at"].isoformat()
-                        if p["created_at"]
-                        else None,
-                        "actor_id": str(p["created_by"]) if p["created_by"] else None,
-                        "actor_name": None,
-                    }
-                )
-
-            # 5. Get from audit_logs if available
-            audit_rows = await conn.fetch(
-                """
-                SELECT id, "createdAt", "eventType", "userId", metadata
-                FROM audit_logs
-                WHERE metadata->>'entity_type' = 'SALES_INVOICE'
-                  AND metadata->>'entity_id' = $1::text
-                ORDER BY "createdAt" DESC
-                LIMIT 100
-            """,
-                str(invoice_id),
-            )
-            for row in audit_rows:
-                metadata = row["metadata"] or {}
-                activities.append(
-                    {
-                        "id": str(row["id"]),
-                        "type": row["eventType"] or "AUDIT",
-                        "description": metadata.get(
-                            "description", row["eventType"] or "Activity"
-                        ),
-                        "timestamp": row["createdAt"].isoformat()
-                        if row["createdAt"]
-                        else None,
-                        "actor_id": row["userId"],
-                        "actor_name": metadata.get("user_name"),
-                        "changes": metadata.get("changes"),
-                    }
-                )
+                p_actor = await resolve_actor(p["created_by"])
+                activities.append({
+                    "id": f"payment-{p['id']}",
+                    "type": "payment",
+                    "description": f"Pembayaran {'tunai' if p['payment_method'] == 'cash' else 'transfer'}",
+                    "actor_name": p_actor,
+                    "timestamp": p["created_at"].isoformat() if p["created_at"] else None,
+                    "amount": float(p["amount"]) if p["amount"] else None,
+                    "payment_method": p["payment_method"],
+                    "bank_account_name": p["bank_account_name"],
+                })
 
             # Sort by timestamp descending
             activities.sort(key=lambda x: x["timestamp"] or "", reverse=True)
 
-            # Apply pagination
             total = len(activities)
             paginated = activities[offset : offset + limit]
 
             return {
-                "success": True,
-                "data": paginated,
-                "total": total,
-                "page": page,
-                "limit": limit,
-                "has_more": (offset + limit) < total,
+                "activities": paginated,
             }
 
     except HTTPException:
@@ -3055,3 +3190,202 @@ async def get_invoice_journals(
     except Exception as e:
         logger.error(f"Error getting invoice journals {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+# =============================================================================
+# SALES INVOICE ATTACHMENTS
+# =============================================================================
+
+@router.post("/{invoice_id}/attachments", status_code=201)
+async def upload_invoice_attachment(
+    request: Request,
+    invoice_id: UUID,
+    file: UploadFile = File(..., description="Image or PDF file (max 5MB)"),
+):
+    """Upload an attachment to a sales invoice (stored in MinIO)."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        content = await file.read()
+        if len(content) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+        await file.seek(0)
+
+        allowed_types = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File type {file.content_type} not allowed. Use JPEG, PNG, WebP, or PDF.",
+            )
+
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx["user_id"]
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+
+            inv = await conn.fetchrow(
+                "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                invoice_id, tenant_id,
+            )
+            if not inv:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
+            storage = get_storage_service()
+            result = await storage.upload_file(
+                file=file,
+                tenant_id=tenant_id,
+                category="invoice-attachments",
+            )
+
+            import uuid as uuid_mod
+            attachment_id = uuid_mod.uuid4()
+            await conn.execute(
+                """INSERT INTO sales_invoice_attachments (id, invoice_id, tenant_id, filename, file_path, file_size, mime_type, uploaded_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                attachment_id, invoice_id, tenant_id, file.filename, result.file_path,
+                len(content), file.content_type, user_id,
+            )
+
+            return {
+                "success": True,
+                "data": {
+                    "id": str(attachment_id),
+                    "filename": file.filename,
+                    "url": result.url,
+                    "size": len(content),
+                    "mime_type": file.content_type,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading attachment for invoice {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+
+
+@router.get("/{invoice_id}/attachments")
+async def list_invoice_attachments(
+    request: Request,
+    invoice_id: UUID,
+):
+    """List attachments for a sales invoice."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+
+        inv = await conn.fetchrow(
+            "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+            invoice_id, tenant_id,
+        )
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        rows = await conn.fetch(
+            "SELECT id, filename, file_path, file_size, mime_type, uploaded_at FROM sales_invoice_attachments WHERE invoice_id = $1 ORDER BY uploaded_at DESC",
+            invoice_id,
+        )
+
+        storage = get_storage_service()
+
+        attachments = []
+        for r in rows:
+            try:
+                url = await storage.generate_signed_url(r["file_path"]) if r["file_path"] else None
+            except Exception:
+                url = None
+            attachments.append({
+                "id": str(r["id"]),
+                "filename": r["filename"],
+                "url": url,
+                "size": r["file_size"],
+                "mime_type": r["mime_type"],
+                "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+            })
+
+        return {"attachments": attachments}
+
+
+@router.delete("/{invoice_id}/attachments/{attachment_id}")
+async def delete_invoice_attachment(
+    request: Request,
+    invoice_id: UUID,
+    attachment_id: UUID,
+):
+    """Delete a sales invoice attachment."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+
+        row = await conn.fetchrow(
+            """SELECT sa.id, sa.file_path FROM sales_invoice_attachments sa
+               JOIN sales_invoices si ON si.id = sa.invoice_id
+               WHERE sa.id = $1 AND sa.invoice_id = $2 AND si.tenant_id = $3""",
+            attachment_id, invoice_id, tenant_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+
+        storage = get_storage_service()
+        try:
+            await storage.delete_file(row["file_path"])
+        except Exception:
+            pass
+
+        await conn.execute("DELETE FROM sales_invoice_attachments WHERE id = $1", attachment_id)
+
+        return {"success": True, "message": "Attachment deleted"}
+
+
+@router.get("/{invoice_id}/attachments/{attachment_id}/download")
+async def download_invoice_attachment(
+    request: Request,
+    invoice_id: UUID,
+    attachment_id: UUID,
+):
+    """Proxy-download a sales invoice attachment."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+        row = await conn.fetchrow(
+            """SELECT sa.filename, sa.file_path, sa.mime_type
+            FROM sales_invoice_attachments sa
+            JOIN sales_invoices si ON si.id = sa.invoice_id
+            WHERE sa.id = $1 AND sa.invoice_id = $2 AND si.tenant_id = $3""",
+            attachment_id, invoice_id, tenant_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    storage = get_storage_service()
+    try:
+        obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
+        body = obj["Body"]
+
+        def iter_body():
+            while chunk := body.read(65536):
+                yield chunk
+            body.close()
+
+        return StreamingResponse(
+            iter_body(),
+            media_type=row["mime_type"] or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'inline; filename="{row["filename"]}"',
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error downloading attachment {attachment_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to download attachment")

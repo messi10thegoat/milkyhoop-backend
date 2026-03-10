@@ -26,7 +26,7 @@ from .routers import invoices
 from .routers import bills
 from .routers import vendors
 from .routers import customers
-from .routers import tax_codes, tax_reports
+from .routers import tax_codes, tax_groups, tax_reports, pkp_settings, djp_master, nsfp, product_djp_mapping, tax_invoices
 from .routers import accounts
 from .routers import sales_invoices
 from .routers import credit_notes
@@ -120,6 +120,7 @@ from .routers import chat_history
 from .routers import chat_usage
 from .routers import unified_chat
 from .routers import document_intake
+from .routers import efaktur
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -342,7 +343,13 @@ app.include_router(customers.router, prefix="/api/customers", tags=["customers"]
 
 # Tax Codes router (Tax Master Data)
 app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"])
+app.include_router(tax_groups.router, prefix="/api/tax-groups", tags=["tax-groups"])
 app.include_router(tax_reports.router, prefix="/api/tax-reports", tags=["tax-reports"])
+app.include_router(pkp_settings.router, prefix="/api/settings/pkp", tags=["PKP Settings"])
+app.include_router(djp_master.router, prefix="/api/djp", tags=["DJP Master Data"])
+app.include_router(nsfp.router, prefix="/api/nsfp-ranges", tags=["NSFP Management"])
+app.include_router(product_djp_mapping.router, prefix="/api/product-djp-mapping", tags=["Product DJP Mapping"])
+app.include_router(tax_invoices.router, prefix="/api/tax-invoices", tags=["Tax Invoices"])
 
 # Chart of Accounts router (CoA CRUD)
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
@@ -613,6 +620,7 @@ app.include_router(unified_chat.router, prefix="/api/v3/chat", tags=["unified-ch
 app.include_router(
     document_intake.router, prefix="/api/document-intake", tags=["document-intake"]
 )
+app.include_router(efaktur.router, prefix="/api/efaktur", tags=["E-Faktur Export"])
 
 
 @app.get("/")

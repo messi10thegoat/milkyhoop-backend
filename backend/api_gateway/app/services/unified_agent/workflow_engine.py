@@ -63,6 +63,33 @@ class DocReviewState(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class InvoicePaymentState(str, Enum):
+    """Invoice + immediate payment workflow states."""
+    CREATE_INVOICE = "CREATE_INVOICE"
+    AWAIT_INVOICE_CONFIRM = "AWAIT_INVOICE_CONFIRM"
+    CREATE_PAYMENT = "CREATE_PAYMENT"
+    AWAIT_PAYMENT_CONFIRM = "AWAIT_PAYMENT_CONFIRM"
+    COMPLETED = "COMPLETED"
+
+
+class MonthlyClosingState(str, Enum):
+    """Monthly closing workflow states."""
+    CHECK_DRAFTS = "CHECK_DRAFTS"
+    CHECK_RECONCILIATION = "CHECK_RECONCILIATION"
+    GENERATE_REPORTS = "GENERATE_REPORTS"
+    PRESENT_SUMMARY = "PRESENT_SUMMARY"
+    CLOSE_PERIOD = "CLOSE_PERIOD"
+    AWAIT_CLOSE_CONFIRM = "AWAIT_CLOSE_CONFIRM"
+    COMPLETED = "COMPLETED"
+
+
+class CrudFormState(str, Enum):
+    """CRUD form multi-turn workflow states."""
+    COLLECTING = "COLLECTING"
+    PROPOSING = "PROPOSING"
+    COMPLETED = "COMPLETED"
+
+
 # ─── Data Classes ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -208,6 +235,71 @@ async def check_has_draft_plan(ctx: WorkflowContext, user_data: dict) -> Tuple[b
     doc = ctx.data.get("document")
     has_draft = bool(doc and doc.get("draft_plan"))
     return has_draft, "" if has_draft else "Dokumen belum punya draft plan"
+
+
+# ============ INVOICE + PAYMENT CHECK FUNCTIONS ============
+
+async def check_has_invoice_data(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: do we have customer + items for invoice?"""
+    has_customer = bool(ctx.data.get("customer_id"))
+    has_items = bool(ctx.data.get("items"))
+    if has_customer and has_items:
+        return (True, "")
+    missing = []
+    if not has_customer:
+        missing.append("customer")
+    if not has_items:
+        missing.append("items")
+    return (False, ", ".join(missing))
+
+
+async def check_invoice_created(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: has the invoice been confirmed/created?"""
+    if ctx.data.get("invoice_id") and ctx.data.get("invoice_confirmed"):
+        return (True, "")
+    return (False, "Invoice belum dikonfirmasi")
+
+
+async def check_payment_data_ready(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: do we have bank_account for payment?"""
+    if ctx.data.get("bank_account_id") and ctx.data.get("invoice_id"):
+        return (True, "")
+    if not ctx.data.get("bank_account_id"):
+        return (False, "bank_account_id")
+    return (False, "invoice_id")
+
+
+# ============ MONTHLY CLOSING CHECK FUNCTIONS ============
+
+async def check_has_period(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: do we have the target period?"""
+    if ctx.data.get("period"):
+        return (True, "")
+    return (False, "period (format: YYYY-MM)")
+
+
+async def check_drafts_clear(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: are there zero draft invoices/bills?"""
+    draft_invoices = ctx.data.get("draft_invoice_count", -1)
+    draft_bills = ctx.data.get("draft_bill_count", -1)
+    if draft_invoices == 0 and draft_bills == 0:
+        return (True, "")
+    parts = []
+    if draft_invoices > 0:
+        parts.append(f"{draft_invoices} faktur draft")
+    if draft_bills > 0:
+        parts.append(f"{draft_bills} tagihan draft")
+    if parts:
+        joined = ", ".join(parts)
+        return (False, f"Masih ada {joined} yang belum diposting")
+    return (True, "")
+
+
+async def check_user_approved_close(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: user explicitly approved period closing."""
+    if ctx.data.get("user_approved_close"):
+        return (True, "")
+    return (False, "Menunggu konfirmasi user untuk tutup periode")
 
 
 async def auto_check_existing(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
@@ -1018,7 +1110,270 @@ async def auto_present_draft(ctx: WorkflowContext, call_internal) -> Dict[str, A
     return {"instruction": instruction, "confirm_suggestion": ctx.data["confirm_suggestion"]}
 
 
+# ============ INVOICE + PAYMENT AUTO-EXECUTE ============
+
+async def auto_create_invoice_proposal(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Build invoice proposal from workflow data."""
+    customer_id = ctx.data.get("customer_id", "")
+    customer_name = ctx.data.get("customer_name", "")
+    items = ctx.data.get("items", [])
+    tax_rate = ctx.data.get("tax_rate", 0)
+    invoice_date = ctx.data.get("date", date_type.today().isoformat())
+
+    return {
+        "confirm_suggestion": {
+            "action_key": "create_sales_invoice",
+            "payload": {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "items": items,
+                "invoice_date": invoice_date,
+                "due_date": ctx.data.get("due_date", ""),
+                "tax_rate": tax_rate,
+                "auto_post": True,
+            },
+        },
+        "instruction": f"Buatkan faktur penjualan untuk {customer_name}.",
+    }
+
+
+async def auto_create_payment_proposal(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Build payment proposal after invoice is confirmed."""
+    invoice_id = ctx.data.get("invoice_id", "")
+    invoice_number = ctx.data.get("invoice_number", "")
+    customer_id = ctx.data.get("customer_id", "")
+    customer_name = ctx.data.get("customer_name", "")
+    total_amount = ctx.data.get("invoice_total", 0)
+    bank_account_id = ctx.data.get("bank_account_id", "")
+    bank_account_name = ctx.data.get("bank_account_name", "")
+
+    return {
+        "confirm_suggestion": {
+            "action_key": "create_receive_payment",
+            "payload": {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "invoice_numbers": invoice_number,
+                "total_amount": total_amount,
+                "allocations": [{"invoice_id": invoice_id, "amount_applied": total_amount}],
+                "bank_account_id": bank_account_id,
+                "bank_account_name": bank_account_name,
+                "payment_date": date_type.today().isoformat(),
+                "payment_method": "bank_transfer",
+            },
+        },
+        "instruction": f"Faktur {invoice_number} sudah dibuat. Sekarang catat pembayarannya.",
+    }
+
+
+# ============ MONTHLY CLOSING AUTO-EXECUTE ============
+
+async def auto_check_drafts(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Check for draft invoices and bills."""
+    try:
+        inv_result = await call_internal("GET", "/api/sales-invoices/summary")
+        draft_invoices = inv_result.get("draft_count", 0)
+        bill_result = await call_internal("GET", "/api/bills/outstanding-summary")
+        draft_bills = bill_result.get("breakdown", {}).get("draft", {}).get("count", 0)
+        ctx.data["draft_invoice_count"] = draft_invoices
+        ctx.data["draft_bill_count"] = draft_bills
+        parts = []
+        if draft_invoices > 0:
+            parts.append(f"{draft_invoices} faktur penjualan masih draft")
+        if draft_bills > 0:
+            parts.append(f"{draft_bills} faktur pembelian masih draft")
+        if parts:
+            joined = ", ".join(parts)
+            return {
+                "draft_invoice_count": draft_invoices,
+                "draft_bill_count": draft_bills,
+                "instruction": f"Masih ada {joined}. Posting dulu sebelum tutup bulan.",
+                "has_drafts": True,
+            }
+        return {
+            "draft_invoice_count": 0,
+            "draft_bill_count": 0,
+            "instruction": "Tidak ada dokumen draft. Lanjut cek rekonsiliasi.",
+            "has_drafts": False,
+        }
+    except Exception as e:
+        logger.warning(f"[CLOSING] Check drafts failed: {e}")
+        ctx.data["draft_invoice_count"] = 0
+        ctx.data["draft_bill_count"] = 0
+        return {"instruction": "Tidak bisa cek draft (lanjut saja).", "has_drafts": False}
+
+
+async def auto_check_recon(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Check bank reconciliation status."""
+    try:
+        bank_result = await call_internal("GET", "/api/bank-accounts")
+        accounts = bank_result.get("items", bank_result.get("data", []))
+        if not isinstance(accounts, list):
+            accounts = []
+        unrecon_accounts = []
+        for acc in accounts:
+            if acc.get("is_active"):
+                unrecon_accounts.append(acc.get("account_name", "Unknown"))
+        ctx.data["bank_account_count"] = len(unrecon_accounts)
+        return {
+            "bank_accounts": unrecon_accounts,
+            "instruction": f"Ada {len(unrecon_accounts)} rekening bank aktif. Lanjut generate laporan.",
+        }
+    except Exception as e:
+        logger.warning(f"[CLOSING] Check recon failed: {e}")
+        return {"instruction": "Tidak bisa cek rekonsiliasi (lanjut saja)."}
+
+
+async def auto_generate_reports(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Generate P&L and balance sheet for the period."""
+    period = ctx.data.get("period", "")
+    try:
+        pl_result = await call_internal("GET", f"/api/reports/laba-rugi/{period}")
+        revenue = pl_result.get("total_pendapatan", 0)
+        expenses = pl_result.get("total_beban", 0)
+        net_income = pl_result.get("laba_bersih", 0)
+        bs_result = await call_internal("GET", f"/api/reports/neraca/{period}")
+        total_assets = bs_result.get("total_aset", 0)
+        is_balanced = bs_result.get("is_balanced", True)
+        ctx.data["report_summary"] = {
+            "revenue": revenue,
+            "expenses": expenses,
+            "net_income": net_income,
+            "total_assets": total_assets,
+            "is_balanced": is_balanced,
+        }
+        balance_status = "Neraca seimbang" if is_balanced else "Neraca TIDAK seimbang"
+        def fmt(x):
+            return f"Rp {int(x):,}".replace(",", ".")
+        return {
+            "report_summary": ctx.data["report_summary"],
+            "instruction": (
+                f"Laporan keuangan periode {period}:\n"
+                f"- Pendapatan: {fmt(revenue)}\n"
+                f"- Beban: {fmt(expenses)}\n"
+                f"- Laba Bersih: {fmt(net_income)}\n"
+                f"- Total Aset: {fmt(total_assets)}\n"
+                f"- {balance_status}\n\n"
+                f"Mau tutup periode {period}?"
+            ),
+        }
+    except Exception as e:
+        logger.warning(f"[CLOSING] Generate reports failed: {e}")
+        return {"instruction": f"Gagal generate laporan: {e}. Mau coba lagi?"}
+
+
+async def auto_close_period(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Close the accounting period."""
+    period = ctx.data.get("period", "")
+    try:
+        result = await call_internal("POST", f"/api/periods/{period}/close", {})
+        return {
+            "closed": True,
+            "instruction": f"Periode {period} berhasil ditutup.",
+        }
+    except Exception as e:
+        logger.warning(f"[CLOSING] Close period failed: {e}")
+        return {
+            "closed": False,
+            "instruction": f"Gagal tutup periode: {e}",
+        }
+
+
 # ─── Transition Table ─────────────────────────────────────────────────────
+
+
+# ============ CRUD FORM CHECK + AUTO-EXECUTE FUNCTIONS ============
+
+async def check_crud_fields_complete(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """Gate: are all required fields present for the CRUD action?"""
+    from .direct_action_registry import validate_payload, get_direct_action
+
+    action_key = ctx.data.get("action_key", "")
+    payload = ctx.data.get("payload", {})
+
+
+    # ── UPDATE flow: different gate logic ──
+    if action_key.startswith("update_"):
+        phase = ctx.data.get("phase", "")
+        if phase in ("showing_current", ""):
+            # Check if user provided any field to change (beyond just id/name identifiers)
+            changed = {k: v for k, v in payload.items()
+                      if k not in ("id", "date", "name", "item_name", "customer_name", "vendor_name", "warehouse_name", "bank_name")
+                      and v is not None and v != ""}
+            if changed:
+                ctx.data["phase"] = "ready"
+                return (True, "")
+            else:
+                entity_name = ctx.data.get("entity_name", "item")
+                current = ctx.data.get("current_data", {})
+                # Build instruction for LLM clarification
+                display_parts = []
+                for k, v in current.items():
+                    if v is not None and v != "" and v != 0:
+                        display_parts.append(f"  - {k}: {v}")
+                instruction = f"Data {entity_name} sudah ditampilkan ke user. Tanya: 'Mau ubah yang mana?'"
+                return (False, instruction)
+
+    is_valid, missing = validate_payload(action_key, payload)
+    if is_valid:
+        return (True, "")
+
+    # Build dynamic instruction with collected + missing context
+    config = get_direct_action(action_key)
+    lines = []
+
+    # Show collected fields
+    collected_lines = []
+    if config and config.fields:
+        for f in config.fields:
+            if f.hidden or f.display_only:
+                continue
+            val = payload.get(f.name)
+            if val is not None and str(val).strip():
+                collected_lines.append(f"  \u2713 {f.label}: {val}")
+    if collected_lines:
+        lines.append("Data yang sudah terkumpul:")
+        lines.extend(collected_lines)
+        lines.append("")
+
+    # Show missing fields with hints
+    lines.append("Tanyakan field berikut ke user (natural, singkat, sebutkan data yang sudah ada supaya user tahu konteksnya):")
+    if config and config.fields:
+        for f in config.fields:
+            if f.label in missing or f.name in missing:
+                hint_parts = []
+                if f.options:
+                    hint_parts.append(", ".join(f.options[:6]))
+                if f.description:
+                    hint_parts.append(f.description)
+                hint = " \u2014 ".join(hint_parts) if hint_parts else ""
+                line = f"- {f.label}"
+                if hint:
+                    line += f" ({hint})"
+                lines.append(line)
+    else:
+        for m in missing:
+            lines.append(f"- {m}")
+
+    instruction = "\n".join(lines)
+    return (False, instruction)
+
+
+async def auto_propose_direct(ctx: WorkflowContext, call_internal) -> Dict[str, Any]:
+    """Auto: propose the CRUD action via tool executor."""
+    action_key = ctx.data.get("action_key", "")
+    payload = ctx.data.get("payload", {})
+
+    execute_tool = getattr(ctx, "_execute_tool", None)
+    if execute_tool:
+        result = await execute_tool("propose_direct", {
+            "action_key": action_key,
+            "payload": payload,
+        })
+        return {"instruction": "", "propose_result": result}
+
+    return {"error": "No execute_tool callback available"}
+
 
 RECON_TRANSITIONS = {
     "IDENTIFY_ACCOUNT": {
@@ -1122,6 +1477,83 @@ DOC_REVIEW_TRANSITIONS = {
     },
 }
 
+
+INVOICE_PAYMENT_TRANSITIONS = {
+    "CREATE_INVOICE": {
+        "check": check_has_invoice_data,
+        "auto_execute": auto_create_invoice_proposal,
+        "next": "AWAIT_INVOICE_CONFIRM",
+        "not_ready_instruction": "Data faktur belum lengkap. Butuh: {missing}.",
+    },
+    "AWAIT_INVOICE_CONFIRM": {
+        "check": check_invoice_created,
+        "next": "CREATE_PAYMENT",
+        "not_ready_instruction": "Menunggu konfirmasi faktur dari user.",
+    },
+    "CREATE_PAYMENT": {
+        "check": check_payment_data_ready,
+        "auto_execute": auto_create_payment_proposal,
+        "next": "AWAIT_PAYMENT_CONFIRM",
+        "not_ready_instruction": "Butuh rekening bank untuk pembayaran. Rekening mana?",
+    },
+    "AWAIT_PAYMENT_CONFIRM": {
+        "check": check_always_pass,
+        "next": "COMPLETED",
+        "not_ready_instruction": "",
+    },
+}
+
+MONTHLY_CLOSING_TRANSITIONS = {
+    "CHECK_DRAFTS": {
+        "check": check_has_period,
+        "auto_execute": auto_check_drafts,
+        "next": "CHECK_RECONCILIATION",
+        "not_ready_instruction": "Periode mana yang mau ditutup? Format: YYYY-MM (contoh: 2026-03).",
+    },
+    "CHECK_RECONCILIATION": {
+        "check": check_drafts_clear,
+        "auto_execute": auto_check_recon,
+        "next": "GENERATE_REPORTS",
+        "not_ready_instruction": "{missing}. Posting semua draft dulu sebelum tutup bulan.",
+    },
+    "GENERATE_REPORTS": {
+        "check": check_always_pass,
+        "auto_execute": auto_generate_reports,
+        "next": "PRESENT_SUMMARY",
+        "not_ready_instruction": "",
+    },
+    "PRESENT_SUMMARY": {
+        "check": check_always_pass,
+        "next": "CLOSE_PERIOD",
+        "not_ready_instruction": "",
+    },
+    "CLOSE_PERIOD": {
+        "check": check_user_approved_close,
+        "auto_execute": auto_close_period,
+        "next": "COMPLETED",
+        "not_ready_instruction": "Konfirmasi: tutup periode ini? (Setelah ditutup, transaksi di periode ini tidak bisa diubah)",
+    },
+    "AWAIT_CLOSE_CONFIRM": {
+        "check": check_always_pass,
+        "next": "COMPLETED",
+        "not_ready_instruction": "",
+    },
+}
+
+
+CRUD_FORM_TRANSITIONS = {
+    "COLLECTING": {
+        "check": check_crud_fields_complete,
+        "next": "PROPOSING",
+        "not_ready_instruction": "",  # Dynamic from check fn
+    },
+    "PROPOSING": {
+        "check": check_always_pass,
+        "next": "COMPLETED",
+        "not_ready_instruction": "",
+    },
+}
+
 # ============ WORKFLOW TYPE DISPATCH ============
 WORKFLOW_TRANSITIONS = {
     "bank_reconciliation": {
@@ -1131,6 +1563,18 @@ WORKFLOW_TRANSITIONS = {
     "document_review": {
         "transitions": DOC_REVIEW_TRANSITIONS,
         "initial_state": "FETCH_DOCUMENT",
+    },
+    "invoice_and_payment": {
+        "transitions": INVOICE_PAYMENT_TRANSITIONS,
+        "initial_state": "CREATE_INVOICE",
+    },
+    "monthly_closing": {
+        "transitions": MONTHLY_CLOSING_TRANSITIONS,
+        "initial_state": "CHECK_DRAFTS",
+    },
+    "crud_form": {
+        "transitions": CRUD_FORM_TRANSITIONS,
+        "initial_state": "COLLECTING",
     },
 }
 
@@ -1158,6 +1602,21 @@ STATE_INSTRUCTIONS = {
     "POSTING": "Memposting jurnal ke ledger...",
     "POSTED": "Dokumen berhasil diposting ke ledger.",
     "POSTING_FAILED": "Posting gagal. Periksa error.",
+    # Invoice + Payment states
+    "CREATE_INVOICE": "Membuat faktur penjualan...",
+    "AWAIT_INVOICE_CONFIRM": "Menunggu konfirmasi faktur.",
+    "CREATE_PAYMENT": "Menyiapkan pembayaran...",
+    "AWAIT_PAYMENT_CONFIRM": "Menunggu konfirmasi pembayaran.",
+    # Monthly closing states
+    "CHECK_DRAFTS": "Memeriksa dokumen draft...",
+    "CHECK_RECONCILIATION": "Memeriksa rekonsiliasi bank...",
+    "GENERATE_REPORTS": "Membuat laporan keuangan...",
+    "PRESENT_SUMMARY": "Menampilkan ringkasan...",
+    "CLOSE_PERIOD": "Menutup periode...",
+    "AWAIT_CLOSE_CONFIRM": "Menunggu konfirmasi penutupan.",
+    # CRUD form states
+    "COLLECTING": "Mengumpulkan data dari user.",
+    "PROPOSING": "Menyiapkan konfirmasi.",
 }
 
 
@@ -1170,7 +1629,10 @@ def _verify_state_instructions_complete():
     """Assert every non-terminal state has an instruction entry."""
     all_recon = set(s.value for s in ReconState)
     all_doc = set(s.value for s in DocReviewState)
-    all_states = all_recon | all_doc
+    all_inv = set(s.value for s in InvoicePaymentState)
+    all_closing = set(s.value for s in MonthlyClosingState)
+    all_crud = set(s.value for s in CrudFormState)
+    all_states = all_recon | all_doc | all_inv | all_closing | all_crud
     handled = set(STATE_INSTRUCTIONS.keys())
     missing = all_states - handled
     assert not missing, (
@@ -1193,6 +1655,29 @@ def _verify_transitions_complete():
     assert not missing_doc, (
         f"[FATAL] DOC_REVIEW_TRANSITIONS missing states: {missing_doc}. "
         f"Every non-terminal DocReviewState MUST have a transition entry."
+    )
+
+    inv_non_terminal = set(s.value for s in InvoicePaymentState if s != InvoicePaymentState.COMPLETED)
+    inv_transition_states = set(INVOICE_PAYMENT_TRANSITIONS.keys())
+    missing_inv = inv_non_terminal - inv_transition_states
+    assert not missing_inv, (
+        f"[FATAL] INVOICE_PAYMENT_TRANSITIONS missing states: {missing_inv}. "
+        f"Every non-terminal InvoicePaymentState MUST have a transition entry."
+    )
+    closing_non_terminal = set(s.value for s in MonthlyClosingState if s != MonthlyClosingState.COMPLETED)
+    closing_transition_states = set(MONTHLY_CLOSING_TRANSITIONS.keys())
+    missing_closing = closing_non_terminal - closing_transition_states
+    assert not missing_closing, (
+        f"[FATAL] MONTHLY_CLOSING_TRANSITIONS missing states: {missing_closing}. "
+        f"Every non-terminal MonthlyClosingState MUST have a transition entry."
+    )
+
+    crud_non_terminal = set(s.value for s in CrudFormState if s != CrudFormState.COMPLETED)
+    crud_transition_states = set(CRUD_FORM_TRANSITIONS.keys())
+    missing_crud = crud_non_terminal - crud_transition_states
+    assert not missing_crud, (
+        f"[FATAL] CRUD_FORM_TRANSITIONS missing states: {missing_crud}. "
+        f"Every non-terminal CrudFormState MUST have a transition entry."
     )
 
 _verify_state_instructions_complete()

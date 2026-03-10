@@ -283,13 +283,13 @@ async def get_warehouse_stock(
         where_extra = ""
         params = [warehouse_id, ctx["tenant_id"]]
         if search:
-            where_extra = " AND (i.code ILIKE $3 OR i.name ILIKE $3)"
+            where_extra = " AND (i.item_code ILIKE $3 OR i.nama_produk ILIKE $3)"
             params.append(f"%{search}%")
 
         total = await conn.fetchval(
             f"""
             SELECT COUNT(*) FROM warehouse_stock ws
-            JOIN items i ON ws.item_id = i.id
+            JOIN products i ON ws.item_id = i.id
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 {where_extra}
             """,
             *params
@@ -298,14 +298,14 @@ async def get_warehouse_stock(
         rows = await conn.fetch(
             f"""
             SELECT
-                ws.item_id, i.code as item_code, i.name as item_name,
+                ws.item_id, i.item_code, i.nama_produk as item_name,
                 ws.quantity, ws.reserved_quantity, ws.available_quantity,
-                i.unit, i.unit_cost, (ws.quantity * COALESCE(i.unit_cost, 0))::BIGINT as total_value,
+                i.base_unit as unit, 0 as unit_cost, 0 as total_value,
                 ws.reorder_level, ws.reorder_quantity, ws.last_stock_date
             FROM warehouse_stock ws
-            JOIN items i ON ws.item_id = i.id
+            JOIN products i ON ws.item_id = i.id
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 {where_extra}
-            ORDER BY i.name ASC
+            ORDER BY i.nama_produk ASC
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
             """,
             *params, limit, skip
@@ -340,9 +340,9 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
             SELECT
                 COUNT(DISTINCT ws.item_id)::INT as total_items,
                 COALESCE(SUM(ws.quantity), 0) as total_quantity,
-                COALESCE(SUM(ws.quantity * COALESCE(i.unit_cost, 0)), 0)::BIGINT as total_value
+                COALESCE(SUM(ws.quantity * COALESCE(p.purchase_price, 0)), 0)::BIGINT as total_value
             FROM warehouse_stock ws
-            JOIN items i ON ws.item_id = i.id
+            JOIN products p ON ws.item_id = p.id
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 AND ws.quantity > 0
             """,
             warehouse_id, ctx["tenant_id"]

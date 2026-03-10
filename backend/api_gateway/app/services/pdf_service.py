@@ -55,6 +55,28 @@ class PDFService:
         # Register custom filters
         self.jinja_env.filters["currency"] = self.format_currency
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
+        self.jinja_env.filters["date_short"] = self.format_date_short
+
+    @classmethod
+    def format_date_short(cls, date_value: Any) -> str:
+        """Format date to short form (e.g., Mar 2026 or 19 Mar 2026)."""
+        if not date_value:
+            return "-"
+        try:
+            from datetime import date, datetime
+            if isinstance(date_value, str):
+                # Handle YYYY-MM format
+                if len(date_value) == 7 and "-" in date_value:
+                    parts = date_value.split("-")
+                    months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agt","Sep","Okt","Nov","Des"]
+                    return f"{months[int(parts[1])-1]} {parts[0]}"
+                date_value = datetime.fromisoformat(date_value.replace("Z", "+00:00"))
+            if isinstance(date_value, (date, datetime)):
+                months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agt","Sep","Okt","Nov","Des"]
+                return f"{date_value.day} {months[date_value.month-1]} {date_value.year}"
+            return str(date_value)
+        except Exception:
+            return str(date_value) if date_value else "-"
 
     @staticmethod
     def format_currency(amount: Any) -> str:
