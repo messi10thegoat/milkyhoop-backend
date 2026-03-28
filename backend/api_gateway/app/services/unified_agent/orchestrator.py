@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse
-from .system_prompt import build_system_prompt, build_system_messages, get_intent_bias, _infer_intent
+from .system_prompt import build_system_messages, get_intent_bias, _infer_intent
 from .intent_classifier import RouteResult  # classify_and_route removed (Final Cleanup)
-from .tool_registry import get_tools, get_tools_for_domains, TOOL_DOMAINS
+from .tool_registry import get_tools, get_tools_for_domains
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .model_router import ModelRouter
@@ -38,8 +38,13 @@ logger = logging.getLogger("unified_agent.orchestrator")
 
 # Broad fallback — when no signal words match
 BROAD_FALLBACK_DOMAINS = {
-    "CORE", "MASTER_DATA", "BANKING", "REPORTS", "ACTIONS",
+    "CORE",
+    "MASTER_DATA",
+    "BANKING",
+    "REPORTS",
+    "ACTIONS",
 }
+
 
 def _resolve_domains_from_hint(hint_text: str) -> set:
     """Parse get_intent_bias() MODE hint and map to tool domains.
@@ -99,16 +104,29 @@ def _resolve_domains_from_text(user_text: str) -> set:
 
     # ── AR signals (piutang / customer side) ──
     ar_words = [
-        "piutang", "receivable", "faktur jual", "sales invoice", "invoice",
-        "pelanggan", "customer", "penjualan",
+        "piutang",
+        "receivable",
+        "faktur jual",
+        "sales invoice",
+        "invoice",
+        "pelanggan",
+        "customer",
+        "penjualan",
     ]
     if any(w in text_lower for w in ar_words):
         domains |= {"AR_INVOICES", "MASTER_DATA"}
 
     # ── AP signals (hutang / vendor side) ──
     ap_words = [
-        "hutang", "payable", "tagihan", "bill", "vendor", "supplier",
-        "pembelian", "faktur beli", "purchase",
+        "hutang",
+        "payable",
+        "tagihan",
+        "bill",
+        "vendor",
+        "supplier",
+        "pembelian",
+        "faktur beli",
+        "purchase",
     ]
     if any(w in text_lower for w in ap_words):
         domains |= {"AP_BILLS", "MASTER_DATA"}
@@ -116,9 +134,18 @@ def _resolve_domains_from_text(user_text: str) -> set:
     # ── Obligation words → BOTH AR and AP (ambiguous side) ──
     # "berapa yang belum dibayar si Budi?" — could be customer or vendor
     obligation_words = [
-        "bayar", "dibayar", "belum bayar", "belum dibayar",
-        "jatuh tempo", "overdue", "outstanding", "tunggakan",
-        "lunas", "belum lunas", "sisa", "terutang",
+        "bayar",
+        "dibayar",
+        "belum bayar",
+        "belum dibayar",
+        "jatuh tempo",
+        "overdue",
+        "outstanding",
+        "tunggakan",
+        "lunas",
+        "belum lunas",
+        "sisa",
+        "terutang",
     ]
     if any(w in text_lower for w in obligation_words):
         domains |= {"AR_INVOICES", "AP_BILLS", "MASTER_DATA"}
@@ -130,16 +157,27 @@ def _resolve_domains_from_text(user_text: str) -> set:
 
     # ── Accounting signals ──
     acct_words = [
-        "jurnal", "journal", "buku besar", "ledger",
-        "neraca saldo", "trial balance", "akun", "coa",
+        "jurnal",
+        "journal",
+        "buku besar",
+        "ledger",
+        "neraca saldo",
+        "trial balance",
+        "akun",
+        "coa",
     ]
     if any(w in text_lower for w in acct_words):
         domains |= {"ACCOUNTING"}
 
     # ── Report signals ──
     report_words = [
-        "laba rugi", "profit", "neraca", "balance sheet",
-        "arus kas", "cash flow", "laporan",
+        "laba rugi",
+        "profit",
+        "neraca",
+        "balance sheet",
+        "arus kas",
+        "cash flow",
+        "laporan",
     ]
     if any(w in text_lower for w in report_words):
         domains |= {"REPORTS"}
@@ -156,8 +194,13 @@ def _resolve_domains_from_text(user_text: str) -> set:
 
     # ── Inventory signals ──
     inv_words = [
-        "stok", "stock", "persediaan", "inventory",
-        "gudang", "warehouse", "barang",
+        "stok",
+        "stock",
+        "persediaan",
+        "inventory",
+        "gudang",
+        "warehouse",
+        "barang",
     ]
     if any(w in text_lower for w in inv_words):
         domains |= {"INVENTORY", "MASTER_DATA"}
@@ -174,14 +217,32 @@ def _resolve_domains_from_text(user_text: str) -> set:
 
     # ── Pipeline signals ──
     pipe_words = [
-        "deposit", "uang muka", "giro", "cheque", "recurring", "berulang",
-        "sales order", "pesanan", "quote", "penawaran", "aset tetap", "fixed asset",
+        "deposit",
+        "uang muka",
+        "giro",
+        "cheque",
+        "recurring",
+        "berulang",
+        "sales order",
+        "pesanan",
+        "quote",
+        "penawaran",
+        "aset tetap",
+        "fixed asset",
     ]
     if any(w in text_lower for w in pipe_words):
         domains |= {"PIPELINE"}
 
     # ── Analytics ──
-    analytics_words = ["rasio", "ratio", "budget", "anggaran", "cost center", "payroll", "gaji"]
+    analytics_words = [
+        "rasio",
+        "ratio",
+        "budget",
+        "anggaran",
+        "cost center",
+        "payroll",
+        "gaji",
+    ]
     if any(w in text_lower for w in analytics_words):
         domains |= {"ANALYTICS"}
 
@@ -211,7 +272,6 @@ def resolve_domains(user_text: str, intent_hint: str) -> set:
         domains |= BROAD_FALLBACK_DOMAINS
 
     return domains
-
 
 
 import time as _time  # noqa: E402
@@ -375,7 +435,11 @@ def _get_tool_category(function_name: str) -> str:
         return "read"
     if function_name in ("propose_action", "propose_direct_action", "simulate_action"):
         return "write"
-    if function_name in ("agentic_reconcile", "confirm_single_match", "categorize_statement"):
+    if function_name in (
+        "agentic_reconcile",
+        "confirm_single_match",
+        "categorize_statement",
+    ):
         return "verify"
     if function_name.startswith("execute_"):
         return "analyze"
@@ -392,8 +456,19 @@ def _extract_result_meta(function_name: str, result) -> tuple:
         return None, None
 
     # Try common result list keys
-    for key in ("results", "data", "bills", "invoices", "items", "entries",
-                "transactions", "accounts", "vendors", "customers", "payments"):
+    for key in (
+        "results",
+        "data",
+        "bills",
+        "invoices",
+        "items",
+        "entries",
+        "transactions",
+        "accounts",
+        "vendors",
+        "customers",
+        "payments",
+    ):
         val = result.get(key)
         if isinstance(val, list) and len(val) > 0:
             count = len(val)
@@ -495,12 +570,14 @@ def _extract_sub_items(function_name: str, result) -> list | None:
             except (ValueError, TypeError):
                 pass
 
-        sub_items.append({
-            "id": str(item.get("id", f"si-{len(sub_items)}")),
-            "title": str(title),
-            "subtitle": subtitle,
-            "badge": badge_label,
-        })
+        sub_items.append(
+            {
+                "id": str(item.get("id", f"si-{len(sub_items)}")),
+                "title": str(title),
+                "subtitle": subtitle,
+                "badge": badge_label,
+            }
+        )
 
     return sub_items if sub_items else None
 
@@ -662,6 +739,7 @@ def _safe_num(val, decimals=0):
     except (TypeError, ValueError):
         return 0
 
+
 class UnifiedAgent:
     """
     Single agent loop. Replaces: intent classifier + action_planner + enrichment.
@@ -693,21 +771,19 @@ class UnifiedAgent:
             intent="CHITCHAT",
         )
         messages = [
-            LLMMessage(role=msg["role"], content=msg["content"])
-            for msg in sys_msgs
+            LLMMessage(role=msg["role"], content=msg["content"]) for msg in sys_msgs
         ]
         messages.append(LLMMessage(role="user", content=user_text))
 
-        client, model = self.router.route("chitchat")
         try:
-            resp = await client.chat(
+            resp = await self.router.complete(
+                task_type="chitchat",
                 messages=messages,
-                tools=[],
-                model=model,
                 temperature=TEMPERATURE_CHAT,
                 max_tokens=300,
             )
             content = (resp.content or "").strip()
+            model = getattr(resp, "model", None) or "gemini-2.5-flash-lite"
             usage = {}
             if hasattr(resp, "usage") and resp.usage:
                 usage = dict(resp.usage)
@@ -733,7 +809,8 @@ class UnifiedAgent:
         latency_ms = int((time.time() - start_time) * 1000)
         logger.warning(
             "[Phase4-CHITCHAT] SHORT-CIRCUIT user='%s' latency=%dms",
-            user_text[:30], latency_ms,
+            user_text[:30],
+            latency_ms,
         )
 
         return AgentResponse(
@@ -746,7 +823,6 @@ class UnifiedAgent:
             thinking_stages=[],
             usage=usage,
         )
-
 
     # ── Compiler Pipeline Handler ─────────────────────────────────────────────
     async def _handle_pipeline(
@@ -764,6 +840,7 @@ class UnifiedAgent:
         Output format IDENTICAL to existing DIRECT_ACTION_PREVIEW.
         """
         import time as _time
+
         start_time = _time.time()
 
         async def emit(event_type, data):
@@ -773,12 +850,15 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
-        await emit("THINKING_STEP", {
-            "step_id": "pipeline-resolve",
-            "text": "Menyiapkan data",
-            "status": "running",
-            "category": "search",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "pipeline-resolve",
+                "text": "Menyiapkan data",
+                "status": "running",
+                "category": "search",
+            },
+        )
 
         # Resolve + Complete
         from .entity_resolver import EntityResolver
@@ -792,14 +872,20 @@ class UnifiedAgent:
         entity_graph = {}
         if tool_executor and tool_executor.session_manager and tool_executor.session_id:
             try:
-                state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                state = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
                 memory_state = {
                     "active_customer_id": getattr(state, "active_customer_id", None),
-                    "active_customer_name": getattr(state, "active_customer_name", None),
+                    "active_customer_name": getattr(
+                        state, "active_customer_name", None
+                    ),
                     "active_vendor_id": getattr(state, "active_vendor_id", None),
                     "active_vendor_name": getattr(state, "active_vendor_name", None),
                     "active_invoice_id": getattr(state, "active_invoice_id", None),
-                    "active_invoice_number": getattr(state, "active_invoice_number", None),
+                    "active_invoice_number": getattr(
+                        state, "active_invoice_number", None
+                    ),
                     "active_bill_id": getattr(state, "active_bill_id", None),
                     "active_bill_number": getattr(state, "active_bill_number", None),
                 }
@@ -812,7 +898,10 @@ class UnifiedAgent:
         if tool_executor and tool_executor.session_manager:
             try:
                 from .action_memory import ActionMemory
-                am = ActionMemory(pool, context.tenant_id, getattr(context, "user_id", ""))
+
+                am = ActionMemory(
+                    pool, context.tenant_id, getattr(context, "user_id", "")
+                )
                 action_memory_suggestion = await am.suggest_pattern(
                     extraction.intent, {**extraction.entities, **memory_state}
                 )
@@ -832,14 +921,26 @@ class UnifiedAgent:
         # This fires an additional cheap LLM call (~300ms, ~100 tokens).
         from .direct_action_registry import get_direct_action as _s2_get_config
         from .entity_extractor import EXTRACTION_SCHEMAS as _S1_SCHEMAS
+
         _da_config = _s2_get_config(extraction.intent)
-        if _da_config and _da_config.fields and not extraction.intent.startswith("query_"):
-            _stage1_fields = set(_S1_SCHEMAS["general"]["json_schema"]["schema"]["properties"]["entities"]["properties"].keys())
-            _registry_fields = {f.name for f in _da_config.fields if not f.hidden and not f.display_only}
+        if (
+            _da_config
+            and _da_config.fields
+            and not extraction.intent.startswith("query_")
+        ):
+            _stage1_fields = set(
+                _S1_SCHEMAS["general"]["json_schema"]["schema"]["properties"][
+                    "entities"
+                ]["properties"].keys()
+            )
+            _registry_fields = {
+                f.name for f in _da_config.fields if not f.hidden and not f.display_only
+            }
             _fields_only_in_registry = _registry_fields - _stage1_fields
 
             if _fields_only_in_registry:
                 from .entity_extractor import FieldExtractor
+
                 _s2_client, _s2_model = self.router.route("field_extract")
                 _field_extractor = FieldExtractor(_s2_client, _s2_model)
 
@@ -875,6 +976,7 @@ class UnifiedAgent:
             if resolution.resolved:
                 try:
                     from .session_manager import StateUpdateHooks
+
                     await StateUpdateHooks.after_resolve(
                         tool_executor.session_manager,
                         tool_executor.session_id,
@@ -884,13 +986,16 @@ class UnifiedAgent:
                 except Exception as e:
                     logger.warning("[PIPELINE] Graph update failed (non-fatal): %s", e)
 
-        await emit("THINKING_STEP", {
-            "step_id": "pipeline-resolve",
-            "text": "Menyiapkan data",
-            "status": "done",
-            "duration_ms": int((_time.time() - start_time) * 1000),
-            "category": "search",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "pipeline-resolve",
+                "text": "Menyiapkan data",
+                "status": "done",
+                "duration_ms": int((_time.time() - start_time) * 1000),
+                "category": "search",
+            },
+        )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ── WORKFLOW PRIMARY PATH: check active crud_form ──
@@ -902,17 +1007,23 @@ class UnifiedAgent:
             try:
                 from .workflow_engine import WorkflowEngine
                 from .db_utils import get_session_db_pool as _wf_pool
+
                 _wf_db = await _wf_pool()
                 _wf_engine = WorkflowEngine(
-                    _wf_db, context.tenant_id,
+                    _wf_db,
+                    context.tenant_id,
                     getattr(context, "user_id", ""),
                     getattr(context, "auth_token", ""),
                 )
-                _active_crud_wf = await _wf_engine.get_state(tool_executor.session_id, "crud_form")
+                _active_crud_wf = await _wf_engine.get_state(
+                    tool_executor.session_id, "crud_form"
+                )
                 if _active_crud_wf and _active_crud_wf.status != "active":
                     _active_crud_wf = None
             except Exception as _wf_err:
-                logger.warning("[PIPELINE] Workflow check failed (non-fatal): %s", _wf_err)
+                logger.warning(
+                    "[PIPELINE] Workflow check failed (non-fatal): %s", _wf_err
+                )
 
         if _active_crud_wf and _wf_engine:
             # ── ACTIVE WORKFLOW: this path handles EVERYTHING and RETURNs ──
@@ -921,11 +1032,19 @@ class UnifiedAgent:
             _wf_payload = _active_crud_wf.data.get("payload", {})
 
             # Check if user started a DIFFERENT action
-            if (extraction.intent and extraction.intent not in ("ambiguous", "chitchat", "")
-                    and _wf_intent and extraction.intent != _wf_intent
-                    and extraction.confidence > 0.7):
+            if (
+                extraction.intent
+                and extraction.intent not in ("ambiguous", "chitchat", "")
+                and _wf_intent
+                and extraction.intent != _wf_intent
+                and extraction.confidence > 0.7
+            ):
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
-                logger.warning("[PIPELINE] Cancelled stale crud_form: was %s, now %s", _wf_intent, extraction.intent)
+                logger.warning(
+                    "[PIPELINE] Cancelled stale crud_form: was %s, now %s",
+                    _wf_intent,
+                    extraction.intent,
+                )
                 # Fall through to normal flow below
             else:
                 # ── CANDIDATE PICKING: resolve user's choice from saved candidates ──
@@ -937,7 +1056,8 @@ class UnifiedAgent:
 
                     # Try number pick first ("1", "2", "yang pertama")
                     import re as _pick_re
-                    _num_match = _pick_re.search(r'\b(\d+)\b', _user_lower)
+
+                    _num_match = _pick_re.search(r"\b(\d+)\b", _user_lower)
                     if _num_match:
                         _pick_idx = int(_num_match.group(1)) - 1
                         if 0 <= _pick_idx < len(_wf_candidates):
@@ -946,8 +1066,28 @@ class UnifiedAgent:
                     # Try name substring match ("dewasa", "anak", "yang dewasa")
                     if not _matched_candidate:
                         # Check if any significant word from user text appears in candidate name
-                        _skip_words = {"yang", "mau", "pilih", "nomor", "no", "item", "barang", "produk", "itu", "ini", "ya", "dong", "deh", "aja", "saja"}
-                        _user_words = [w for w in _user_lower.split() if w not in _skip_words and len(w) > 1]
+                        _skip_words = {
+                            "yang",
+                            "mau",
+                            "pilih",
+                            "nomor",
+                            "no",
+                            "item",
+                            "barang",
+                            "produk",
+                            "itu",
+                            "ini",
+                            "ya",
+                            "dong",
+                            "deh",
+                            "aja",
+                            "saja",
+                        }
+                        _user_words = [
+                            w
+                            for w in _user_lower.split()
+                            if w not in _skip_words and len(w) > 1
+                        ]
                         _best_match = None
                         _best_score = 0
                         for _cand in _wf_candidates:
@@ -960,11 +1100,17 @@ class UnifiedAgent:
                             _matched_candidate = _best_match
 
                     if _matched_candidate:
-                        logger.warning("[PIPELINE] Candidate picked: %s -> id=%s", _matched_candidate["name"], str(_matched_candidate["id"])[:8])
+                        logger.warning(
+                            "[PIPELINE] Candidate picked: %s -> id=%s",
+                            _matched_candidate["name"],
+                            str(_matched_candidate["id"])[:8],
+                        )
                         await _wf_engine.cancel(tool_executor.session_id, "crud_form")
 
                         # Directly execute update flow: fetch current data + show
-                        _entity_type = _wf_action_key.replace("update_", "").replace("delete_", "")
+                        _entity_type = _wf_action_key.replace("update_", "").replace(
+                            "delete_", ""
+                        )
                         _entity_id = _matched_candidate["id"]
                         _entity_name = _matched_candidate["name"]
                         _get_endpoints = {
@@ -979,23 +1125,45 @@ class UnifiedAgent:
                         if _get_ep:
                             try:
                                 import httpx as _httpx
+
                                 _auth = getattr(context, "auth_token", "") or ""
                                 async with _httpx.AsyncClient(timeout=10.0) as _cl:
-                                    _rr = await _cl.get(f"http://localhost:8000{_get_ep}", headers={"Authorization": f"Bearer {_auth}", "X-Tenant-ID": context.tenant_id})
+                                    _rr = await _cl.get(
+                                        f"http://localhost:8000{_get_ep}",
+                                        headers={
+                                            "Authorization": f"Bearer {_auth}",
+                                            "X-Tenant-ID": context.tenant_id,
+                                        },
+                                    )
                                     if _rr.status_code == 200:
                                         _raw = _rr.json()
-                                        _cur_data = _raw.get("data", _raw) if isinstance(_raw, dict) else _raw
+                                        _cur_data = (
+                                            _raw.get("data", _raw)
+                                            if isinstance(_raw, dict)
+                                            else _raw
+                                        )
                             except Exception as _e:
-                                logger.warning("[PIPELINE] Fetch after candidate pick failed: %s", _e)
+                                logger.warning(
+                                    "[PIPELINE] Fetch after candidate pick failed: %s",
+                                    _e,
+                                )
 
                         if _cur_data:
-                            _display = self._compact_current_data(_entity_type, _cur_data)
-                            _real_name = _cur_data.get("nama_produk") or _cur_data.get("nama") or _cur_data.get("name") or _entity_name
+                            _display = self._compact_current_data(
+                                _entity_type, _cur_data
+                            )
+                            _real_name = (
+                                _cur_data.get("nama_produk")
+                                or _cur_data.get("nama")
+                                or _cur_data.get("name")
+                                or _entity_name
+                            )
 
                             # Create fresh workflow with resolved entity
                             try:
                                 await _wf_engine.process(
-                                    tool_executor.session_id, "crud_form",
+                                    tool_executor.session_id,
+                                    "crud_form",
                                     user_data={
                                         "action_key": _wf_action_key,
                                         "intent": _wf_action_key,
@@ -1008,12 +1176,26 @@ class UnifiedAgent:
                             except Exception:
                                 pass
 
-                            _show = await self._polish_current_data(entity_name=_real_name, entity_type=_entity_type, current_data=_display)
-                            await emit("THINKING_DONE", {"summary": "Data ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                            _show = await self._polish_current_data(
+                                entity_name=_real_name,
+                                entity_type=_entity_type,
+                                current_data=_display,
+                            )
+                            await emit(
+                                "THINKING_DONE",
+                                {
+                                    "summary": "Data ditemukan",
+                                    "total_ms": int((_time.time() - start_time) * 1000),
+                                },
+                            )
                             return AgentResponse(
-                                message_type="TEXT", content=_show,
-                                iterations=1, model_used="gpt-4o-mini-2024-07-18",
-                                total_latency_ms=int((_time.time() - start_time) * 1000),
+                                message_type="TEXT",
+                                content=_show,
+                                iterations=1,
+                                model_used="gpt-4o-mini-2024-07-18",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
                                 thinking_stages=["Menganalisis pesan", "Mencari data"],
                             )
                         else:
@@ -1025,11 +1207,19 @@ class UnifiedAgent:
                     else:
                         # No match — ask again
                         _names = [c.get("name", "?") for c in _wf_candidates]
-                        await emit("THINKING_DONE", {"summary": "Pilih salah satu", "total_ms": int((_time.time() - start_time) * 1000)})
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Pilih salah satu",
+                                "total_ms": int((_time.time() - start_time) * 1000),
+                            },
+                        )
                         return AgentResponse(
                             message_type="TEXT",
-                            content=f"Maaf, saya tidak yakin yang mana. Pilih salah satu:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(_names)),
-                            iterations=1, model_used="pipeline",
+                            content="Maaf, saya tidak yakin yang mana. Pilih salah satu:\n"
+                            + "\n".join(f"{i+1}. {n}" for i, n in enumerate(_names)),
+                            iterations=1,
+                            model_used="pipeline",
                             total_latency_ms=int((_time.time() - start_time) * 1000),
                         )
 
@@ -1045,78 +1235,161 @@ class UnifiedAgent:
                 # Also merge resolution payload
                 if resolution.payload:
                     for k, v in resolution.payload.items():
-                        if v is not None and (k not in merged_for_wf or merged_for_wf.get(k) is None):
+                        if v is not None and (
+                            k not in merged_for_wf or merged_for_wf.get(k) is None
+                        ):
                             merged_for_wf[k] = v
 
                 # Process workflow with merged payload
                 _wf_result = await _wf_engine.process(
-                    tool_executor.session_id, "crud_form",
-                    user_data={"payload": merged_for_wf, "action_key": _wf_action_key, "intent": _wf_intent},
+                    tool_executor.session_id,
+                    "crud_form",
+                    user_data={
+                        "payload": merged_for_wf,
+                        "action_key": _wf_action_key,
+                        "intent": _wf_intent,
+                    },
                 )
 
-                if _wf_result.new_state in ("PROPOSING", "COMPLETED") or _wf_result.completed:
+                if (
+                    _wf_result.new_state in ("PROPOSING", "COMPLETED")
+                    or _wf_result.completed
+                ):
                     # Gate passed: all fields present. Orchestrator handles propose directly.
                     _final_payload = merged_for_wf
 
                     # ── Entity ID resolution for update_*/delete_* ──
-                    if (_wf_action_key.startswith("update_") or _wf_action_key.startswith("delete_")) and "id" not in _final_payload:
+                    if (
+                        _wf_action_key.startswith("update_")
+                        or _wf_action_key.startswith("delete_")
+                    ) and "id" not in _final_payload:
                         _WF_ENTITY_SEARCH = {
                             "update_item": ("item_name", "/api/items", "nama_produk"),
-                            "update_customer": ("customer_name", "/api/customers", "nama"),
+                            "update_customer": (
+                                "customer_name",
+                                "/api/customers",
+                                "nama",
+                            ),
                             "update_vendor": ("vendor_name", "/api/vendors", "name"),
-                            "update_bank_account": ("bank_name", "/api/bank-accounts", "account_name"),
-                            "update_warehouse": ("warehouse_name", "/api/warehouses", "name"),
+                            "update_bank_account": (
+                                "bank_name",
+                                "/api/bank-accounts",
+                                "account_name",
+                            ),
+                            "update_warehouse": (
+                                "warehouse_name",
+                                "/api/warehouses",
+                                "name",
+                            ),
                             "delete_item": ("item_name", "/api/items", "nama_produk"),
-                            "delete_customer": ("customer_name", "/api/customers", "nama"),
+                            "delete_customer": (
+                                "customer_name",
+                                "/api/customers",
+                                "nama",
+                            ),
                             "delete_vendor": ("vendor_name", "/api/vendors", "name"),
-                            "delete_bank_account": ("bank_name", "/api/bank-accounts", "account_name"),
-                            "delete_warehouse": ("warehouse_name", "/api/warehouses", "name"),
+                            "delete_bank_account": (
+                                "bank_name",
+                                "/api/bank-accounts",
+                                "account_name",
+                            ),
+                            "delete_warehouse": (
+                                "warehouse_name",
+                                "/api/warehouses",
+                                "name",
+                            ),
                         }
                         _wf_s_cfg = _WF_ENTITY_SEARCH.get(_wf_action_key)
                         if _wf_s_cfg:
                             _wf_name_key, _wf_api_path, _wf_db_name_key = _wf_s_cfg
-                            _wf_search = _final_payload.get(_wf_name_key) or _final_payload.get("name") or _final_payload.get("item_name") or ""
+                            _wf_search = (
+                                _final_payload.get(_wf_name_key)
+                                or _final_payload.get("name")
+                                or _final_payload.get("item_name")
+                                or ""
+                            )
                             if _wf_search:
                                 try:
                                     import httpx as _httpx
+
                                     _wf_auth = getattr(context, "auth_token", "") or ""
-                                    _wf_headers = {"Authorization": f"Bearer {_wf_auth}"} if _wf_auth else {}
-                                    async with _httpx.AsyncClient(base_url="http://localhost:8000", timeout=5.0) as _wf_hc:
-                                        _wf_r = await _wf_hc.get(f"{_wf_api_path}?search={_wf_search}&limit=1", headers=_wf_headers)
+                                    _wf_headers = (
+                                        {"Authorization": f"Bearer {_wf_auth}"}
+                                        if _wf_auth
+                                        else {}
+                                    )
+                                    async with _httpx.AsyncClient(
+                                        base_url="http://localhost:8000", timeout=5.0
+                                    ) as _wf_hc:
+                                        _wf_r = await _wf_hc.get(
+                                            f"{_wf_api_path}?search={_wf_search}&limit=1",
+                                            headers=_wf_headers,
+                                        )
                                         _wf_r.raise_for_status()
                                         _wf_d = _wf_r.json()
-                                        _wf_list = _wf_d.get("items") or _wf_d.get("data") or (_wf_d if isinstance(_wf_d, list) else [])
+                                        _wf_list = (
+                                            _wf_d.get("items")
+                                            or _wf_d.get("data")
+                                            or (
+                                                _wf_d if isinstance(_wf_d, list) else []
+                                            )
+                                        )
                                         if _wf_list:
                                             _final_payload["id"] = _wf_list[0].get("id")
-                                            logger.warning("[PIPELINE-WF] Entity resolved: %s -> id=%s", _wf_action_key, str(_final_payload["id"])[:8])
+                                            logger.warning(
+                                                "[PIPELINE-WF] Entity resolved: %s -> id=%s",
+                                                _wf_action_key,
+                                                str(_final_payload["id"])[:8],
+                                            )
                                         else:
-                                            await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                            await emit(
+                                                "THINKING_DONE",
+                                                {
+                                                    "summary": "Tidak ditemukan",
+                                                    "total_ms": int(
+                                                        (_time.time() - start_time)
+                                                        * 1000
+                                                    ),
+                                                },
+                                            )
                                             return AgentResponse(
                                                 message_type="TEXT",
                                                 content=f"Maaf, saya tidak menemukan {_wf_search}. Bisa cek kembali namanya?",
-                                                iterations=1, model_used="pipeline",
-                                                total_latency_ms=int((_time.time() - start_time) * 1000),
+                                                iterations=1,
+                                                model_used="pipeline",
+                                                total_latency_ms=int(
+                                                    (_time.time() - start_time) * 1000
+                                                ),
                                             )
                                 except Exception as _wf_re:
-                                    logger.warning("[PIPELINE-WF] Entity resolution failed: %s", _wf_re)
+                                    logger.warning(
+                                        "[PIPELINE-WF] Entity resolution failed: %s",
+                                        _wf_re,
+                                    )
 
-                    if _wf_result.auto_results and _wf_result.auto_results.get("propose_result"):
+                    if _wf_result.auto_results and _wf_result.auto_results.get(
+                        "propose_result"
+                    ):
                         _propose_data = _wf_result.auto_results["propose_result"]
                     else:
                         # Normalize entity name field (Bug 3 fix)
-                        if "name" not in _final_payload or not _final_payload.get("name"):
+                        if "name" not in _final_payload or not _final_payload.get(
+                            "name"
+                        ):
                             _final_payload["name"] = (
-                                _final_payload.get("item_name") or
-                                _final_payload.get("customer_name") or
-                                _final_payload.get("vendor_name") or
-                                _final_payload.get("entity_name") or
-                                _active_crud_wf.data.get("entity_name", "") or
-                                ""
+                                _final_payload.get("item_name")
+                                or _final_payload.get("customer_name")
+                                or _final_payload.get("vendor_name")
+                                or _final_payload.get("entity_name")
+                                or _active_crud_wf.data.get("entity_name", "")
+                                or ""
                             )
-                        _propose_data = await tool_executor._execute_propose_direct({
-                            "action_key": _wf_action_key,
-                            "payload": _final_payload,
-                        })
+                        _propose_data = await tool_executor._execute_propose_direct(
+                            {
+                                "action_key": _wf_action_key,
+                                "payload": _final_payload,
+                            }
+                        )
 
                     if _propose_data.get("message_type") == "DIRECT_ACTION_PREVIEW":
                         _direct_data = _propose_data.get("data", {})
@@ -1125,20 +1398,31 @@ class UnifiedAgent:
                         if tool_executor.session_manager and tool_executor.session_id:
                             try:
                                 from .session_manager import StateUpdateHooks
+
                                 await StateUpdateHooks.after_propose(
                                     tool_executor.session_manager,
                                     tool_executor.session_id,
                                     extraction.intent.upper(),
                                     _final_payload,
-                                    {"pending_action_id": _direct_data.get("pending_action_id")},
+                                    {
+                                        "pending_action_id": _direct_data.get(
+                                            "pending_action_id"
+                                        )
+                                    },
                                 )
                             except Exception as _hook_err:
-                                logger.warning("[PIPELINE] WF state hook failed: %s", _hook_err)
+                                logger.warning(
+                                    "[PIPELINE] WF state hook failed: %s", _hook_err
+                                )
 
                         # Save pending for Edit flow
                         if tool_executor.session_manager:
                             try:
-                                _save = {k: v for k, v in _final_payload.items() if v is not None}
+                                _save = {
+                                    k: v
+                                    for k, v in _final_payload.items()
+                                    if v is not None
+                                }
                                 await tool_executor.session_manager.update_state(
                                     tool_executor.session_id,
                                     pending_payload=_save,
@@ -1149,14 +1433,19 @@ class UnifiedAgent:
 
                         # Cancel workflow (propose reached = done)
                         try:
-                            await _wf_engine.cancel(tool_executor.session_id, "crud_form")
+                            await _wf_engine.cancel(
+                                tool_executor.session_id, "crud_form"
+                            )
                         except Exception:
                             pass
 
-                        await emit("THINKING_DONE", {
-                            "summary": "Data siap dikonfirmasi",
-                            "total_ms": int((_time.time() - start_time) * 1000),
-                        })
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Data siap dikonfirmasi",
+                                "total_ms": int((_time.time() - start_time) * 1000),
+                            },
+                        )
                         return AgentResponse(
                             message_type="DIRECT_ACTION_PREVIEW",
                             content=_propose_data.get("content", ""),
@@ -1165,48 +1454,78 @@ class UnifiedAgent:
                             expires_at=_direct_data.get("expires_at", ""),
                             iterations=1,
                             tool_calls_made=[
-                                {"name": "entity_extractor", "args": {"intent": extraction.intent}, "success": True},
-                                {"name": "propose_direct_action", "args": {"action_key": _wf_action_key}, "success": True},
+                                {
+                                    "name": "entity_extractor",
+                                    "args": {"intent": extraction.intent},
+                                    "success": True,
+                                },
+                                {
+                                    "name": "propose_direct_action",
+                                    "args": {"action_key": _wf_action_key},
+                                    "success": True,
+                                },
                             ],
                             model_used="pipeline",
                             total_latency_ms=int((_time.time() - start_time) * 1000),
-                            thinking_stages=["Menganalisis pesan", "Mencari data", "Menyiapkan konfirmasi"],
+                            thinking_stages=[
+                                "Menganalisis pesan",
+                                "Mencari data",
+                                "Menyiapkan konfirmasi",
+                            ],
                         )
                     else:
                         # Propose failed
                         _error_msg = _propose_data.get("error", "")
                         _error_type = _propose_data.get("error_type", "")
                         if _error_type == "VALIDATION_ERROR":
-                            _val_missing = _propose_data.get("missing_fields", [str(_error_msg)])
+                            _val_missing = _propose_data.get(
+                                "missing_fields", [str(_error_msg)]
+                            )
                             clarification_text = await self._natural_clarification(
                                 intent=extraction.intent,
                                 collected=merged_for_wf,
                                 missing_labels=_val_missing,
                                 resolution=resolution,
                             )
-                            await emit("THINKING_DONE", {
-                                "summary": "Butuh info tambahan",
-                                "total_ms": int((_time.time() - start_time) * 1000),
-                            })
+                            await emit(
+                                "THINKING_DONE",
+                                {
+                                    "summary": "Butuh info tambahan",
+                                    "total_ms": int((_time.time() - start_time) * 1000),
+                                },
+                            )
                             return AgentResponse(
                                 message_type="TEXT",
                                 content=clarification_text,
-                                iterations=1, tool_calls_made=[], model_used="pipeline",
-                                total_latency_ms=int((_time.time() - start_time) * 1000),
+                                iterations=1,
+                                tool_calls_made=[],
+                                model_used="pipeline",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
                                 thinking_stages=["Menganalisis pesan", "Validasi data"],
                             )
                         else:
                             if isinstance(_error_msg, dict):
                                 _error_msg = _error_msg.get("message", str(_error_msg))
-                            await emit("THINKING_DONE", {
-                                "summary": "Terjadi error",
-                                "total_ms": int((_time.time() - start_time) * 1000),
-                            })
+                            await emit(
+                                "THINKING_DONE",
+                                {
+                                    "summary": "Terjadi error",
+                                    "total_ms": int((_time.time() - start_time) * 1000),
+                                },
+                            )
                             return AgentResponse(
                                 message_type="TEXT",
-                                content=str(_error_msg) if _error_msg else "Terjadi error saat menyiapkan data.",
-                                iterations=1, tool_calls_made=[], model_used="pipeline",
-                                total_latency_ms=int((_time.time() - start_time) * 1000),
+                                content=str(_error_msg)
+                                if _error_msg
+                                else "Terjadi error saat menyiapkan data.",
+                                iterations=1,
+                                tool_calls_made=[],
+                                model_used="pipeline",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
                             )
 
                 if _wf_result.new_state == "COLLECTING":
@@ -1224,31 +1543,44 @@ class UnifiedAgent:
                         clarification_text = await self._natural_clarification(
                             intent=extraction.intent,
                             collected=merged_for_wf,
-                            missing_labels=resolution.clarifications if resolution.needs_clarification else [],
+                            missing_labels=resolution.clarifications
+                            if resolution.needs_clarification
+                            else [],
                             resolution=resolution,
                         )
 
-                    await emit("THINKING_DONE", {
-                        "summary": "Butuh info tambahan",
-                        "total_ms": int((_time.time() - start_time) * 1000),
-                    })
+                    await emit(
+                        "THINKING_DONE",
+                        {
+                            "summary": "Butuh info tambahan",
+                            "total_ms": int((_time.time() - start_time) * 1000),
+                        },
+                    )
                     return AgentResponse(
                         message_type="TEXT",
                         content=clarification_text,
-                        iterations=1, tool_calls_made=[], model_used="pipeline",
+                        iterations=1,
+                        tool_calls_made=[],
+                        model_used="pipeline",
                         total_latency_ms=int((_time.time() - start_time) * 1000),
                         thinking_stages=["Menganalisis pesan", "Mencari data"],
                     )
 
                 # Unexpected workflow state: log and fall through
-                logger.warning("[PIPELINE] Unexpected workflow state: %s", _wf_result.new_state)
+                logger.warning(
+                    "[PIPELINE] Unexpected workflow state: %s", _wf_result.new_state
+                )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ── NO active workflow: original flow ──
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-                # Clarification needed? -> Natural LLM-driven question + save pending
-        if resolution.needs_clarification and not extraction.intent.startswith("update_") and not extraction.intent.startswith("delete_"):
+        # Clarification needed? -> Natural LLM-driven question + save pending
+        if (
+            resolution.needs_clarification
+            and not extraction.intent.startswith("update_")
+            and not extraction.intent.startswith("delete_")
+        ):
             # Save partial payload for next turn
             save_payload = {k: v for k, v in merged_entities.items() if v is not None}
             if resolution.payload:
@@ -1256,7 +1588,11 @@ class UnifiedAgent:
                     if v is not None and k not in save_payload:
                         save_payload[k] = v
 
-            if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
                     await tool_executor.session_manager.update_state(
                         tool_executor.session_id,
@@ -1265,7 +1601,8 @@ class UnifiedAgent:
                     )
                     logger.warning(
                         "[PIPELINE] Saved pending: intent=%s keys=%s",
-                        extraction.intent, list(save_payload.keys()),
+                        extraction.intent,
+                        list(save_payload.keys()),
                     )
                 except Exception as e:
                     logger.warning("[PIPELINE] Save pending failed: %s", e)
@@ -1274,37 +1611,51 @@ class UnifiedAgent:
             if _wf_engine and tool_executor and tool_executor.session_id:
                 try:
                     await _wf_engine.process(
-                        tool_executor.session_id, "crud_form",
+                        tool_executor.session_id,
+                        "crud_form",
                         user_data={
                             "action_key": extraction.intent,
                             "payload": save_payload,
                             "intent": extraction.intent,
                         },
                     )
-                    logger.warning("[PIPELINE] Created crud_form workflow: intent=%s", extraction.intent)
+                    logger.warning(
+                        "[PIPELINE] Created crud_form workflow: intent=%s",
+                        extraction.intent,
+                    )
                 except Exception as _wf_err2:
-                    logger.warning("[PIPELINE] Workflow create failed (non-fatal): %s", _wf_err2)
+                    logger.warning(
+                        "[PIPELINE] Workflow create failed (non-fatal): %s", _wf_err2
+                    )
             elif tool_executor and tool_executor.session_id and not _wf_engine:
                 try:
                     from .workflow_engine import WorkflowEngine
                     from .db_utils import get_session_db_pool as _wf_pool2
+
                     _wf_db2 = await _wf_pool2()
                     _wf_engine_new = WorkflowEngine(
-                        _wf_db2, context.tenant_id,
+                        _wf_db2,
+                        context.tenant_id,
                         getattr(context, "user_id", ""),
                         getattr(context, "auth_token", ""),
                     )
                     await _wf_engine_new.process(
-                        tool_executor.session_id, "crud_form",
+                        tool_executor.session_id,
+                        "crud_form",
                         user_data={
                             "action_key": extraction.intent,
                             "payload": save_payload,
                             "intent": extraction.intent,
                         },
                     )
-                    logger.warning("[PIPELINE] Created crud_form workflow (new engine): intent=%s", extraction.intent)
+                    logger.warning(
+                        "[PIPELINE] Created crud_form workflow (new engine): intent=%s",
+                        extraction.intent,
+                    )
                 except Exception as _wf_err2:
-                    logger.warning("[PIPELINE] Workflow create failed (non-fatal): %s", _wf_err2)
+                    logger.warning(
+                        "[PIPELINE] Workflow create failed (non-fatal): %s", _wf_err2
+                    )
 
             # Build natural clarification via LLM
             clarification_text = await self._natural_clarification(
@@ -1314,87 +1665,156 @@ class UnifiedAgent:
                 resolution=resolution,
             )
 
-            await emit("THINKING_DONE", {
-                "summary": "Butuh info tambahan",
-                "total_ms": int((_time.time() - start_time) * 1000),
-            })
+            await emit(
+                "THINKING_DONE",
+                {
+                    "summary": "Butuh info tambahan",
+                    "total_ms": int((_time.time() - start_time) * 1000),
+                },
+            )
             return AgentResponse(
                 message_type="TEXT",
                 content=clarification_text,
                 iterations=1,
-                tool_calls_made=[{
-                    "name": "entity_extractor",
-                    "args": {"user_text": user_text},
-                    "success": True,
-                    "latency_ms": int((_time.time() - start_time) * 1000),
-                }],
+                tool_calls_made=[
+                    {
+                        "name": "entity_extractor",
+                        "args": {"user_text": user_text},
+                        "success": True,
+                        "latency_ms": int((_time.time() - start_time) * 1000),
+                    }
+                ],
                 model_used="gpt-4o-mini-2024-07-18",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
                 thinking_stages=["Menganalisis pesan", "Mencari data"],
             )
 
         # Propose via existing _execute_propose_direct
-        await emit("THINKING_STEP", {
-            "step_id": "pipeline-propose",
-            "text": "Menyiapkan konfirmasi",
-            "status": "running",
-            "category": "write",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "pipeline-propose",
+                "text": "Menyiapkan konfirmasi",
+                "status": "running",
+                "category": "write",
+            },
+        )
 
         # ── Entity Resolution for update_*/delete_* intents ──
-        if (extraction.intent.startswith("update_") or extraction.intent.startswith("delete_")) and ("id" not in merged_entities or len(str(merged_entities.get("id",""))) < 30):
+        if (
+            extraction.intent.startswith("update_")
+            or extraction.intent.startswith("delete_")
+        ) and (
+            "id" not in merged_entities or len(str(merged_entities.get("id", ""))) < 30
+        ):
             _ENTITY_SEARCH = {
                 "update_item": ("item_name", "/api/items", "nama_produk"),
                 "update_customer": ("customer_name", "/api/customers", "nama"),
                 "update_vendor": ("vendor_name", "/api/vendors", "name"),
-                "update_bank_account": ("bank_name", "/api/bank-accounts", "account_name"),
+                "update_bank_account": (
+                    "bank_name",
+                    "/api/bank-accounts",
+                    "account_name",
+                ),
                 "update_warehouse": ("warehouse_name", "/api/warehouses", "name"),
                 "delete_item": ("item_name", "/api/items", "nama_produk"),
                 "delete_customer": ("customer_name", "/api/customers", "nama"),
                 "delete_vendor": ("vendor_name", "/api/vendors", "name"),
-                "delete_bank_account": ("bank_name", "/api/bank-accounts", "account_name"),
+                "delete_bank_account": (
+                    "bank_name",
+                    "/api/bank-accounts",
+                    "account_name",
+                ),
                 "delete_warehouse": ("warehouse_name", "/api/warehouses", "name"),
             }
             _s_cfg = _ENTITY_SEARCH.get(extraction.intent)
             if _s_cfg:
                 _name_key, _api_path, _db_name_key = _s_cfg
-                _search_name = merged_entities.get(_name_key) or merged_entities.get("name") or merged_entities.get("item_name") or ""
+                _search_name = (
+                    merged_entities.get(_name_key)
+                    or merged_entities.get("name")
+                    or merged_entities.get("item_name")
+                    or ""
+                )
                 if _search_name:
                     try:
                         import httpx as _httpx
+
                         _auth = getattr(context, "auth_token", "") or ""
                         _headers = {"Authorization": f"Bearer {_auth}"} if _auth else {}
-                        async with _httpx.AsyncClient(base_url="http://localhost:8000", timeout=5.0) as _hc:
-                            _r = await _hc.get(f"{_api_path}?search={_search_name}&limit=5", headers=_headers)
+                        async with _httpx.AsyncClient(
+                            base_url="http://localhost:8000", timeout=5.0
+                        ) as _hc:
+                            _r = await _hc.get(
+                                f"{_api_path}?search={_search_name}&limit=5",
+                                headers=_headers,
+                            )
                             _r.raise_for_status()
                             _d = _r.json()
-                            _list = _d.get("items") or _d.get("data") or (_d if isinstance(_d, list) else [])
+                            _list = (
+                                _d.get("items")
+                                or _d.get("data")
+                                or (_d if isinstance(_d, list) else [])
+                            )
                             if len(_list) == 1:
                                 _found = _list[0]
                                 merged_entities["id"] = _found.get("id")
-                                merged_entities.setdefault("name", _found.get(_db_name_key) or _found.get("name") or _found.get("nama_produk") or _search_name)
+                                merged_entities.setdefault(
+                                    "name",
+                                    _found.get(_db_name_key)
+                                    or _found.get("name")
+                                    or _found.get("nama_produk")
+                                    or _search_name,
+                                )
                                 extraction.entities = merged_entities
-                                logger.warning("[PIPELINE] Entity resolved: %s -> id=%s", extraction.intent, str(merged_entities["id"])[:8])
+                                logger.warning(
+                                    "[PIPELINE] Entity resolved: %s -> id=%s",
+                                    extraction.intent,
+                                    str(merged_entities["id"])[:8],
+                                )
                             elif len(_list) > 1:
                                 # Multiple matches — save candidates + ask user to pick
                                 _candidates_display = []
                                 _candidates_data = []
                                 for _ci, _c in enumerate(_list, 1):
-                                    _cname = _c.get(_db_name_key) or _c.get("name") or _c.get("nama_produk") or _c.get("nama") or "?"
+                                    _cname = (
+                                        _c.get(_db_name_key)
+                                        or _c.get("name")
+                                        or _c.get("nama_produk")
+                                        or _c.get("nama")
+                                        or "?"
+                                    )
                                     _cdetail = ""
                                     if _c.get("item_code"):
                                         _cdetail += f" ({_c['item_code']})"
                                     if _c.get("item_type"):
                                         _cdetail += f" — {_c['item_type']}"
-                                    _candidates_display.append(f"{_ci}. {_cname}{_cdetail}")
-                                    _candidates_data.append({"id": _c.get("id"), "name": _cname, "code": _c.get("item_code", "")})
-                                _pick_text = f"Ada {len(_list)} hasil untuk \"{_search_name}\":\n" + "\n".join(_candidates_display) + "\n\nYang mana yang kamu maksud?"
+                                    _candidates_display.append(
+                                        f"{_ci}. {_cname}{_cdetail}"
+                                    )
+                                    _candidates_data.append(
+                                        {
+                                            "id": _c.get("id"),
+                                            "name": _cname,
+                                            "code": _c.get("item_code", ""),
+                                        }
+                                    )
+                                _pick_text = (
+                                    f'Ada {len(_list)} hasil untuk "{_search_name}":\n'
+                                    + "\n".join(_candidates_display)
+                                    + "\n\nYang mana yang kamu maksud?"
+                                )
 
                                 # Save candidates in workflow for next turn resolution
-                                if _wf_engine and tool_executor and tool_executor.session_id:
+                                if (
+                                    _wf_engine
+                                    and tool_executor
+                                    and tool_executor.session_id
+                                ):
                                     try:
                                         await _wf_engine.process(
-                                            tool_executor.session_id, "crud_form",
+                                            tool_executor.session_id,
+                                            "crud_form",
                                             user_data={
                                                 "action_key": extraction.intent,
                                                 "intent": extraction.intent,
@@ -1403,34 +1823,66 @@ class UnifiedAgent:
                                                 "phase": "picking_candidate",
                                             },
                                         )
-                                        logger.warning("[PIPELINE] Saved %d candidates in workflow", len(_candidates_data))
+                                        logger.warning(
+                                            "[PIPELINE] Saved %d candidates in workflow",
+                                            len(_candidates_data),
+                                        )
                                     except Exception as _wf_e:
-                                        logger.warning("[PIPELINE] Save candidates failed: %s", _wf_e)
+                                        logger.warning(
+                                            "[PIPELINE] Save candidates failed: %s",
+                                            _wf_e,
+                                        )
 
-                                await emit("THINKING_DONE", {"summary": "Beberapa ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                await emit(
+                                    "THINKING_DONE",
+                                    {
+                                        "summary": "Beberapa ditemukan",
+                                        "total_ms": int(
+                                            (_time.time() - start_time) * 1000
+                                        ),
+                                    },
+                                )
                                 return AgentResponse(
                                     message_type="TEXT",
                                     content=_pick_text,
-                                    iterations=1, model_used="pipeline",
-                                    total_latency_ms=int((_time.time() - start_time) * 1000),
-                                    thinking_stages=["Menganalisis pesan", "Mencari data"],
+                                    iterations=1,
+                                    model_used="pipeline",
+                                    total_latency_ms=int(
+                                        (_time.time() - start_time) * 1000
+                                    ),
+                                    thinking_stages=[
+                                        "Menganalisis pesan",
+                                        "Mencari data",
+                                    ],
                                 )
                             else:
-                                await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                await emit(
+                                    "THINKING_DONE",
+                                    {
+                                        "summary": "Tidak ditemukan",
+                                        "total_ms": int(
+                                            (_time.time() - start_time) * 1000
+                                        ),
+                                    },
+                                )
                                 return AgentResponse(
                                     message_type="TEXT",
-                                    content=f"Maaf, saya tidak menemukan \'{_search_name}\'. Bisa cek kembali namanya?",
-                                    iterations=1, model_used="pipeline",
-                                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                                    content=f"Maaf, saya tidak menemukan '{_search_name}'. Bisa cek kembali namanya?",
+                                    iterations=1,
+                                    model_used="pipeline",
+                                    total_latency_ms=int(
+                                        (_time.time() - start_time) * 1000
+                                    ),
                                 )
                     except Exception as _re:
                         logger.warning("[PIPELINE] Entity resolution failed: %s", _re)
 
-
         # ── UPDATE FLOW: Show current data + ask what to change ──
         if extraction.intent.startswith("update_") and not _active_crud_wf:
             _entity_type = extraction.intent.replace("update_", "")
-            _entity_id = merged_entities.get("id") or (resolution.payload or {}).get("id")
+            _entity_id = merged_entities.get("id") or (resolution.payload or {}).get(
+                "id"
+            )
 
             if _entity_id:
                 _get_endpoints = {
@@ -1446,6 +1898,7 @@ class UnifiedAgent:
                     _current_data = None
                     try:
                         import httpx as _httpx
+
                         _auth = getattr(context, "auth_token", "") or ""
                         async with _httpx.AsyncClient(timeout=10.0) as _client:
                             _resp = await _client.get(
@@ -1458,61 +1911,112 @@ class UnifiedAgent:
                             )
                             if _resp.status_code == 200:
                                 _rj = _resp.json()
-                                _current_data = _rj.get("data", _rj) if isinstance(_rj, dict) else _rj
+                                _current_data = (
+                                    _rj.get("data", _rj)
+                                    if isinstance(_rj, dict)
+                                    else _rj
+                                )
                     except Exception as _e:
                         logger.warning("[PIPELINE] Fetch current data failed: %s", _e)
 
                     if _current_data:
-                        _display_data = self._compact_current_data(_entity_type, _current_data)
+                        _display_data = self._compact_current_data(
+                            _entity_type, _current_data
+                        )
                         _entity_name = (
-                            _current_data.get("name") or
-                            _current_data.get("nama_produk") or
-                            _current_data.get("nama") or
-                            _current_data.get("account_name") or
-                            "item"
+                            _current_data.get("name")
+                            or _current_data.get("nama_produk")
+                            or _current_data.get("nama")
+                            or _current_data.get("account_name")
+                            or "item"
                         )
 
                         # ── FAST PATH: if user already provided field changes, skip "mau ubah?" ──
-                        _id_fields = {"id", "item_name", "customer_name", "vendor_name", "warehouse_name", "bank_name", "name", "date", "entity_name"}
-                        _change_fields = {k: v for k, v in merged_entities.items() if k not in _id_fields and v is not None and v != ""}
+                        _id_fields = {
+                            "id",
+                            "item_name",
+                            "customer_name",
+                            "vendor_name",
+                            "warehouse_name",
+                            "bank_name",
+                            "name",
+                            "date",
+                            "entity_name",
+                        }
+                        _change_fields = {
+                            k: v
+                            for k, v in merged_entities.items()
+                            if k not in _id_fields and v is not None and v != ""
+                        }
                         if _change_fields:
                             # User said "edit X, harga jual 43000" — go straight to propose
-                            _fast_payload = {"id": _entity_id, "name": _entity_name, **_change_fields}
-                            logger.warning("[PIPELINE] Update fast path: %s changes=%s", extraction.intent, list(_change_fields.keys()))
+                            _fast_payload = {
+                                "id": _entity_id,
+                                "name": _entity_name,
+                                **_change_fields,
+                            }
+                            logger.warning(
+                                "[PIPELINE] Update fast path: %s changes=%s",
+                                extraction.intent,
+                                list(_change_fields.keys()),
+                            )
 
                             # Normalize name
-                            if "name" not in _fast_payload or not _fast_payload.get("name"):
+                            if "name" not in _fast_payload or not _fast_payload.get(
+                                "name"
+                            ):
                                 _fast_payload["name"] = _entity_name
 
-                            propose_result = await tool_executor._execute_propose_direct({
-                                "action_key": extraction.intent,
-                                "payload": _fast_payload,
-                            })
+                            propose_result = (
+                                await tool_executor._execute_propose_direct(
+                                    {
+                                        "action_key": extraction.intent,
+                                        "payload": _fast_payload,
+                                    }
+                                )
+                            )
 
-                            if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+                            if (
+                                propose_result.get("message_type")
+                                == "DIRECT_ACTION_PREVIEW"
+                            ):
                                 _direct_data = propose_result.get("data", {})
-                                await emit("THINKING_DONE", {
-                                    "summary": "Data siap dikonfirmasi",
-                                    "total_ms": int((_time.time() - start_time) * 1000),
-                                })
+                                await emit(
+                                    "THINKING_DONE",
+                                    {
+                                        "summary": "Data siap dikonfirmasi",
+                                        "total_ms": int(
+                                            (_time.time() - start_time) * 1000
+                                        ),
+                                    },
+                                )
                                 return AgentResponse(
                                     message_type="DIRECT_ACTION_PREVIEW",
                                     content=propose_result.get("content", ""),
-                                    pending_action_id=_direct_data.get("pending_action_id", ""),
+                                    pending_action_id=_direct_data.get(
+                                        "pending_action_id", ""
+                                    ),
                                     preview=_direct_data,
                                     expires_at=_direct_data.get("expires_at", ""),
                                     iterations=1,
                                     tool_calls_made=[],
                                     model_used="pipeline",
-                                    total_latency_ms=int((_time.time() - start_time) * 1000),
-                                    thinking_stages=["Menganalisis pesan", "Mencari data", "Menyiapkan konfirmasi"],
+                                    total_latency_ms=int(
+                                        (_time.time() - start_time) * 1000
+                                    ),
+                                    thinking_stages=[
+                                        "Menganalisis pesan",
+                                        "Mencari data",
+                                        "Menyiapkan konfirmasi",
+                                    ],
                                 )
 
                         # Create workflow with current data
                         if _wf_engine and tool_executor and tool_executor.session_id:
                             try:
                                 await _wf_engine.process(
-                                    tool_executor.session_id, "crud_form",
+                                    tool_executor.session_id,
+                                    "crud_form",
                                     user_data={
                                         "action_key": extraction.intent,
                                         "payload": {"id": _entity_id},
@@ -1522,12 +2026,21 @@ class UnifiedAgent:
                                         "phase": "showing_current",
                                     },
                                 )
-                                logger.warning("[PIPELINE] Created update workflow: %s phase=showing_current", extraction.intent)
+                                logger.warning(
+                                    "[PIPELINE] Created update workflow: %s phase=showing_current",
+                                    extraction.intent,
+                                )
                             except Exception as _e:
-                                logger.warning("[PIPELINE] Create update workflow failed: %s", _e)
+                                logger.warning(
+                                    "[PIPELINE] Create update workflow failed: %s", _e
+                                )
 
                         # Also save pending state for session continuity
-                        if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+                        if (
+                            tool_executor
+                            and tool_executor.session_manager
+                            and tool_executor.session_id
+                        ):
                             try:
                                 await tool_executor.session_manager.update_state(
                                     tool_executor.session_id,
@@ -1543,10 +2056,13 @@ class UnifiedAgent:
                             current_data=_display_data,
                         )
 
-                        await emit("THINKING_DONE", {
-                            "summary": "Data ditemukan",
-                            "total_ms": int((_time.time() - start_time) * 1000),
-                        })
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Data ditemukan",
+                                "total_ms": int((_time.time() - start_time) * 1000),
+                            },
+                        )
 
                         return AgentResponse(
                             message_type="TEXT",
@@ -1558,53 +2074,80 @@ class UnifiedAgent:
                         )
             else:
                 # No entity ID resolved — item not found
-                _search_name = merged_entities.get("item_name") or merged_entities.get("name") or ""
-                await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                _search_name = (
+                    merged_entities.get("item_name")
+                    or merged_entities.get("name")
+                    or ""
+                )
+                await emit(
+                    "THINKING_DONE",
+                    {
+                        "summary": "Tidak ditemukan",
+                        "total_ms": int((_time.time() - start_time) * 1000),
+                    },
+                )
                 return AgentResponse(
                     message_type="TEXT",
                     content=f"Maaf, saya tidak menemukan '{_search_name}'. Bisa cek kembali namanya?",
-                    iterations=1, model_used="pipeline",
+                    iterations=1,
+                    model_used="pipeline",
                     total_latency_ms=int((_time.time() - start_time) * 1000),
                 )
 
         # Normalize entity name field for propose (Bug 3 fix)
-        _propose_payload = {**resolution.payload, **{k: v for k, v in merged_entities.items() if v is not None}}
+        _propose_payload = {
+            **resolution.payload,
+            **{k: v for k, v in merged_entities.items() if v is not None},
+        }
         if "name" not in _propose_payload or not _propose_payload.get("name"):
             _propose_payload["name"] = (
-                _propose_payload.get("item_name") or
-                _propose_payload.get("customer_name") or
-                _propose_payload.get("vendor_name") or
-                _propose_payload.get("warehouse_name") or
-                _propose_payload.get("bank_name") or
-                _propose_payload.get("account_name") or
-                ""
+                _propose_payload.get("item_name")
+                or _propose_payload.get("customer_name")
+                or _propose_payload.get("vendor_name")
+                or _propose_payload.get("warehouse_name")
+                or _propose_payload.get("bank_name")
+                or _propose_payload.get("account_name")
+                or ""
             )
 
-        propose_result = await tool_executor._execute_propose_direct({
-            "action_key": extraction.intent,
-            "payload": _propose_payload,
-        })
+        propose_result = await tool_executor._execute_propose_direct(
+            {
+                "action_key": extraction.intent,
+                "payload": _propose_payload,
+            }
+        )
 
-        await emit("THINKING_STEP", {
-            "step_id": "pipeline-propose",
-            "text": "Menyiapkan konfirmasi",
-            "status": "done",
-            "duration_ms": int((_time.time() - start_time) * 1000),
-            "category": "write",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "pipeline-propose",
+                "text": "Menyiapkan konfirmasi",
+                "status": "done",
+                "duration_ms": int((_time.time() - start_time) * 1000),
+                "category": "write",
+            },
+        )
 
         # Return in existing format
         if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
             direct_data = propose_result.get("data", {})
-            await emit("THINKING_DONE", {
-                "summary": "Data siap dikonfirmasi",
-                "total_ms": int((_time.time() - start_time) * 1000),
-            })
+            await emit(
+                "THINKING_DONE",
+                {
+                    "summary": "Data siap dikonfirmasi",
+                    "total_ms": int((_time.time() - start_time) * 1000),
+                },
+            )
 
             # Fire L2 + L3 hooks
-            if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
                     from .session_manager import StateUpdateHooks
+
                     await StateUpdateHooks.after_propose(
                         tool_executor.session_manager,
                         tool_executor.session_id,
@@ -1617,9 +2160,15 @@ class UnifiedAgent:
 
             # Save proposed payload as pending (for Edit flow — user may tap Edit and modify)
             # Pending is only cleared on successful CONFIRM, not on propose
-            if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
-                    _save = {k: v for k, v in resolution.payload.items() if v is not None}
+                    _save = {
+                        k: v for k, v in resolution.payload.items() if v is not None
+                    }
                     await tool_executor.session_manager.update_state(
                         tool_executor.session_id,
                         pending_payload=_save,
@@ -1636,13 +2185,29 @@ class UnifiedAgent:
                 expires_at=direct_data.get("expires_at", ""),
                 iterations=1,
                 tool_calls_made=[
-                    {"name": "entity_extractor", "args": {"intent": extraction.intent}, "success": True},
-                    {"name": "entity_resolver", "args": list(extraction.entities.keys()), "success": True},
-                    {"name": "propose_direct_action", "args": {"action_key": extraction.intent}, "success": True},
+                    {
+                        "name": "entity_extractor",
+                        "args": {"intent": extraction.intent},
+                        "success": True,
+                    },
+                    {
+                        "name": "entity_resolver",
+                        "args": list(extraction.entities.keys()),
+                        "success": True,
+                    },
+                    {
+                        "name": "propose_direct_action",
+                        "args": {"action_key": extraction.intent},
+                        "success": True,
+                    },
                 ],
                 model_used="gpt-4o-mini-2024-07-18",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
-                thinking_stages=["Menganalisis pesan", "Mencari data", "Menyiapkan konfirmasi"],
+                thinking_stages=[
+                    "Menganalisis pesan",
+                    "Mencari data",
+                    "Menyiapkan konfirmasi",
+                ],
             )
 
         # Propose failed — check if validation error (missing fields) vs backend error
@@ -1656,7 +2221,11 @@ class UnifiedAgent:
                 for k, v in resolution.payload.items():
                     if v is not None and k not in save_payload:
                         save_payload[k] = v
-            if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
                     await tool_executor.session_manager.update_state(
                         tool_executor.session_id,
@@ -1670,7 +2239,8 @@ class UnifiedAgent:
             if _wf_engine and tool_executor and tool_executor.session_id:
                 try:
                     await _wf_engine.process(
-                        tool_executor.session_id, "crud_form",
+                        tool_executor.session_id,
+                        "crud_form",
                         user_data={
                             "action_key": extraction.intent,
                             "payload": save_payload,
@@ -1692,10 +2262,13 @@ class UnifiedAgent:
                 resolution=resolution,
             )
 
-            await emit("THINKING_DONE", {
-                "summary": "Butuh info tambahan",
-                "total_ms": int((_time.time() - start_time) * 1000),
-            })
+            await emit(
+                "THINKING_DONE",
+                {
+                    "summary": "Butuh info tambahan",
+                    "total_ms": int((_time.time() - start_time) * 1000),
+                },
+            )
 
             return AgentResponse(
                 message_type="TEXT",
@@ -1712,10 +2285,13 @@ class UnifiedAgent:
         elif not isinstance(error_msg, str):
             error_msg = str(propose_result)
 
-        await emit("THINKING_DONE", {
-            "summary": "Terjadi error",
-            "total_ms": int((_time.time() - start_time) * 1000),
-        })
+        await emit(
+            "THINKING_DONE",
+            {
+                "summary": "Terjadi error",
+                "total_ms": int((_time.time() - start_time) * 1000),
+            },
+        )
 
         return AgentResponse(
             message_type="TEXT",
@@ -1725,7 +2301,6 @@ class UnifiedAgent:
             total_latency_ms=int((_time.time() - start_time) * 1000),
             thinking_stages=["Menganalisis pesan", "Validasi data"],
         )
-
 
     async def _natural_clarification(
         self,
@@ -1738,31 +2313,55 @@ class UnifiedAgent:
         """Generate natural conversational clarification using LLM."""
         import json as _json
 
-        collected_clean = {k: v for k, v in collected.items() if v is not None and k != "date"}
+        collected_clean = {
+            k: v for k, v in collected.items() if v is not None and k != "date"
+        }
         _field_labels = {
-            "name": "nama", "item_name": "nama produk", "customer_name": "pelanggan",
-            "vendor_name": "vendor", "bank_name": "bank", "warehouse_name": "gudang",
-            "item_type": "tipe", "base_unit": "satuan (pcs, kg, box, dll)",
-            "amount": "jumlah", "quantity": "qty", "unit_price": "harga satuan",
-            "description": "deskripsi", "phone": "telepon", "email": "email",
-            "address": "alamat", "reason": "alasan", "payment_method": "metode bayar",
+            "name": "nama",
+            "item_name": "nama produk",
+            "customer_name": "pelanggan",
+            "vendor_name": "vendor",
+            "bank_name": "bank",
+            "warehouse_name": "gudang",
+            "item_type": "tipe",
+            "base_unit": "satuan (pcs, kg, box, dll)",
+            "amount": "jumlah",
+            "quantity": "qty",
+            "unit_price": "harga satuan",
+            "description": "deskripsi",
+            "phone": "telepon",
+            "email": "email",
+            "address": "alamat",
+            "reason": "alasan",
+            "payment_method": "metode bayar",
             "account_type": "tipe akun",
         }
-        collected_display = {_field_labels.get(k, k): v for k, v in collected_clean.items() if k in _field_labels}
+        collected_display = {
+            _field_labels.get(k, k): v
+            for k, v in collected_clean.items()
+            if k in _field_labels
+        }
 
         # Map API values to Indonesian display labels
         _VALUE_DISPLAY = {
-            "item_type": {"goods": "persediaan", "service": "jasa", "non_inventory": "non-persediaan"},
+            "item_type": {
+                "goods": "persediaan",
+                "service": "jasa",
+                "non_inventory": "non-persediaan",
+            },
         }
         for field_key, val_map in _VALUE_DISPLAY.items():
             display_key = _field_labels.get(field_key, field_key)
-            if display_key in collected_display and isinstance(collected_display[display_key], str):
+            if display_key in collected_display and isinstance(
+                collected_display[display_key], str
+            ):
                 mapped = val_map.get(collected_display[display_key].lower())
                 if mapped:
                     collected_display[display_key] = mapped
 
         # Get field options from registry
         from .direct_action_registry import get_direct_action
+
         config = get_direct_action(intent)
         field_hints = {}
         if config:
@@ -1791,7 +2390,9 @@ class UnifiedAgent:
                         # Add each field in the group as a hint
                         for fn in group["fields"]:
                             if fn not in collected_clean:
-                                fs = next((f for f in config.fields if f.name == fn), None)
+                                fs = next(
+                                    (f for f in config.fields if f.name == fn), None
+                                )
                                 if fs:
                                     field_hints[fn] = fs.label + " (minimal salah satu)"
 
@@ -1801,7 +2402,9 @@ class UnifiedAgent:
             _action_desc = config.display_name.lower()
 
         system_prompt = (
-            "Kamu asisten pembukuan. User BARU SAJA minta " + _action_desc + " via chat.\n"
+            "Kamu asisten pembukuan. User BARU SAJA minta "
+            + _action_desc
+            + " via chat.\n"
             "User BELUM punya data ini — kamu sedang MEMBANTU MENDAFTARKAN, bukan mengedit.\n\n"
             "TUGASMU: Konfirmasi apa yang user minta, lalu tanya info yang kurang.\n\n"
             "RULES:\n"
@@ -1820,27 +2423,28 @@ class UnifiedAgent:
 
         if override_instruction:
             user_prompt = (
-                "User minta: " + _action_desc + "\n\n"
-                + override_instruction + "\n\n"
+                "User minta: " + _action_desc + "\n\n" + override_instruction + "\n\n"
                 "Balas user secara natural, singkat (1-2 kalimat)."
             )
         else:
             user_prompt = (
                 "User minta: " + _action_desc + "\n"
-                "Data yang sudah ditangkap: " + _json.dumps(collected_display, ensure_ascii=False) + "\n"
-                "Field WAJIB yang masih kurang: " + _json.dumps(field_hints, ensure_ascii=False) + "\n"
+                "Data yang sudah ditangkap: "
+                + _json.dumps(collected_display, ensure_ascii=False)
+                + "\n"
+                "Field WAJIB yang masih kurang: "
+                + _json.dumps(field_hints, ensure_ascii=False)
+                + "\n"
                 "Balas user secara natural."
             )
 
         try:
-            client, model = self.router.route("clarification")
-            response = await client.chat(
+            response = await self.router.complete(
+                task_type="clarification",
                 messages=[
                     LLMMessage(role="system", content=system_prompt),
                     LLMMessage(role="user", content=user_prompt),
                 ],
-                tools=[],
-                model=model,
                 temperature=0.5,
                 max_tokens=150,
             )
@@ -1853,7 +2457,9 @@ class UnifiedAgent:
         # Fallback
         missing_str = ", ".join(missing_labels) if missing_labels else "beberapa info"
         if collected_display:
-            collected_str = ", ".join(str(k) + ": " + str(v) for k, v in list(collected_display.items())[:3])
+            collected_str = ", ".join(
+                str(k) + ": " + str(v) for k, v in list(collected_display.items())[:3]
+            )
             return "Oke, " + collected_str + ". Masih butuh: " + missing_str
         return "Untuk lanjut, saya butuh: " + missing_str
 
@@ -1881,20 +2487,24 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
-        await emit("THINKING_STEP", {
-            "step_id": "query-resolve",
-            "text": "Mencari data",
-            "status": "running",
-            "category": "search",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "query-resolve",
+                "text": "Mencari data",
+                "status": "running",
+                "category": "search",
+            },
+        )
 
         # Get query config from registry
         from .direct_action_registry import get_query_action
+
         query_config = get_query_action(extraction.intent)
         if not query_config:
             return AgentResponse(
                 message_type="TEXT",
-                content="Hmm, saya belum paham pertanyaannya. Coba lebih spesifik, misalnya:\n\n\u2022 \"Berapa total piutang?\"\n\u2022 \"Daftar faktur pembelian\"\n\u2022 \"Saldo kas dan bank\"\n",
+                content='Hmm, saya belum paham pertanyaannya. Coba lebih spesifik, misalnya:\n\n\u2022 "Berapa total piutang?"\n\u2022 "Daftar faktur pembelian"\n\u2022 "Saldo kas dan bank"\n',
                 iterations=1,
                 model_used="gpt-4o-mini",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -1908,21 +2518,35 @@ class UnifiedAgent:
         if "{id}" in endpoint and extraction.entities.get("item_name"):
             from .entity_resolver import EntityResolver
             from .db_utils import get_session_db_pool
+
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
-            resolved_item = await resolver._resolve_item(extraction.entities["item_name"])
-            if resolved_item and resolved_item.entity_id and resolved_item.confidence >= 0.5:
+            resolved_item = await resolver._resolve_item(
+                extraction.entities["item_name"]
+            )
+            if (
+                resolved_item
+                and resolved_item.entity_id
+                and resolved_item.confidence >= 0.5
+            ):
                 endpoint = endpoint.replace("{id}", resolved_item.entity_id)
             else:
                 # Try entity graph focus
                 state = None
-                if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+                if (
+                    tool_executor
+                    and tool_executor.session_manager
+                    and tool_executor.session_id
+                ):
                     try:
-                        state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                        state = await tool_executor.session_manager.get_state(
+                            tool_executor.session_id
+                        )
                     except Exception:
                         pass
-                if state and getattr(state, 'entity_graph', None):
+                if state and getattr(state, "entity_graph", None):
                     from .entity_graph import get_last_node
+
                     last_item = get_last_node(state.entity_graph, "item")
                     if last_item:
                         endpoint = endpoint.replace("{id}", last_item["id"])
@@ -1949,9 +2573,12 @@ class UnifiedAgent:
         if "{id}" in endpoint and extraction.entities.get("warehouse_name"):
             from .entity_resolver import EntityResolver
             from .db_utils import get_session_db_pool
+
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
-            resolved_wh = await resolver._resolve_warehouse(extraction.entities["warehouse_name"])
+            resolved_wh = await resolver._resolve_warehouse(
+                extraction.entities["warehouse_name"]
+            )
             if resolved_wh and resolved_wh.entity_id and resolved_wh.confidence >= 0.5:
                 endpoint = endpoint.replace("{id}", resolved_wh.entity_id)
             else:
@@ -1965,14 +2592,23 @@ class UnifiedAgent:
                 )
 
         # Resolve item_id query param (for endpoints like /api/item-batches?item_id=UUID)
-        if any(qp.name == "item_id" for qp in (query_config.query_params or [])) and extraction.entities.get("item_name"):
+        if any(
+            qp.name == "item_id" for qp in (query_config.query_params or [])
+        ) and extraction.entities.get("item_name"):
             if "{id}" not in endpoint:  # Only for non-path-param endpoints
                 from .entity_resolver import EntityResolver
                 from .db_utils import get_session_db_pool
+
                 pool = await get_session_db_pool()
                 resolver = EntityResolver(pool, context.tenant_id)
-                resolved_item = await resolver._resolve_item(extraction.entities["item_name"])
-                if resolved_item and resolved_item.entity_id and resolved_item.confidence >= 0.5:
+                resolved_item = await resolver._resolve_item(
+                    extraction.entities["item_name"]
+                )
+                if (
+                    resolved_item
+                    and resolved_item.entity_id
+                    and resolved_item.confidence >= 0.5
+                ):
                     query_params["item_id"] = resolved_item.entity_id
                 else:
                     return AgentResponse(
@@ -1989,7 +2625,7 @@ class UnifiedAgent:
             "search": ["item_name", "name", "keyword"],
             "warehouse_id": ["warehouse_name"],
         }
-        for qp in (query_config.query_params or []):
+        for qp in query_config.query_params or []:
             entity_val = extraction.entities.get(qp.name)
             if not entity_val:
                 # Try aliases
@@ -2015,7 +2651,7 @@ class UnifiedAgent:
         # Call REST endpoint
         try:
             base_url = "http://localhost:8000"
-            auth_token = getattr(context, 'auth_token', '') or ''
+            auth_token = getattr(context, "auth_token", "") or ""
             headers = {
                 "Authorization": f"Bearer {auth_token}",
                 "Content-Type": "application/json",
@@ -2041,56 +2677,191 @@ class UnifiedAgent:
                 total_latency_ms=int((_time.time() - start_time) * 1000),
             )
 
-        await emit("THINKING_STEP", {
-            "step_id": "query-resolve",
-            "text": "Mencari data",
-            "status": "done",
-            "duration_ms": int((_time.time() - start_time) * 1000),
-            "category": "search",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "query-resolve",
+                "text": "Mencari data",
+                "status": "done",
+                "duration_ms": int((_time.time() - start_time) * 1000),
+                "category": "search",
+            },
+        )
 
         # Format + LLM Polish
-        await emit("THINKING_STEP", {
-            "step_id": "query-format",
-            "text": "Menyusun jawaban",
-            "status": "running",
-            "category": "write",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "query-format",
+                "text": "Menyusun jawaban",
+                "status": "running",
+                "category": "write",
+            },
+        )
 
         response_text = await self._polish_query_response(
             query_config=query_config,
             data=data,
             user_text=user_text,
-            entity_name=extraction.entities.get("item_name") or extraction.entities.get("warehouse_name") or "",
+            entity_name=extraction.entities.get("item_name")
+            or extraction.entities.get("warehouse_name")
+            or "",
         )
 
-        await emit("THINKING_STEP", {
-            "step_id": "query-format",
-            "text": "Menyusun jawaban",
-            "status": "done",
-            "duration_ms": int((_time.time() - start_time) * 1000),
-            "category": "write",
-        })
+        await emit(
+            "THINKING_STEP",
+            {
+                "step_id": "query-format",
+                "text": "Menyusun jawaban",
+                "status": "done",
+                "duration_ms": int((_time.time() - start_time) * 1000),
+                "category": "write",
+            },
+        )
 
-        await emit("THINKING_DONE", {
-            "summary": "Data ditemukan",
-            "total_ms": int((_time.time() - start_time) * 1000),
-        })
+        await emit(
+            "THINKING_DONE",
+            {
+                "summary": "Data ditemukan",
+                "total_ms": int((_time.time() - start_time) * 1000),
+            },
+        )
+
+        # Save last query context for reformat_as_table
+        try:
+            if (
+                tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type=extraction.intent,
+                    last_action_result={
+                        "response_text": response_text[:2000],
+                        "query_text": user_text,
+                    },
+                )
+        except Exception as _save_err:
+            logger.warning("[QUERY_PIPELINE] Failed to save last query: %s", _save_err)
 
         return AgentResponse(
             message_type="TEXT",
             content=response_text,
             iterations=1,
             tool_calls_made=[
-                {"name": "entity_extractor", "args": {"intent": extraction.intent}, "success": True},
-                {"name": "query_endpoint", "args": {"endpoint": endpoint}, "success": True},
+                {
+                    "name": "entity_extractor",
+                    "args": {"intent": extraction.intent},
+                    "success": True,
+                },
+                {
+                    "name": "query_endpoint",
+                    "args": {"endpoint": endpoint},
+                    "success": True,
+                },
             ],
             model_used=getattr(self, "_last_polish_model", "pipeline"),
             total_latency_ms=int((_time.time() - start_time) * 1000),
             thinking_stages=["Menganalisis pesan", "Mencari data", "Menyusun jawaban"],
         )
 
-    async def _polish_query_response(self, query_config, data, user_text, entity_name=""):
+    async def _handle_reformat_as_table(
+        self,
+        user_text,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """Re-format last bot response as a markdown table using Gemini Flash."""
+        import time as _time
+
+        start_time = _time.time()
+
+        # Get last response from session state
+        last_response = None
+        if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            try:
+                state = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
+                if state and state.last_action_result:
+                    result = state.last_action_result
+                    if isinstance(result, dict):
+                        last_response = result.get("response_text")
+                    elif isinstance(result, str):
+                        last_response = result
+            except Exception as _e:
+                logger.warning("[REFORMAT] Failed to get state: %s", _e)
+
+        if not last_response:
+            # Fallback: try chat_messages table
+            try:
+                if tool_executor and tool_executor.session_manager:
+                    rows = await tool_executor.session_manager.db.fetch(
+                        """
+                        SELECT content FROM chat_messages
+                        WHERE session_id = $1::uuid AND tenant_id = $2 AND role = 'assistant'
+                        ORDER BY created_at DESC LIMIT 1
+                    """,
+                        tool_executor.session_id,
+                        context.tenant_id,
+                    )
+                    if rows:
+                        last_response = rows[0]["content"]
+            except Exception as _e2:
+                logger.warning("[REFORMAT] Fallback fetch failed: %s", _e2)
+
+        if not last_response:
+            return AgentResponse(
+                message_type="TEXT",
+                content="Mau tabel tentang apa? Misalnya: 'tampilkan hutang dalam tabel' atau 'tabel piutang per pelanggan'",
+                iterations=1,
+                model_used="pipeline",
+                total_latency_ms=int((_time.time() - start_time) * 1000),
+            )
+
+        reformat_prompt = (
+            f"User meminta data berikut ditampilkan dalam bentuk tabel markdown:\n\n"
+            f"{last_response}\n\n"
+            f"FORMAT ULANG sebagai tabel markdown yang rapi.\n"
+            f"Pertahankan semua data dan angka, hanya ubah format ke tabel.\n"
+            f"Tambahkan baris total di bawah tabel kalau ada angka.\n"
+            f"Kalau data sudah dalam bentuk tabel, perbaiki formatnya saja.\n"
+            f"JANGAN tambah data yang tidak ada. JANGAN hilangkan data."
+        )
+
+        try:
+            response = await self.router.complete(
+                task_type="polish",
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content="Kamu formatter data. Format ulang data menjadi tabel markdown yang rapi. Bahasa Indonesia.",
+                    ),
+                    LLMMessage(role="user", content=reformat_prompt),
+                ],
+                temperature=0.2,
+                max_tokens=800,
+            )
+            text = (response.content or "").strip()
+            if not text:
+                text = last_response
+        except Exception as e:
+            logger.warning("[REFORMAT] LLM failed: %s", e)
+            text = last_response
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=text,
+            iterations=1,
+            model_used="pipeline",
+            total_latency_ms=int((_time.time() - start_time) * 1000),
+        )
+
+    async def _polish_query_response(
+        self, query_config, data, user_text, entity_name=""
+    ):
         """Polish raw API response into natural Bahasa Indonesia via LLM."""
         import json as _json
 
@@ -2102,7 +2873,16 @@ class UnifiedAgent:
             if isinstance(data, list):
                 items = data
             elif isinstance(data, dict):
-                for _k in ("items", "data", "warehouses", "categories", "default_units", "units", "transfers", "adjustments"):
+                for _k in (
+                    "items",
+                    "data",
+                    "warehouses",
+                    "categories",
+                    "default_units",
+                    "units",
+                    "transfers",
+                    "adjustments",
+                ):
                     if _k in data and isinstance(data[_k], list):
                         items = data[_k]
                         break
@@ -2110,16 +2890,34 @@ class UnifiedAgent:
                     items = []
             else:
                 items = []
-            _simple_entities = {"query_categories_list", "query_warehouses", "query_items_units"}
-            if (query_config.action_key in _simple_entities
-                    and isinstance(items, list) and 0 < len(items) <= 10):
+            _simple_entities = {
+                "query_categories_list",
+                "query_warehouses",
+                "query_items_units",
+            }
+            if (
+                query_config.action_key in _simple_entities
+                and isinstance(items, list)
+                and 0 < len(items) <= 10
+            ):
                 names = [
                     i.get("name", i.get("nama", i.get("nama_produk", "?")))
-                    if isinstance(i, dict) else str(i)
+                    if isinstance(i, dict)
+                    else str(i)
                     for i in items
                 ]
-                count = data.get("total", len(names)) if isinstance(data, dict) else len(names)
-                return str(count) + " " + query_config.display_name.lower() + ":\n" + ", ".join(names)
+                count = (
+                    data.get("total", len(names))
+                    if isinstance(data, dict)
+                    else len(names)
+                )
+                return (
+                    str(count)
+                    + " "
+                    + query_config.display_name.lower()
+                    + ":\n"
+                    + ", ".join(names)
+                )
             # All other lists -> fall through to LLM polish
 
         # Compact data for LLM
@@ -2166,34 +2964,43 @@ class UnifiedAgent:
         # ── Insight Engine: rule-based interpretation ──
         _insight_text = ""
         try:
-            from .insight_engine import evaluate as _evaluate_insights, format_insights_for_prompt as _format_insights
+            from .insight_engine import (
+                evaluate as _evaluate_insights,
+                format_insights_for_prompt as _format_insights,
+            )
+
             _insights = _evaluate_insights(query_config.action_key, data)
             _insight_text = _format_insights(_insights)
             if _insights:
-                logger.warning("[INSIGHT] %d insights for %s (top: %s/%s)",
-                    len(_insights), query_config.action_key, _insights[0].severity, _insights[0].insight_type)
+                logger.warning(
+                    "[INSIGHT] %d insights for %s (top: %s/%s)",
+                    len(_insights),
+                    query_config.action_key,
+                    _insights[0].severity,
+                    _insights[0].insight_type,
+                )
         except Exception as _ie:
             logger.warning("[INSIGHT] Failed: %s", _ie)
         polish_user = (
-            f"Pertanyaan user: \"{user_text}\"\n"
+            f'Pertanyaan user: "{user_text}"\n'
             f"Tipe: {response_format}\n"
             f"DATA:\n```json\n{compact_str}\n```{_insight_text}"
         )
 
         try:
-            client, model = self.router.route("polish")
-
-            response = await client.chat(
+            response = await self.router.complete(
+                task_type="polish",
                 messages=[
                     LLMMessage(role="system", content=polish_system),
                     LLMMessage(role="user", content=polish_user),
                 ],
-                tools=[],
-                model=model,
                 temperature=0.3,
-                max_tokens=300,
+                max_tokens=800,
             )
-            return (response.content or "").strip() or "Data ditemukan tapi gagal diformat."
+            self._last_polish_model = getattr(response, "model", None) or "pipeline"
+            return (
+                response.content or ""
+            ).strip() or "Data ditemukan tapi gagal diformat."
         except Exception as e:
             logger.warning(f"[QUERY_PIPELINE] LLM polish failed, using template: {e}")
             return f"{query_config.display_name}:\n{_json.dumps(compact, ensure_ascii=False, indent=2, default=str)[:500]}"
@@ -2245,12 +3052,24 @@ class UnifiedAgent:
                 "nomor": data.get("account_number", ""),
                 "tipe": data.get("account_type", ""),
             }
-        return {k: v for k, v in data.items() if k not in ("id", "tenant_id", "created_at", "updated_at", "deleted_at") and isinstance(v, (str, int, float, bool))}
+        return {
+            k: v
+            for k, v in data.items()
+            if k not in ("id", "tenant_id", "created_at", "updated_at", "deleted_at")
+            and isinstance(v, (str, int, float, bool))
+        }
 
-    async def _polish_current_data(self, entity_name: str, entity_type: str, current_data: dict) -> str:
+    async def _polish_current_data(
+        self, entity_name: str, entity_type: str, current_data: dict
+    ) -> str:
         """LLM polish: show current data naturally + ask what to change."""
         import json as _json
-        display = {k: v for k, v in current_data.items() if v is not None and v != "" and v != 0}
+
+        display = {
+            k: v
+            for k, v in current_data.items()
+            if v is not None and v != "" and v != 0
+        }
 
         system_prompt = (
             "Kamu asisten pembukuan yang ramah. User mau edit data yang sudah ada.\n"
@@ -2268,18 +3087,18 @@ class UnifiedAgent:
             f"Data saat ini:\n{_json.dumps(display, ensure_ascii=False, default=str)}"
         )
         try:
-            client, model = self.router.route("polish")
-            response = await client.chat(
+            response = await self.router.complete(
+                task_type="polish",
                 messages=[
                     LLMMessage(role="system", content=system_prompt),
                     LLMMessage(role="user", content=user_prompt),
                 ],
-                tools=[],
-                model=model,
                 temperature=0.4,
-                max_tokens=200,
+                max_tokens=800,
             )
-            return (response.content or "").strip() or f"Data {entity_name} ditemukan. Mau ubah yang mana?"
+            return (
+                response.content or ""
+            ).strip() or f"Data {entity_name} ditemukan. Mau ubah yang mana?"
         except Exception:
             lines = [f"**{entity_name}**:"]
             for k, v in display.items():
@@ -2301,7 +3120,11 @@ class UnifiedAgent:
             return {}
 
         # Unwrap {"success": true, "data": {...}} envelope if present
-        if isinstance(data, dict) and "data" in data and isinstance(data["data"], (dict, list)):
+        if (
+            isinstance(data, dict)
+            and "data" in data
+            and isinstance(data["data"], (dict, list))
+        ):
             data = data["data"]
 
         # If data is a list, wrap it
@@ -2312,12 +3135,32 @@ class UnifiedAgent:
         list_data = None
         list_key = None
         _COMMON_LIST_KEYS = [
-            "items", "data", "products", "transactions", "entries",
-            "categories", "units", "default_units", "custom_units", "warehouses",
-            "adjustments", "transfers", "stock", "lines", "batches",
-            "invoices", "bills", "payments", "results", "records",
-            "movements", "activities", "related", "history",
-            "journal_entries", "purchase_orders",
+            "items",
+            "data",
+            "products",
+            "transactions",
+            "entries",
+            "categories",
+            "units",
+            "default_units",
+            "custom_units",
+            "warehouses",
+            "adjustments",
+            "transfers",
+            "stock",
+            "lines",
+            "batches",
+            "invoices",
+            "bills",
+            "payments",
+            "results",
+            "records",
+            "movements",
+            "activities",
+            "related",
+            "history",
+            "journal_entries",
+            "purchase_orders",
         ]
         for key in _COMMON_LIST_KEYS:
             val = data.get(key)
@@ -2338,7 +3181,11 @@ class UnifiedAgent:
             if isinstance(v, (str, int, float, bool)) or v is None:
                 renamed = self._rename_field(k)
                 compact[renamed] = self._safe_val(v)
-            elif isinstance(v, list) and len(v) <= 5 and all(isinstance(x, str) for x in v):
+            elif (
+                isinstance(v, list)
+                and len(v) <= 5
+                and all(isinstance(x, str) for x in v)
+            ):
                 # Small string list (e.g. default_units: ["pcs", "kg"])
                 compact[self._rename_field(k)] = v
             elif isinstance(v, dict) and len(v) <= 8:
@@ -2346,12 +3193,15 @@ class UnifiedAgent:
                 compact[self._rename_field(k)] = {
                     self._rename_field(sk): self._safe_val(sv)
                     for sk, sv in v.items()
-                    if not self._is_noise_field(sk) and isinstance(sv, (str, int, float, bool, type(None)))
+                    if not self._is_noise_field(sk)
+                    and isinstance(sv, (str, int, float, bool, type(None)))
                 }
 
         # Process list data
         if list_data:
-            compact["total"] = compact.get("total") or data.get("total", data.get("count", len(list_data)))
+            compact["total"] = compact.get("total") or data.get(
+                "total", data.get("count", len(list_data))
+            )
             compact_key = list_key if list_key not in ("data",) else "items"
             compact[compact_key] = self._compact_list(list_data, max_items=10)
         elif not compact:
@@ -2359,7 +3209,8 @@ class UnifiedAgent:
             return {
                 self._rename_field(k): self._safe_val(v)
                 for k, v in data.items()
-                if not self._is_noise_field(k) and isinstance(v, (str, int, float, bool, type(None)))
+                if not self._is_noise_field(k)
+                and isinstance(v, (str, int, float, bool, type(None)))
             }
 
         return compact
@@ -2405,25 +3256,49 @@ class UnifiedAgent:
                     pass
         return v
 
-    _NOISE_FIELDS = frozenset({
-        # UUIDs and internal IDs
-        "id", "uuid", "tenant_id", "user_id", "created_by", "updated_by",
-        "posted_by", "voided_by", "shipped_by", "received_by", "cancelled_by",
-        "session_id", "conversation_id", "idempotency_key",
-        # Timestamps (keep only human-readable dates)
-        "created_at", "updated_at", "deleted_at",
-        "posted_at", "voided_at",
-        # Internal references
-        "journal_id", "source_id",
-        "coa_id", "confidentiality_level",
-        "sales_account_id", "purchase_account_id",
-        "inventory_account_id", "cogs_account_id",
-        "pph_account_id",
-        # Technical
-        "is_matrix_parent", "matrix_parent_id",
-        "content_unit", "wholesale_unit", "units_per_wholesale",
-        "image_url", "image_urls",
-    })
+    _NOISE_FIELDS = frozenset(
+        {
+            # UUIDs and internal IDs
+            "id",
+            "uuid",
+            "tenant_id",
+            "user_id",
+            "created_by",
+            "updated_by",
+            "posted_by",
+            "voided_by",
+            "shipped_by",
+            "received_by",
+            "cancelled_by",
+            "session_id",
+            "conversation_id",
+            "idempotency_key",
+            # Timestamps (keep only human-readable dates)
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "posted_at",
+            "voided_at",
+            # Internal references
+            "journal_id",
+            "source_id",
+            "coa_id",
+            "confidentiality_level",
+            "sales_account_id",
+            "purchase_account_id",
+            "inventory_account_id",
+            "cogs_account_id",
+            "pph_account_id",
+            # Technical
+            "is_matrix_parent",
+            "matrix_parent_id",
+            "content_unit",
+            "wholesale_unit",
+            "units_per_wholesale",
+            "image_url",
+            "image_urls",
+        }
+    )
 
     _FIELD_RENAMES = {
         # Bahasa Indonesia → readable
@@ -2508,7 +3383,9 @@ class UnifiedAgent:
             return True
         # Strip any field ending with _id EXCEPT known useful ones
         if field_name.endswith("_id") and field_name not in (
-            "product_id", "item_id", "warehouse_id",
+            "product_id",
+            "item_id",
+            "warehouse_id",
         ):
             return True
         return False
@@ -2516,7 +3393,6 @@ class UnifiedAgent:
     def _rename_field(self, field_name: str) -> str:
         """Rename field to human-readable Indonesian name."""
         return self._FIELD_RENAMES.get(field_name, field_name)
-
 
     async def process_message(
         self,
@@ -2559,6 +3435,19 @@ class UnifiedAgent:
         if not tool_executor:
             tool_executor = ToolExecutor(context, user_text=user_text)
 
+        # Ensure tool_executor has session context for state persistence
+        if chat_session_id and not tool_executor.session_id:
+            tool_executor.session_id = chat_session_id
+        if not tool_executor.session_manager and db_pool:
+            try:
+                from .session_manager import SessionManager
+
+                tool_executor.session_manager = SessionManager(
+                    db_pool, context.tenant_id
+                )
+            except Exception:
+                pass
+
         # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
         _intent = _infer_intent(user_text)
         _route = RouteResult(
@@ -2572,7 +3461,8 @@ class UnifiedAgent:
         )
         logger.warning(
             "[INTENT] intent=%s user='%s'",
-            _intent, user_text[:50],
+            _intent,
+            user_text[:50],
         )
 
         # CHITCHAT short-circuit — bypass agent loop entirely
@@ -2582,12 +3472,19 @@ class UnifiedAgent:
         # ── Workflow trigger detection ──────────────────────────
         _workflow_triggers = {
             "invoice_and_payment": [
-                "faktur dan bayar", "invoice dan bayar", "buat faktur langsung bayar",
-                "faktur sekaligus bayar", "langsung lunas",
+                "faktur dan bayar",
+                "invoice dan bayar",
+                "buat faktur langsung bayar",
+                "faktur sekaligus bayar",
+                "langsung lunas",
             ],
             "monthly_closing": [
-                "tutup bulan", "closing bulan", "tutup buku", "monthly closing",
-                "akhir bulan", "closing bulanan",
+                "tutup bulan",
+                "closing bulan",
+                "tutup buku",
+                "monthly closing",
+                "akhir bulan",
+                "closing bulanan",
             ],
         }
 
@@ -2600,14 +3497,26 @@ class UnifiedAgent:
                     _wf_user_data = {}
                     if _wf_type == "monthly_closing":
                         _month_map = {
-                            "januari": "01", "februari": "02", "maret": "03", "april": "04",
-                            "mei": "05", "juni": "06", "juli": "07", "agustus": "08",
-                            "september": "09", "oktober": "10", "november": "11", "desember": "12",
+                            "januari": "01",
+                            "februari": "02",
+                            "maret": "03",
+                            "april": "04",
+                            "mei": "05",
+                            "juni": "06",
+                            "juli": "07",
+                            "agustus": "08",
+                            "september": "09",
+                            "oktober": "10",
+                            "november": "11",
+                            "desember": "12",
                         }
                         for _mn, _mnum in _month_map.items():
                             if _mn in _text_lower:
                                 from datetime import date as _date_type
-                                _wf_user_data["period"] = f"{_date_type.today().year}-{_mnum}"
+
+                                _wf_user_data[
+                                    "period"
+                                ] = f"{_date_type.today().year}-{_mnum}"
                                 break
 
                     wf_result = await tool_executor.execute(
@@ -2615,17 +3524,24 @@ class UnifiedAgent:
                         {"workflow_type": _wf_type, "user_data": _wf_user_data},
                     )
                     if isinstance(wf_result, dict):
-                        content_text = wf_result.get("llm_instruction", wf_result.get("message", ""))
+                        content_text = wf_result.get(
+                            "llm_instruction", wf_result.get("message", "")
+                        )
                         if wf_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
                             return AgentResponse(
                                 message_type="DIRECT_ACTION_PREVIEW",
                                 content=content_text,
                                 preview=wf_result.get("data", {}),
-                                pending_action_id=wf_result.get("data", {}).get("pending_action_id", ""),
+                                pending_action_id=wf_result.get("data", {}).get(
+                                    "pending_action_id", ""
+                                ),
                                 iterations=1,
                                 model_used="gpt-4o-mini",
                                 total_latency_ms=int((time.time() - start_time) * 1000),
-                                thinking_stages=["Menganalisis pesan", "Memulai workflow"],
+                                thinking_stages=[
+                                    "Menganalisis pesan",
+                                    "Memulai workflow",
+                                ],
                             )
                         return AgentResponse(
                             message_type="TEXT",
@@ -2639,7 +3555,6 @@ class UnifiedAgent:
                     logger.warning(f"[WORKFLOW] Trigger failed: {_wf_err}")
                 break
 
-
         # ── COMPILER PIPELINE: Side-by-side with agent loop ──
         # Feature-flagged: only enabled intents use pipeline.
         from .entity_extractor import EntityExtractor, is_pipeline_enabled
@@ -2649,38 +3564,70 @@ class UnifiedAgent:
             extractor = EntityExtractor(_extract_client, _extract_model)
 
             _ctx_summary = ""
-            if tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
-                    _state = await tool_executor.session_manager.get_state(tool_executor.session_id)
-                    _ctx_summary = _state.to_context_string() if hasattr(_state, "to_context_string") else ""
+                    _state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    _ctx_summary = (
+                        _state.to_context_string()
+                        if hasattr(_state, "to_context_string")
+                        else ""
+                    )
                 except Exception:
                     pass
 
             # ── Code-driven CRUD intent classifier (pre-LLM, deterministic) ──
             from .entity_extractor import classify_crud_intent, classify_query_intent
-            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(user_text)
+
+            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
+                user_text
+            )
             # Query code classifier first
             _qci, _, _ = classify_query_intent(user_text)
             if _qci:
                 _code_intent = _qci
             if _code_intent:
-                logger.warning("[PIPELINE] Code classifier: intent=%s name='%s' field=%s", _code_intent, _code_entity_name or "", _code_name_field or "")
+                logger.warning(
+                    "[PIPELINE] Code classifier: intent=%s name='%s' field=%s",
+                    _code_intent,
+                    _code_entity_name or "",
+                    _code_name_field or "",
+                )
 
-            extraction = await extractor.extract(user_text, context_summary=_ctx_summary)
+            extraction = await extractor.extract(
+                user_text, context_summary=_ctx_summary
+            )
             if _code_intent:
                 extraction.intent = _code_intent
                 extraction.confidence = 1.0
                 extraction.needs_escalation = False
                 if _code_entity_name and _code_name_field:
                     extraction.entities[_code_name_field] = _code_entity_name
-                logger.warning("[PIPELINE] Intent overridden by code classifier: %s", _code_intent)
-
+                logger.warning(
+                    "[PIPELINE] Intent overridden by code classifier: %s", _code_intent
+                )
 
             # Calculation pipeline — code-driven numerics (zero LLM compute)
-            if extraction.intent.startswith("calc_") and is_pipeline_enabled(extraction.intent):
-                from .calculation_engine import is_calculation_intent, get_calculation_template, execute_calculation, format_calculation_result
+            if extraction.intent.startswith("calc_") and is_pipeline_enabled(
+                extraction.intent
+            ):
+                from .calculation_engine import (
+                    is_calculation_intent,
+                    get_calculation_template,
+                    execute_calculation,
+                    format_calculation_result,
+                )
+
                 if is_calculation_intent(extraction.intent):
-                    logger.warning("[CALC_PIPELINE] Routing to calculation engine: intent=%s", extraction.intent)
+                    logger.warning(
+                        "[CALC_PIPELINE] Routing to calculation engine: intent=%s",
+                        extraction.intent,
+                    )
                     _calc_template = get_calculation_template(extraction.intent)
                     _calc_result = await execute_calculation(
                         _calc_template,
@@ -2694,15 +3641,20 @@ class UnifiedAgent:
                             content=_calc_text,
                             iterations=1,
                             model_used="calc_engine",
-                            total_latency_ms=int((_time.monotonic() - _process_start) * 1000),
+                            total_latency_ms=int(
+                                (_time.monotonic() - _process_start) * 1000
+                            ),
                         )
                     else:
                         logger.warning("[CALC_PIPELINE] Failed: %s", _calc_result)
                         extraction.needs_escalation = True
 
             # Query pipeline — before write pipeline
-            if extraction.intent.startswith("query_") and is_pipeline_enabled(extraction.intent):
+            if extraction.intent.startswith("query_") and is_pipeline_enabled(
+                extraction.intent
+            ):
                 from .direct_action_registry import get_query_action
+
                 _qconfig = get_query_action(extraction.intent)
                 if _qconfig:
                     logger.warning(
@@ -2718,15 +3670,27 @@ class UnifiedAgent:
                     )
 
             # ── Pending-intent fallback: if extraction is ambiguous but there's a pending action ──
-            if extraction.intent in ("ambiguous", "chitchat", "unknown", "SIMPLE_READ") and tool_executor and tool_executor.session_manager and tool_executor.session_id:
+            if (
+                extraction.intent in ("ambiguous", "chitchat", "unknown", "SIMPLE_READ")
+                and tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
                 try:
-                    _route_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                    _route_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
                     _route_pending = getattr(_route_state, "pending_intent", "") or ""
                     _route_payload = getattr(_route_state, "pending_payload", {}) or {}
-                    if _route_pending and _route_payload and is_pipeline_enabled(_route_pending):
+                    if (
+                        _route_pending
+                        and _route_payload
+                        and is_pipeline_enabled(_route_pending)
+                    ):
                         logger.warning(
                             "[PIPELINE] Ambiguous override: extraction=%s -> pending=%s",
-                            extraction.intent, _route_pending,
+                            extraction.intent,
+                            _route_pending,
                         )
                         extraction.intent = _route_pending
                         extraction.needs_escalation = False
@@ -2734,34 +3698,58 @@ class UnifiedAgent:
                     logger.warning("[PIPELINE] Routing pending check failed: %s", _re)
 
             # ── Active workflow override: force pipeline routing ──
-            if not is_pipeline_enabled(extraction.intent) or extraction.needs_escalation:
+            if (
+                not is_pipeline_enabled(extraction.intent)
+                or extraction.needs_escalation
+            ):
                 if tool_executor and tool_executor.session_id:
                     try:
                         from .workflow_engine import WorkflowEngine
                         from .db_utils import get_session_db_pool as _rp_pool
+
                         _rp_db = await _rp_pool()
                         _rp_engine = WorkflowEngine(
-                            _rp_db, context.tenant_id,
+                            _rp_db,
+                            context.tenant_id,
                             getattr(context, "user_id", ""),
                             getattr(context, "auth_token", ""),
                         )
-                        _rp_wf = await _rp_engine.get_state(tool_executor.session_id, "crud_form")
+                        _rp_wf = await _rp_engine.get_state(
+                            tool_executor.session_id, "crud_form"
+                        )
                         if _rp_wf and _rp_wf.status == "active":
                             _rp_intent = _rp_wf.data.get("intent", "")
                             if _rp_intent and is_pipeline_enabled(_rp_intent):
                                 logger.warning(
                                     "[PIPELINE] Active workflow override: %s -> %s",
-                                    extraction.intent, _rp_intent,
+                                    extraction.intent,
+                                    _rp_intent,
                                 )
                                 extraction.intent = _rp_intent
                                 extraction.needs_escalation = False
                     except Exception as _rp_err:
-                        logger.warning("[PIPELINE] Workflow routing check failed: %s", _rp_err)
+                        logger.warning(
+                            "[PIPELINE] Workflow routing check failed: %s", _rp_err
+                        )
 
-            if is_pipeline_enabled(extraction.intent) and not extraction.needs_escalation:
+            # ── Reformat-as-table: re-format last response ──
+            if extraction.intent == "reformat_as_table":
+                logger.warning("[REFORMAT] Routing to reformat handler")
+                return await self._handle_reformat_as_table(
+                    user_text=user_text,
+                    context=context,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
+            if (
+                is_pipeline_enabled(extraction.intent)
+                and not extraction.needs_escalation
+            ):
                 logger.warning(
                     "[PIPELINE] Routing to compiler pipeline: intent=%s confidence=%.2f",
-                    extraction.intent, extraction.confidence,
+                    extraction.intent,
+                    extraction.confidence,
                 )
                 return await self._handle_pipeline(
                     user_text=user_text,
@@ -2774,7 +3762,9 @@ class UnifiedAgent:
             else:
                 logger.warning(
                     "[PIPELINE] Fallback to agent loop: intent=%s confidence=%.2f escalation=%s",
-                    extraction.intent, extraction.confidence, extraction.needs_escalation,
+                    extraction.intent,
+                    extraction.confidence,
+                    extraction.needs_escalation,
                 )
         # ── END COMPILER PIPELINE ──
 
@@ -2788,8 +3778,7 @@ class UnifiedAgent:
         )
 
         messages: List[LLMMessage] = [
-            LLMMessage(role=msg["role"], content=msg["content"])
-            for msg in system_msgs
+            LLMMessage(role=msg["role"], content=msg["content"]) for msg in system_msgs
         ]
 
         # Conversation history injection
@@ -2881,7 +3870,9 @@ class UnifiedAgent:
             tools = get_tools_for_domains(_active_domains)
             logger.warning(
                 "[Phase2] domains=%d tools=%d active=%s",
-                len(_active_domains), len(tools), sorted(_active_domains),
+                len(_active_domains),
+                len(tools),
+                sorted(_active_domains),
             )
             logger.warning(
                 f"[DOMAIN] domains={sorted(_active_domains)} tools_loaded={len(tools)} "
@@ -2970,25 +3961,55 @@ class UnifiedAgent:
 
             # Case 1: LLM returns text (no tool calls) → final answer
             if llm_response.finish_reason == "stop" or not llm_response.tool_calls:
-
                 # ── NUDGE: If ACTION intent, LLM has data but didn't call propose_direct_action ──
                 _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
-                _has_data_tools = bool(_tool_names_used & {"get_bills", "search_bank_accounts", "get_sales_invoices", "search_customers", "search_vendors", "update_document_context"})
-                _has_action_tool = bool(_tool_names_used & {"propose_direct_action", "propose_action"})
+                _has_data_tools = bool(
+                    _tool_names_used
+                    & {
+                        "get_bills",
+                        "search_bank_accounts",
+                        "get_sales_invoices",
+                        "search_customers",
+                        "search_vendors",
+                        "update_document_context",
+                    }
+                )
+                _has_action_tool = bool(
+                    _tool_names_used & {"propose_direct_action", "propose_action"}
+                )
                 _has_doc_update = "update_document_context" in _tool_names_used
 
                 # ── DOC-REPROPOSE: Build DIRECT_ACTION_PREVIEW deterministically from updated doc ──
-                if _has_doc_update and not _has_action_tool and tool_executor.session_manager and tool_executor.session_id:
+                if (
+                    _has_doc_update
+                    and not _has_action_tool
+                    and tool_executor.session_manager
+                    and tool_executor.session_id
+                ):
                     try:
-                        _rp_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                        _rp_state = await tool_executor.session_manager.get_state(
+                            tool_executor.session_id
+                        )
                         _rp_doc = getattr(_rp_state, "document_context", None)
                         if _rp_doc and _rp_doc.get("document_id"):
-                            logger.warning(f"[DOC-REPROPOSE] Building re-proposal from corrected document_context")
+                            logger.warning(
+                                "[DOC-REPROPOSE] Building re-proposal from corrected document_context"
+                            )
                             # Apply edits to base data
                             _rp_edits = _rp_doc.get("edits", {})
-                            _rp_vendor = _rp_edits.get("vendor_name", _rp_doc.get("vendor_name", ""))
-                            _rp_total = float(_rp_edits.get("total_amount", _rp_doc.get("total_amount", 0)))
-                            _rp_tax = float(_rp_edits.get("tax_amount", _rp_doc.get("tax_amount", 0)))
+                            _rp_vendor = _rp_edits.get(
+                                "vendor_name", _rp_doc.get("vendor_name", "")
+                            )
+                            _rp_total = float(
+                                _rp_edits.get(
+                                    "total_amount", _rp_doc.get("total_amount", 0)
+                                )
+                            )
+                            _rp_tax = float(
+                                _rp_edits.get(
+                                    "tax_amount", _rp_doc.get("tax_amount", 0)
+                                )
+                            )
                             _rp_items = _rp_doc.get("items", [])
                             # Apply item edits
                             _item_edits = _rp_edits.get("items", {})
@@ -2999,6 +4020,7 @@ class UnifiedAgent:
 
                             # Build preview payload
                             import uuid as _rp_uuid
+
                             _rp_pending_id = str(_rp_uuid.uuid4())
                             _rp_preview = {
                                 "pending_action_id": _rp_pending_id,
@@ -3029,9 +4051,15 @@ class UnifiedAgent:
 
                             # Store pending action
                             from datetime import datetime, timedelta, timezone
-                            _rp_expires = datetime.now(timezone.utc) + timedelta(seconds=300)
+
+                            _rp_expires = datetime.now(timezone.utc) + timedelta(
+                                seconds=300
+                            )
                             try:
-                                from .db_utils import get_session_db_pool as _rp_get_pool
+                                from .db_utils import (
+                                    get_session_db_pool as _rp_get_pool,
+                                )
+
                                 _rp_pool = await _rp_get_pool()
                                 await _rp_pool.execute(
                                     """INSERT INTO pending_actions (id, tenant_id, user_id, action_id, action_type, action_category, action_plan, status, expires_at)
@@ -3046,7 +4074,9 @@ class UnifiedAgent:
                                     _rp_expires,
                                 )
                             except Exception as _rp_db_err:
-                                logger.warning(f"[DOC-REPROPOSE] Failed to store pending: {_rp_db_err}")
+                                logger.warning(
+                                    f"[DOC-REPROPOSE] Failed to store pending: {_rp_db_err}"
+                                )
 
                             # Update document_context with new pending_action_id
                             _rp_doc["pending_action_id"] = _rp_pending_id
@@ -3064,7 +4094,8 @@ class UnifiedAgent:
                                 tool_calls_made=tool_calls_log,
                                 model_used=current_model,
                                 total_latency_ms=int((time.time() - start_time) * 1000),
-                                thinking_stages=thinking_stages + ["Menyiapkan konfirmasi ulang"],
+                                thinking_stages=thinking_stages
+                                + ["Menyiapkan konfirmasi ulang"],
                                 usage=accumulated_usage,
                             )
                     except Exception as _rp_err:
@@ -3079,14 +4110,22 @@ class UnifiedAgent:
                 )
                 if _should_nudge and not locals().get("_nudge_done"):
                     _nudge_done = True
-                    logger.warning(f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}")
-                    messages.append(LLMMessage(role="assistant", content=llm_response.content or ""))
-                    messages.append(LLMMessage(role="user", content=(
-                            "Jangan tanya konfirmasi via text. "
-                            "LANGSUNG panggil propose_direct_action() dengan data yang sudah kamu dapatkan. "
-                            "Kamu sudah punya semua data yang dibutuhkan dari tool calls sebelumnya."
+                    logger.warning(
+                        f"[NUDGE] LLM has data but didn't call propose_direct_action. Injecting nudge at iter={iteration}"
+                    )
+                    messages.append(
+                        LLMMessage(role="assistant", content=llm_response.content or "")
+                    )
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=(
+                                "Jangan tanya konfirmasi via text. "
+                                "LANGSUNG panggil propose_direct_action() dengan data yang sudah kamu dapatkan. "
+                                "Kamu sudah punya semua data yang dibutuhkan dari tool calls sebelumnya."
+                            ),
                         )
-                    ))
+                    )
                     thinking_stages.append("Menyiapkan konfirmasi")
                     continue  # Go back to loop for another LLM call
                 # ── END NUDGE ──
@@ -3182,31 +4221,48 @@ class UnifiedAgent:
             # When document_context is active, user corrections like "vendornya PT X"
             # cause LLM to call search_vendors instead of update_document_context.
             # Deterministic intercept: replace the tool call before execution.
-            _doc_intercept_map = {"search_vendors": "vendor_name", "search_customers": "vendor_name"}
+            _doc_intercept_map = {
+                "search_vendors": "vendor_name",
+                "search_customers": "vendor_name",
+            }
             if (
                 tool_executor.session_manager
                 and tool_executor.session_id
                 and any(tc.function_name in _doc_intercept_map for tc in all_tool_calls)
             ):
                 try:
-                    _di_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                    _di_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
                     _di_doc_ctx = getattr(_di_state, "document_context", None)
                     if _di_doc_ctx and _di_doc_ctx.get("document_id"):
                         _new_tool_calls = []
                         _intercepted = False
                         for tc in all_tool_calls:
-                            if tc.function_name in _doc_intercept_map and not _intercepted:
+                            if (
+                                tc.function_name in _doc_intercept_map
+                                and not _intercepted
+                            ):
                                 _edit_field = _doc_intercept_map[tc.function_name]
-                                _search_q = (tc.arguments or {}).get("q") or (tc.arguments or {}).get("query") or (tc.arguments or {}).get("search") or (tc.arguments or {}).get("name", "")
+                                _search_q = (
+                                    (tc.arguments or {}).get("q")
+                                    or (tc.arguments or {}).get("query")
+                                    or (tc.arguments or {}).get("search")
+                                    or (tc.arguments or {}).get("name", "")
+                                )
                                 if _search_q:
-                                    logger.warning(f"[DOC-INTERCEPT] Redirecting {tc.function_name}('{_search_q}') -> update_document_context(edits={{{_edit_field}: '{_search_q}'}})")
+                                    logger.warning(
+                                        f"[DOC-INTERCEPT] Redirecting {tc.function_name}('{_search_q}') -> update_document_context(edits={{{_edit_field}: '{_search_q}'}})"
+                                    )
                                     tc.function_name = "update_document_context"
                                     tc.arguments = {"edits": {_edit_field: _search_q}}
                                     _intercepted = True
                             _new_tool_calls.append(tc)
                         all_tool_calls = _new_tool_calls
                 except Exception as _di_err:
-                    logger.warning(f"[DOC-INTERCEPT] Failed to check document_context: {_di_err}")
+                    logger.warning(
+                        f"[DOC-INTERCEPT] Failed to check document_context: {_di_err}"
+                    )
             # ── END DOC-INTERCEPT ──
             parallel_tcs = [
                 tc
@@ -3636,7 +4692,7 @@ class UnifiedAgent:
         )
         return AgentResponse(
             message_type="TEXT",
-            content="Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n\u2022 \"Catat pembelian kain 800rb\"\n\u2022 \"Cek piutang pelanggan Budi\"\n\u2022 \"Berapa total pengeluaran bulan ini\"\n"
+            content='Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n\u2022 "Catat pembelian kain 800rb"\n\u2022 "Cek piutang pelanggan Budi"\n\u2022 "Berapa total pengeluaran bulan ini"\n'
             "Bisa coba ulangi dengan informasi yang lebih spesifik?",
             iterations=_max_iter,
             tool_calls_made=tool_calls_log,

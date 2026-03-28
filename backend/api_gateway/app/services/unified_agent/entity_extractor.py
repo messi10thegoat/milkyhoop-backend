@@ -11,7 +11,6 @@ LLM role: language interpreter only. NOT decision maker.
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger("unified_agent.entity_extractor")
 
@@ -19,6 +18,7 @@ logger = logging.getLogger("unified_agent.entity_extractor")
 @dataclass
 class ExtractionResult:
     """Result of entity extraction."""
+
     intent: str = "ambiguous"
     entities: dict = field(default_factory=dict)
     modifiers: list = field(default_factory=list)
@@ -40,36 +40,79 @@ EXTRACTION_SCHEMAS = {
                         "type": "string",
                         "description": "The action intent detected from user message",
                         "enum": [
-                            "create_customer", "create_vendor", "create_warehouse",
-                            "create_bank_account", "create_item",
-                            "create_sales_invoice", "create_bill",
-                            "create_receive_payment", "create_bill_payment",
-                            "create_expense", "create_journal_entry",
-                            "void_sales_invoice", "void_bill",
-                            "void_receive_payment", "void_bill_payment",
-                            "void_expense", "reverse_journal",
-                            "update_customer", "update_vendor", "update_item",
-                            "delete_customer", "delete_vendor",
-                            "query_item_detail", "query_item_stock_card", "query_item_transactions",
-                            "query_items_summary", "query_items_low_stock", "query_items_top_products",
-                            "query_items_slow_moving", "query_items_margins",
-                            "query_warehouse_stock", "query_categories_list",
-                            "query_items_search", "query_items_by_stock", "query_items_inactive", "query_items_units", "query_items_stats",
-                            "query_inventory_summary", "query_stock_adjustments", "query_stock_adjustments_summary",
-                            "query_stock_transfers", "query_stock_in_transit", "query_warehouses",
-                            "query_warehouse_stock_value", "query_inventory_health", "query_item_journal",
-                            "create_item", "create_warehouse", "quick_stock_adjustment", "create_stock_transfer",
-                            "query_item_activity", "query_item_related", "query_item_batches",
-                            "calc_avg_harga_jual", "calc_sum_harga_jual",
-                            "calc_count_items_active", "calc_count_items_inactive",
-                            "calc_rank_items_by_price", "calc_avg_harga_beli", "calc_sum_stok",
-                            "calc_count_customers_active", "calc_count_vendors_active",
-                            "calc_count_bills_outstanding", "calc_sum_bills_outstanding",
-                            "calc_count_invoices_outstanding", "calc_sum_invoices_outstanding",
-                            "calc_count_bank_accounts", "calc_sum_bank_balance",
+                            "create_customer",
+                            "create_vendor",
+                            "create_warehouse",
+                            "create_bank_account",
+                            "create_item",
+                            "create_sales_invoice",
+                            "create_bill",
+                            "create_receive_payment",
+                            "create_bill_payment",
+                            "create_expense",
+                            "create_journal_entry",
+                            "void_sales_invoice",
+                            "void_bill",
+                            "void_receive_payment",
+                            "void_bill_payment",
+                            "void_expense",
+                            "reverse_journal",
+                            "update_customer",
+                            "update_vendor",
+                            "update_item",
+                            "delete_customer",
+                            "delete_vendor",
+                            "query_item_detail",
+                            "query_item_stock_card",
+                            "query_item_transactions",
+                            "query_items_summary",
+                            "query_items_low_stock",
+                            "query_items_top_products",
+                            "query_items_slow_moving",
+                            "query_items_margins",
+                            "query_warehouse_stock",
+                            "query_categories_list",
+                            "query_items_search",
+                            "query_items_by_stock",
+                            "query_items_inactive",
+                            "query_items_units",
+                            "query_items_stats",
+                            "query_inventory_summary",
+                            "query_stock_adjustments",
+                            "query_stock_adjustments_summary",
+                            "query_stock_transfers",
+                            "query_stock_in_transit",
+                            "query_warehouses",
+                            "query_warehouse_stock_value",
+                            "query_inventory_health",
+                            "query_item_journal",
+                            "create_item",
+                            "create_warehouse",
+                            "quick_stock_adjustment",
+                            "create_stock_transfer",
+                            "query_item_activity",
+                            "query_item_related",
+                            "query_item_batches",
+                            "calc_avg_harga_jual",
+                            "calc_sum_harga_jual",
+                            "calc_count_items_active",
+                            "calc_count_items_inactive",
+                            "calc_rank_items_by_price",
+                            "calc_avg_harga_beli",
+                            "calc_sum_stok",
+                            "calc_count_customers_active",
+                            "calc_count_vendors_active",
+                            "calc_count_bills_outstanding",
+                            "calc_sum_bills_outstanding",
+                            "calc_count_invoices_outstanding",
+                            "calc_sum_invoices_outstanding",
+                            "calc_count_bank_accounts",
+                            "calc_sum_bank_balance",
                             "calc_count_expenses_month",
-                            "chitchat", "query", "ambiguous"
-                        ]
+                            "chitchat",
+                            "query",
+                            "ambiguous",
+                        ],
                     },
                     "entities": {
                         "type": "object",
@@ -94,32 +137,54 @@ EXTRACTION_SCHEMAS = {
                             "name": {"type": ["string", "null"]},
                             "account_type": {"type": ["string", "null"]},
                             "payment_method": {"type": ["string", "null"]},
-                            "item_type": {"type": ["string", "null"], "description": "goods, service, or non_inventory"},
-                            "base_unit": {"type": ["string", "null"], "description": "Unit: pcs, kg, box, roll, meter, tube, dll"}
+                            "item_type": {
+                                "type": ["string", "null"],
+                                "description": "goods, service, or non_inventory",
+                            },
+                            "base_unit": {
+                                "type": ["string", "null"],
+                                "description": "Unit: pcs, kg, box, roll, meter, tube, dll",
+                            },
                         },
                         "additionalProperties": False,
                         "required": [
-                            "customer_name", "vendor_name", "item_name", "bank_name",
-                            "warehouse_name", "invoice_number", "bill_number",
-                            "amount", "quantity", "unit_price", "description",
-                            "date", "phone", "email", "address", "reason", "name",
-                            "account_type", "payment_method", "item_type", "base_unit"
-                        ]
+                            "customer_name",
+                            "vendor_name",
+                            "item_name",
+                            "bank_name",
+                            "warehouse_name",
+                            "invoice_number",
+                            "bill_number",
+                            "amount",
+                            "quantity",
+                            "unit_price",
+                            "description",
+                            "date",
+                            "phone",
+                            "email",
+                            "address",
+                            "reason",
+                            "name",
+                            "account_type",
+                            "payment_method",
+                            "item_type",
+                            "base_unit",
+                        ],
                     },
                     "modifiers": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Special modifiers: like_previous, half_amount, full_amount, etc."
+                        "description": "Special modifiers: like_previous, half_amount, full_amount, etc.",
                     },
                     "confidence": {
                         "type": "number",
-                        "description": "Confidence 0.0-1.0 that extraction is correct"
-                    }
+                        "description": "Confidence 0.0-1.0 that extraction is correct",
+                    },
                 },
                 "required": ["intent", "entities", "modifiers", "confidence"],
-                "additionalProperties": False
-            }
-        }
+                "additionalProperties": False,
+            },
+        },
     }
 }
 
@@ -236,6 +301,8 @@ PENTING: Kalkulasi numerik (rata-rata, total, jumlah, ranking) -> WAJIB pakai ca
 """
 
 PIPELINE_ENABLED_INTENTS = {
+    # Re-format
+    "reformat_as_table",
     # Tahap 1 (master data)
     "create_customer",
     "create_vendor",
@@ -278,40 +345,75 @@ PIPELINE_ENABLED_INTENTS = {
     "query_item_related",
     "query_item_batches",
     # Batch/expiry
-    "query_items_expired", "query_items_expiring_soon", "query_items_quarantine",
+    "query_items_expired",
+    "query_items_expiring_soon",
+    "query_items_quarantine",
     # Customer/Vendor queries
-    "query_customers_summary", "query_vendors_summary",
-    "query_customers_list", "query_vendors_list",
-    "query_customer_detail", "query_vendor_detail",
+    "query_customers_summary",
+    "query_vendors_summary",
+    "query_customers_list",
+    "query_vendors_list",
+    "query_customer_detail",
+    "query_vendor_detail",
     # AR/AP queries (ARAP compliant)
-    "query_ar_outstanding", "query_ar_invoices", "query_ap_outstanding",
+    "query_ar_outstanding",
+    "query_ar_invoices",
+    "query_ap_outstanding",
     "query_cash_balance",
     # Kas & Bank
-    "query_bank_accounts_list", "query_bank_account_detail", "query_bank_transactions",
+    "query_bank_accounts_list",
+    "query_bank_account_detail",
+    "query_bank_transactions",
     # Faktur Penjualan
-    "query_sales_invoices_list", "query_sales_invoice_detail", "query_sales_invoices_summary",
+    "query_sales_invoices_list",
+    "query_sales_invoice_detail",
+    "query_sales_invoices_summary",
     # Faktur Pembelian
-    "query_bills_list", "query_bill_detail", "query_bills_summary",
+    "query_bills_list",
+    "query_bill_detail",
+    "query_bills_summary",
     # Expense
-    "query_expenses_list", "query_expense_detail", "query_expenses_summary",
+    "query_expenses_list",
+    "query_expense_detail",
+    "query_expenses_summary",
     # Items price/sort
     "query_items_by_price",
     # Calculation intents
-    "calc_avg_harga_jual", "calc_sum_harga_jual",
-    "calc_count_items_active", "calc_count_items_inactive",
-    "calc_rank_items_by_price", "calc_avg_harga_beli", "calc_sum_stok",
-    "calc_count_customers_active", "calc_count_vendors_active",
-    "calc_count_bills_outstanding", "calc_sum_bills_outstanding",
-    "calc_count_invoices_outstanding", "calc_sum_invoices_outstanding",
-    "calc_count_bank_accounts", "calc_sum_bank_balance",
+    "calc_avg_harga_jual",
+    "calc_sum_harga_jual",
+    "calc_count_items_active",
+    "calc_count_items_inactive",
+    "calc_rank_items_by_price",
+    "calc_avg_harga_beli",
+    "calc_sum_stok",
+    "calc_count_customers_active",
+    "calc_count_vendors_active",
+    "calc_count_bills_outstanding",
+    "calc_sum_bills_outstanding",
+    "calc_count_invoices_outstanding",
+    "calc_sum_invoices_outstanding",
+    "calc_count_bank_accounts",
+    "calc_sum_bank_balance",
     "calc_count_expenses_month",
     # Voids
-    "void_sales_invoice", "void_bill", "void_expense",
-    "void_receive_payment", "void_bill_payment", "reverse_journal",
+    "void_sales_invoice",
+    "void_bill",
+    "void_expense",
+    "void_receive_payment",
+    "void_bill_payment",
+    "reverse_journal",
     # Updates
-    "update_item", "update_customer", "update_vendor", "update_bank_account", "update_warehouse",
+    "update_item",
+    "update_customer",
+    "update_vendor",
+    "update_bank_account",
+    "update_warehouse",
     # Deletes
-    "delete_item", "delete_customer", "delete_vendor", "delete_warehouse", "delete_bank_account",
+    "delete_item",
+    "delete_customer",
+    "delete_vendor",
+    "delete_warehouse",
+    "delete_bank_account",
 }
 
 
@@ -328,19 +430,46 @@ import re as _re
 
 _ACTION_KEYWORDS = {
     "create": [
-        "buat", "tambah", "bikin", "daftarkan", "catat", "input",
-        "buatkan", "tambahkan", "bikinkan", "registrasi", "register",
+        "buat",
+        "tambah",
+        "bikin",
+        "daftarkan",
+        "catat",
+        "input",
+        "buatkan",
+        "tambahkan",
+        "bikinkan",
+        "registrasi",
+        "register",
     ],
     "update": [
-        "edit", "ubah", "ganti", "update", "perbarui", "revisi",
-        "koreksi", "perbaiki", "modifikasi", "rubah", "tukar",
+        "edit",
+        "ubah",
+        "ganti",
+        "update",
+        "perbarui",
+        "revisi",
+        "koreksi",
+        "perbaiki",
+        "modifikasi",
+        "rubah",
+        "tukar",
     ],
     "delete": [
-        "hapus", "delete", "buang", "hilangkan", "remove",
-        "hapuskan", "singkirkan",
+        "hapus",
+        "delete",
+        "buang",
+        "hilangkan",
+        "remove",
+        "hapuskan",
+        "singkirkan",
     ],
     "void": [
-        "void", "batalkan", "batal", "cancel", "anulir",
+        "void",
+        "batalkan",
+        "batal",
+        "cancel",
+        "anulir",
     ],
 }
 
@@ -386,21 +515,30 @@ _ENTITY_KEYWORDS = {
         "name_field": "description",
     },
     "_bill_payment": {
-        "keywords": ["bayar tagihan", "pembayaran tagihan", "bill payment", "bayar faktur"],
+        "keywords": [
+            "bayar tagihan",
+            "pembayaran tagihan",
+            "bill payment",
+            "bayar faktur",
+        ],
         "name_field": "description",
     },
 }
 
 
-
 def classify_query_intent(user_text: str) -> tuple:
     """Code-driven query intent classifier. 0ms, deterministic."""
     import re as _qre
+
     t = user_text.strip().lower()
 
     # AR
-    if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(r"\bpiutang\b.*\b(kejar|tagih|prioritas)\b", t):
-        if _qre.search(r"\b(siapa|daftar|list|detail|pelanggan|faktur|invoice|nomor)\b", t):
+    if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(
+        r"\bpiutang\b.*\b(kejar|tagih|prioritas)\b", t
+    ):
+        if _qre.search(
+            r"\b(siapa|daftar|list|detail|pelanggan|faktur|invoice|nomor)\b", t
+        ):
             return "query_ar_invoices", None, None
         return "query_ar_outstanding", None, None
     if _qre.search(r"\bsiapa\b.*\b(piutang|hutang|utang)\b", t):
@@ -417,7 +555,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_cash_balance", None, None
 
     # Saldo
-    if _qre.search(r"\b(saldo|balance)\b", t) and not _qre.search(r"\b(pelanggan|customer|vendor)\b", t):
+    if _qre.search(r"\b(saldo|balance)\b", t) and not _qre.search(
+        r"\b(pelanggan|customer|vendor)\b", t
+    ):
         return "query_cash_balance", None, None
 
     # Bank/Kas list
@@ -439,16 +579,36 @@ def classify_query_intent(user_text: str) -> tuple:
     # Expenses
     if _qre.search(r"\b(daftar|list|semua)\s+(pengeluaran|biaya|expense)\b", t):
         return "query_expenses_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(pengeluaran|biaya|expense)\b", t):
+    if _qre.search(
+        r"\b(ringkasan|summary|rekap|total)\s+(pengeluaran|biaya|expense)\b", t
+    ):
         return "query_expenses_summary", None, None
 
     # Low stock / inactive / categories
-    if _qre.search(r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis)\b", t):
+    if _qre.search(
+        r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis)\b", t
+    ):
         return "query_items_low_stock", None, None
     if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
         return "query_items_inactive", None, None
     if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
         return "query_categories_list", None, None
+
+    # Re-format requests — user wants last response as table
+    if _qre.search(
+        r"(?:tampilkan|tunjukkan|bikin|buat|format|ubah)\s+(?:dalam|ke|jadi|sebagai)\s+(?:bentuk\s+)?(?:tabel|table)",
+        t,
+    ):
+        return "reformat_as_table", None, None
+    if _qre.search(
+        r"(?:rekapan|rekap)\s+(?:dalam|ke)?\s*(?:bentuk\s+)?(?:tabel|table)", t
+    ):
+        return "reformat_as_table", None, None
+    if _qre.search(
+        r"(?:tolong|bisa|mau)\s+(?:di)?(?:bikin|buat|format)(?:kan)?\s+(?:tabel|table)",
+        t,
+    ):
+        return "reformat_as_table", None, None
 
     return None, None, None
 
@@ -468,10 +628,10 @@ def classify_crud_intent(user_text: str) -> tuple:
     for act, keywords in _ACTION_KEYWORDS.items():
         for kw in keywords:
             patterns = [
-                rf'^{_re.escape(kw)}\b',
-                rf'^(?:tolong|mohon|bisa|boleh|bantu|coba|mau|minta|gas|oke|ok|yuk|dong|sip|siap|ayo|cus|langsung|baik|ya|iya|please)\s+{_re.escape(kw)}\b',
-                rf'^(?:tolong|mohon|bisa|boleh|minta)\s+(?:bantu\s+)?{_re.escape(kw)}\b',
-                rf'^(?:bantu)\s+{_re.escape(kw)}\b',
+                rf"^{_re.escape(kw)}\b",
+                rf"^(?:tolong|mohon|bisa|boleh|bantu|coba|mau|minta|gas|oke|ok|yuk|dong|sip|siap|ayo|cus|langsung|baik|ya|iya|please)\s+{_re.escape(kw)}\b",
+                rf"^(?:tolong|mohon|bisa|boleh|minta)\s+(?:bantu\s+)?{_re.escape(kw)}\b",
+                rf"^(?:bantu)\s+{_re.escape(kw)}\b",
             ]
             for pattern in patterns:
                 m = _re.search(pattern, text_lower)
@@ -521,7 +681,13 @@ def classify_crud_intent(user_text: str) -> tuple:
         return None, None, None
 
     # Step 3: Build intent
-    if action == "void" and entity_suffix not in ("_sales_invoice", "_bill", "_expense", "_receive_payment", "_bill_payment"):
+    if action == "void" and entity_suffix not in (
+        "_sales_invoice",
+        "_bill",
+        "_expense",
+        "_receive_payment",
+        "_bill_payment",
+    ):
         action = "delete"
 
     intent = f"{action}{entity_suffix}"
@@ -529,27 +695,48 @@ def classify_crud_intent(user_text: str) -> tuple:
     # Step 4: Extract entity name
     remaining_after_entity = remaining[entity_end_pos:].strip()
     remaining_after_entity = _re.sub(
-        r'^(?:yang\s+bernama|dengan\s+nama|bernama|nama|namanya|yang|dengan|lama|baru|dong|ya|nih)\s+',
-        '', remaining_after_entity, flags=_re.IGNORECASE
+        r"^(?:yang\s+bernama|dengan\s+nama|bernama|nama|namanya|yang|dengan|lama|baru|dong|ya|nih)\s+",
+        "",
+        remaining_after_entity,
+        flags=_re.IGNORECASE,
     ).strip()
-    remaining_after_entity = remaining_after_entity.rstrip('?!.,;')
+    remaining_after_entity = remaining_after_entity.rstrip("?!.,;")
     # Strip trailing filler words (dong, ya, nih, deh, baru)
-    remaining_after_entity = _re.sub(r'\s+(?:dong|ya|nih|deh|baru|lah|sih)$', '', remaining_after_entity, flags=_re.IGNORECASE).strip()
+    remaining_after_entity = _re.sub(
+        r"\s+(?:dong|ya|nih|deh|baru|lah|sih)$",
+        "",
+        remaining_after_entity,
+        flags=_re.IGNORECASE,
+    ).strip()
     # If entire remaining is just a filler word, clear it
-    if remaining_after_entity.lower() in ('dong', 'ya', 'nih', 'deh', 'baru', 'lah', 'sih', 'lama', 'aja', 'saja'):
-        remaining_after_entity = ''
-    remaining_after_entity = remaining_after_entity.strip('"\'\u201c\u201d\u2018\u2019')
+    if remaining_after_entity.lower() in (
+        "dong",
+        "ya",
+        "nih",
+        "deh",
+        "baru",
+        "lah",
+        "sih",
+        "lama",
+        "aja",
+        "saja",
+    ):
+        remaining_after_entity = ""
+    remaining_after_entity = remaining_after_entity.strip("\"'\u201c\u201d\u2018\u2019")
 
     entity_name = remaining_after_entity if remaining_after_entity else None
     name_field = entity_config["name_field"]
 
     logger.warning(
         "[INTENT_CLASSIFIER] text='%s' -> action=%s entity=%s intent=%s name='%s'",
-        text[:60], action, entity_suffix, intent, entity_name or "",
+        text[:60],
+        action,
+        entity_suffix,
+        intent,
+        entity_name or "",
     )
 
     return intent, entity_name, name_field
-
 
 
 class EntityExtractor:
@@ -595,7 +782,9 @@ class EntityExtractor:
                 raw_text = raw_text.strip()
 
             parsed = json.loads(raw_text)
-            entities = {k: v for k, v in parsed.get("entities", {}).items() if v is not None}
+            entities = {
+                k: v for k, v in parsed.get("entities", {}).items() if v is not None
+            }
 
             result = ExtractionResult(
                 intent=parsed.get("intent", "ambiguous"),
@@ -610,7 +799,8 @@ class EntityExtractor:
 
             logger.warning(
                 "[EXTRACT] intent=%s confidence=%.2f entities=%s modifiers=%s escalation=%s",
-                result.intent, result.confidence,
+                result.intent,
+                result.confidence,
                 list(result.entities.keys()),
                 result.modifiers,
                 result.needs_escalation,
@@ -619,7 +809,9 @@ class EntityExtractor:
             return result
 
         except json.JSONDecodeError as e:
-            logger.warning("[EXTRACT] JSON parse failed: %s, raw: %s", e, raw_text[:200])
+            logger.warning(
+                "[EXTRACT] JSON parse failed: %s, raw: %s", e, raw_text[:200]
+            )
             return ExtractionResult(
                 intent="ambiguous",
                 confidence=0.0,
@@ -637,6 +829,7 @@ class EntityExtractor:
 # ── Registry-Driven Schema Builder (Stage 2) ─────────────────────────────
 # Builds extraction schema dynamically from DirectActionConfig.fields.
 # Zero manual sync — field baru di registry auto-extractable.
+
 
 def build_intent_schema(intent: str):
     """Build mini JSON schema for Stage 2 extraction from registry FieldSpecs."""
@@ -712,12 +905,18 @@ def build_intent_prompt(intent: str, collected: dict) -> str:
     ]
 
     if collected:
-        collected_clean = {k: v for k, v in collected.items() if v is not None and k != "date"}
+        collected_clean = {
+            k: v for k, v in collected.items() if v is not None and k != "date"
+        }
         if collected_clean:
-            items_str = ", ".join(str(k) + "=" + str(v) for k, v in list(collected_clean.items())[:8])
+            items_str = ", ".join(
+                str(k) + "=" + str(v) for k, v in list(collected_clean.items())[:8]
+            )
             parts.append("")
             parts.append("Sudah terkumpul: " + items_str)
-            parts.append("JANGAN override data yang sudah ada kecuali user eksplisit ganti.")
+            parts.append(
+                "JANGAN override data yang sudah ada kecuali user eksplisit ganti."
+            )
 
     parts.append("")
     parts.append("Fields untuk " + config.display_name + ":")
@@ -742,7 +941,11 @@ class FieldExtractor:
         self.default_model = default_model
 
     async def extract_fields(
-        self, user_text: str, intent: str, collected: dict, model: str = None,
+        self,
+        user_text: str,
+        intent: str,
+        collected: dict,
+        model: str = None,
     ) -> dict:
         """Extract intent-specific fields. Schema auto-built from registry."""
         from ..llm import LLMMessage
@@ -777,16 +980,18 @@ class FieldExtractor:
                 raw_text = raw_text.strip()
 
             import json as _json
+
             parsed = _json.loads(raw_text)
             extracted = {k: v for k, v in parsed.items() if v is not None}
 
             logger.warning(
                 "[EXTRACT_S2] intent=%s extracted=%s from='%s'",
-                intent, list(extracted.keys()), user_text[:80],
+                intent,
+                list(extracted.keys()),
+                user_text[:80],
             )
             return extracted
 
         except Exception as e:
             logger.warning("[EXTRACT_S2] Failed: %s", e)
             return {}
-

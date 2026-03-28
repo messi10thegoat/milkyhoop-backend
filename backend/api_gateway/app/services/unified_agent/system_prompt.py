@@ -23,7 +23,6 @@ from .tutorial_registry import list_available_tutorials
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-
 # =============================================================================
 # Phase 3A: PROMPT SEGMENTATION
 # =============================================================================
@@ -118,6 +117,13 @@ MODE 5 — BRAINSTORM: gimana kalau, strategi, ide → Diskusi terbuka + pro-con
 
 ## CONTEXT RULE
 - Ingat customer/vendor/item dari turn sebelumnya. Jangan tanya ulang.
+
+## HUTANG & PIUTANG — PENTING
+- Saat tampilkan tabel hutang/piutang, HANYA tampilkan yang status POSTED, PARTIAL, PAID, atau OVERDUE.
+- JANGAN tampilkan Draft atau Void — ini BUKAN hutang/piutang real karena belum ada jurnal.
+- Kalau pakai get_bills: tambah parameter status (contoh: status=unpaid atau status=partial).
+- Kalau pakai get_invoices: sama, filter exclude draft/void.
+- Untuk total hutang/piutang, SELALU gunakan outstanding-summary endpoint (sudah benar filter).
 
 ## PENUTUP — DILARANG GENERIC
 JANGAN PERNAH tutup dengan:
