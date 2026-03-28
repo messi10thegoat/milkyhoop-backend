@@ -399,7 +399,7 @@ def classify_query_intent(user_text: str) -> tuple:
     t = user_text.strip().lower()
 
     # AR
-    if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t):
+    if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(r"\bpiutang\b.*\b(kejar|tagih|prioritas)\b", t):
         if _qre.search(r"\b(siapa|daftar|list|detail|pelanggan|faktur|invoice|nomor)\b", t):
             return "query_ar_invoices", None, None
         return "query_ar_outstanding", None, None
@@ -411,6 +411,10 @@ def classify_query_intent(user_text: str) -> tuple:
     # AP
     if _qre.search(r"\b(utang|hutang|payable|ap outstanding)\b", t):
         return "query_ap_outstanding", None, None
+
+    # Cash runway / uang aman
+    if _qre.search(r"\b(uang|kas|cash)\b.*\b(aman|cukup|habis|bertahan)\b", t):
+        return "query_cash_balance", None, None
 
     # Saldo
     if _qre.search(r"\b(saldo|balance)\b", t) and not _qre.search(r"\b(pelanggan|customer|vendor)\b", t):
@@ -439,7 +443,7 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_expenses_summary", None, None
 
     # Low stock / inactive / categories
-    if _qre.search(r"\b(stok rendah|hampir habis|low stock)\b", t):
+    if _qre.search(r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis)\b", t):
         return "query_items_low_stock", None, None
     if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
         return "query_items_inactive", None, None

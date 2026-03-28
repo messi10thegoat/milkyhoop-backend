@@ -900,6 +900,20 @@ class ToolExecutor:
         confirmation_table = build_confirmation_table(action_key, payload, journal_preview)
         review_card = build_review_card_payload(action_key, payload, journal_preview)
 
+        # Build detection reason from payload fields
+        _det_parts = []
+        if payload.get("amount") or payload.get("total_amount"):
+            _amt = payload.get("amount") or payload.get("total_amount")
+            try:
+                _det_parts.append("nominal Rp {:,.0f}".format(float(_amt)).replace(",", "."))
+            except (ValueError, TypeError):
+                pass
+        for _det_key, _det_label in [("vendor_name", "vendor"), ("customer_name", "pelanggan"), ("item_name", "barang"), ("account_name", "akun"), ("name", "nama")]:
+            if payload.get(_det_key):
+                _det_parts.append(_det_label + " '" + str(payload[_det_key]) + "'")
+                break
+        _detection_reason = "Terdeteksi dari: " + ", ".join(_det_parts) if _det_parts else ""
+
         response_data = {
             "success": True,
             "message_type": "DIRECT_ACTION_PREVIEW",
@@ -907,6 +921,7 @@ class ToolExecutor:
             "data": {
                 "pending_action_id": pending_id,
                 "action_key": action_key,
+                "detection_reason": _detection_reason,
                 "display_name": f"{config.display_name}: {payload.get('name') or payload.get('entity_name') or ''}" .strip(': ') if action_key.startswith("update_") and (payload.get('name') or payload.get('entity_name')) else config.display_name,
                 "payload": payload,
                 "expires_at": expires_at.isoformat(),

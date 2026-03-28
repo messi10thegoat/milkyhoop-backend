@@ -2096,9 +2096,9 @@ class UnifiedAgent:
 
         response_format = query_config.response_format
 
-        # Simple list — template, skip LLM
+        # Simple list — template ONLY for trivial name-only entities
+        # Complex data (invoices, bills, transactions) always goes to LLM polish
         if response_format == "list":
-            # Try common list keys in API responses
             if isinstance(data, list):
                 items = data
             elif isinstance(data, dict):
@@ -2110,14 +2110,17 @@ class UnifiedAgent:
                     items = []
             else:
                 items = []
-            if isinstance(items, list) and 0 < len(items) <= 5:
+            _simple_entities = {"query_categories_list", "query_warehouses", "query_items_units"}
+            if (query_config.action_key in _simple_entities
+                    and isinstance(items, list) and 0 < len(items) <= 10):
                 names = [
-                    i.get("name", i.get("nama", i.get("nama_produk", str(i))))
+                    i.get("name", i.get("nama", i.get("nama_produk", "?")))
                     if isinstance(i, dict) else str(i)
                     for i in items
                 ]
                 count = data.get("total", len(names)) if isinstance(data, dict) else len(names)
-                return f"{count} {query_config.display_name.lower()}:\n" + ", ".join(names)
+                return str(count) + " " + query_config.display_name.lower() + ":\n" + ", ".join(names)
+            # All other lists -> fall through to LLM polish
 
         # Compact data for LLM
         compact = self._compact_query_data(query_config.action_key, data)
