@@ -89,6 +89,32 @@ class AdjustBalanceRequest(BaseModel):
     )
 
 
+class CreateManualTransactionRequest(BaseModel):
+    """Request body for creating a manual bank transaction (Uang Masuk / Uang Keluar)."""
+
+    direction: str = Field(..., description="'in' (deposit) or 'out' (withdrawal)")
+    amount: int = Field(
+        ..., gt=0, description="Amount in Rupiah (integer, no decimals)"
+    )
+    transaction_date: date = Field(..., description="Date of transaction")
+    description: str = Field(
+        ..., min_length=1, max_length=500, description="Transaction description"
+    )
+    contra_account_id: str = Field(
+        ..., description="UUID of the contra CoA account selected by user"
+    )
+    contact_name: Optional[str] = Field(
+        None, max_length=200, description="Nama pihak terkait (optional)"
+    )
+
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v):
+        if v not in ("in", "out"):
+            raise ValueError("direction must be 'in' or 'out'")
+        return v
+
+
 # =============================================================================
 # RESPONSE MODELS - Bank Account
 # =============================================================================

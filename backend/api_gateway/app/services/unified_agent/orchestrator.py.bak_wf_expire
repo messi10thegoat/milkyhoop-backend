@@ -698,7 +698,7 @@ class UnifiedAgent:
         ]
         messages.append(LLMMessage(role="user", content=user_text))
 
-        client, model = self.router.route("chitchat")
+        client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
         try:
             resp = await client.chat(
                 messages=messages,
@@ -840,7 +840,7 @@ class UnifiedAgent:
 
             if _fields_only_in_registry:
                 from .entity_extractor import FieldExtractor
-                _s2_client, _s2_model = self.router.route("field_extract")
+                _s2_client, _s2_model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
                 _field_extractor = FieldExtractor(_s2_client, _s2_model)
 
                 _s2_result = await _field_extractor.extract_fields(
@@ -1009,7 +1009,7 @@ class UnifiedAgent:
                                 pass
 
                             _show = await self._polish_current_data(entity_name=_real_name, entity_type=_entity_type, current_data=_display)
-                            await emit("THINKING_DONE", {"summary": "Data ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                            await emit("_NOOP_LEGACY_DONE", {"summary": "Data ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
                             return AgentResponse(
                                 message_type="TEXT", content=_show,
                                 iterations=1, model_used="gpt-4o-mini-2024-07-18",
@@ -1025,7 +1025,7 @@ class UnifiedAgent:
                     else:
                         # No match — ask again
                         _names = [c.get("name", "?") for c in _wf_candidates]
-                        await emit("THINKING_DONE", {"summary": "Pilih salah satu", "total_ms": int((_time.time() - start_time) * 1000)})
+                        await emit("_NOOP_LEGACY_DONE", {"summary": "Pilih salah satu", "total_ms": int((_time.time() - start_time) * 1000)})
                         return AgentResponse(
                             message_type="TEXT",
                             content=f"Maaf, saya tidak yakin yang mana. Pilih salah satu:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(_names)),
@@ -1090,7 +1090,7 @@ class UnifiedAgent:
                                             _final_payload["id"] = _wf_list[0].get("id")
                                             logger.warning("[PIPELINE-WF] Entity resolved: %s -> id=%s", _wf_action_key, str(_final_payload["id"])[:8])
                                         else:
-                                            await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                            await emit("_NOOP_LEGACY_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
                                             return AgentResponse(
                                                 message_type="TEXT",
                                                 content=f"Maaf, saya tidak menemukan {_wf_search}. Bisa cek kembali namanya?",
@@ -1153,7 +1153,7 @@ class UnifiedAgent:
                         except Exception:
                             pass
 
-                        await emit("THINKING_DONE", {
+                        await emit("_NOOP_LEGACY_DONE", {
                             "summary": "Data siap dikonfirmasi",
                             "total_ms": int((_time.time() - start_time) * 1000),
                         })
@@ -1184,7 +1184,7 @@ class UnifiedAgent:
                                 missing_labels=_val_missing,
                                 resolution=resolution,
                             )
-                            await emit("THINKING_DONE", {
+                            await emit("_NOOP_LEGACY_DONE", {
                                 "summary": "Butuh info tambahan",
                                 "total_ms": int((_time.time() - start_time) * 1000),
                             })
@@ -1198,7 +1198,7 @@ class UnifiedAgent:
                         else:
                             if isinstance(_error_msg, dict):
                                 _error_msg = _error_msg.get("message", str(_error_msg))
-                            await emit("THINKING_DONE", {
+                            await emit("_NOOP_LEGACY_DONE", {
                                 "summary": "Terjadi error",
                                 "total_ms": int((_time.time() - start_time) * 1000),
                             })
@@ -1228,7 +1228,7 @@ class UnifiedAgent:
                             resolution=resolution,
                         )
 
-                    await emit("THINKING_DONE", {
+                    await emit("_NOOP_LEGACY_DONE", {
                         "summary": "Butuh info tambahan",
                         "total_ms": int((_time.time() - start_time) * 1000),
                     })
@@ -1314,7 +1314,7 @@ class UnifiedAgent:
                 resolution=resolution,
             )
 
-            await emit("THINKING_DONE", {
+            await emit("_NOOP_LEGACY_DONE", {
                 "summary": "Butuh info tambahan",
                 "total_ms": int((_time.time() - start_time) * 1000),
             })
@@ -1407,7 +1407,7 @@ class UnifiedAgent:
                                     except Exception as _wf_e:
                                         logger.warning("[PIPELINE] Save candidates failed: %s", _wf_e)
 
-                                await emit("THINKING_DONE", {"summary": "Beberapa ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                await emit("_NOOP_LEGACY_DONE", {"summary": "Beberapa ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
                                 return AgentResponse(
                                     message_type="TEXT",
                                     content=_pick_text,
@@ -1416,7 +1416,7 @@ class UnifiedAgent:
                                     thinking_stages=["Menganalisis pesan", "Mencari data"],
                                 )
                             else:
-                                await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                                await emit("_NOOP_LEGACY_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
                                 return AgentResponse(
                                     message_type="TEXT",
                                     content=f"Maaf, saya tidak menemukan \'{_search_name}\'. Bisa cek kembali namanya?",
@@ -1491,7 +1491,7 @@ class UnifiedAgent:
 
                             if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
                                 _direct_data = propose_result.get("data", {})
-                                await emit("THINKING_DONE", {
+                                await emit("_NOOP_LEGACY_DONE", {
                                     "summary": "Data siap dikonfirmasi",
                                     "total_ms": int((_time.time() - start_time) * 1000),
                                 })
@@ -1543,7 +1543,7 @@ class UnifiedAgent:
                             current_data=_display_data,
                         )
 
-                        await emit("THINKING_DONE", {
+                        await emit("_NOOP_LEGACY_DONE", {
                             "summary": "Data ditemukan",
                             "total_ms": int((_time.time() - start_time) * 1000),
                         })
@@ -1559,7 +1559,7 @@ class UnifiedAgent:
             else:
                 # No entity ID resolved — item not found
                 _search_name = merged_entities.get("item_name") or merged_entities.get("name") or ""
-                await emit("THINKING_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
+                await emit("_NOOP_LEGACY_DONE", {"summary": "Tidak ditemukan", "total_ms": int((_time.time() - start_time) * 1000)})
                 return AgentResponse(
                     message_type="TEXT",
                     content=f"Maaf, saya tidak menemukan '{_search_name}'. Bisa cek kembali namanya?",
@@ -1596,7 +1596,7 @@ class UnifiedAgent:
         # Return in existing format
         if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
             direct_data = propose_result.get("data", {})
-            await emit("THINKING_DONE", {
+            await emit("_NOOP_LEGACY_DONE", {
                 "summary": "Data siap dikonfirmasi",
                 "total_ms": int((_time.time() - start_time) * 1000),
             })
@@ -1692,7 +1692,7 @@ class UnifiedAgent:
                 resolution=resolution,
             )
 
-            await emit("THINKING_DONE", {
+            await emit("_NOOP_LEGACY_DONE", {
                 "summary": "Butuh info tambahan",
                 "total_ms": int((_time.time() - start_time) * 1000),
             })
@@ -1712,7 +1712,7 @@ class UnifiedAgent:
         elif not isinstance(error_msg, str):
             error_msg = str(propose_result)
 
-        await emit("THINKING_DONE", {
+        await emit("_NOOP_LEGACY_DONE", {
             "summary": "Terjadi error",
             "total_ms": int((_time.time() - start_time) * 1000),
         })
@@ -1833,7 +1833,7 @@ class UnifiedAgent:
             )
 
         try:
-            client, model = self.router.route("clarification")
+            client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
             response = await client.chat(
                 messages=[
                     LLMMessage(role="system", content=system_prompt),
@@ -1864,6 +1864,7 @@ class UnifiedAgent:
         extraction,
         tool_executor=None,
         event_callback=None,
+        conversation_history: list = None,
     ) -> "AgentResponse":
         """
         Query pipeline: extract -> resolve -> GET endpoint -> LLM polish -> TEXT.
@@ -1894,7 +1895,7 @@ class UnifiedAgent:
         if not query_config:
             return AgentResponse(
                 message_type="TEXT",
-                content="Hmm, saya belum paham pertanyaannya. Coba lebih spesifik, misalnya:\n\n\u2022 \"Berapa total piutang?\"\n\u2022 \"Daftar faktur pembelian\"\n\u2022 \"Saldo kas dan bank\"\n",
+                content="Maaf, saya belum bisa menjawab pertanyaan itu.",
                 iterations=1,
                 model_used="gpt-4o-mini",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -1987,6 +1988,7 @@ class UnifiedAgent:
         # Entity-to-param mapping (extractor uses entity names, API uses param names)
         _entity_aliases = {
             "search": ["item_name", "name", "keyword"],
+            "kategori": ["category", "kategory"],
             "warehouse_id": ["warehouse_name"],
         }
         for qp in (query_config.query_params or []):
@@ -2062,6 +2064,7 @@ class UnifiedAgent:
             data=data,
             user_text=user_text,
             entity_name=extraction.entities.get("item_name") or extraction.entities.get("warehouse_name") or "",
+            conversation_history=conversation_history,
         )
 
         await emit("THINKING_STEP", {
@@ -2072,7 +2075,7 @@ class UnifiedAgent:
             "category": "write",
         })
 
-        await emit("THINKING_DONE", {
+        await emit("_NOOP_LEGACY_DONE", {
             "summary": "Data ditemukan",
             "total_ms": int((_time.time() - start_time) * 1000),
         })
@@ -2085,12 +2088,12 @@ class UnifiedAgent:
                 {"name": "entity_extractor", "args": {"intent": extraction.intent}, "success": True},
                 {"name": "query_endpoint", "args": {"endpoint": endpoint}, "success": True},
             ],
-            model_used=getattr(self, "_last_polish_model", "pipeline"),
+            model_used="gpt-4o-mini",
             total_latency_ms=int((_time.time() - start_time) * 1000),
             thinking_stages=["Menganalisis pesan", "Mencari data", "Menyusun jawaban"],
         )
 
-    async def _polish_query_response(self, query_config, data, user_text, entity_name=""):
+    async def _polish_query_response(self, query_config, data, user_text, entity_name="", conversation_history=None):
         """Polish raw API response into natural Bahasa Indonesia via LLM."""
         import json as _json
 
@@ -2148,37 +2151,40 @@ class UnifiedAgent:
             "- JANGAN tambah info yang TIDAK ADA di DATA\n"
             "- JANGAN bilang 'berdasarkan data' atau 'menurut sistem'\n"
             "- Kalau data kosong/nol: jujur tapi positif ('belum ada transaksi' bukan 'tidak tersedia')\n"
-            "\n"
-            "INSIGHT:\n"
-            "- Kalau ada INSIGHT section di data, WAJIB sampaikan ke user dalam bahasa natural.\n"
-            "- Format: jawab pertanyaan dulu dengan data, lalu tambahkan insight di bawahnya.\n"
-            "- Kalau severity=HIGH, mulai insight dengan emoji warning.\n"
-            "- Kalau ada recommended_action, tutup dengan saran yang actionable.\n"
-            "- JANGAN tutup dengan 'Ada yang bisa saya bantu?' — tutup dengan saran kontekstual dari insight.\n"
-            "- Kalau tidak ada insight, tutup langsung tanpa basa-basi.\n"
         )
 
         compact_str = _json.dumps(compact, ensure_ascii=False, default=str)[:1500]
 
-        # ── Insight Engine: rule-based interpretation ──
-        _insight_text = ""
-        try:
-            from .insight_engine import evaluate as _evaluate_insights, format_insights_for_prompt as _format_insights
-            _insights = _evaluate_insights(query_config.action_key, data)
-            _insight_text = _format_insights(_insights)
-            if _insights:
-                logger.warning("[INSIGHT] %d insights for %s (top: %s/%s)",
-                    len(_insights), query_config.action_key, _insights[0].severity, _insights[0].insight_type)
-        except Exception as _ie:
-            logger.warning("[INSIGHT] Failed: %s", _ie)
+        # Build conversation context from recent messages
+        _chat_context = ""
+        if conversation_history and len(conversation_history) > 0:
+            _recent = conversation_history[-5:] if len(conversation_history) > 5 else conversation_history
+            _context_lines = []
+            for msg in _recent:
+                if isinstance(msg, dict):
+                    role = msg.get("role", "")
+                    _content = msg.get("content", "")
+                elif hasattr(msg, "role"):
+                    role = getattr(msg, "role", "")
+                    _content = getattr(msg, "content", "")
+                else:
+                    continue
+                if _content:
+                    content_short = _content[:150] + "..." if len(_content) > 150 else _content
+                    label = "User" if role == "user" else "Bot"
+                    _context_lines.append(f"{label}: {content_short}")
+            if _context_lines:
+                _chat_context = "\n\nPERCAKAPAN SEBELUMNYA:\n" + "\n".join(_context_lines)
+
         polish_user = (
             f"Pertanyaan user: \"{user_text}\"\n"
             f"Tipe: {response_format}\n"
-            f"DATA:\n```json\n{compact_str}\n```{_insight_text}"
+            f"DATA:\n```json\n{compact_str}\n```"
+            f"{_chat_context}"
         )
 
         try:
-            client, model = self.router.route("polish")
+            client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
 
             response = await client.chat(
                 messages=[
@@ -2265,7 +2271,7 @@ class UnifiedAgent:
             f"Data saat ini:\n{_json.dumps(display, ensure_ascii=False, default=str)}"
         )
         try:
-            client, model = self.router.route("polish")
+            client, model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
             response = await client.chat(
                 messages=[
                     LLMMessage(role="system", content=system_prompt),
@@ -2642,7 +2648,7 @@ class UnifiedAgent:
         from .entity_extractor import EntityExtractor, is_pipeline_enabled
 
         if _intent in ("ACTION", "SIMPLE_READ"):
-            _extract_client, _extract_model = self.router.route("extraction")
+            _extract_client, _extract_model = self.router.get_client_and_model(TaskComplexity.SIMPLE_READ)
             extractor = EntityExtractor(_extract_client, _extract_model)
 
             _ctx_summary = ""
@@ -2654,16 +2660,28 @@ class UnifiedAgent:
                     pass
 
             # ── Code-driven CRUD intent classifier (pre-LLM, deterministic) ──
-            from .entity_extractor import classify_crud_intent, classify_query_intent
+            from .entity_extractor import classify_crud_intent
             _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(user_text)
-            # Query code classifier first
-            _qci, _, _ = classify_query_intent(user_text)
-            if _qci:
-                _code_intent = _qci
             if _code_intent:
                 logger.warning("[PIPELINE] Code classifier: intent=%s name='%s' field=%s", _code_intent, _code_entity_name or "", _code_name_field or "")
 
+            # SSE: instant thinking spinner before LLM extraction
+            await emit("THINKING_STEP", {
+                "step_id": "extraction",
+                "text": "Menganalisis pesan",
+                "status": "running",
+                "category": "search",
+            })
+
             extraction = await extractor.extract(user_text, context_summary=_ctx_summary)
+
+            # SSE: mark extraction done
+            await emit("THINKING_STEP", {
+                "step_id": "extraction",
+                "text": "Menganalisis pesan",
+                "status": "done",
+                "duration_ms": int((_time.monotonic() - _process_start) * 1000),
+            })
             if _code_intent:
                 extraction.intent = _code_intent
                 extraction.confidence = 1.0
@@ -2672,30 +2690,6 @@ class UnifiedAgent:
                     extraction.entities[_code_name_field] = _code_entity_name
                 logger.warning("[PIPELINE] Intent overridden by code classifier: %s", _code_intent)
 
-
-            # Calculation pipeline — code-driven numerics (zero LLM compute)
-            if extraction.intent.startswith("calc_") and is_pipeline_enabled(extraction.intent):
-                from .calculation_engine import is_calculation_intent, get_calculation_template, execute_calculation, format_calculation_result
-                if is_calculation_intent(extraction.intent):
-                    logger.warning("[CALC_PIPELINE] Routing to calculation engine: intent=%s", extraction.intent)
-                    _calc_template = get_calculation_template(extraction.intent)
-                    _calc_result = await execute_calculation(
-                        _calc_template,
-                        auth_token=getattr(context, "auth_token", "") or "",
-                        tenant_id=context.tenant_id,
-                    )
-                    if _calc_result.get("type") != "error":
-                        _calc_text = format_calculation_result(_calc_result)
-                        return AgentResponse(
-                            message_type="TEXT",
-                            content=_calc_text,
-                            iterations=1,
-                            model_used="calc_engine",
-                            total_latency_ms=int((_time.monotonic() - _process_start) * 1000),
-                        )
-                    else:
-                        logger.warning("[CALC_PIPELINE] Failed: %s", _calc_result)
-                        extraction.needs_escalation = True
 
             # Query pipeline — before write pipeline
             if extraction.intent.startswith("query_") and is_pipeline_enabled(extraction.intent):
@@ -2712,6 +2706,7 @@ class UnifiedAgent:
                         extraction=extraction,
                         tool_executor=tool_executor,
                         event_callback=event_callback,
+                        conversation_history=conversation_history,
                     )
 
             # ── Pending-intent fallback: if extraction is ambiguous but there's a pending action ──
@@ -2913,7 +2908,7 @@ class UnifiedAgent:
             # Budget guard
             if tool_executor.call_count >= MAX_TOOL_CALLS:
                 await emit(
-                    "THINKING_DONE",
+                    "_NOOP_LEGACY_DONE",
                     {
                         "summary": "Terlalu banyak langkah",
                         "total_ms": int((_time.monotonic() - _process_start) * 1000),
@@ -2943,7 +2938,7 @@ class UnifiedAgent:
             except Exception:
                 logger.exception("LLM API call failed")
                 await emit(
-                    "THINKING_DONE",
+                    "_NOOP_LEGACY_DONE",
                     {
                         "summary": "Kesalahan sistem",
                         "total_ms": int((_time.monotonic() - _process_start) * 1000),
@@ -3093,7 +3088,7 @@ class UnifiedAgent:
                 # --- SSE: Emit THINKING_DONE ---
                 _last_tool = tool_calls_log[-1]["name"] if tool_calls_log else ""
                 await emit(
-                    "THINKING_DONE",
+                    "_NOOP_LEGACY_DONE",
                     {
                         "summary": _format_thinking_label(_last_tool)
                         if _last_tool
@@ -3345,7 +3340,7 @@ class UnifiedAgent:
             if _chart_result is not None:
                 chart_data = _chart_result.get("data", {})
                 await emit(
-                    "THINKING_DONE",
+                    "_NOOP_LEGACY_DONE",
                     {
                         "summary": "Membuat grafik",
                         "total_ms": int((_time.monotonic() - _process_start) * 1000),
@@ -3490,7 +3485,7 @@ class UnifiedAgent:
 
                     # SSE: Emit THINKING_DONE for ACTION_PREVIEW
                     await emit(
-                        "THINKING_DONE",
+                        "_NOOP_LEGACY_DONE",
                         {
                             "summary": "Menyiapkan transaksi",
                             "total_ms": int(
@@ -3529,7 +3524,7 @@ class UnifiedAgent:
 
                     # SSE: Emit THINKING_DONE for DIRECT_ACTION_PREVIEW
                     await emit(
-                        "THINKING_DONE",
+                        "_NOOP_LEGACY_DONE",
                         {
                             "summary": "Menyiapkan data konfirmasi",
                             "total_ms": int(
@@ -3565,7 +3560,7 @@ class UnifiedAgent:
                     chart_data = result.get("data", {})
 
                     await emit(
-                        "THINKING_DONE",
+                        "_NOOP_LEGACY_DONE",
                         {
                             "summary": "Membuat grafik",
                             "total_ms": int(
@@ -3625,7 +3620,7 @@ class UnifiedAgent:
 
         # Max iterations reached
         await emit(
-            "THINKING_DONE",
+            "_NOOP_LEGACY_DONE",
             {
                 "summary": "Terlalu banyak iterasi",
                 "total_ms": int((_time.monotonic() - _process_start) * 1000),
@@ -3633,7 +3628,7 @@ class UnifiedAgent:
         )
         return AgentResponse(
             message_type="TEXT",
-            content="Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n\u2022 \"Catat pembelian kain 800rb\"\n\u2022 \"Cek piutang pelanggan Budi\"\n\u2022 \"Berapa total pengeluaran bulan ini\"\n"
+            content="Maaf, saya tidak bisa menyelesaikan permintaan ini. "
             "Bisa coba ulangi dengan informasi yang lebih spesifik?",
             iterations=_max_iter,
             tool_calls_made=tool_calls_log,

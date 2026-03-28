@@ -24,6 +24,7 @@ from datetime import date
 import uuid as uuid_module
 
 from ..schemas.bank_accounts import (
+    CreateManualTransactionRequest,
     CreateBankAccountRequest,
     UpdateBankAccountRequest,
     AdjustBalanceRequest,
@@ -1652,3 +1653,220 @@ async def get_bank_account_statement(
 
 
 # =============================================================================
+
+
+# =============================================================================
+# CREATE MANUAL TRANSACTION (Uang Masuk / Uang Keluar)
+# =============================================================================
+
+
+@router.post("/{bank_account_id}/transactions")
+async def create_manual_transaction(
+    request: Request,
+    bank_account_id: UUID,
+    body: CreateManualTransactionRequest,
+):
+    """
+    Create manual bank transaction (Uang Masuk / Uang Keluar).
+
+    BankSync Rule 1: journal (DRAFT→POSTED) + bank_transaction atomic in 1 DB transaction.
+    Law 13: Advisory lock BANK_TX_MANUAL:{bank_account_id} acquired first.
+    Law 20: DRAFT→POSTED pattern (triggers hash chain).
+    Law 27: Bank CoA resolved from bank_accounts.coa_id.
+    Law 29: Rejects RECEIVABLE/PAYABLE contra — route to correct module.
+    BankSync Rule 10: origin_type = 'MANUAL'.
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Law 13: Advisory lock — FIRST before any reads/writes
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TX_MANUAL:{bank_account_id}",
+                )
+
+                # Verify bank account belongs to tenant
+                ba = await conn.fetchrow(
+                    """
+                    SELECT id, coa_id, account_name, is_active
+                    FROM bank_accounts
+                    WHERE id = $1 AND tenant_id = $2
+                    """,
+                    bank_account_id,
+                    ctx["tenant_id"],
+                )
+                if not ba:
+                    raise HTTPException(status_code=404, detail="Bank account not found")
+                if not ba["is_active"]:
+                    raise HTTPException(status_code=400, detail="Bank account is inactive")
+
+                # Law 27: CoA from bank_accounts.coa_id (not hardcoded)
+                bank_coa_id = ba["coa_id"]
+
+                # Law 29: Reject RECEIVABLE/PAYABLE contra — route to correct module
+                contra_coa = await conn.fetchrow(
+                    """
+                    SELECT id, account_type FROM chart_of_accounts
+                    WHERE id = $1 AND tenant_id = $2
+                    """,
+                    uuid_module.UUID(body.contra_account_id),
+                    ctx["tenant_id"],
+                )
+                if not contra_coa:
+                    raise HTTPException(status_code=400, detail="Contra account not found")
+                if contra_coa["account_type"] in ("RECEIVABLE", "PAYABLE"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Gunakan modul Terima Pembayaran untuk piutang, "
+                            "atau Bayar Tagihan untuk hutang. (Law 29)"
+                        ),
+                    )
+
+                # Law 5: Period check
+                period = await conn.fetchrow(
+                    """
+                    SELECT id, period_name, status FROM fiscal_periods
+                    WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                    ORDER BY start_date DESC LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                    body.transaction_date,
+                )
+                if period and period["status"] in ("CLOSED", "LOCKED"):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+                    )
+
+                # Compute current ledger balance (for running_balance cache)
+                current_balance = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE jl.account_id = $1 AND je.status = 'POSTED' AND je.tenant_id = $2
+                    """,
+                    bank_coa_id,
+                    ctx["tenant_id"],
+                ) or 0
+
+                amount = body.amount
+                txn_amount = amount if body.direction == "in" else -amount
+                running_balance = int(current_balance) + txn_amount
+
+                # Law 20, Gate 3: Create DRAFT journal
+                journal_id = uuid_module.uuid4()
+                journal_number = f"MT-{uuid_module.uuid4().hex[:8].upper()}"
+                direction_label = "Uang Masuk" if body.direction == "in" else "Uang Keluar"
+
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date,
+                        description, source_type, source_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'BANK_TRANSACTION', $6, 'DRAFT', $7, $7, $8)
+                    """,
+                    journal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    body.transaction_date,
+                    f"{direction_label} - {body.description}",
+                    str(bank_account_id),  # temp source_id, updated after bank_txn
+                    amount,
+                    ctx.get("user_id"),
+                )
+
+                # Law 4: Insert journal lines (debit = credit)
+                contra_uuid = uuid_module.UUID(body.contra_account_id)
+                if body.direction == "in":
+                    # Uang Masuk: Dr. Bank CoA, Cr. Contra
+                    line1 = (uuid_module.uuid4(), journal_id, 1, bank_coa_id, amount, 0, body.description)
+                    line2 = (uuid_module.uuid4(), journal_id, 2, contra_uuid, 0, amount, body.description)
+                else:
+                    # Uang Keluar: Dr. Contra, Cr. Bank CoA
+                    line1 = (uuid_module.uuid4(), journal_id, 1, contra_uuid, amount, 0, body.description)
+                    line2 = (uuid_module.uuid4(), journal_id, 2, bank_coa_id, 0, amount, body.description)
+
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    """,
+                    *line1,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    """,
+                    *line2,
+                )
+
+                # Law 20: UPDATE to POSTED — triggers hash chain
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
+
+                # BankSync Rule 1: bank_transaction atomic with journal
+                # BankSync Rule 10: origin_type = 'MANUAL' (user-initiated)
+                bank_txn_id = uuid_module.uuid4()
+                txn_type = "deposit" if body.direction == "in" else "withdrawal"
+
+                await conn.execute(
+                    """
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date, transaction_type,
+                        amount, running_balance, description, payee_payer,
+                        origin_type, status, journal_id, created_by
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'MANUAL','POSTED',$10,$11)
+                    """,
+                    bank_txn_id,
+                    ctx["tenant_id"],
+                    bank_account_id,
+                    body.transaction_date,
+                    txn_type,
+                    txn_amount,
+                    running_balance,
+                    body.description,
+                    body.contact_name,
+                    journal_id,
+                    ctx.get("user_id"),
+                )
+
+                # Law 6: Update journal source_id to actual bank_transaction id
+                await conn.execute(
+                    "UPDATE journal_entries SET source_id = $1 WHERE id = $2",
+                    str(bank_txn_id),
+                    journal_id,
+                )
+
+                logger.info(
+                    f"Manual transaction created: {bank_txn_id}, "
+                    f"direction={body.direction}, amount={amount}, "
+                    f"account={bank_account_id}"
+                )
+
+                return {
+                    "success": True,
+                    "data": {
+                        "id": str(bank_txn_id),
+                        "journal_id": str(journal_id),
+                        "journal_number": journal_number,
+                        "direction": body.direction,
+                        "amount": amount,
+                        "transaction_date": body.transaction_date.isoformat(),
+                        "description": body.description,
+                    },
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating manual transaction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

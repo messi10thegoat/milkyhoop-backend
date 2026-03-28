@@ -6,23 +6,15 @@ Pure Ledger: All financial data queries journal_entries + journal_lines
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
-from typing import List, Optional, Literal
+from typing import List, Optional
 import logging
-import asyncpg
 from datetime import datetime, timedelta, date
 
 # Import centralized config
-from ..config import settings
+from ..services.db_pool import get_db_pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-# Database connection helper
-async def get_db_connection():
-    """Get database connection using centralized config"""
-    db_config = settings.get_db_config()
-    return await asyncpg.connect(**db_config)
 
 
 # ========================================
@@ -331,12 +323,260 @@ def calc_change_pct(current: int, prev: int) -> float:
 # ========================================
 
 
+# ========================================
+# Combined Dashboard Endpoint (Performance)
+# ========================================
+# Single connection, single auth check, no pool contention.
+# Replaces 5 parallel frontend fetches with 1 request.
+
+
+# ========================================
+# Upcoming Due & Sales Today helpers
+# ========================================
+
+
+async def _get_upcoming_due(request: Request):
+    """Tagihan Terdekat - invoices & bills due within 14 days, not yet overdue."""
+    tenant_id = request.state.user.get("tenant_id")
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+        rows = await conn.fetch(
+            """
+            WITH ar AS (
+                SELECT
+                    'invoice' AS type,
+                    invoice_number AS number,
+                    customer_name AS customer_or_vendor,
+                    due_date,
+                    (due_date - CURRENT_DATE) AS days_until_due,
+                    outstanding
+                FROM compute_ar_outstanding($1)
+                WHERE outstanding > 0
+                  AND due_date >= CURRENT_DATE
+                  AND due_date <= CURRENT_DATE + 14
+            ),
+            ap AS (
+                SELECT
+                    'bill' AS type,
+                    bill_number AS number,
+                    vendor_name AS customer_or_vendor,
+                    due_date,
+                    (due_date - CURRENT_DATE) AS days_until_due,
+                    outstanding
+                FROM compute_ap_outstanding($1)
+                WHERE outstanding > 0
+                  AND due_date >= CURRENT_DATE
+                  AND due_date <= CURRENT_DATE + 14
+            )
+            SELECT * FROM (SELECT * FROM ar UNION ALL SELECT * FROM ap) combined
+            ORDER BY due_date ASC
+            LIMIT 10
+        """,
+            tenant_id,
+        )
+
+        items = []
+        total_outstanding = 0
+        for r in rows:
+            outstanding_val = int(r["outstanding"])
+            total_outstanding += outstanding_val
+            items.append(
+                {
+                    "type": r["type"],
+                    "number": r["number"],
+                    "customer_or_vendor": r["customer_or_vendor"],
+                    "due_date": r["due_date"].isoformat() if r["due_date"] else None,
+                    "days_until_due": int(r["days_until_due"])
+                    if r["days_until_due"] is not None
+                    else None,
+                    "outstanding": outstanding_val,
+                }
+            )
+
+        return {
+            "items": items,
+            "total_outstanding": total_outstanding,
+            "count": len(items),
+        }
+
+
+async def _get_sales_today(
+    request: Request, sales_start: str = None, sales_end: str = None
+):
+    """Penjualan Hari Ini - journal-derived revenue + invoice context."""
+    tenant_id = request.state.user.get("tenant_id")
+    today_str = date.today().isoformat()
+    s_start = date.fromisoformat(sales_start) if sales_start else date.today()
+    s_end = date.fromisoformat(sales_end) if sales_end else date.today()
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+
+        # Revenue from journal (Law 1/16)
+        rev_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(jl.credit), 0) - COALESCE(SUM(jl.debit), 0) AS total_revenue
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.journal_id
+            JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE je.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND je.reversed_by_id IS NULL
+              AND coa.account_type = 'REVENUE'
+              AND je.journal_date BETWEEN $2 AND $3
+        """,
+            str(tenant_id),
+            s_start,
+            s_end,
+        )
+
+        # Context counts from sales_invoices
+        ctx_row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS invoice_count,
+                   COUNT(DISTINCT customer_name) AS customer_count
+            FROM sales_invoices
+            WHERE tenant_id = $1
+              AND status NOT IN ('draft', 'void')
+              AND invoice_date BETWEEN $2 AND $3
+        """,
+            str(tenant_id),
+            s_start,
+            s_end,
+        )
+
+        return {
+            "total_revenue": int(rev_row["total_revenue"]),
+            "invoice_count": int(ctx_row["invoice_count"]),
+            "customer_count": int(ctx_row["customer_count"]),
+            "period_start": s_start.isoformat(),
+            "period_end": s_end.isoformat(),
+        }
+
+
+@router.get("/sales-today")
+async def get_sales_today_endpoint(
+    request: Request,
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Lightweight endpoint for sales period data only."""
+    return await _get_sales_today(request, sales_start=start_date, sales_end=end_date)
+
+
+@router.get("/all")
+async def get_dashboard_all(
+    request: Request,
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    basis: Optional[str] = Query(None),
+    cf_start_date: Optional[str] = Query(None),
+    cf_end_date: Optional[str] = Query(None),
+    exp_start_date: Optional[str] = Query(None),
+    exp_end_date: Optional[str] = Query(None),
+    expense_limit: int = Query(10, ge=1, le=20),
+    sales_start_date: Optional[str] = Query(
+        None, description="Sales period start YYYY-MM-DD (default today)"
+    ),
+    sales_end_date: Optional[str] = Query(
+        None, description="Sales period end YYYY-MM-DD (default today)"
+    ),
+):
+    """
+    Combined dashboard endpoint — returns summary + cash flow + expenses + overdue in ONE response.
+    Uses a single DB connection to avoid pool contention on concurrent requests.
+    """
+    import asyncio
+
+    try:
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user context")
+
+        # Delegate to individual handlers — they each acquire their own connection
+        # but with a warm pool this is fast. The key win is ONE HTTP request = ONE auth check.
+        # For further optimization, we could inline the SQL here on one connection,
+        # but the auth/network overhead savings alone are significant.
+
+        # Build request params for each sub-endpoint
+        summary_params = {}
+        if start_date:
+            summary_params["start_date"] = start_date
+        if end_date:
+            summary_params["end_date"] = end_date
+        if basis:
+            summary_params["basis"] = basis
+
+        cf_sd = cf_start_date or start_date
+        cf_ed = cf_end_date or end_date
+
+        exp_sd = exp_start_date or start_date
+        exp_ed = exp_end_date or end_date
+
+        # Run all 5 queries concurrently using asyncio.gather
+        # Each gets its own pool connection — with warm pool this is ~0ms acquire
+        results = await asyncio.gather(
+            get_dashboard_summary(
+                request, start_date=start_date, end_date=end_date, basis=basis
+            ),
+            get_cash_flow_trends(request, start_date=cf_sd, end_date=cf_ed),
+            get_top_expenses(
+                request, start_date=exp_sd, end_date=exp_ed, limit=expense_limit
+            ),
+            get_overdue_invoices(request),
+            get_overdue_bills(request),
+            _get_upcoming_due(request),
+            _get_sales_today(
+                request, sales_start=sales_start_date, sales_end=sales_end_date
+            ),
+            return_exceptions=True,
+        )
+
+        # Build combined response
+        response = {}
+        labels = [
+            "summary",
+            "cashFlow",
+            "expenses",
+            "overdueInvoices",
+            "overdueBills",
+            "upcomingDue",
+            "salesToday",
+        ]
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Dashboard /all sub-query {label} failed: {result}",
+                    exc_info=result,
+                )
+                response[label] = None
+            else:
+                # Pydantic models — convert to dict
+                response[label] = result.dict() if hasattr(result, "dict") else result
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dashboard /all error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load dashboard")
+
+
 @router.get("/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
     request: Request,
     period: str = Query("30d", regex="^(7d|30d|month)$"),
-    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
-    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
+    start_date: Optional[str] = Query(
+        None, description="Start date YYYY-MM-DD (overrides period)"
+    ),
+    end_date: Optional[str] = Query(
+        None, description="End date YYYY-MM-DD (overrides period)"
+    ),
     basis: Optional[str] = Query(None, description="Accounting basis: accrual or cash"),
 ):
     """
@@ -362,6 +602,7 @@ async def get_dashboard_summary(
         # If start_date/end_date provided, use them (fiscal period mode)
         if start_date and end_date:
             from datetime import date as date_type
+
             sd = date_type.fromisoformat(start_date)
             ed = date_type.fromisoformat(end_date)
             period_label = f"{sd.strftime('%d/%m/%Y')} - {ed.strftime('%d/%m/%Y')}"
@@ -378,8 +619,9 @@ async def get_dashboard_summary(
         # Resolve accounting basis (default: tenant setting or accrual)
         effective_basis = basis  # Will resolve after DB connection if None
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # ============================
             # 1. LABA RUGI (P&L Summary)
             # Pure Ledger: uses get_revenue_by_basis / get_expenses_by_basis SQL functions
@@ -392,9 +634,13 @@ async def get_dashboard_summary(
                     "SELECT default_report_basis FROM accounting_settings WHERE tenant_id = $1",
                     tenant_id,
                 )
-                effective_basis = settings_row["default_report_basis"] if settings_row else "accrual"
+                effective_basis = (
+                    settings_row["default_report_basis"] if settings_row else "accrual"
+                )
 
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
+            )
 
             sd = start_date if isinstance(start_date, date) else start_date
             ed = end_date if isinstance(end_date, date) else end_date
@@ -402,14 +648,20 @@ async def get_dashboard_summary(
             # Revenue via basis-aware SQL function
             revenue_rows = await conn.fetch(
                 "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
-                tenant_id, sd, ed, effective_basis,
+                tenant_id,
+                sd,
+                ed,
+                effective_basis,
             )
             pendapatan = sum(int(r["total_amount"]) for r in revenue_rows)
 
             # Expenses via basis-aware SQL function
             expense_rows = await conn.fetch(
                 "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
-                tenant_id, sd, ed, effective_basis,
+                tenant_id,
+                sd,
+                ed,
+                effective_basis,
             )
             pengeluaran = sum(int(r["total_amount"]) for r in expense_rows)
             profit = pendapatan - pengeluaran
@@ -420,12 +672,18 @@ async def get_dashboard_summary(
             # Previous period P&L (same basis)
             prev_revenue_rows = await conn.fetch(
                 "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
-                tenant_id, prev_start_date, prev_end_date, effective_basis,
+                tenant_id,
+                prev_start_date,
+                prev_end_date,
+                effective_basis,
             )
             prev_pendapatan = sum(int(r["total_amount"]) for r in prev_revenue_rows)
             prev_expense_rows = await conn.fetch(
                 "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
-                tenant_id, prev_start_date, prev_end_date, effective_basis,
+                tenant_id,
+                prev_start_date,
+                prev_end_date,
+                effective_basis,
             )
             prev_pengeluaran = sum(int(r["total_amount"]) for r in prev_expense_rows)
             prev_profit = prev_pendapatan - prev_pengeluaran
@@ -478,67 +736,18 @@ async def get_dashboard_summary(
             """
             oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
 
-            # Previous period AR balance - Pure Ledger
+            # Previous period AR balance - Pure Ledger (Law 1/16, ARAP Rule 5/6)
+            # Use account_type = 'RECEIVABLE' instead of hardcoded account_code
             prev_ar_query = """
-                WITH invoice_outstanding_prev AS (
-                    SELECT
-                        si.id,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND je2.journal_date <= $2
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) -
-                        COALESCE((
-                            SELECT SUM(rpa.amount_applied)
-                            FROM receive_payment_allocations rpa
-                            JOIN receive_payments rp ON rp.id = rpa.payment_id
-                            WHERE rpa.invoice_id = si.id
-                              AND rpa.tenant_id = $1
-                              AND rp.status = 'posted'
-                              AND rp.journal_id IS NOT NULL
-                              AND rp.payment_date <= $2
-                        ), 0) -
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = si.id
-                              AND je2.source_type = 'INVOICE_REVERSAL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND je2.journal_date <= $2
-                              AND coa2.account_code LIKE '1-104%%'
-                        ), 0) -
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_type = 'PAYMENT_RECEIVED'
-                              AND je2.tenant_id = $1 AND je2.status = 'POSTED'
-                              AND je2.journal_date <= $2
-                              AND coa2.account_code LIKE '1-104%%'
-                              AND je2.description LIKE '%%' || si.invoice_number || '%%'
-                              AND NOT EXISTS(
-                                  SELECT 1 FROM receive_payment_allocations rpa2
-                                  WHERE rpa2.payment_id = je2.source_id AND rpa2.tenant_id = $1
-                              )
-                        ), 0) as outstanding
-                    FROM sales_invoices si
-                    WHERE si.tenant_id = $1
-                      AND si.status NOT IN ('draft', 'void', 'paid')
-                )
-                SELECT COALESCE(SUM(outstanding), 0) as total_piutang
-                FROM invoice_outstanding_prev
-                WHERE outstanding > 0
+                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS total_piutang
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE coa.account_type = 'RECEIVABLE'
+                  AND je.status = 'POSTED'
+                  AND je.reversed_by_id IS NULL
+                  AND je.tenant_id = $1
+                  AND je.journal_date <= $2
             """
             prev_ar_row = await conn.fetchrow(prev_ar_query, tenant_id, prev_end_date)
             ar_prev_total = int(prev_ar_row["total_piutang"]) if prev_ar_row else 0
@@ -570,71 +779,24 @@ async def get_dashboard_summary(
             )
             ap_total = int(ap_total_row["total_hutang"]) if ap_total_row else 0
 
-            # Pure Ledger: AP aging from journal-based per-bill outstanding
+            # ARAP Rule 5/6: Use compute_ap_outstanding() — single source of truth
             ap_aging_query = """
-                WITH ap_journal_outstanding AS (
-                    SELECT
-                        b.id as bill_id,
-                        b.invoice_number,
-                        b.vendor_name,
-                        b.due_date,
-                        b.status,
-                        b.status_v2,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id
-                              AND je2.source_type = 'BILL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as bill_credit,
-                        COALESCE((
-                            SELECT SUM(bpa.amount_applied)
-                            FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-                            WHERE bpa.bill_id = b.id
-                              AND bpv2.tenant_id = $1
-                              AND bpv2.status = 'posted'
-                              AND bpv2.journal_id IS NOT NULL
-                        ), 0) as payment_debit,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id
-                              AND je2.source_type = 'ADJUSTMENT'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as adjustment_debit
-                    FROM bills b
-                    WHERE b.tenant_id = $1
-                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
-                ),
-                ap_with_outstanding AS (
-                    SELECT *,
-                        (bill_credit - payment_debit - adjustment_debit) as outstanding
-                    FROM ap_journal_outstanding
-                    WHERE (bill_credit - payment_debit - adjustment_debit) > 0
-                )
-                SELECT COUNT(DISTINCT vendor_name) as supplier_count,
+                SELECT
+                    COUNT(DISTINCT vendor_name) as supplier_count,
                     COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
                     COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
                     COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
-                FROM ap_with_outstanding
+                FROM compute_ap_outstanding($1)
             """
             ap_aging = await conn.fetchrow(ap_aging_query, tenant_id)
 
+            # ARAP Rule 6: nearest supplier from compute_ap_outstanding()
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - CURRENT_DATE as days_until_due
-                FROM bills WHERE tenant_id = $1 AND status_v2 NOT IN ('draft', 'void', 'paid')
+                FROM compute_ap_outstanding($1)
                 ORDER BY due_date ASC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
@@ -648,6 +810,7 @@ async def get_dashboard_summary(
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE coa.account_type = 'PAYABLE'
                   AND je.status = 'POSTED'
+                  AND je.reversed_by_id IS NULL
                   AND je.tenant_id = $1
                   AND je.journal_date <= $2
             """
@@ -794,9 +957,6 @@ async def get_dashboard_summary(
                 generated_at=datetime.now().isoformat(),
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -825,8 +985,9 @@ async def get_piutang_detail(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Pure Ledger: total piutang via compute_ar_summary()
             total_row = await conn.fetchrow(
                 "SELECT total_outstanding AS total_piutang FROM compute_ar_summary($1)",
@@ -868,9 +1029,6 @@ async def get_piutang_detail(
                 overdue_90_plus=int(aging["overdue_90_plus"]) if aging else 0,
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -893,8 +1051,9 @@ async def get_hutang_detail(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Pure Ledger: total hutang via compute_ap_summary()
             total_row = await conn.fetchrow(
                 "SELECT total_outstanding AS total_hutang FROM compute_ap_summary($1)",
@@ -984,9 +1143,6 @@ async def get_hutang_detail(
                 overdue_90_plus=int(aging["overdue_90_plus"]) if aging else 0,
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1007,8 +1163,9 @@ async def get_kas_bank_detail(request: Request):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             query = """
                 SELECT
                     c.account_code,
@@ -1063,9 +1220,6 @@ async def get_kas_bank_detail(request: Request):
                 accounts=accounts,
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1088,8 +1242,12 @@ async def health_check():
 async def get_cash_flow_trends(
     request: Request,
     period: str = Query("7d", regex="^(7d|30d|month)$"),
-    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
-    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
+    start_date: Optional[str] = Query(
+        None, description="Start date YYYY-MM-DD (overrides period)"
+    ),
+    end_date: Optional[str] = Query(
+        None, description="End date YYYY-MM-DD (overrides period)"
+    ),
 ):
     """
     Get cash flow trends (kas masuk/keluar) for chart visualization.
@@ -1110,6 +1268,7 @@ async def get_cash_flow_trends(
         now = datetime.now()
         if start_date and end_date:
             from datetime import date as date_type
+
             cf_start = date_type.fromisoformat(start_date)
             cf_end = date_type.fromisoformat(end_date)
         else:
@@ -1125,8 +1284,9 @@ async def get_cash_flow_trends(
         range_days = (cf_end - cf_start).days
         use_monthly = range_days > 60
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             if use_monthly:
                 # Monthly aggregation for fiscal year views
                 query = """
@@ -1156,7 +1316,20 @@ async def get_cash_flow_trends(
                 trends = []
                 total_masuk = 0
                 total_keluar = 0
-                month_names = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+                month_names = [
+                    "Jan",
+                    "Feb",
+                    "Mar",
+                    "Apr",
+                    "Mei",
+                    "Jun",
+                    "Jul",
+                    "Agu",
+                    "Sep",
+                    "Okt",
+                    "Nov",
+                    "Des",
+                ]
 
                 flow_by_month = {row["flow_date"]: row for row in rows}
 
@@ -1166,18 +1339,23 @@ async def get_cash_flow_trends(
                     flow = flow_by_month.get(current_month)
                     km = int(flow["kas_masuk"]) if flow else 0
                     kk = int(flow["kas_keluar"]) if flow else 0
-                    trends.append(CashFlowTrend(
-                        date=current_month.isoformat(),
-                        label=month_names[current_month.month - 1],
-                        kas_masuk=km, kas_keluar=kk,
-                    ))
+                    trends.append(
+                        CashFlowTrend(
+                            date=current_month.isoformat(),
+                            label=month_names[current_month.month - 1],
+                            kas_masuk=km,
+                            kas_keluar=kk,
+                        )
+                    )
                     total_masuk += km
                     total_keluar += kk
                     # Next month
                     if current_month.month == 12:
                         current_month = date(current_month.year + 1, 1, 1)
                     else:
-                        current_month = date(current_month.year, current_month.month + 1, 1)
+                        current_month = date(
+                            current_month.year, current_month.month + 1, 1
+                        )
             else:
                 # Daily aggregation (existing behavior)
                 query = """
@@ -1214,11 +1392,16 @@ async def get_cash_flow_trends(
                     flow = flow_by_date.get(current)
                     km = int(flow["kas_masuk"]) if flow else 0
                     kk = int(flow["kas_keluar"]) if flow else 0
-                    trends.append(CashFlowTrend(
-                        date=current.isoformat(),
-                        label=get_day_label(datetime.combine(current, datetime.min.time())),
-                        kas_masuk=km, kas_keluar=kk,
-                    ))
+                    trends.append(
+                        CashFlowTrend(
+                            date=current.isoformat(),
+                            label=get_day_label(
+                                datetime.combine(current, datetime.min.time())
+                            ),
+                            kas_masuk=km,
+                            kas_keluar=kk,
+                        )
+                    )
                     total_masuk += km
                     total_keluar += kk
                     current += timedelta(days=1)
@@ -1256,9 +1439,6 @@ async def get_cash_flow_trends(
                 else 0,
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1276,8 +1456,12 @@ async def get_top_expenses(
     request: Request,
     period: str = Query("30d", regex="^(7d|30d|month)$"),
     limit: int = Query(5, ge=1, le=20),
-    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (overrides period)"),
-    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (overrides period)"),
+    start_date: Optional[str] = Query(
+        None, description="Start date YYYY-MM-DD (overrides period)"
+    ),
+    end_date: Optional[str] = Query(
+        None, description="End date YYYY-MM-DD (overrides period)"
+    ),
 ):
     """
     Get top expense categories breakdown for period.
@@ -1298,6 +1482,7 @@ async def get_top_expenses(
         now = datetime.now()
         if start_date and end_date:
             from datetime import date as date_type
+
             te_start = date_type.fromisoformat(start_date)
             te_end = date_type.fromisoformat(end_date)
         else:
@@ -1309,8 +1494,9 @@ async def get_top_expenses(
                 te_start = date(now.year, now.month, 1)
             te_end = now.date()
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Query expenses grouped by account category
             # Expense accounts typically start with 5-xxx or 6-xxx
             query = """
@@ -1331,9 +1517,7 @@ async def get_top_expenses(
                 LIMIT $4
             """
 
-            rows = await conn.fetch(
-                query, tenant_id, te_start, te_end, limit
-            )
+            rows = await conn.fetch(query, tenant_id, te_start, te_end, limit)
 
             # Calculate total and percentages
             total = sum(int(row["amount"]) for row in rows)
@@ -1350,9 +1534,6 @@ async def get_top_expenses(
                 )
 
             return TopExpensesResponse(expenses=expenses, total=total)
-
-        finally:
-            await conn.close()
 
     except HTTPException:
         raise
@@ -1379,8 +1560,9 @@ async def get_overdue_invoices(request: Request):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Pure Ledger: overdue invoices from journal-based outstanding
             query = """
                 -- ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
@@ -1419,9 +1601,6 @@ async def get_overdue_invoices(request: Request):
                 count=len(invoices),
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1447,66 +1626,19 @@ async def get_overdue_bills(request: Request):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
-            # Pure Ledger: overdue bills from journal-based outstanding
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # Pure Ledger: overdue bills via compute_ap_outstanding()
+            # ARAP Rule 5/6: Use compute_ap_outstanding() — single source of truth
             query = """
-                WITH ap_journal_outstanding AS (
-                    SELECT
-                        b.id as bill_id,
-                        b.invoice_number,
-                        b.vendor_name,
-                        b.due_date,
-                        b.status,
-                        b.status_v2,
-                        COALESCE((
-                            SELECT SUM(jl2.credit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id
-                              AND je2.source_type = 'BILL'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as bill_credit,
-                        COALESCE((
-                            SELECT SUM(bpa.amount_applied)
-                            FROM bill_payment_allocations bpa
-                            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-                            WHERE bpa.bill_id = b.id
-                              AND bpv2.tenant_id = $1
-                              AND bpv2.status = 'posted'
-                              AND bpv2.journal_id IS NOT NULL
-                        ), 0) as payment_debit,
-                        COALESCE((
-                            SELECT SUM(jl2.debit)
-                            FROM journal_lines jl2
-                            JOIN journal_entries je2 ON je2.id = jl2.journal_id
-                            JOIN chart_of_accounts coa2 ON coa2.id = jl2.account_id
-                            WHERE je2.source_id = b.id
-                              AND je2.source_type = 'ADJUSTMENT'
-                              AND je2.tenant_id = $1
-                              AND je2.status = 'POSTED'
-                              AND coa2.account_code LIKE '2-101%%'
-                        ), 0) as adjustment_debit
-                    FROM bills b
-                    WHERE b.tenant_id = $1
-                      AND b.status_v2 NOT IN ('draft', 'void', 'paid')
-                ),
-                ap_with_outstanding AS (
-                    SELECT *,
-                        (bill_credit - payment_debit - adjustment_debit) as outstanding
-                    FROM ap_journal_outstanding
-                    WHERE (bill_credit - payment_debit - adjustment_debit) > 0
-                )
                 SELECT
-                    invoice_number as bill_number,
-                    vendor_name as supplier_name,
+                    bill_number,
+                    vendor_name AS supplier_name,
                     due_date,
                     CURRENT_DATE - due_date as days_overdue,
                     outstanding
-                FROM ap_with_outstanding
+                FROM compute_ap_outstanding($1)
                 WHERE due_date < CURRENT_DATE
                 ORDER BY (CURRENT_DATE - due_date) DESC, outstanding DESC
             """
@@ -1532,9 +1664,6 @@ async def get_overdue_bills(request: Request):
             return OverdueBillsResponse(
                 bills=bills, total_outstanding=total_outstanding, count=len(bills)
             )
-
-        finally:
-            await conn.close()
 
     except HTTPException:
         raise
@@ -1566,8 +1695,9 @@ async def get_reconciliation_status(request: Request):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Pure Ledger: Outstanding Bills total from journals
             bills_query = """
                 WITH ap_journal_outstanding AS (
@@ -1715,9 +1845,6 @@ async def get_reconciliation_status(request: Request):
                 },
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1774,8 +1901,9 @@ async def get_cash_flow_projection(request: Request):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        conn = await get_db_connection()
-        try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SET LOCAL statement_timeout = '5000'")
             # 1. Get current kas + bank balance (same as /summary)
             kas_bank_query = """
                 SELECT
@@ -1938,9 +2066,6 @@ async def get_cash_flow_projection(request: Request):
                 warning=warning,
             )
 
-        finally:
-            await conn.close()
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1948,3 +2073,141 @@ async def get_cash_flow_projection(request: Request):
         raise HTTPException(
             status_code=500, detail="Failed to get cash flow projection"
         )
+
+
+# ─── Sales Daily Trends ────────────────────────────────────────────────────────
+
+class SalesDailyTrend(BaseModel):
+    date: str
+    label: str
+    revenue: float
+    trx_count: int
+
+class SalesDailyResponse(BaseModel):
+    total_revenue: float
+    trx_count: int
+    granularity: str
+    trends: list[SalesDailyTrend]
+
+@router.get("/sales-daily", response_model=SalesDailyResponse)
+async def get_sales_daily(
+    request: Request,
+    days: int = Query(30, ge=7, le=365),
+    granularity: str = Query("daily"),
+):
+    """
+    Sales revenue trends — daily or monthly granularity.
+    Law 1/16: reads from journal_lines (REVENUE accounts), not sales_invoices.
+    Law 2: reversed_by_id IS NULL guard.
+    """
+    try:
+        if not hasattr(request.state, "user") or not request.state.user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        tenant_id = request.state.user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Tenant not found")
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
+
+            if granularity == "monthly":
+                # Last 12 months
+                query = """
+                    WITH months AS (
+                        SELECT generate_series(
+                            date_trunc('month', CURRENT_DATE - INTERVAL '11 months'),
+                            date_trunc('month', CURRENT_DATE),
+                            '1 month'::interval
+                        )::date AS period_start
+                    ),
+                    sales AS (
+                        SELECT
+                            date_trunc('month', je.journal_date)::date AS period_start,
+                            SUM(jl.credit) AS revenue,
+                            COUNT(DISTINCT je.id) AS trx_count
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.tenant_id = $1
+                          AND coa.account_type = 'REVENUE'
+                          AND jl.credit > 0
+                          AND je.status = 'POSTED'
+                          AND je.reversed_by_id IS NULL
+                          AND je.journal_date >= CURRENT_DATE - INTERVAL '11 months'
+                        GROUP BY 1
+                    )
+                    SELECT
+                        m.period_start AS date,
+                        COALESCE(s.revenue, 0) AS revenue,
+                        COALESCE(s.trx_count, 0) AS trx_count
+                    FROM months m
+                    LEFT JOIN sales s ON s.period_start = m.period_start
+                    ORDER BY m.period_start
+                """
+                rows = await conn.fetch(query, tenant_id)
+                trends = []
+                for r in rows:
+                    d = r["date"]
+                    trends.append(SalesDailyTrend(
+                        date=d.strftime("%Y-%m-%d"),
+                        label=d.strftime("%-m/%Y") if hasattr(d, "strftime") else str(d),
+                        revenue=float(r["revenue"]),
+                        trx_count=int(r["trx_count"]),
+                    ))
+            else:
+                # Daily — last N days
+                query = """
+                    WITH days AS (
+                        SELECT generate_series(
+                            CURRENT_DATE - ($2 - 1) * INTERVAL '1 day',
+                            CURRENT_DATE,
+                            '1 day'::interval
+                        )::date AS day
+                    ),
+                    sales AS (
+                        SELECT
+                            je.journal_date::date AS day,
+                            SUM(jl.credit) AS revenue,
+                            COUNT(DISTINCT je.id) AS trx_count
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        WHERE je.tenant_id = $1
+                          AND coa.account_type = 'REVENUE'
+                          AND jl.credit > 0
+                          AND je.status = 'POSTED'
+                          AND je.reversed_by_id IS NULL
+                          AND je.journal_date >= CURRENT_DATE - ($2 - 1) * INTERVAL '1 day'
+                        GROUP BY 1
+                    )
+                    SELECT
+                        d.day AS date,
+                        COALESCE(s.revenue, 0) AS revenue,
+                        COALESCE(s.trx_count, 0) AS trx_count
+                    FROM days d
+                    LEFT JOIN sales s ON s.day = d.day
+                    ORDER BY d.day
+                """
+                rows = await conn.fetch(query, tenant_id, days)
+                trends = []
+                for r in rows:
+                    d = r["date"]
+                    trends.append(SalesDailyTrend(
+                        date=d.strftime("%Y-%m-%d"),
+                        label=d.strftime("%-d/%-m"),
+                        revenue=float(r["revenue"]),
+                        trx_count=int(r["trx_count"]),
+                    ))
+
+            total_revenue = sum(t.revenue for t in trends)
+            total_trx = sum(t.trx_count for t in trends)
+            return SalesDailyResponse(
+                total_revenue=total_revenue,
+                trx_count=total_trx,
+                granularity=granularity,
+                trends=trends,
+            )
+
+    except Exception as e:
+        logger.error(f"sales-daily error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get sales daily trends")

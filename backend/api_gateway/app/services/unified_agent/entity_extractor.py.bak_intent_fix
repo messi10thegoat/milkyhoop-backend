@@ -60,14 +60,7 @@ EXTRACTION_SCHEMAS = {
                             "query_warehouse_stock_value", "query_inventory_health", "query_item_journal",
                             "create_item", "create_warehouse", "quick_stock_adjustment", "create_stock_transfer",
                             "query_item_activity", "query_item_related", "query_item_batches",
-                            "calc_avg_harga_jual", "calc_sum_harga_jual",
-                            "calc_count_items_active", "calc_count_items_inactive",
-                            "calc_rank_items_by_price", "calc_avg_harga_beli", "calc_sum_stok",
-                            "calc_count_customers_active", "calc_count_vendors_active",
-                            "calc_count_bills_outstanding", "calc_sum_bills_outstanding",
-                            "calc_count_invoices_outstanding", "calc_sum_invoices_outstanding",
-                            "calc_count_bank_accounts", "calc_sum_bank_balance",
-                            "calc_count_expenses_month",
+                            "query_items_expired", "query_items_expiring_soon", "query_items_quarantine",
                             "chitchat", "query", "ambiguous"
                         ]
                     },
@@ -192,7 +185,9 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 - "barang lambat" / "dead stock" -> query_items_slow_moving
 - "margin produk" -> query_items_margins
 - "stok di gudang X" -> query_warehouse_stock
-- "daftar kategori" -> query_categories_list
+- "daftar kategori" / "kategori apa saja" (TANPA nama kategori spesifik) -> query_categories_list
+- "barang kategori X" / "item di kategori X" / "yang kategorinya X" -> query_items_search (entities: kategori="X", bukan item_name)
+- PENTING: Kalau user sebut nama kategori spesifik (Obat, Elektronik, Fashion), itu query_items_search BUKAN query_categories_list
 - "barang tidak aktif" -> query_items_inactive
 - "cari barang X" -> query_items_search
 - "stok terbanyak" / "ranking stok" -> query_items_by_stock
@@ -211,25 +206,10 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 - "aktivitas barang X" -> query_item_activity
 - "dokumen terkait barang X" -> query_item_related
 - "batch barang X" / "expiry" -> query_item_batches
-
-== KALKULASI (code-driven, tanpa LLM) ==
-- "rata-rata harga jual" / "average harga jual" -> calc_avg_harga_jual
-- "rata-rata harga beli" -> calc_avg_harga_beli
-- "total harga jual" / "jumlah semua harga jual" -> calc_sum_harga_jual
-- "total stok" / "jumlah semua stok" -> calc_sum_stok
-- "berapa item aktif" / "jumlah barang aktif" / "total produk aktif" -> calc_count_items_active
-- "berapa item tidak aktif" / "barang nonaktif" -> calc_count_items_inactive
-- "item termahal" / "top harga" / "ranking harga jual" -> calc_rank_items_by_price
-- "berapa pelanggan aktif" / "total pelanggan" / "jumlah pelanggan" -> calc_count_customers_active
-- "berapa vendor aktif" / "total vendor" / "jumlah vendor" -> calc_count_vendors_active
-- "berapa tagihan belum lunas" -> calc_count_bills_outstanding
-- "total hutang outstanding" -> calc_sum_bills_outstanding
-- "berapa invoice belum lunas" -> calc_count_invoices_outstanding
-- "total piutang outstanding" -> calc_sum_invoices_outstanding
-- "berapa rekening" -> calc_count_bank_accounts
-- "total saldo kas dan bank" -> calc_sum_bank_balance
-- "berapa pengeluaran bulan ini" -> calc_count_expenses_month
-PENTING: Kalkulasi numerik (rata-rata, total, jumlah, ranking) -> WAJIB pakai calc_* intent.
+- "item kedaluwarsa" / "expired" / "kadaluarsa" / "ada yang expired?" -> query_items_expired
+- "item hampir kedaluwarsa" / "mau expired" / "expiring soon" -> query_items_expiring_soon
+- "item karantina" / "quarantine" -> query_items_quarantine
+- PENTING: "kedaluwarsa/expired/kadaluarsa" = query_items_expired (hit item-batches status=expired). BUKAN query_items_low_stock!
 
 == FALLBACK ==
 - Pesan ambigu/tidak jelas -> intent: "ambiguous"
@@ -277,40 +257,12 @@ PIPELINE_ENABLED_INTENTS = {
     "query_item_activity",
     "query_item_related",
     "query_item_batches",
-    # Batch/expiry
-    "query_items_expired", "query_items_expiring_soon", "query_items_quarantine",
-    # Customer/Vendor queries
-    "query_customers_summary", "query_vendors_summary",
-    "query_customers_list", "query_vendors_list",
-    "query_customer_detail", "query_vendor_detail",
-    # AR/AP queries (ARAP compliant)
-    "query_ar_outstanding", "query_ar_invoices", "query_ap_outstanding",
-    "query_cash_balance",
-    # Kas & Bank
-    "query_bank_accounts_list", "query_bank_account_detail", "query_bank_transactions",
-    # Faktur Penjualan
-    "query_sales_invoices_list", "query_sales_invoice_detail", "query_sales_invoices_summary",
-    # Faktur Pembelian
-    "query_bills_list", "query_bill_detail", "query_bills_summary",
-    # Expense
-    "query_expenses_list", "query_expense_detail", "query_expenses_summary",
-    # Items price/sort
-    "query_items_by_price",
-    # Calculation intents
-    "calc_avg_harga_jual", "calc_sum_harga_jual",
-    "calc_count_items_active", "calc_count_items_inactive",
-    "calc_rank_items_by_price", "calc_avg_harga_beli", "calc_sum_stok",
-    "calc_count_customers_active", "calc_count_vendors_active",
-    "calc_count_bills_outstanding", "calc_sum_bills_outstanding",
-    "calc_count_invoices_outstanding", "calc_sum_invoices_outstanding",
-    "calc_count_bank_accounts", "calc_sum_bank_balance",
-    "calc_count_expenses_month",
-    # Voids
-    "void_sales_invoice", "void_bill", "void_expense",
-    "void_receive_payment", "void_bill_payment", "reverse_journal",
-    # Updates
+    "query_items_expired",
+    "query_items_expiring_soon",
+    "query_items_quarantine",
+    # Updates (pipeline-enabled with entity resolution)
     "update_item", "update_customer", "update_vendor", "update_bank_account", "update_warehouse",
-    # Deletes
+    # Deletes (pipeline-enabled with entity resolution)
     "delete_item", "delete_customer", "delete_vendor", "delete_warehouse", "delete_bank_account",
 }
 
@@ -392,63 +344,6 @@ _ENTITY_KEYWORDS = {
 }
 
 
-
-def classify_query_intent(user_text: str) -> tuple:
-    """Code-driven query intent classifier. 0ms, deterministic."""
-    import re as _qre
-    t = user_text.strip().lower()
-
-    # AR
-    if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t):
-        if _qre.search(r"\b(siapa|daftar|list|detail|pelanggan|faktur|invoice|nomor)\b", t):
-            return "query_ar_invoices", None, None
-        return "query_ar_outstanding", None, None
-    if _qre.search(r"\bsiapa\b.*\b(piutang|hutang|utang)\b", t):
-        if "piutang" in t:
-            return "query_ar_invoices", None, None
-        return "query_ap_outstanding", None, None
-
-    # AP
-    if _qre.search(r"\b(utang|hutang|payable|ap outstanding)\b", t):
-        return "query_ap_outstanding", None, None
-
-    # Saldo
-    if _qre.search(r"\b(saldo|balance)\b", t) and not _qre.search(r"\b(pelanggan|customer|vendor)\b", t):
-        return "query_cash_balance", None, None
-
-    # Bank/Kas list
-    if _qre.search(r"\b(daftar|list|semua)\s+(rekening|bank|kas)\b", t):
-        return "query_bank_accounts_list", None, None
-
-    # Sales invoices
-    if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+penjualan|invoice)\b", t):
-        return "query_sales_invoices_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(penjualan|sales)\b", t):
-        return "query_sales_invoices_summary", None, None
-
-    # Bills
-    if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+pembelian|tagihan|bill)\b", t):
-        return "query_bills_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(pembelian|bill)\b", t):
-        return "query_bills_summary", None, None
-
-    # Expenses
-    if _qre.search(r"\b(daftar|list|semua)\s+(pengeluaran|biaya|expense)\b", t):
-        return "query_expenses_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(pengeluaran|biaya|expense)\b", t):
-        return "query_expenses_summary", None, None
-
-    # Low stock / inactive / categories
-    if _qre.search(r"\b(stok rendah|hampir habis|low stock)\b", t):
-        return "query_items_low_stock", None, None
-    if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
-        return "query_items_inactive", None, None
-    if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
-        return "query_categories_list", None, None
-
-    return None, None, None
-
-
 def classify_crud_intent(user_text: str) -> tuple:
     """
     Classify CRUD intent from user text using keyword matching.
@@ -528,7 +423,30 @@ def classify_crud_intent(user_text: str) -> tuple:
         r'^(?:yang\s+bernama|dengan\s+nama|bernama|nama|namanya|yang|dengan|lama|baru|dong|ya|nih)\s+',
         '', remaining_after_entity, flags=_re.IGNORECASE
     ).strip()
-    remaining_after_entity = remaining_after_entity.rstrip('?!.,;')
+    # For update/delete: stop entity name at field-change delimiters
+    if action in ("update", "delete", "void"):
+        _name_stop_patterns = [
+            r'\s*:\s*',                    # "Paracetamol 500mg: harga jual..."
+            r'\s*;\s*',                    # "Paracetamol 500mg; harga jual..."
+            r'\s*,\s*(?=harga|deskripsi|kategori|satuan|tipe|tracking|track)',
+            r'\s+harga\s',                # "...500mg harga jual..."
+            r'\s+deskripsi\s',            # "...500mg deskripsi ganti..."
+            r'\s+kategori\s',             # "...500mg kategori ganti..."
+            r'\s+satuan\s',               # "...500mg satuan ganti..."
+            r'\s+dengan\s+harga',         # "...500mg dengan harga..."
+            r'\s+ganti\s',               # "...500mg ganti harga..."
+            r'\s+ubah\s',                # "...500mg ubah deskripsi..."
+            r'\s+naik\s',                # "...500mg naik jadi..."
+            r'\s+turun\s',               # "...500mg turun jadi..."
+            r'\s+jadi\s+\d',            # "...500mg jadi 18000"
+        ]
+        for pattern in _name_stop_patterns:
+            match = _re.search(pattern, remaining_after_entity, flags=_re.IGNORECASE)
+            if match:
+                remaining_after_entity = remaining_after_entity[:match.start()].strip()
+                break
+
+    remaining_after_entity = remaining_after_entity.rstrip('?!.,;:')
     # Strip trailing filler words (dong, ya, nih, deh, baru)
     remaining_after_entity = _re.sub(r'\s+(?:dong|ya|nih|deh|baru|lah|sih)$', '', remaining_after_entity, flags=_re.IGNORECASE).strip()
     # If entire remaining is just a filler word, clear it

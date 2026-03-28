@@ -6,9 +6,8 @@ Provider-agnostic interface for multi-model support.
 
 from .llm_client import LLMClient, LLMMessage, LLMToolCall, LLMResponse
 from .openai_client import OpenAIClient
-from .claude_client import ClaudeClient
 from .gemini_client import GeminiClient
-from .llm_router import LLMRouter, TaskComplexity, MODEL_ROUTING
+from .llm_router import LLMRouter, TaskComplexity, MODEL_ROUTING, TASK_TYPE_ROUTING
 
 __all__ = [
     "LLMClient",
@@ -16,8 +15,7 @@ __all__ = [
     "LLMToolCall",
     "LLMResponse",
     "OpenAIClient",
-    "ClaudeClient",
-    "GeminiClient",
+        "GeminiClient",
     "LLMRouter",
     "TaskComplexity",
     "MODEL_ROUTING",
