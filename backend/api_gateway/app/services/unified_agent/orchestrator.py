@@ -2795,6 +2795,87 @@ class UnifiedAgent:
             thinking_stages=["Menganalisis pesan", "Mencari data", "Menyusun jawaban"],
         )
 
+    async def _handle_drilldown_table(
+        self,
+        user_text,
+        context,
+        extraction,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """Contextual drill-down: resolve last query context → route to pipeline list query.
+        E.g., after 'hutang berapa' (query_ap_outstanding) → 'per faktur' → query_bills_list.
+        ~1.5s via pipeline instead of ~50s via agent loop.
+        """
+        import time as _time
+
+        start_time = _time.time()
+
+        # Determine drill-down target from session state
+        _last_intent = None
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                state = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
+                if state:
+                    _last_intent = getattr(state, "last_action_type", None)
+            except Exception:
+                pass
+
+        # Drill-down mapping: last_intent → target pipeline intent
+        _DRILLDOWN_MAP = {
+            "query_ap_outstanding": "query_bills_list",
+            "query_ar_outstanding": "query_sales_invoices_list",
+            "query_bills_summary": "query_bills_list",
+            "query_sales_invoices_summary": "query_sales_invoices_list",
+            "query_expenses_summary": "query_expenses_list",
+        }
+
+        target_intent = _DRILLDOWN_MAP.get(_last_intent)
+
+        if not target_intent:
+            # No context — fallback: try to infer from user text
+            t = user_text.lower()
+            if any(w in t for w in ("tagihan", "hutang", "bill", "ap", "pembelian")):
+                target_intent = "query_bills_list"
+            elif any(w in t for w in ("piutang", "invoice", "ar", "penjualan")):
+                target_intent = "query_sales_invoices_list"
+            elif any(w in t for w in ("pengeluaran", "biaya", "expense")):
+                target_intent = "query_expenses_list"
+            else:
+                # Default: if last intent was AP-related, show bills
+                target_intent = "query_bills_list"
+
+        logger.warning(
+            "[DRILLDOWN] last_intent=%s → target=%s user='%s'",
+            _last_intent,
+            target_intent,
+            user_text[:50],
+        )
+
+        # Override extraction intent and route to query pipeline
+        extraction.intent = target_intent
+        extraction.confidence = 1.0
+        extraction.needs_escalation = False
+
+        # Add table format hint to user_text for polish
+        _table_hint = user_text
+        if "tabel" not in user_text.lower():
+            _table_hint = user_text + " (dalam bentuk tabel)"
+
+        return await self._handle_query_pipeline(
+            user_text=_table_hint,
+            context=context,
+            extraction=extraction,
+            tool_executor=tool_executor,
+            event_callback=event_callback,
+        )
+
     async def _handle_reformat_as_table(
         self,
         user_text,
@@ -3762,6 +3843,16 @@ class UnifiedAgent:
                         )
 
             # ── Reformat-as-table: re-format last response ──
+            if extraction.intent == "drilldown_table":
+                logger.warning("[DRILLDOWN] Routing to drilldown handler")
+                return await self._handle_drilldown_table(
+                    user_text=user_text,
+                    context=context,
+                    extraction=extraction,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
             if extraction.intent == "reformat_as_table":
                 logger.warning("[REFORMAT] Routing to reformat handler")
                 return await self._handle_reformat_as_table(

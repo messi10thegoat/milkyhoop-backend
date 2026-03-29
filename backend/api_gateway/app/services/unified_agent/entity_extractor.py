@@ -301,8 +301,9 @@ PENTING: Kalkulasi numerik (rata-rata, total, jumlah, ranking) -> WAJIB pakai ca
 """
 
 PIPELINE_ENABLED_INTENTS = {
-    # Re-format
+    # Re-format + drill-down
     "reformat_as_table",
+    "drilldown_table",
     # Tahap 1 (master data)
     "create_customer",
     "create_vendor",
@@ -593,6 +594,25 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_items_inactive", None, None
     if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
         return "query_categories_list", None, None
+
+    # Contextual drill-down — "per faktur", "breakdown", "detailnya" after a summary query
+    # Returns drilldown_table — orchestrator resolves to correct pipeline query using session state
+    if _qre.search(
+        r"(?:rekapan|rekap|breakdown|rincian|detail)\s+(?:per|tiap|masing-masing)\s+(?:faktur|tagihan|invoice|bill|pelanggan|customer|vendor|pemasok)",
+        t,
+    ):
+        return "drilldown_table", None, None
+    if _qre.search(
+        r"(?:per|tiap)\s+(?:faktur|tagihan|invoice|bill).*(?:tabel|table)", t
+    ):
+        return "drilldown_table", None, None
+    if _qre.search(
+        r"(?:bikin|buat|tampilkan|tunjukkan)\s+(?:rekapan|rekap|breakdown|rincian)\s+(?:per|tiap)",
+        t,
+    ):
+        return "drilldown_table", None, None
+    if _qre.search(r"(?:detailnya|rinciannya|breakdownnya)", t):
+        return "drilldown_table", None, None
 
     # Re-format requests — user wants last response as table
     if _qre.search(
