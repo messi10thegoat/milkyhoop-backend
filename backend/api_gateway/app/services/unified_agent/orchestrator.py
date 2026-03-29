@@ -740,6 +740,31 @@ def _safe_num(val, decimals=0):
         return 0
 
 
+def _strip_draft_void_rows(text: str) -> str:
+    """Post-process: remove Draft/Void rows from markdown tables in bot responses.
+    Only applies to tables that contain financial data (hutang/piutang/tagihan/faktur)."""
+    if not text or "|" not in text:
+        return text
+    lines = text.split("\n")
+    result = []
+    in_table = False
+    header_line = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if not in_table:
+                in_table = True
+                header_line = stripped.lower()
+            # Skip rows containing Draft or Void status
+            cells = [c.strip().lower() for c in stripped.split("|")]
+            if any(cell in ("draft", "void") for cell in cells):
+                continue
+        else:
+            in_table = False
+        result.append(line)
+    return "\n".join(result)
+
+
 class UnifiedAgent:
     """
     Single agent loop. Replaces: intent classifier + action_planner + enrichment.
@@ -2513,6 +2538,10 @@ class UnifiedAgent:
         # Resolve entities for parameterized endpoints
         endpoint = query_config.rest_endpoint
         query_params = {}
+
+        # Default: exclude draft & void for bills/invoices lists (hutang/piutang accuracy)
+        if query_config.action_key in ("query_bills_list", "query_sales_invoices_list"):
+            query_params["status"] = "active"
 
         # Resolve item by name -> get ID for {id} endpoints
         if "{id}" in endpoint and extraction.entities.get("item_name"):

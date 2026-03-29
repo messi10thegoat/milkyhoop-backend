@@ -170,15 +170,17 @@ logger = logging.getLogger("unified_agent.tool_executor")
 import time as _cache_time
 
 TOOL_CACHE_TTL = 300  # 5 minutes
-_cache_logger = __import__('logging').getLogger('unified_agent.cache')
-CACHEABLE_TOOLS = frozenset({
-    "get_chart_of_accounts",
-    "get_bank_accounts",
-    "get_accounting_periods",
-    "search_customers",
-    "search_vendors",
-    "search_items",
-})
+_cache_logger = __import__("logging").getLogger("unified_agent.cache")
+CACHEABLE_TOOLS = frozenset(
+    {
+        "get_chart_of_accounts",
+        "get_bank_accounts",
+        "get_accounting_periods",
+        "search_customers",
+        "search_vendors",
+        "search_items",
+    }
+)
 
 # Per-request in-memory cache (lives for duration of one agent turn)
 # This is sufficient because:
@@ -187,10 +189,13 @@ CACHEABLE_TOOLS = frozenset({
 # 3. Avoids DB complexity of session-backed cache
 _turn_cache: dict = {}
 
+
 def _cache_key(tool_name: str, params: dict) -> str:
     """Generate cache key from tool name + sorted params."""
     import json as _cj
+
     return f"{tool_name}:{_cj.dumps(params, sort_keys=True, default=str)}"
+
 
 def get_from_cache(tool_name: str, params: dict) -> dict | None:
     """Check turn cache for cached result."""
@@ -203,6 +208,7 @@ def get_from_cache(tool_name: str, params: dict) -> dict | None:
         return entry["result"]
     return None
 
+
 def set_in_cache(tool_name: str, params: dict, result: dict):
     """Store result in turn cache."""
     if tool_name not in CACHEABLE_TOOLS:
@@ -210,6 +216,7 @@ def set_in_cache(tool_name: str, params: dict, result: dict):
     key = _cache_key(tool_name, params)
     _turn_cache[key] = {"ts": _cache_time.time(), "result": result}
     _cache_logger.warning("[Phase3-Cache] SET tool=%s key=%s", tool_name, key[:60])
+
 
 def clear_turn_cache():
     """Clear the per-turn cache. Call at start of each new turn."""
@@ -453,6 +460,7 @@ class ToolExecutor:
         """Resolve display names (vendor_name, customer_name etc.) from IDs when LLM omits them."""
         try:
             from .db_utils import get_session_db_pool
+
             pool = await get_session_db_pool()
             tenant_id = self.context.tenant_id
         except Exception as e:
@@ -460,11 +468,16 @@ class ToolExecutor:
             return
 
         # Vendor name (vendors.id = uuid)
-        if action_key == "create_bill_payment" and not payload.get("vendor_name") and payload.get("vendor_id"):
+        if (
+            action_key == "create_bill_payment"
+            and not payload.get("vendor_name")
+            and payload.get("vendor_id")
+        ):
             try:
                 row = await pool.fetchrow(
                     "SELECT name FROM vendors WHERE id = $1::uuid AND tenant_id = $2",
-                    str(payload["vendor_id"]), tenant_id
+                    str(payload["vendor_id"]),
+                    tenant_id,
                 )
                 if row:
                     payload["vendor_name"] = row["name"]
@@ -475,7 +488,8 @@ class ToolExecutor:
                 try:
                     brow = await pool.fetchrow(
                         "SELECT invoice_number, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
-                        str(payload["bill_id"]), tenant_id
+                        str(payload["bill_id"]),
+                        tenant_id,
                     )
                     if brow:
                         payload.setdefault("bill_number", brow["invoice_number"])
@@ -484,11 +498,16 @@ class ToolExecutor:
                     logger.warning(f"[resolve_entity_names] bill lookup: {e}")
 
         # Customer name (customers.id = varchar, NOT uuid)
-        if action_key == "create_receive_payment" and not payload.get("customer_name") and payload.get("customer_id"):
+        if (
+            action_key == "create_receive_payment"
+            and not payload.get("customer_name")
+            and payload.get("customer_id")
+        ):
             try:
                 row = await pool.fetchrow(
                     "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                    str(payload["customer_id"]), tenant_id
+                    str(payload["customer_id"]),
+                    tenant_id,
                 )
                 if row:
                     payload["customer_name"] = row["nama"]
@@ -500,7 +519,8 @@ class ToolExecutor:
             try:
                 row = await pool.fetchrow(
                     "SELECT account_name FROM bank_accounts WHERE id = $1::uuid AND tenant_id = $2",
-                    str(payload["bank_account_id"]), tenant_id
+                    str(payload["bank_account_id"]),
+                    tenant_id,
                 )
                 if row:
                     payload["bank_account_name"] = row["account_name"]
@@ -712,33 +732,34 @@ class ToolExecutor:
     def _normalize_payload(self, action_key: str, payload: dict) -> dict:
         """
         Generic field normalization based on FieldSpec.aliases.
-        
+
         GPT-4o-mini sends "logical" but wrong field names. Instead of
         manual if-blocks per action_key, aliases are declared in FieldSpec.
-        
+
         Supported patterns:
-        - Simple rename: aliases=["payment_account_id"] -> name="bank_account_id"  
+        - Simple rename: aliases=["payment_account_id"] -> name="bank_account_id"
         - Array extraction: aliases=["EXTRACT:allocations.bill_id"] -> name="bill_id"
-        
+
         To add normalization for new module: just add aliases to FieldSpec in registry.
         No need to edit this file.
         """
         from .direct_action_registry import DIRECT_ACTIONS
+
         config = DIRECT_ACTIONS.get(action_key)
         if not config or not config.fields:
             return payload
-        
+
         for field_spec in config.fields:
-            if not hasattr(field_spec, 'aliases') or not field_spec.aliases:
+            if not hasattr(field_spec, "aliases") or not field_spec.aliases:
                 continue
             # Skip if canonical name already present
             if field_spec.name in payload:
                 continue
-            
+
             for alias in field_spec.aliases:
                 if alias.startswith("EXTRACT:"):
                     # Array extraction: "EXTRACT:allocations.bill_id"
-                    parts = alias[len("EXTRACT:"):].split(".", 1)
+                    parts = alias[len("EXTRACT:") :].split(".", 1)
                     if len(parts) == 2:
                         array_field, nested_key = parts
                         items = payload.get(array_field, [])
@@ -751,11 +772,18 @@ class ToolExecutor:
                     # Simple rename
                     payload[field_spec.name] = payload.pop(alias)
                     break
-        
+
         # Indonesian label -> API value mapping (for user-facing options in registry)
         _LABEL_TO_API = {
-            "item_type": {"persediaan": "goods", "jasa": "service", "non-persediaan": "non_inventory",
-                          "barang": "goods", "goods": "goods", "service": "service", "non_inventory": "non_inventory"},
+            "item_type": {
+                "persediaan": "goods",
+                "jasa": "service",
+                "non-persediaan": "non_inventory",
+                "barang": "goods",
+                "goods": "goods",
+                "service": "service",
+                "non_inventory": "non_inventory",
+            },
         }
         for field_name, mapping in _LABEL_TO_API.items():
             if field_name in payload and isinstance(payload[field_name], str):
@@ -803,21 +831,32 @@ class ToolExecutor:
             if not vid or len(vid) < 30:  # not a valid UUID
                 try:
                     from .db_utils import get_session_db_pool
+
                     pool = await get_session_db_pool()
                     bill_row = await pool.fetchrow(
                         "SELECT vendor_id, vendor_name FROM bills WHERE id = $1::uuid AND tenant_id = $2",
-                        str(payload["bill_id"]), self.context.tenant_id
+                        str(payload["bill_id"]),
+                        self.context.tenant_id,
                     )
                     if bill_row:
                         payload["vendor_id"] = str(bill_row["vendor_id"])
                         payload.setdefault("vendor_name", bill_row["vendor_name"])
                 except Exception as e:
-                    logger.warning(f"[create_bill_payment] vendor_id resolve from bill: {e}")
+                    logger.warning(
+                        f"[create_bill_payment] vendor_id resolve from bill: {e}"
+                    )
 
         # Auto-extract customer_id from allocations for receive_payment
         if action_key == "create_receive_payment":
             if "invoice_id" in payload and "allocations" not in payload:
-                payload["allocations"] = [{"invoice_id": payload["invoice_id"], "amount_applied": payload.get("total_amount", payload.get("amount", 0))}]
+                payload["allocations"] = [
+                    {
+                        "invoice_id": payload["invoice_id"],
+                        "amount_applied": payload.get(
+                            "total_amount", payload.get("amount", 0)
+                        ),
+                    }
+                ]
             if "allocations" in payload and "customer_id" not in payload:
                 allocs = payload.get("allocations", [])
                 if allocs and isinstance(allocs, list) and len(allocs) > 0:
@@ -833,6 +872,7 @@ class ToolExecutor:
         if not is_valid:
             # Build helpful message with field descriptions
             from .direct_action_registry import DIRECT_ACTIONS
+
             field_hints = []
             da_config = DIRECT_ACTIONS.get(action_key)
             if da_config:
@@ -897,7 +937,9 @@ class ToolExecutor:
             return _error("DB_ERROR", f"Gagal menyimpan action: {str(e)[:200]}")
 
         # Build confirmation table + structured review card
-        confirmation_table = build_confirmation_table(action_key, payload, journal_preview)
+        confirmation_table = build_confirmation_table(
+            action_key, payload, journal_preview
+        )
         review_card = build_review_card_payload(action_key, payload, journal_preview)
 
         # Build detection reason from payload fields
@@ -905,14 +947,24 @@ class ToolExecutor:
         if payload.get("amount") or payload.get("total_amount"):
             _amt = payload.get("amount") or payload.get("total_amount")
             try:
-                _det_parts.append("nominal Rp {:,.0f}".format(float(_amt)).replace(",", "."))
+                _det_parts.append(
+                    "nominal Rp {:,.0f}".format(float(_amt)).replace(",", ".")
+                )
             except (ValueError, TypeError):
                 pass
-        for _det_key, _det_label in [("vendor_name", "vendor"), ("customer_name", "pelanggan"), ("item_name", "barang"), ("account_name", "akun"), ("name", "nama")]:
+        for _det_key, _det_label in [
+            ("vendor_name", "vendor"),
+            ("customer_name", "pelanggan"),
+            ("item_name", "barang"),
+            ("account_name", "akun"),
+            ("name", "nama"),
+        ]:
             if payload.get(_det_key):
                 _det_parts.append(_det_label + " '" + str(payload[_det_key]) + "'")
                 break
-        _detection_reason = "Terdeteksi dari: " + ", ".join(_det_parts) if _det_parts else ""
+        _detection_reason = (
+            "Terdeteksi dari: " + ", ".join(_det_parts) if _det_parts else ""
+        )
 
         response_data = {
             "success": True,
@@ -922,7 +974,12 @@ class ToolExecutor:
                 "pending_action_id": pending_id,
                 "action_key": action_key,
                 "detection_reason": _detection_reason,
-                "display_name": f"{config.display_name}: {payload.get('name') or payload.get('entity_name') or ''}" .strip(': ') if action_key.startswith("update_") and (payload.get('name') or payload.get('entity_name')) else config.display_name,
+                "display_name": f"{config.display_name}: {payload.get('name') or payload.get('entity_name') or ''}".strip(
+                    ": "
+                )
+                if action_key.startswith("update_")
+                and (payload.get("name") or payload.get("entity_name"))
+                else config.display_name,
                 "payload": payload,
                 "expires_at": expires_at.isoformat(),
                 "risk_level": config.risk_level,
@@ -951,6 +1008,13 @@ class ToolExecutor:
         # Build request path + query params
         path = config.rest_endpoint
         req_params = {}
+
+        # Default: exclude draft & void for bills/invoices queries
+        if (
+            query_key in ("query_bills_list", "query_sales_invoices_list")
+            and "status" not in query_params
+        ):
+            req_params["status"] = "active"
 
         for key, value in query_params.items():
             if value is None:
@@ -1136,8 +1200,14 @@ class ToolExecutor:
 
         # Guard: customer_id MUST be a valid UUID
         if not customer_id or len(customer_id) < 10:
-            logger.warning("get_customer_invoices called without valid customer_id: %s", customer_id)
-            return {"results": [], "error": "customer_id wajib diisi. Panggil search_customers dulu untuk mendapatkan UUID pelanggan."}
+            logger.warning(
+                "get_customer_invoices called without valid customer_id: %s",
+                customer_id,
+            )
+            return {
+                "results": [],
+                "error": "customer_id wajib diisi. Panggil search_customers dulu untuk mendapatkan UUID pelanggan.",
+            }
 
         # ARAP Rule 5/6: Use /customers/{id}/open-invoices which wraps
         # compute_customer_ar() — single source of truth from journal_lines
@@ -1152,7 +1222,11 @@ class ToolExecutor:
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.context.auth_token}",
                 }
-                api_params = {} if status == "outstanding" else {"customer_id": customer_id, "limit": "20"}
+                api_params = (
+                    {}
+                    if status == "outstanding"
+                    else {"customer_id": customer_id, "limit": "20"}
+                )
                 resp = await client.get(url, headers=headers, params=api_params)
                 if resp.status_code >= 400:
                     return {"results": [], "error": f"HTTP {resp.status_code}"}
@@ -1191,9 +1265,18 @@ class ToolExecutor:
                         "id": inv.get("id", ""),
                         "number": inv.get("invoice_number", ""),
                         "date": inv.get("invoice_date", ""),
-                        "total": str(inv.get("total_amount", inv.get("total", inv.get("amount", 0)))),
+                        "total": str(
+                            inv.get(
+                                "total_amount", inv.get("total", inv.get("amount", 0))
+                            )
+                        ),
                         "amount_paid": str(inv.get("amount_paid", 0)),
-                        "amount_due": str(inv.get("amount_due", inv.get("total_amount", inv.get("total", 0)))),
+                        "amount_due": str(
+                            inv.get(
+                                "amount_due",
+                                inv.get("total_amount", inv.get("total", 0)),
+                            )
+                        ),
                         "status": inv.get("status", ""),
                     }
                     for inv in invoices
@@ -1207,8 +1290,13 @@ class ToolExecutor:
 
         # Guard: vendor_id MUST be a valid UUID
         if not vendor_id or len(vendor_id) < 10:
-            logger.warning("get_vendor_bills called without valid vendor_id: %s", vendor_id)
-            return {"results": [], "error": "vendor_id wajib diisi. Panggil search_vendors dulu untuk mendapatkan UUID vendor."}
+            logger.warning(
+                "get_vendor_bills called without valid vendor_id: %s", vendor_id
+            )
+            return {
+                "results": [],
+                "error": "vendor_id wajib diisi. Panggil search_vendors dulu untuk mendapatkan UUID vendor.",
+            }
 
         # ARAP Rule 5/6: Use /vendors/{id}/open-bills which wraps
         # compute_vendor_ap() — single source of truth from journal_lines
@@ -1223,10 +1311,19 @@ class ToolExecutor:
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.context.auth_token}",
                 }
-                api_params = {} if status == "outstanding" else {"vendor_id": vendor_id, "limit": "20"}
+                api_params = (
+                    {}
+                    if status == "outstanding"
+                    else {"vendor_id": vendor_id, "limit": "20"}
+                )
                 resp = await client.get(url, headers=headers, params=api_params)
                 if resp.status_code >= 400:
-                    logger.warning("get_vendor_bills HTTP %s for vendor %s: %s", resp.status_code, vendor_id, resp.text[:200])
+                    logger.warning(
+                        "get_vendor_bills HTTP %s for vendor %s: %s",
+                        resp.status_code,
+                        vendor_id,
+                        resp.text[:200],
+                    )
                     return {"results": [], "error": f"HTTP {resp.status_code}"}
                 data = resp.json()
         except Exception as e:
@@ -1236,7 +1333,12 @@ class ToolExecutor:
         if status == "outstanding":
             # Response: {"bills": [...], "total_outstanding": X}
             bills = data.get("bills", [])
-            logger.info("get_vendor_bills: vendor=%s, bills_count=%d, total=%s", vendor_id, len(bills), data.get("total_outstanding", 0))
+            logger.info(
+                "get_vendor_bills: vendor=%s, bills_count=%d, total=%s",
+                vendor_id,
+                len(bills),
+                data.get("total_outstanding", 0),
+            )
             return {
                 "results": [
                     {
@@ -1264,9 +1366,15 @@ class ToolExecutor:
                         "number": b.get("bill_number", b.get("invoice_number", "")),
                         "date": b.get("bill_date", b.get("issue_date", "")),
                         "vendor_name": b.get("vendor_name", ""),
-                        "total": str(b.get("total_amount", b.get("total", b.get("amount", 0)))),
+                        "total": str(
+                            b.get("total_amount", b.get("total", b.get("amount", 0)))
+                        ),
                         "amount_paid": str(b.get("amount_paid", 0)),
-                        "amount_due": str(b.get("amount_due", b.get("total_amount", b.get("total", 0)))),
+                        "amount_due": str(
+                            b.get(
+                                "amount_due", b.get("total_amount", b.get("total", 0))
+                            )
+                        ),
                         "status": b.get("status", ""),
                     }
                     for b in bills
@@ -1733,7 +1841,9 @@ class ToolExecutor:
             for bill in unpaid_bills:
                 bill_number = (bill.get("invoice_number") or "").upper()
                 vendor_name = _safe_get_name(bill, "bill").upper()
-                bill_amount = _to_amount(bill.get("total_amount", bill.get("amount", 0)))
+                bill_amount = _to_amount(
+                    bill.get("total_amount", bill.get("amount", 0))
+                )
                 amount_due = bill_amount - _to_amount(bill.get("amount_paid", 0))
                 amount_paid = _to_amount(bill.get("amount_paid", 0))  # display only
 
@@ -1857,7 +1967,9 @@ class ToolExecutor:
                 inv_number = (inv.get("invoice_number") or "").upper()
                 customer_name = _safe_get_name(inv, "invoice").upper()
                 inv_amount = _to_amount(inv.get("amount", inv.get("total_amount", 0)))
-                amount_due = _to_amount(inv.get("total_amount", 0)) - _to_amount(inv.get("amount_paid", 0))  # J-compliant: compute from journal-derived fields
+                amount_due = _to_amount(inv.get("total_amount", 0)) - _to_amount(
+                    inv.get("amount_paid", 0)
+                )  # J-compliant: compute from journal-derived fields
 
                 confidence = None
                 reason = ""
@@ -2581,6 +2693,23 @@ class ToolExecutor:
 
         path = endpoint["path"]
         query_params = {}
+
+        # Default: exclude draft & void for bills/invoices (hutang/piutang accuracy)
+        if tool_name in ("get_bills", "get_invoices"):
+            _has_status = "status" in params
+            _status_val = params.get("status", "NOT_SET")
+            logger.warning(
+                "[ACTIVE_FILTER] tool=%s has_status=%s status_val=%s",
+                tool_name,
+                _has_status,
+                _status_val,
+            )
+            if not _has_status:
+                query_params["status"] = "active"
+                logger.warning(
+                    "[ACTIVE_FILTER] Injecting status=active for %s", tool_name
+                )
+
         for key, value in params.items():
             if value is None:
                 continue
@@ -4348,18 +4477,18 @@ class ToolExecutor:
         ]
         return spec
 
-
-# --- Helpers ---
-
-
+    # --- Helpers ---
 
     # --- Update Document Context (Layer 2 document edit) ---
 
-    async def _execute_update_document_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_update_document_context(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Handle user corrections to active document context.
         Merges edits into Layer 2 document_context, expires old pending action.
         """
         import uuid as _uuid
+
         edits = params.get("edits", {})
         if not edits:
             return {"success": False, "error": "No edits provided"}
@@ -4370,7 +4499,10 @@ class ToolExecutor:
         state = await self.session_manager.get_state(self.session_id)
         doc_ctx = getattr(state, "document_context", None)
         if not doc_ctx:
-            return {"success": False, "error": "Tidak ada dokumen aktif. User belum upload dokumen."}
+            return {
+                "success": False,
+                "error": "Tidak ada dokumen aktif. User belum upload dokumen.",
+            }
 
         # Deep-merge edits
         existing_edits = doc_ctx.get("edits", {})
@@ -4379,7 +4511,10 @@ class ToolExecutor:
                 existing_items_edits = existing_edits.get("items", {})
                 for idx_str, item_edits in value.items():
                     if idx_str in existing_items_edits:
-                        existing_items_edits[idx_str] = {**existing_items_edits[idx_str], **item_edits}
+                        existing_items_edits[idx_str] = {
+                            **existing_items_edits[idx_str],
+                            **item_edits,
+                        }
                     else:
                         existing_items_edits[idx_str] = item_edits
                 existing_edits["items"] = existing_items_edits
@@ -4392,16 +4527,22 @@ class ToolExecutor:
         if old_pending_id:
             try:
                 from .db_utils import get_session_db_pool
+
                 pool = await get_session_db_pool()
                 await pool.execute(
                     "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1 AND tenant_id = $2",
-                    _uuid.UUID(str(old_pending_id)), self.context.tenant_id,
+                    _uuid.UUID(str(old_pending_id)),
+                    self.context.tenant_id,
                 )
             except Exception as e:
-                logger.warning(f"[UpdateDocCtx] Failed to expire old pending action: {e}")
+                logger.warning(
+                    f"[UpdateDocCtx] Failed to expire old pending action: {e}"
+                )
 
         # Update Layer 2
-        await self.session_manager.update_state(self.session_id, document_context=doc_ctx)
+        await self.session_manager.update_state(
+            self.session_id, document_context=doc_ctx
+        )
 
         # Build summary
         edit_parts = []
@@ -4421,6 +4562,7 @@ class ToolExecutor:
 
 def _error(code: str, message: str) -> Dict[str, Any]:
     return {"success": False, "error": {"code": code, "message": message}}
+
 
 def _is_valid_uuid(value: str) -> bool:
     return bool(UUID_PATTERN.match(value))

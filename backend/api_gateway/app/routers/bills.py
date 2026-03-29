@@ -51,11 +51,14 @@ from ..services.bills_service import BillCalculator
 
 # Import services
 from ..services.bills_service import BillsService
+
 # Import AccountingFacade for AP integration
 try:
     import sys
+
     sys.path.insert(0, "/app/backend/services")
     from accounting_kernel.integration.facade import AccountingFacade
+
     HAS_ACCOUNTING = True
 except ImportError:
     AccountingFacade = None
@@ -144,6 +147,7 @@ async def get_pool() -> asyncpg.Pool:
 # Global accounting facade instance
 _accounting_facade = None
 
+
 async def get_accounting_facade():
     """Get or create AccountingFacade instance."""
     global _accounting_facade
@@ -151,6 +155,7 @@ async def get_accounting_facade():
         pool = await get_pool()
         _accounting_facade = AccountingFacade(pool)
     return _accounting_facade
+
 
 async def get_bills_service() -> BillsService:
     """Get BillsService instance with connection pool and accounting facade."""
@@ -182,8 +187,8 @@ async def list_bills(
     request: Request,
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
-    status: Literal["all", "paid", "unpaid", "partial", "overdue"] = Query(
-        "all", description="Filter by status"
+    status: Literal["all", "active", "paid", "unpaid", "partial", "overdue"] = Query(
+        "all", description="Filter by status. 'active' = exclude draft & void."
     ),
     search: Optional[str] = Query(None, description="Search invoice number or vendor"),
     sort: str = Query(
@@ -207,7 +212,8 @@ async def list_bills(
     List bills with filtering, sorting, and pagination.
 
     **Status values:**
-    - `all`: All bills
+    - `all`: All bills (including draft & void)
+    - `active`: All except draft & void (RECOMMENDED for hutang/AP queries)
     - `paid`: Fully paid (amount_paid >= amount)
     - `unpaid`: No payment yet, not overdue
     - `partial`: Partially paid
@@ -458,6 +464,7 @@ async def get_bill_detail(request: Request, bill_id: UUID):
         logger.error(f"Error getting bill {bill_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get bill")
 
+
 # =============================================================================
 # GET BILL JOURNALS
 # =============================================================================
@@ -546,16 +553,22 @@ async def get_bill_journals(request: Request, bill_id: UUID):
                     for line in lines_rows
                 ]
 
-                journals.append({
-                    "id": str(je_row["id"]),
-                    "entry_number": je_row["journal_number"],
-                    "posting_date": je_row["journal_date"].isoformat() if je_row["journal_date"] else None,
-                    "description": je_row["description"],
-                    "status": je_row["status"].lower() if je_row["status"] else "draft",
-                    "total_debit": float(je_row["total_debit"] or 0),
-                    "total_credit": float(je_row["total_credit"] or 0),
-                    "lines": lines,
-                })
+                journals.append(
+                    {
+                        "id": str(je_row["id"]),
+                        "entry_number": je_row["journal_number"],
+                        "posting_date": je_row["journal_date"].isoformat()
+                        if je_row["journal_date"]
+                        else None,
+                        "description": je_row["description"],
+                        "status": je_row["status"].lower()
+                        if je_row["status"]
+                        else "draft",
+                        "total_debit": float(je_row["total_debit"] or 0),
+                        "total_credit": float(je_row["total_credit"] or 0),
+                        "lines": lines,
+                    }
+                )
 
             return {"journals": journals}
 
@@ -602,23 +615,33 @@ async def get_bill_pdf(
         # Fetch tenant info for PDF header
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
             tenant_row = await conn.fetchrow(
                 'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
                 ctx["tenant_id"],
             )
-            tenant_info = {
-                "name": tenant_row["display_name"] if tenant_row else ctx["tenant_id"],
-                "address": tenant_row["address"] if tenant_row else None,
-                "phone": tenant_row["phone"] if tenant_row else None,
-                "logo_url": tenant_row["logo_url"] if tenant_row else None,
-            } if tenant_row else {"name": ctx["tenant_id"]}
+            tenant_info = (
+                {
+                    "name": tenant_row["display_name"]
+                    if tenant_row
+                    else ctx["tenant_id"],
+                    "address": tenant_row["address"] if tenant_row else None,
+                    "phone": tenant_row["phone"] if tenant_row else None,
+                    "logo_url": tenant_row["logo_url"] if tenant_row else None,
+                }
+                if tenant_row
+                else {"name": ctx["tenant_id"]}
+            )
 
             # Resolve logo to base64 data URI
             _logo_data = None
             _logo_fn = tenant_info.get("logo_url")
             if _logo_fn:
-                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_fn
+                _logo_path = (
+                    _Path(__file__).parent.parent / "static" / "logos" / _logo_fn
+                )
                 if _logo_path.exists():
                     with open(_logo_path, "rb") as _lf:
                         _logo_data = f"data:image/png;base64,{base64.b64encode(_lf.read()).decode()}"
@@ -657,7 +680,9 @@ async def get_bill_pdf(
             )
 
             # Calculate expiry
-            expires_at = datetime.utcnow() + timedelta(seconds=storage.config.url_expiry)
+            expires_at = datetime.utcnow() + timedelta(
+                seconds=storage.config.url_expiry
+            )
 
             return {
                 "success": True,
@@ -958,7 +983,8 @@ async def upload_attachment(
             # Verify bill exists
             bill = await conn.fetchrow(
                 "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2",
-                bill_id, tenant_id,
+                bill_id,
+                tenant_id,
             )
             if not bill:
                 raise HTTPException(status_code=404, detail="Bill not found")
@@ -974,12 +1000,18 @@ async def upload_attachment(
 
             # Insert into bill_attachments
             import uuid as uuid_mod
+
             attachment_id = uuid_mod.uuid4()
             await conn.execute(
                 """INSERT INTO bill_attachments (id, bill_id, filename, file_path, file_size, mime_type, uploaded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                attachment_id, bill_id, file.filename, result.file_path,
-                len(content), file.content_type, user_id,
+                attachment_id,
+                bill_id,
+                file.filename,
+                result.file_path,
+                len(content),
+                file.content_type,
+                user_id,
             )
 
             return {
@@ -996,7 +1028,9 @@ async def upload_attachment(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading attachment for bill {bill_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error uploading attachment for bill {bill_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to upload attachment")
 
 
@@ -1018,7 +1052,8 @@ async def list_bill_attachments(
 
         bill = await conn.fetchrow(
             "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2",
-            bill_id, tenant_id,
+            bill_id,
+            tenant_id,
         )
         if not bill:
             raise HTTPException(status_code=404, detail="Bill not found")
@@ -1034,17 +1069,25 @@ async def list_bill_attachments(
         attachments = []
         for r in rows:
             try:
-                url = await storage.generate_signed_url(r["file_path"]) if r["file_path"] else None
+                url = (
+                    await storage.generate_signed_url(r["file_path"])
+                    if r["file_path"]
+                    else None
+                )
             except Exception:
                 url = None
-            attachments.append({
-                "id": str(r["id"]),
-                "filename": r["filename"],
-                "url": url,
-                "size": r["file_size"],
-                "mime_type": r["mime_type"],
-                "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
-            })
+            attachments.append(
+                {
+                    "id": str(r["id"]),
+                    "filename": r["filename"],
+                    "url": url,
+                    "size": r["file_size"],
+                    "mime_type": r["mime_type"],
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
+                }
+            )
 
         return {"attachments": attachments}
 
@@ -1070,7 +1113,9 @@ async def delete_bill_attachment(
             """SELECT ba.id, ba.file_path FROM bill_attachments ba
                JOIN bills b ON b.id = ba.bill_id
                WHERE ba.id = $1 AND ba.bill_id = $2 AND b.tenant_id = $3""",
-            attachment_id, bill_id, tenant_id,
+            attachment_id,
+            bill_id,
+            tenant_id,
         )
         if not row:
             raise HTTPException(status_code=404, detail="Attachment not found")
@@ -1308,7 +1353,6 @@ async def calculate_bill_totals(request: Request, body: CreateBillRequestV2):
         raise HTTPException(status_code=500, detail="Failed to calculate")
 
 
-
 # =============================================================================
 # ACTIVITY ENDPOINT
 # =============================================================================
@@ -1330,13 +1374,13 @@ async def get_bill_activity(request: Request, bill_id: UUID):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        
+
         async with pool.acquire() as conn:
             # Verify bill exists and get bill data
             bill = await conn.fetchrow(
                 """
-                SELECT 
-                    b.id, b.invoice_number, b.created_at, b.updated_at, 
+                SELECT
+                    b.id, b.invoice_number, b.created_at, b.updated_at,
                     b.voided_at, b.voided_reason, b.created_by,
                     b.status_v2, b.posted_at, b.posted_by, b.amount,
                     u.name as creator_name, u.fullname as creator_fullname
@@ -1347,12 +1391,12 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                 bill_id,
                 ctx["tenant_id"],
             )
-            
+
             if not bill:
                 raise HTTPException(status_code=404, detail="Bill not found")
-            
+
             activities = []
-            
+
             # 1. Bill created activity
             creator_name = bill["creator_fullname"] or bill["creator_name"] or "System"
             activities.append(
@@ -1361,38 +1405,42 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                     type="created",
                     description="Faktur dibuat",
                     actor_name=creator_name,
-                    timestamp=bill["created_at"].isoformat() if bill["created_at"] else None,
+                    timestamp=bill["created_at"].isoformat()
+                    if bill["created_at"]
+                    else None,
                     amount=bill["amount"],
-                    details=f"Invoice #{bill['invoice_number']}"
+                    details=f"Invoice #{bill['invoice_number']}",
                 )
             )
-            
+
             # 2. Bill posted activity (if status_v2 is posted and posted_at exists)
             if bill["posted_at"] and bill["posted_at"] != bill["created_at"]:
                 poster = await conn.fetchrow(
                     """SELECT name, fullname FROM "User" WHERE id = $1""",
-                    str(bill["posted_by"]) if bill["posted_by"] else None
+                    str(bill["posted_by"]) if bill["posted_by"] else None,
                 )
                 poster_name = "System"
                 if poster:
                     poster_name = poster["fullname"] or poster["name"] or "System"
-                
+
                 activities.append(
                     BillActivity(
                         id=f"{bill_id}-posted",
                         type="status_changed",
                         description="Faktur diposting",
                         actor_name=poster_name,
-                        timestamp=bill["posted_at"].isoformat() if bill["posted_at"] else None,
+                        timestamp=bill["posted_at"].isoformat()
+                        if bill["posted_at"]
+                        else None,
                         old_value="draft",
-                        new_value="posted"
+                        new_value="posted",
                     )
                 )
-            
+
             # 3. Payment activities
             payments = await conn.fetch(
                 """
-                SELECT 
+                SELECT
                     bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
                     bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
                     u.name as payer_name, u.fullname as payer_fullname
@@ -1402,30 +1450,34 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                 WHERE bp.status != 'voided'
                 ORDER BY bp.created_at ASC
                 """,
-                bill_id
+                bill_id,
             )
-            
+
             for payment in payments:
-                payer_name = payment["payer_fullname"] or payment["payer_name"] or "System"
+                payer_name = (
+                    payment["payer_fullname"] or payment["payer_name"] or "System"
+                )
                 method_display = {
                     "cash": "tunai",
                     "transfer": "transfer",
                     "check": "cek/giro",
-                    "other": "lainnya"
+                    "other": "lainnya",
                 }.get(payment["payment_method"], payment["payment_method"])
-                
+
                 activities.append(
                     BillActivity(
                         id=str(payment["id"]),
                         type="payment",
                         description=f"Pembayaran {method_display}",
                         actor_name=payer_name,
-                        timestamp=payment["created_at"].isoformat() if payment["created_at"] else None,
+                        timestamp=payment["created_at"].isoformat()
+                        if payment["created_at"]
+                        else None,
                         amount=payment["amount"],
-                        details=payment["reference"] or payment["notes"]
+                        details=payment["reference"] or payment["notes"],
                     )
                 )
-            
+
             # 4. Voided activity
             if bill["voided_at"]:
                 activities.append(
@@ -1435,10 +1487,10 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                         description="Faktur dibatalkan",
                         actor_name="System",  # void doesn't track who voided
                         timestamp=bill["voided_at"].isoformat(),
-                        details=bill["voided_reason"]
+                        details=bill["voided_reason"],
                     )
                 )
-            
+
             # 5. Updated activity (if updated_at is significantly different from created_at)
             if bill["updated_at"] and bill["created_at"]:
                 time_diff = (bill["updated_at"] - bill["created_at"]).total_seconds()
@@ -1450,18 +1502,17 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                             type="updated",
                             description="Faktur diperbarui",
                             actor_name="System",
-                            timestamp=bill["updated_at"].isoformat()
+                            timestamp=bill["updated_at"].isoformat(),
                         )
                     )
-            
+
             # Sort by timestamp descending (most recent first)
             activities.sort(
-                key=lambda x: x.timestamp if x.timestamp else "",
-                reverse=True
+                key=lambda x: x.timestamp if x.timestamp else "", reverse=True
             )
-            
+
             return BillActivityResponse(activities=activities)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1486,14 +1537,18 @@ async def download_bill_attachment(
             FROM bill_attachments ba
             JOIN bills b ON b.id = ba.bill_id
             WHERE ba.id = $1 AND ba.bill_id = $2 AND b.tenant_id = $3""",
-            attachment_id, bill_id, tenant_id,
+            attachment_id,
+            bill_id,
+            tenant_id,
         )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     storage = get_storage_service()
     try:
-        obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
+        obj = storage.client.get_object(
+            Bucket=storage.config.bucket, Key=row["file_path"]
+        )
         body = obj["Body"]
 
         def iter_body():
@@ -1510,5 +1565,7 @@ async def download_bill_attachment(
             },
         )
     except Exception as e:
-        logger.error(f"Error downloading attachment {attachment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error downloading attachment {attachment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to download attachment")

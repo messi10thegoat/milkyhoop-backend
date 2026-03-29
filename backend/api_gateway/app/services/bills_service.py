@@ -16,12 +16,14 @@ from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
 from datetime import date, datetime
 from decimal import Decimal
+
 _Dec = Decimal
 
 import asyncpg
 import uuid as uuid_module
 
 from .resolve_account import resolve_account_id
+from .unit_helpers import convert_to_base_unit
 
 from ..utils.sorting import build_order_by_clause
 from ..utils.money import cents_to_decimal_string
@@ -65,7 +67,6 @@ BILL_JOURNAL_PAID_CTE = """
         GROUP BY bill_id
     )
 """
-
 
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,9 @@ class BillCalculator:
         # Step 3: Invoice discount (% takes precedence over amount)
         if invoice_discount_percent > 0:
             invoice_discount_total = (
-                after_item_discount * Decimal(str(invoice_discount_percent)) / Decimal("100")
+                after_item_discount
+                * Decimal(str(invoice_discount_percent))
+                / Decimal("100")
             )
         else:
             invoice_discount_total = Decimal(str(invoice_discount_amount))
@@ -152,7 +155,9 @@ class BillCalculator:
         # Step 4: Cash discount (% takes precedence over amount)
         if cash_discount_percent > 0:
             cash_discount_total = (
-                after_invoice_discount * Decimal(str(cash_discount_percent)) / Decimal("100")
+                after_invoice_discount
+                * Decimal(str(cash_discount_percent))
+                / Decimal("100")
             )
         else:
             cash_discount_total = Decimal(str(cash_discount_amount))
@@ -268,9 +273,16 @@ class BillsService:
                         ELSE 'unpaid'
                     END
                 """
-                if status == 'unpaid':
+                if status == "active":
+                    # Exclude draft & void — for hutang/AP queries
+                    conditions.append(
+                        f"{computed_status_expr} NOT IN ('draft', 'void')"
+                    )
+                elif status == "unpaid":
                     # 'belum lunas' = semua yang belum dibayar penuh (unpaid + partial + overdue)
-                    conditions.append(f"{computed_status_expr} IN ('unpaid', 'partial', 'overdue')")
+                    conditions.append(
+                        f"{computed_status_expr} IN ('unpaid', 'partial', 'overdue')"
+                    )
                 else:
                     conditions.append(f"{computed_status_expr} = ${param_idx}")
                     params.append(status)
@@ -418,9 +430,13 @@ class BillsService:
                         "created_at": row["created_at"].isoformat(),
                         "updated_at": row["updated_at"].isoformat(),
                         "operational_status": row.get("operational_status") or "DRAFT",
-                        "doc_status": "draft" if (row.get("operational_status") or "DRAFT") == "DRAFT" else "posted",
+                        "doc_status": "draft"
+                        if (row.get("operational_status") or "DRAFT") == "DRAFT"
+                        else "posted",
                         "accounting_status": row.get("accounting_status") or "UNPOSTED",
-                        "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
+                        "vendor_id": str(row["vendor_id"])
+                        if row["vendor_id"]
+                        else None,
                         "vendor_name": row["vendor_name"],
                     }
                 )
@@ -523,7 +539,8 @@ class BillsService:
                   AND dtl.tenant_id = $2
                 ORDER BY dtl.created_at
                 """,
-                bill_id, tenant_id,
+                bill_id,
+                tenant_id,
             )
             tax_lines = [
                 {
@@ -536,7 +553,7 @@ class BillsService:
                 }
                 for row in tax_lines_rows
             ]
-                # Build vendor info
+            # Build vendor info
             vendor_name = bill["vendor_name"] or ""
             words = vendor_name.split()
             if len(words) >= 2:
@@ -555,7 +572,9 @@ class BillsService:
                     "initials": initials,
                 },
                 "amount": self._money_str(bill["amount"]),
-                "amount_paid": self._money_str(bill["journal_paid"]),  # Law 16: journal-derived
+                "amount_paid": self._money_str(
+                    bill["journal_paid"]
+                ),  # Law 16: journal-derived
                 "amount_due": self._money_str(bill["amount_due"]),
                 "status": bill["calculated_status"],
                 "issue_date": bill["issue_date"].isoformat(),
@@ -563,33 +582,65 @@ class BillsService:
                 "ref_no": bill.get("ref_no"),
                 "tax_rate": float(bill["tax_rate"]) if bill.get("tax_rate") else 0,
                 "tax_inclusive": bool(bill.get("tax_inclusive", False)),
-                "tax_code_id": str(bill["tax_code_id"]) if bill.get("tax_code_id") else None,
+                "tax_code_id": str(bill["tax_code_id"])
+                if bill.get("tax_code_id")
+                else None,
                 "tax_lines": tax_lines,
-                "invoice_discount_percent": float(bill["invoice_discount_percent"]) if bill.get("invoice_discount_percent") else 0,
-                "invoice_discount_amount": self._money_str(bill.get("invoice_discount_amount") or 0),
-                "cash_discount_percent": float(bill["cash_discount_percent"]) if bill.get("cash_discount_percent") else 0,
-                "cash_discount_amount": self._money_str(bill.get("cash_discount_amount") or 0),
-                "dpp_manual": int(bill["dpp_manual"]) if bill.get("dpp_manual") else None,
-                "posted_at": bill["posted_at"].isoformat() if bill.get("posted_at") else None,
+                "invoice_discount_percent": float(bill["invoice_discount_percent"])
+                if bill.get("invoice_discount_percent")
+                else 0,
+                "invoice_discount_amount": self._money_str(
+                    bill.get("invoice_discount_amount") or 0
+                ),
+                "cash_discount_percent": float(bill["cash_discount_percent"])
+                if bill.get("cash_discount_percent")
+                else 0,
+                "cash_discount_amount": self._money_str(
+                    bill.get("cash_discount_amount") or 0
+                ),
+                "dpp_manual": int(bill["dpp_manual"])
+                if bill.get("dpp_manual")
+                else None,
+                "posted_at": bill["posted_at"].isoformat()
+                if bill.get("posted_at")
+                else None,
                 "notes": bill["notes"],
                 "subtotal": self._money_str(bill.get("subtotal") or 0),
-                "item_discount_total": self._money_str(bill.get("item_discount_total") or 0),
-                "invoice_discount_total": self._money_str(bill.get("invoice_discount_total") or 0),
-                "cash_discount_total": self._money_str(bill.get("cash_discount_total") or 0),
+                "item_discount_total": self._money_str(
+                    bill.get("item_discount_total") or 0
+                ),
+                "invoice_discount_total": self._money_str(
+                    bill.get("invoice_discount_total") or 0
+                ),
+                "cash_discount_total": self._money_str(
+                    bill.get("cash_discount_total") or 0
+                ),
                 "dpp": self._money_str(bill.get("dpp") or 0),
                 "tax_amount": self._money_str(bill.get("tax_amount") or 0),
-                "grand_total": self._money_str(bill.get("grand_total") or bill.get("amount") or 0),
+                "grand_total": self._money_str(
+                    bill.get("grand_total") or bill.get("amount") or 0
+                ),
                 "calculation": {
                     "subtotal": self._money_str(bill.get("subtotal") or 0),
-                    "item_discount_total": self._money_str(bill.get("item_discount_total") or 0),
-                    "invoice_discount_total": self._money_str(bill.get("invoice_discount_total") or 0),
-                    "cash_discount_total": self._money_str(bill.get("cash_discount_total") or 0),
+                    "item_discount_total": self._money_str(
+                        bill.get("item_discount_total") or 0
+                    ),
+                    "invoice_discount_total": self._money_str(
+                        bill.get("invoice_discount_total") or 0
+                    ),
+                    "cash_discount_total": self._money_str(
+                        bill.get("cash_discount_total") or 0
+                    ),
                     "dpp": self._money_str(bill.get("dpp") or 0),
                     "tax_amount": self._money_str(bill.get("tax_amount") or 0),
-                    "grand_total": self._money_str(bill.get("grand_total") or bill.get("amount") or 0),
+                    "grand_total": self._money_str(
+                        bill.get("grand_total") or bill.get("amount") or 0
+                    ),
                 },
                 "operational_status": bill.get("operational_status") or "DRAFT",
-                "doc_status": "draft" if (bill.get("operational_status") or "DRAFT") == "DRAFT" else "posted",
+                "doc_status": "draft"
+                if (bill.get("operational_status") or "DRAFT") == "DRAFT"
+                else "posted",
                 "accounting_status": bill.get("accounting_status") or "UNPOSTED",
                 "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
                 "vendor_name": bill["vendor_name"],
@@ -600,20 +651,28 @@ class BillsService:
                         if item["product_id"]
                         else None,
                         "product_code": item.get("product_code"),
-                        "product_name": item.get("product_name") or item.get("description") or "-",
+                        "product_name": item.get("product_name")
+                        or item.get("description")
+                        or "-",
                         "description": item.get("description"),
                         "qty": int(item["quantity"]),
                         "quantity": float(item["quantity"]),
                         "unit": item["unit"],
                         "price": self._money_str(item["unit_price"]),
                         "unit_price": self._money_str(item["unit_price"]),
-                        "discount_percent": float(item["discount_percent"]) if item.get("discount_percent") else 0,
-                        "discount_amount": self._money_str(item.get("discount_amount") or 0),
+                        "discount_percent": float(item["discount_percent"])
+                        if item.get("discount_percent")
+                        else 0,
+                        "discount_amount": self._money_str(
+                            item.get("discount_amount") or 0
+                        ),
                         "total": self._money_str(item.get("subtotal") or 0),
                         "subtotal": self._money_str(item.get("subtotal") or 0),
                         "batch_no": item.get("batch_no"),
                         "exp_date": item.get("exp_date"),
-                        "bonus_qty": int(item["bonus_qty"]) if item.get("bonus_qty") else 0,
+                        "bonus_qty": int(item["bonus_qty"])
+                        if item.get("bonus_qty")
+                        else 0,
                     }
                     for item in items
                 ],
@@ -670,10 +729,11 @@ class BillsService:
             async with conn.transaction():
                 # P0-Fix #4: Advisory lock for concurrent bill creation (Law 13)
                 import uuid as uuid_module
+
                 bill_uuid = uuid_module.uuid4()
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BILL_CREATE:{bill_uuid}"
+                    f"BILL_CREATE:{bill_uuid}",
                 )
 
                 # 1. Generate invoice number if not provided
@@ -799,9 +859,11 @@ class BillsService:
                     # Get default warehouse for tenant
                     default_warehouse = await conn.fetchrow(
                         "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
-                        tenant_id
+                        tenant_id,
                     )
-                    warehouse_id = default_warehouse["id"] if default_warehouse else None
+                    warehouse_id = (
+                        default_warehouse["id"] if default_warehouse else None
+                    )
 
                     for item in items:
                         product_id = item.get("product_id")
@@ -814,10 +876,14 @@ class BillsService:
                             SELECT id, nama_produk, item_code, track_inventory, item_type, track_batches
                             FROM products WHERE id = $1
                             """,
-                            product_id
+                            product_id,
                         )
-                        
-                        if not product or product["item_type"] != "goods" or not product.get("track_inventory", True):
+
+                        if (
+                            not product
+                            or product["item_type"] != "goods"
+                            or not product.get("track_inventory", True)
+                        ):
                             continue
 
                         quantity = Decimal(str(item["quantity"]))
@@ -831,27 +897,35 @@ class BillsService:
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
                             """,
-                            tenant_id, product_id
+                            tenant_id,
+                            product_id,
                         )
-                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        current_balance = (
+                            Decimal(str(balance_row["balance"]))
+                            if balance_row
+                            else Decimal("0")
+                        )
                         new_balance = current_balance + quantity
 
                         # Calculate weighted average cost
                         avg_cost_row = await conn.fetchrow(
                             """
-                            SELECT 
+                            SELECT
                                 COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
                                 COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
                             """,
-                            tenant_id, product_id
+                            tenant_id,
+                            product_id,
                         )
-                        
+
                         if avg_cost_row and avg_cost_row["total_qty"] > 0:
                             old_value = Decimal(str(avg_cost_row["total_value"]))
                             old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                            new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                            new_avg_cost = (old_value + total_cost) / (
+                                old_qty + quantity
+                            )
                         else:
                             new_avg_cost = unit_cost
 
@@ -888,10 +962,12 @@ class BillsService:
                             journal_id,
                             user_id,
                             f"Purchase from {vendor_name}",
-                            None  # batch_id - legacy create_bill doesn't support batches
+                            None,  # batch_id - legacy create_bill doesn't support batches
                         )
 
-                        logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
+                        logger.info(
+                            f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}"
+                        )
 
                 else:
                     # Accounting kernel not available - this is a configuration error
@@ -1139,14 +1215,22 @@ class BillsService:
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
                     """,
-                    bill_id, tenant_id,
+                    bill_id,
+                    tenant_id,
                 )
 
                 if not bill:
                     return {"success": False, "message": "Bill not found", "data": None}
 
-                if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
-                    return {"success": False, "message": "Cannot pay voided bill", "data": None}
+                if (
+                    bill["status"] in ("void",)
+                    or (bill.get("status_v2") or "") == "void"
+                ):
+                    return {
+                        "success": False,
+                        "message": "Cannot pay voided bill",
+                        "data": None,
+                    }
 
                 # 3. Compute remaining from journal (Law 16) — NOT cached amount_paid
                 journal_remaining = await conn.fetchval(
@@ -1184,7 +1268,9 @@ class BillsService:
                     SELECT GREATEST(0, bo.total_credit - bps.total_debit)
                     FROM bill_obligation bo, bill_payments_settled bps
                     """,
-                    tenant_id, str(bill_id), bill_id,
+                    tenant_id,
+                    str(bill_id),
+                    bill_id,
                 )
                 remaining = int(journal_remaining or 0)
 
@@ -1196,7 +1282,11 @@ class BillsService:
                 payment_amount = _Dec(str(request["amount"]))
 
                 if payment_amount <= 0:
-                    return {"success": False, "message": "Payment amount must be positive", "data": None}
+                    return {
+                        "success": False,
+                        "message": "Payment amount must be positive",
+                        "data": None,
+                    }
 
                 if payment_amount > remaining:
                     return {
@@ -1231,11 +1321,16 @@ class BillsService:
                         JOIN chart_of_accounts coa ON coa.id = ba.coa_id
                         WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.is_active = true
                         """,
-                        bank_account_id, tenant_id,
+                        bank_account_id,
+                        tenant_id,
                     )
 
                     if not bank_account:
-                        return {"success": False, "message": "Bank account not found or inactive", "data": None}
+                        return {
+                            "success": False,
+                            "message": "Bank account not found or inactive",
+                            "data": None,
+                        }
 
                     if bank_account["is_header"]:
                         return {
@@ -1252,17 +1347,28 @@ class BillsService:
                         coa_id = UUID(coa_id)
                     bank_coa_id = coa_id
                 else:
-                    return {"success": False, "message": "bank_account_id atau account_id wajib diisi", "data": None}
+                    return {
+                        "success": False,
+                        "message": "bank_account_id atau account_id wajib diisi",
+                        "data": None,
+                    }
 
                 # 5. Resolve AP account (Law 27)
                 ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
                 if not ap_account_id:
-                    return {"success": False, "message": "AP account (2-10100) not found", "data": None}
+                    return {
+                        "success": False,
+                        "message": "AP account (2-10100) not found",
+                        "data": None,
+                    }
 
                 # 6. Generate payment number
-                payment_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, 'BP')", tenant_id
-                ) or f"BP-{date.today().strftime('%y%m')}-AUTO"
+                payment_number = (
+                    await conn.fetchval(
+                        "SELECT get_next_journal_number($1, 'BP')", tenant_id
+                    )
+                    or f"BP-{date.today().strftime('%y%m')}-AUTO"
+                )
 
                 # 7. Create journal DRAFT → lines → POSTED (Law 20)
                 journal_id = uuid_module.uuid4()
@@ -1277,22 +1383,32 @@ class BillsService:
                         status, total_debit, total_credit, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', $6, $7, 'DRAFT', $8, $8, $9)
                     """,
-                    journal_id, tenant_id, payment_number, payment_date,
+                    journal_id,
+                    tenant_id,
+                    payment_number,
+                    payment_date,
                     f"Pembayaran ke {bill['vendor_name']}",
-                    payment_id, str(trace_id),
-                    payment_amount, user_id,
+                    payment_id,
+                    str(trace_id),
+                    payment_amount,
+                    user_id,
                 )
 
                 # Fase 2.3: Resolve PPh CoA
                 pph_coa_id = None
                 if pph_amount > 0 and pph_tax_code_id:
                     from uuid import UUID as _UUID
+
                     pph_coa_id = await conn.fetchval(
                         "SELECT coa_id FROM tax_codes WHERE id = $1",
-                        _UUID(pph_tax_code_id) if isinstance(pph_tax_code_id, str) else pph_tax_code_id,
+                        _UUID(pph_tax_code_id)
+                        if isinstance(pph_tax_code_id, str)
+                        else pph_tax_code_id,
                     )
                     if not pph_coa_id:
-                        pph_coa_id = await resolve_account_id(conn, tenant_id, "2-10300")
+                        pph_coa_id = await resolve_account_id(
+                            conn, tenant_id, "2-10300"
+                        )
 
                 line_number = 0
 
@@ -1303,8 +1419,12 @@ class BillsService:
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, ap_account_id,
-                    payment_amount, f"Pelunasan hutang - {bill['vendor_name']}",
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    ap_account_id,
+                    payment_amount,
+                    f"Pelunasan hutang - {bill['vendor_name']}",
                 )
 
                 # Cr. Bank/Cash (money going out) — reduced by PPh
@@ -1315,8 +1435,12 @@ class BillsService:
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, bank_coa_id,
-                    actual_transfer, f"Pembayaran dari bank - {payment_number}",
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    bank_coa_id,
+                    actual_transfer,
+                    f"Pembayaran dari bank - {payment_number}",
                 )
 
                 # Cr. Utang Pajak / PPh Withheld (Fase 2.3)
@@ -1327,8 +1451,12 @@ class BillsService:
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, $3, $4, 0, $5, $6)
                         """,
-                        uuid_module.uuid4(), journal_id, line_number, pph_coa_id,
-                        pph_amount, "PPh dipotong dari pembayaran vendor",
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        pph_coa_id,
+                        pph_amount,
+                        "PPh dipotong dari pembayaran vendor",
                     )
 
                 # DRAFT → POSTED (triggers hash chain)
@@ -1358,13 +1486,20 @@ class BillsService:
                         $15::uuid, $16
                     )
                     """,
-                    payment_id, tenant_id, payment_number,
-                    bill.get("vendor_id"), bill["vendor_name"],
-                    payment_date, request["payment_method"],
+                    payment_id,
+                    tenant_id,
+                    payment_number,
+                    bill.get("vendor_id"),
+                    bill["vendor_name"],
+                    payment_date,
+                    request["payment_method"],
                     bank_account_id if bank_account_id else None,
                     bank_account["account_name"] if bank_account else None,
-                    payment_amount, journal_id,
-                    request.get("reference"), request.get("notes"), user_id,
+                    payment_amount,
+                    journal_id,
+                    request.get("reference"),
+                    request.get("notes"),
+                    user_id,
                     UUID(pph_tax_code_id) if pph_tax_code_id else None,
                     pph_amount,
                 )
@@ -1382,8 +1517,11 @@ class BillsService:
                         NOW()
                     )
                     """,
-                    payment_id, bill_id,
-                    remaining, payment_amount, remaining - payment_amount,
+                    payment_id,
+                    bill_id,
+                    remaining,
+                    payment_amount,
+                    remaining - payment_amount,
                 )
 
                 # 9. INSERT bank_transaction (with journal_id, BankSync Rule 1)
@@ -1407,22 +1545,39 @@ class BillsService:
                             payee_payer, journal_id, created_by
                         ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'bill', $7, $8, $9, $10, $11)
                         """,
-                        bank_transaction_id, tenant_id, bank_account["id"],
-                        payment_date, tx_type, tx_amount,
-                        bill_id, f"Payment for {bill['vendor_name']}",
-                        bill["vendor_name"], journal_id, user_id,
+                        bank_transaction_id,
+                        tenant_id,
+                        bank_account["id"],
+                        payment_date,
+                        tx_type,
+                        tx_amount,
+                        bill_id,
+                        f"Payment for {bill['vendor_name']}",
+                        bill["vendor_name"],
+                        journal_id,
+                        user_id,
                     )
 
                 # 9.5 PPh rider: withholding_tax_records (Fase 2.3)
                 if pph_amount > 0 and pph_tax_code_id:
                     from uuid import UUID as _UUID
-                    _pph_tc_id = _UUID(pph_tax_code_id) if isinstance(pph_tax_code_id, str) else pph_tax_code_id
+
+                    _pph_tc_id = (
+                        _UUID(pph_tax_code_id)
+                        if isinstance(pph_tax_code_id, str)
+                        else pph_tax_code_id
+                    )
                     pph_tc = await conn.fetchrow(
-                        "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1", _pph_tc_id,
+                        "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
+                        _pph_tc_id,
                     )
                     vendor_npwp = None  # vendors table has no npwp column yet
                     pph_rate = _Dec(str(pph_tc["rate"])) if pph_tc else _Dec("2")
-                    pph_dpp = (_Dec(str(pph_amount)) / pph_rate * 100).quantize(_Dec("1")) if pph_rate > 0 else _Dec("0")
+                    pph_dpp = (
+                        (_Dec(str(pph_amount)) / pph_rate * 100).quantize(_Dec("1"))
+                        if pph_rate > 0
+                        else _Dec("0")
+                    )
                     tax_period = payment_date.strftime("%Y%m")
 
                     await conn.execute(
@@ -1439,10 +1594,17 @@ class BillsService:
                             $10, $11, 'recorded'
                         )
                         """,
-                        uuid_module.uuid4(), tenant_id, _pph_tc_id,
-                        payment_id, payment_id, journal_id,
-                        bill.get("vendor_id"), vendor_npwp, tax_period,
-                        pph_dpp, pph_amount,
+                        uuid_module.uuid4(),
+                        tenant_id,
+                        _pph_tc_id,
+                        payment_id,
+                        payment_id,
+                        journal_id,
+                        bill.get("vendor_id"),
+                        vendor_npwp,
+                        tax_period,
+                        pph_dpp,
+                        pph_amount,
                     )
 
                 # 10. Update bill cache (Law 21 — write-side only)
@@ -1454,7 +1616,10 @@ class BillsService:
                     UPDATE bills SET amount_paid = $1, status = $2
                     WHERE id = $3 AND tenant_id = $4
                     """,
-                    new_paid, new_status, bill_id, tenant_id,
+                    new_paid,
+                    new_status,
+                    bill_id,
+                    tenant_id,
                 )
 
                 # 11. Update AP cache (if exists)
@@ -1471,7 +1636,9 @@ class BillsService:
                             updated_at = NOW()
                         WHERE id = $2 AND tenant_id = $3
                         """,
-                        payment_amount, bill["ap_id"], tenant_id,
+                        payment_amount,
+                        bill["ap_id"],
+                        tenant_id,
                     )
 
                 logger.info(
@@ -1489,7 +1656,9 @@ class BillsService:
                         "journal_id": str(journal_id),
                         "bill_status": new_status,
                         "amount_due": int(bill["amount"]) - new_paid,
-                        "bank_transaction_id": str(bank_transaction_id) if bank_transaction_id else None,
+                        "bank_transaction_id": str(bank_transaction_id)
+                        if bank_transaction_id
+                        else None,
                     },
                 }
 
@@ -1581,12 +1750,17 @@ class BillsService:
             # Pre-check: fast fail before lock (non-authoritative)
             bill_exists = await conn.fetchrow(
                 "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
-                bill_id, tenant_id,
+                bill_id,
+                tenant_id,
             )
             if not bill_exists:
                 return {"success": False, "message": "Bill not found", "data": None}
             if bill_exists["status"] == "void":
-                return {"success": False, "message": "Bill is already voided", "data": None}
+                return {
+                    "success": False,
+                    "message": "Bill is already voided",
+                    "data": None,
+                }
 
             async with conn.transaction():
                 # D1 FIX: Advisory lock FIRST — Law 13
@@ -1605,13 +1779,17 @@ class BillsService:
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
                     """,
-                    bill_id, tenant_id,
+                    bill_id,
+                    tenant_id,
                 )
 
                 if not bill:
                     return {"success": False, "message": "Bill not found", "data": None}
 
-                if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
+                if (
+                    bill["status"] in ("void",)
+                    or (bill.get("status_v2") or "") == "void"
+                ):
                     return {
                         "success": False,
                         "message": "Bill is already voided",
@@ -1635,7 +1813,8 @@ class BillsService:
                           AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
                     ) combined
                     """,
-                    bill_id, tenant_id,
+                    bill_id,
+                    tenant_id,
                 )
 
                 if journal_paid and journal_paid > 0:
@@ -1689,7 +1868,9 @@ class BillsService:
                             updated_at = NOW()
                         RETURNING last_number
                         """,
-                        tenant_id, today.year, today.month,
+                        tenant_id,
+                        today.year,
+                        today.month,
                     )
                     rev_journal_number = f"REV-{year_month_str}-{rev_seq:04d}"
 
@@ -1711,10 +1892,15 @@ class BillsService:
                             $8, $8, 'DRAFT', $9, $10, $11
                         )
                         """,
-                        reversal_journal_id, tenant_id, rev_journal_number, today,
+                        reversal_journal_id,
+                        tenant_id,
+                        rev_journal_number,
+                        today,
                         f"VOID: Bill {bill['invoice_number']} - {bill['vendor_name']}",
-                        bill_id, trace_id,
-                        total_amount, user_id,
+                        bill_id,
+                        trace_id,
+                        total_amount,
+                        user_id,
                         bill["journal_id"],  # reversal_of_id
                         reason,
                     )
@@ -1730,7 +1916,7 @@ class BillsService:
                             reversal_journal_id,
                             line["account_id"],
                             line["credit"],  # original credit -> reversal debit
-                            line["debit"],   # original debit -> reversal credit
+                            line["debit"],  # original debit -> reversal credit
                             f"VOID: {line['memo'] or bill['invoice_number']}",
                             idx,
                         )
@@ -1748,7 +1934,8 @@ class BillsService:
                         SET reversed_by_id = $2, reversed_at = NOW()
                         WHERE id = $1
                         """,
-                        bill["journal_id"], reversal_journal_id,
+                        bill["journal_id"],
+                        reversal_journal_id,
                     )
 
                     logger.info(
@@ -1790,7 +1977,8 @@ class BillsService:
                         FROM bank_transactions
                         WHERE journal_id = $1 AND tenant_id = $2
                         """,
-                        bill["journal_id"], tenant_id,
+                        bill["journal_id"],
+                        tenant_id,
                     )
 
                     for bt in bank_txns:
@@ -1811,14 +1999,20 @@ class BillsService:
                                 'bill_void', $7, $8, $9, $10
                             )
                             """,
-                            _uuid4(), tenant_id, bt["bank_account_id"],
-                            today, reversed_type, -bt["amount"],
+                            _uuid4(),
+                            tenant_id,
+                            bt["bank_account_id"],
+                            today,
+                            reversed_type,
+                            -bt["amount"],
                             bill_id,
                             f"VOID: Reversal of {bt['description']}",
                             reversal_journal_id,
                             user_id,
                         )
-                        logger.info(f"Bank transaction reversed for bill void: {bt['id']}")
+                        logger.info(
+                            f"Bank transaction reversed for bill void: {bt['id']}"
+                        )
 
                 # ============================================================
                 # 4. Update AP status (if exists)
@@ -1848,7 +2042,8 @@ class BillsService:
                         updated_at = NOW()
                     WHERE id = $2
                     """,
-                    reason, bill_id,
+                    reason,
+                    bill_id,
                 )
 
                 logger.info(f"Bill voided: {bill_id}, reason: {reason}")
@@ -1866,8 +2061,6 @@ class BillsService:
                         else None,
                     },
                 }
-
-
 
     # =========================================================================
     # GET SUMMARY
@@ -2276,7 +2469,9 @@ class BillsService:
                     calc["dpp"],
                     calc["tax_amount"],
                     calc["grand_total"],
-                    UUID(str(request["tax_code_id"])) if request.get("tax_code_id") else None,  # UUID from tax_codes table
+                    UUID(str(request["tax_code_id"]))
+                    if request.get("tax_code_id")
+                    else None,  # UUID from tax_codes table
                 )
 
                 # 6. Insert items
@@ -2405,19 +2600,23 @@ class BillsService:
                             LEFT JOIN products p ON p.id = bi.product_id
                             WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
                             """,
-                            bill_id
+                            bill_id,
                         )
 
                         # Get default warehouse for tenant
                         default_warehouse = await conn.fetchrow(
                             "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
-                            tenant_id
+                            tenant_id,
                         )
-                        warehouse_id = default_warehouse["id"] if default_warehouse else None
+                        warehouse_id = (
+                            default_warehouse["id"] if default_warehouse else None
+                        )
 
                         for inv_item in bill_items_for_inv:
                             # Only process inventory-tracked goods
-                            if inv_item["item_type"] != "goods" or not inv_item.get("track_inventory", True):
+                            if inv_item["item_type"] != "goods" or not inv_item.get(
+                                "track_inventory", True
+                            ):
                                 continue
 
                             product_id = inv_item["product_id"]
@@ -2432,9 +2631,14 @@ class BillsService:
                                 FROM inventory_ledger
                                 WHERE tenant_id = $1 AND product_id = $2
                                 """,
-                                tenant_id, product_id
+                                tenant_id,
+                                product_id,
                             )
-                            current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                            current_balance = (
+                                Decimal(str(balance_row["balance"]))
+                                if balance_row
+                                else Decimal("0")
+                            )
                             new_balance = current_balance + quantity
 
                             # Calculate weighted average cost
@@ -2446,22 +2650,30 @@ class BillsService:
                                 FROM inventory_ledger
                                 WHERE tenant_id = $1 AND product_id = $2
                                 """,
-                                tenant_id, product_id
+                                tenant_id,
+                                product_id,
                             )
 
                             if avg_cost_row and avg_cost_row["total_qty"] > 0:
                                 old_value = Decimal(str(avg_cost_row["total_value"]))
                                 old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                                new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                                new_avg_cost = (old_value + total_cost) / (
+                                    old_qty + quantity
+                                )
                             else:
                                 new_avg_cost = unit_cost
 
                             # --- Batch resolution (Tahap 1.2) ---
                             batch_id = None
-                            if inv_item.get("track_batches") and inv_item.get("batch_no"):
-                                exp_date_val = inv_item.get("exp_date")  # Already a date from bill_items
+                            if inv_item.get("track_batches") and inv_item.get(
+                                "batch_no"
+                            ):
+                                exp_date_val = inv_item.get(
+                                    "exp_date"
+                                )  # Already a date from bill_items
 
-                                batch_row = await conn.fetchrow("""
+                                batch_row = await conn.fetchrow(
+                                    """
                                     INSERT INTO item_batches (
                                         tenant_id, item_id, batch_number, expiry_date,
                                         received_date, initial_quantity, current_quantity,
@@ -2473,27 +2685,51 @@ class BillsService:
                                         total_value = item_batches.total_value + EXCLUDED.total_value,
                                         updated_at = NOW()
                                     RETURNING id
-                                """, tenant_id, product_id, inv_item["batch_no"], exp_date_val,
-                                    issue_date, quantity, unit_cost, total_cost, bill_id, user_id)
+                                """,
+                                    tenant_id,
+                                    product_id,
+                                    inv_item["batch_no"],
+                                    exp_date_val,
+                                    issue_date,
+                                    quantity,
+                                    unit_cost,
+                                    total_cost,
+                                    bill_id,
+                                    user_id,
+                                )
 
                                 batch_id = batch_row["id"]
 
                                 if warehouse_id:
-                                    await conn.execute("""
+                                    await conn.execute(
+                                        """
                                         INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
                                         VALUES ($1, $2, $3, $4)
                                         ON CONFLICT (batch_id, warehouse_id)
                                         DO UPDATE SET
                                             quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
                                             last_movement_date = NOW(), updated_at = NOW()
-                                    """, tenant_id, batch_id, warehouse_id, quantity)
+                                    """,
+                                        tenant_id,
+                                        batch_id,
+                                        warehouse_id,
+                                        quantity,
+                                    )
 
-                                await conn.execute("""
+                                await conn.execute(
+                                    """
                                     UPDATE bill_items SET batch_id = $1
                                     WHERE bill_id = $2 AND product_id = $3 AND batch_no = $4
-                                """, batch_id, bill_id, product_id, inv_item["batch_no"])
+                                """,
+                                    batch_id,
+                                    bill_id,
+                                    product_id,
+                                    inv_item["batch_no"],
+                                )
 
-                                logger.info(f"Batch created/updated: {inv_item['batch_no']} for product {product_id}, batch_id={batch_id}")
+                                logger.info(
+                                    f"Batch created/updated: {inv_item['batch_no']} for product {product_id}, batch_id={batch_id}"
+                                )
 
                             # Insert inventory_ledger entry
                             await conn.execute(
@@ -2528,10 +2764,12 @@ class BillsService:
                                 journal_id,
                                 user_id,
                                 f"Purchase from {vendor_name}",
-                                batch_id
+                                batch_id,
                             )
 
-                            logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
+                            logger.info(
+                                f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}"
+                            )
 
                     else:
                         # Log warning but allow draft-like behavior
@@ -2564,8 +2802,12 @@ class BillsService:
                         "due_date": due_date.isoformat() if due_date else None,
                         "calculation": calc,
                         "created_at": now_iso,
-                        "operational_status": "RECEIVED" if status == "posted" else "DRAFT",
-                        "accounting_status": "POSTED" if status == "posted" else "UNPOSTED",
+                        "operational_status": "RECEIVED"
+                        if status == "posted"
+                        else "DRAFT",
+                        "accounting_status": "POSTED"
+                        if status == "posted"
+                        else "UNPOSTED",
                     },
                 }
 
@@ -2605,7 +2847,8 @@ class BillsService:
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
                     """,
-                    bill_id, tenant_id,
+                    bill_id,
+                    tenant_id,
                 )
 
                 if not bill:
@@ -2624,20 +2867,35 @@ class BillsService:
 
                 # 3. Resolve accounts (Law 27 — no hardcoded codes)
                 ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
-                inventory_account_id = await resolve_account_id(conn, tenant_id, "1-10600")
+                inventory_account_id = await resolve_account_id(
+                    conn, tenant_id, "1-10600"
+                )
                 vat_input_account_id = None
                 if bill_tax > 0:
-                    vat_input_account_id = await resolve_account_id(conn, tenant_id, "1-10800")
+                    vat_input_account_id = await resolve_account_id(
+                        conn, tenant_id, "1-10800"
+                    )
 
                 if not ap_account_id:
-                    return {"success": False, "message": "AP account (2-10100) not found", "data": None}
+                    return {
+                        "success": False,
+                        "message": "AP account (2-10100) not found",
+                        "data": None,
+                    }
                 if not inventory_account_id:
-                    return {"success": False, "message": "Inventory account (1-10600) not found", "data": None}
+                    return {
+                        "success": False,
+                        "message": "Inventory account (1-10600) not found",
+                        "data": None,
+                    }
 
                 # 4. Generate journal number
-                journal_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, 'PJ')", tenant_id
-                ) or f"PJ-{bill['issue_date'].strftime('%y%m')}-AUTO"
+                journal_number = (
+                    await conn.fetchval(
+                        "SELECT get_next_journal_number($1, 'PJ')", tenant_id
+                    )
+                    or f"PJ-{bill['issue_date'].strftime('%y%m')}-AUTO"
+                )
 
                 # 5. Create journal DRAFT (Law 20)
                 journal_id = uuid_module.uuid4()
@@ -2651,10 +2909,15 @@ class BillsService:
                         status, total_debit, total_credit, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'BILL', $6, $7, 'DRAFT', $8, $8, $9)
                     """,
-                    journal_id, tenant_id, journal_number, bill["issue_date"],
+                    journal_id,
+                    tenant_id,
+                    journal_number,
+                    bill["issue_date"],
                     f"Bill dari {bill['vendor_name']} - {bill['invoice_number']}",
-                    bill_id, str(trace_id),
-                    grand_total, user_id,
+                    bill_id,
+                    str(trace_id),
+                    grand_total,
+                    user_id,
                 )
 
                 # 6. Journal lines
@@ -2666,8 +2929,11 @@ class BillsService:
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number,
-                    inventory_account_id, subtotal,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    inventory_account_id,
+                    subtotal,
                     f"Pembelian dari {bill['vendor_name']}",
                 )
                 line_number += 1
@@ -2679,8 +2945,11 @@ class BillsService:
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, $3, $4, $5, 0, $6)
                         """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        vat_input_account_id, bill_tax,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        vat_input_account_id,
+                        bill_tax,
                         "PPN Masukan",
                     )
                     line_number += 1
@@ -2691,8 +2960,11 @@ class BillsService:
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number,
-                    ap_account_id, grand_total,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    ap_account_id,
+                    grand_total,
                     f"Hutang ke {bill['vendor_name']}",
                 )
 
@@ -2713,9 +2985,13 @@ class BillsService:
                         description, source_type, source_id, currency
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'OPEN', $9, 'BILL', $10, 'IDR')
                     """,
-                    ap_id, tenant_id,
-                    bill["vendor_id"], bill["vendor_name"],
-                    bill["invoice_number"], bill["issue_date"], bill["due_date"],
+                    ap_id,
+                    tenant_id,
+                    bill["vendor_id"],
+                    bill["vendor_name"],
+                    bill["invoice_number"],
+                    bill["issue_date"],
+                    bill["due_date"],
                     grand_total,
                     f"AP for {bill['invoice_number']}",
                     bill_id,
@@ -2736,7 +3012,10 @@ class BillsService:
                         updated_at = NOW()
                     WHERE id = $4
                     """,
-                    str(ap_id), str(journal_id), user_id, bill_id,
+                    str(ap_id),
+                    str(journal_id),
+                    user_id,
+                    bill_id,
                 )
 
                 # 9.5 Populate document_tax_lines (Fase 2.2)
@@ -2745,7 +3024,8 @@ class BillsService:
                     # Get the journal_line_id for the PPN line
                     ppn_journal_line_id = await conn.fetchval(
                         "SELECT id FROM journal_lines WHERE journal_id = $1 AND account_id = $2 LIMIT 1",
-                        journal_id, vat_input_account_id,
+                        journal_id,
+                        vat_input_account_id,
                     )
                     # DPP from bill or calculate
                     dpp_amount = Decimal(str(bill["dpp"] or 0))
@@ -2759,10 +3039,14 @@ class BillsService:
                          direction, base_amount, tax_amount, coa_id, journal_line_id)
                         VALUES ($1, $2, 'BILL', $3, $4, 'input', $5, $6, $7, $8)
                         """,
-                        uuid_module.uuid4(), tenant_id, bill_id,
+                        uuid_module.uuid4(),
+                        tenant_id,
+                        bill_id,
                         bill["tax_code_id"],
-                        dpp_amount, bill_tax,
-                        vat_input_account_id, ppn_journal_line_id,
+                        dpp_amount,
+                        bill_tax,
+                        vat_input_account_id,
+                        ppn_journal_line_id,
                     )
                     logger.info(f"document_tax_lines created for bill {bill_id}")
 
@@ -2777,23 +3061,35 @@ class BillsService:
                     LEFT JOIN products p ON p.id = bi.product_id
                     WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
                     """,
-                    bill_id
+                    bill_id,
                 )
 
                 default_warehouse = await conn.fetchrow(
                     "SELECT id FROM warehouses WHERE tenant_id = $1 AND is_default = true LIMIT 1",
-                    tenant_id
+                    tenant_id,
                 )
                 warehouse_id = default_warehouse["id"] if default_warehouse else None
 
                 for item in bill_items:
-                    if item["item_type"] != "goods" or not item.get("track_inventory", True):
+                    if item["item_type"] != "goods" or not item.get(
+                        "track_inventory", True
+                    ):
                         continue
 
                     product_id = item["product_id"]
-                    quantity = Decimal(str(item["quantity"]))
-                    unit_cost = Decimal(str(item["unit_price"]))
-                    total_cost = quantity * unit_cost
+                    transaction_quantity_3 = Decimal(str(item["quantity"]))
+                    transaction_unit_3 = item.get("unit")
+                    base_qty_3, conversion_factor_3 = await convert_to_base_unit(
+                        conn,
+                        tenant_id,
+                        product_id,
+                        transaction_quantity_3,
+                        transaction_unit_3,
+                    )
+                    quantity = base_qty_3
+                    unit_cost_raw_3 = Decimal(str(item["unit_price"]))
+                    total_cost = transaction_quantity_3 * unit_cost_raw_3
+                    unit_cost = total_cost / quantity if quantity else unit_cost_raw_3
 
                     balance_row = await conn.fetchrow(
                         """
@@ -2801,9 +3097,14 @@ class BillsService:
                         FROM inventory_ledger
                         WHERE tenant_id = $1 AND product_id = $2
                         """,
-                        tenant_id, product_id
+                        tenant_id,
+                        product_id,
                     )
-                    current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                    current_balance = (
+                        Decimal(str(balance_row["balance"]))
+                        if balance_row
+                        else Decimal("0")
+                    )
                     new_balance = current_balance + quantity
 
                     avg_cost_row = await conn.fetchrow(
@@ -2814,7 +3115,8 @@ class BillsService:
                         FROM inventory_ledger
                         WHERE tenant_id = $1 AND product_id = $2
                         """,
-                        tenant_id, product_id
+                        tenant_id,
+                        product_id,
                     )
 
                     if avg_cost_row and avg_cost_row["total_qty"] > 0:
@@ -2829,10 +3131,13 @@ class BillsService:
                     if item.get("track_batches") and item.get("batch_no"):
                         exp_date_val = None
                         if item.get("exp_date"):
-                            exp_date_val = item["exp_date"]  # Already a date from bill_items
+                            exp_date_val = item[
+                                "exp_date"
+                            ]  # Already a date from bill_items
 
                         # UPSERT item_batches
-                        batch_row = await conn.fetchrow("""
+                        batch_row = await conn.fetchrow(
+                            """
                             INSERT INTO item_batches (
                                 tenant_id, item_id, batch_number, expiry_date,
                                 received_date, initial_quantity, current_quantity,
@@ -2844,29 +3149,53 @@ class BillsService:
                                 total_value = item_batches.total_value + EXCLUDED.total_value,
                                 updated_at = NOW()
                             RETURNING id
-                        """, tenant_id, product_id, item["batch_no"], exp_date_val,
-                            bill["issue_date"], quantity, unit_cost, total_cost, bill_id, user_id)
+                        """,
+                            tenant_id,
+                            product_id,
+                            item["batch_no"],
+                            exp_date_val,
+                            bill["issue_date"],
+                            quantity,
+                            unit_cost,
+                            total_cost,
+                            bill_id,
+                            user_id,
+                        )
 
                         batch_id = batch_row["id"]
 
                         # UPSERT batch_warehouse_stock
                         if warehouse_id:
-                            await conn.execute("""
+                            await conn.execute(
+                                """
                                 INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
                                 VALUES ($1, $2, $3, $4)
                                 ON CONFLICT (batch_id, warehouse_id)
                                 DO UPDATE SET
                                     quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
                                     last_movement_date = NOW(), updated_at = NOW()
-                            """, tenant_id, batch_id, warehouse_id, quantity)
+                            """,
+                                tenant_id,
+                                batch_id,
+                                warehouse_id,
+                                quantity,
+                            )
 
                         # Link bill_items.batch_id
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             UPDATE bill_items SET batch_id = $1
                             WHERE bill_id = $2 AND product_id = $3 AND batch_no = $4
-                        """, batch_id, bill_id, product_id, item["batch_no"])
+                        """,
+                            batch_id,
+                            bill_id,
+                            product_id,
+                            item["batch_no"],
+                        )
 
-                        logger.info(f"Batch created/updated: {item['batch_no']} for product {product_id}, batch_id={batch_id}")
+                        logger.info(
+                            f"Batch created/updated: {item['batch_no']} for product {product_id}, batch_id={batch_id}"
+                        )
 
                     await conn.execute(
                         """
@@ -2875,13 +3204,15 @@ class BillsService:
                             movement_type, movement_date, source_type, source_id, source_number,
                             quantity_in, quantity_out, quantity_balance,
                             unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, created_by, notes, batch_id
+                            warehouse_id, journal_id, created_by, notes, batch_id,
+                            transaction_unit, transaction_quantity, conversion_factor
                         ) VALUES (
                             $1, $2, $3, $4,
                             'PURCHASE', $5, 'BILL', $6, $7,
                             $8, 0, $9,
                             $10, $11, $12,
-                            $13, $14, $15, $16, $17
+                            $13, $14, $15, $16, $17,
+                            $18, $19, $20
                         )
                         """,
                         tenant_id,
@@ -2900,10 +3231,15 @@ class BillsService:
                         journal_id,
                         user_id,
                         f"Purchase from {bill['vendor_name']}",
-                        batch_id
+                        batch_id,
+                        transaction_unit_3,
+                        transaction_quantity_3,
+                        conversion_factor_3,
                     )
 
-                    logger.info(f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}")
+                    logger.info(
+                        f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}"
+                    )
 
                 logger.info(f"Bill posted: {bill_id}")
 
@@ -3075,7 +3411,12 @@ class BillsService:
                 if "tax_code_id" in request:
                     updates.append(f"tax_code_id = ${param_idx}")
                     from uuid import UUID as _UUID
-                    params.append(_UUID(str(request["tax_code_id"])) if request["tax_code_id"] else None)
+
+                    params.append(
+                        _UUID(str(request["tax_code_id"]))
+                        if request["tax_code_id"]
+                        else None
+                    )
                     param_idx += 1
 
                 if calc:
@@ -3117,26 +3458,34 @@ class BillsService:
         """Convert money value to string with .00 suffix."""
         return cents_to_decimal_string(value or 0)
 
-
     async def _map_attachments_with_urls(self, attachment_rows) -> list:
         """Map attachment DB rows to response dicts with signed URLs."""
         try:
             from app.services.storage_service import get_storage_service
+
             storage = get_storage_service()
             result = []
             for att in attachment_rows:
                 try:
-                    url = await storage.generate_signed_url(att["file_path"]) if att.get("file_path") else att.get("file_path")
+                    url = (
+                        await storage.generate_signed_url(att["file_path"])
+                        if att.get("file_path")
+                        else att.get("file_path")
+                    )
                 except Exception:
                     url = att.get("file_path")
-                result.append({
-                    "id": str(att["id"]),
-                    "filename": att["filename"],
-                    "url": url,
-                    "size": att.get("file_size"),
-                    "mime_type": att.get("mime_type"),
-                    "uploaded_at": att["uploaded_at"].isoformat() if att.get("uploaded_at") else None,
-                })
+                result.append(
+                    {
+                        "id": str(att["id"]),
+                        "filename": att["filename"],
+                        "url": url,
+                        "size": att.get("file_size"),
+                        "mime_type": att.get("mime_type"),
+                        "uploaded_at": att["uploaded_at"].isoformat()
+                        if att.get("uploaded_at")
+                        else None,
+                    }
+                )
             return result
         except Exception:
             # Fallback if storage service unavailable
@@ -3147,7 +3496,9 @@ class BillsService:
                     "url": att.get("file_path"),
                     "size": att.get("file_size"),
                     "mime_type": att.get("mime_type"),
-                    "uploaded_at": att["uploaded_at"].isoformat() if att.get("uploaded_at") else None,
+                    "uploaded_at": att["uploaded_at"].isoformat()
+                    if att.get("uploaded_at")
+                    else None,
                 }
                 for att in attachment_rows
             ]
@@ -3238,7 +3589,8 @@ class BillsService:
                   AND dtl.tenant_id = $2
                 ORDER BY dtl.created_at
                 """,
-                bill_id, tenant_id,
+                bill_id,
+                tenant_id,
             )
             tax_lines = [
                 {
@@ -3251,7 +3603,7 @@ class BillsService:
                 }
                 for row in tax_lines_rows
             ]
-                # Build vendor info
+            # Build vendor info
             vendor_name = bill["vendor_name"] or ""
             words = vendor_name.split()
             if len(words) >= 2:
@@ -3299,38 +3651,52 @@ class BillsService:
                 "issue_date": bill["issue_date"].isoformat(),
                 "due_date": bill["due_date"].isoformat(),
                 "tax_rate": bill["tax_rate"],
-                "tax_code_id": str(bill["tax_code_id"]) if bill.get("tax_code_id") else None,
+                "tax_code_id": str(bill["tax_code_id"])
+                if bill.get("tax_code_id")
+                else None,
                 "tax_lines": tax_lines,
                 "tax_inclusive": bill["tax_inclusive"],
                 "invoice_discount_percent": float(
                     bill["invoice_discount_percent"] or 0
                 ),
-                "invoice_discount_amount": self._money_str(bill["invoice_discount_amount"]),
+                "invoice_discount_amount": self._money_str(
+                    bill["invoice_discount_amount"]
+                ),
                 "cash_discount_percent": float(bill["cash_discount_percent"] or 0),
                 "cash_discount_amount": self._money_str(bill["cash_discount_amount"]),
                 "dpp_manual": bill["dpp_manual"],
                 "calculation": {
                     "subtotal": self._money_str(bill["subtotal"]),
                     "item_discount_total": self._money_str(bill["item_discount_total"]),
-                    "invoice_discount_total": self._money_str(bill["invoice_discount_total"]),
+                    "invoice_discount_total": self._money_str(
+                        bill["invoice_discount_total"]
+                    ),
                     "cash_discount_total": self._money_str(bill["cash_discount_total"]),
                     "dpp": self._money_str(bill["dpp"]),
                     "tax_amount": self._money_str(bill["tax_amount"]),
-                    "grand_total": self._money_str(bill["grand_total"] or bill["amount"]),
+                    "grand_total": self._money_str(
+                        bill["grand_total"] or bill["amount"]
+                    ),
                 },
                 "subtotal": self._money_str(bill["subtotal"]),
                 "item_discount_total": self._money_str(bill["item_discount_total"]),
-                "invoice_discount_total": self._money_str(bill["invoice_discount_total"]),
+                "invoice_discount_total": self._money_str(
+                    bill["invoice_discount_total"]
+                ),
                 "cash_discount_total": self._money_str(bill["cash_discount_total"]),
                 "dpp": self._money_str(bill["dpp"]),
                 "tax_amount": self._money_str(bill["tax_amount"]),
                 "grand_total": self._money_str(bill["grand_total"] or bill["amount"]),
                 "amount": self._money_str(bill["amount"]),
-                "amount_paid": self._money_str(bill["journal_paid"]),  # Law 16: journal-derived
+                "amount_paid": self._money_str(
+                    bill["journal_paid"]
+                ),  # Law 16: journal-derived
                 "amount_due": self._money_str(bill["amount_due"]),
                 "notes": bill["notes"],
                 "operational_status": bill.get("operational_status") or "DRAFT",
-                "doc_status": "draft" if (bill.get("operational_status") or "DRAFT") == "DRAFT" else "posted",
+                "doc_status": "draft"
+                if (bill.get("operational_status") or "DRAFT") == "DRAFT"
+                else "posted",
                 "accounting_status": bill.get("accounting_status") or "UNPOSTED",
                 "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
                 "vendor_name": bill["vendor_name"],

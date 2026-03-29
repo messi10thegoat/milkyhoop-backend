@@ -221,7 +221,9 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         # Invoice-level discount
         invoice_discount = body.discount_amount
         if body.discount_percent > 0:
-            invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
+            invoice_discount = _r2(
+                _d(subtotal) * _d(body.discount_percent) / Decimal("100")
+            )
 
         # Total
         total_amount = subtotal - total_item_discount - invoice_discount + total_tax
@@ -293,7 +295,10 @@ async def list_invoices(
 
             # Status filter (with dynamic overdue calculation like bills)
             if status:
-                if status == "overdue":
+                if status == "active":
+                    # Exclude draft & void — for piutang/AR queries
+                    conditions.append("si.status NOT IN ('draft', 'void')")
+                elif status == "overdue":
                     # Overdue = posted/partial + past due + has outstanding via DB function
                     conditions.append(
                         "(si.status IN ('posted', 'partial') AND si.due_date < CURRENT_DATE"
@@ -361,7 +366,9 @@ async def list_invoices(
                     "invoice_date": row["invoice_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
                     "total_amount": row["total_amount"],
-                    "amount_paid": int(row["journal_paid"]) if row["journal_paid"] is not None else 0,
+                    "amount_paid": int(row["journal_paid"])
+                    if row["journal_paid"] is not None
+                    else 0,
                     "status": row["status"],
                     "operational_status": row.get("operational_status") or "DRAFT",
                     "accounting_status": row.get("accounting_status") or "UNPOSTED",
@@ -434,14 +441,20 @@ async def get_invoice(request: Request, invoice_id: UUID):
             )
 
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
-            ar_row = await conn.fetchrow("""
+            ar_row = await conn.fetchrow(
+                """
                 SELECT paid_amount, outstanding
                 FROM compute_ar_outstanding($1)
                 WHERE invoice_id = $2
-            """, ctx["tenant_id"], invoice_id)
+            """,
+                ctx["tenant_id"],
+                invoice_id,
+            )
             # If no row from function: invoice is fully paid (outstanding=0) or draft/void
             if ar_row:
-                journal_amount_paid = float(invoice["total_amount"] - ar_row["outstanding"])
+                journal_amount_paid = float(
+                    invoice["total_amount"] - ar_row["outstanding"]
+                )
             elif invoice["status"] in ("paid",):
                 journal_amount_paid = float(invoice["total_amount"])
             else:
@@ -468,7 +481,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
                     "amount_paid": journal_amount_paid,
-                    "amount_due": float(ar_row["outstanding"]) if ar_row else (0.0 if invoice["status"] in ("paid",) else float(invoice["total_amount"] or 0)),
+                    "amount_due": float(ar_row["outstanding"])
+                    if ar_row
+                    else (
+                        0.0
+                        if invoice["status"] in ("paid",)
+                        else float(invoice["total_amount"] or 0)
+                    ),
                     "status": invoice["status"],
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",
@@ -491,9 +510,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
-                            "batch_id": str(item["batch_id"]) if item.get("batch_id") else None,
+                            "batch_id": str(item["batch_id"])
+                            if item.get("batch_id")
+                            else None,
                             "batch_no": item.get("batch_no"),
-                            "exp_date": item["exp_date"].isoformat() if item.get("exp_date") else None,
+                            "exp_date": item["exp_date"].isoformat()
+                            if item.get("exp_date")
+                            else None,
                         }
                         for item in items
                     ],
@@ -516,9 +539,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
-                            "batch_id": str(item["batch_id"]) if item.get("batch_id") else None,
+                            "batch_id": str(item["batch_id"])
+                            if item.get("batch_id")
+                            else None,
                             "batch_no": item.get("batch_no"),
-                            "exp_date": item["exp_date"].isoformat() if item.get("exp_date") else None,
+                            "exp_date": item["exp_date"].isoformat()
+                            if item.get("exp_date")
+                            else None,
                         }
                         for item in items
                     ],
@@ -527,14 +554,22 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "id": str(p["id"]),
                             "payment_number": p.get("payment_number") or "-",
                             "amount": float(p["amount"] or 0),
-                            "payment_date": p["payment_date"].isoformat() if p["payment_date"] else None,
+                            "payment_date": p["payment_date"].isoformat()
+                            if p["payment_date"]
+                            else None,
                             "payment_method": p.get("payment_method"),
-                            "bank_account_id": str(p["bank_account_id"]) if p.get("bank_account_id") else None,
+                            "bank_account_id": str(p["bank_account_id"])
+                            if p.get("bank_account_id")
+                            else None,
                             "bank_account_name": p.get("bank_account_name"),
                             "reference": p.get("reference"),
                             "notes": p.get("notes"),
-                            "journal_id": str(p["journal_id"]) if p.get("journal_id") else None,
-                            "created_at": p["created_at"].isoformat() if p.get("created_at") else None,
+                            "journal_id": str(p["journal_id"])
+                            if p.get("journal_id")
+                            else None,
+                            "created_at": p["created_at"].isoformat()
+                            if p.get("created_at")
+                            else None,
                             "status": p.get("status"),
                         }
                         for p in payments
@@ -580,10 +615,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
     # Law 13: Advisory lock - prevent concurrent posting
     await conn.execute(
-        "SELECT pg_advisory_xact_lock(hashtext($1))",
-        f"INVOICE:{invoice_id}"
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"INVOICE:{invoice_id}"
     )
-    
+
     # Get invoice data
     invoice = await conn.fetchrow(
         """
@@ -656,9 +690,11 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     )
 
     # Get AR and Sales accounts
-    ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10400')}
-    sales_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '4-10100')}
-    vat_output_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '2-10600')}
+    ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], "1-10400")}
+    sales_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], "4-10100")}
+    vat_output_account = {
+        "id": await resolve_account_id(conn, ctx["tenant_id"], "2-10600")
+    }
 
     # Compute subtotal (revenue without tax)
     tax_amount = invoice["tax_amount"] or 0
@@ -717,10 +753,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # =============================================================
     # Law 20: DRAFT->POSTED triggers hash chain
     await conn.execute(
-        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-        journal_id
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
-    
+
     # COGS CALCULATION AND INVENTORY LEDGER (matching post_invoice logic)
     # =============================================================
     # Get invoice items
@@ -825,22 +860,35 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
             # Resolve batch_id (explicit or FEFO auto-allocation)
             si_batch_id = item.get("batch_id")
-            if not si_batch_id and product.get("track_batches") and posting_warehouse_id:
+            if (
+                not si_batch_id
+                and product.get("track_batches")
+                and posting_warehouse_id
+            ):
                 # FEFO auto-allocation
                 fefo_batches = await conn.fetch(
                     "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
-                    ctx["tenant_id"], item["item_id"], posting_warehouse_id, quantity
+                    ctx["tenant_id"],
+                    item["item_id"],
+                    posting_warehouse_id,
+                    quantity,
                 )
                 if fefo_batches:
-                    total_allocated = sum(float(r["quantity_to_use"]) for r in fefo_batches)
+                    total_allocated = sum(
+                        float(r["quantity_to_use"]) for r in fefo_batches
+                    )
                     if total_allocated >= quantity:
                         si_batch_id = fefo_batches[0]["batch_id"]
                     else:
-                        raise HTTPException(400,
-                            f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                        raise HTTPException(
+                            400,
+                            f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
+                        )
                 else:
-                    raise HTTPException(400,
-                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                    raise HTTPException(
+                        400,
+                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
+                    )
 
             # Record inventory movement in ledger
             await conn.execute(
@@ -881,33 +929,46 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             # Batch deduction (if batch tracking)
             if si_batch_id:
                 # Row-level lock + validate
-                bws_row = await conn.fetchrow("""
+                bws_row = await conn.fetchrow(
+                    """
                     SELECT available_quantity FROM batch_warehouse_stock
                     WHERE batch_id = $1 AND warehouse_id = $2
                     FOR UPDATE
-                """, si_batch_id, posting_warehouse_id)
+                """,
+                    si_batch_id,
+                    posting_warehouse_id,
+                )
 
                 if bws_row is None or float(bws_row["available_quantity"]) < quantity:
                     available = float(bws_row["available_quantity"]) if bws_row else 0
-                    raise HTTPException(400,
-                        f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}")
+                    raise HTTPException(
+                        400,
+                        f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}",
+                    )
 
                 # Deduct batch_warehouse_stock
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE batch_warehouse_stock
                     SET quantity = quantity - $3,
                         last_movement_date = NOW(), updated_at = NOW()
                     WHERE batch_id = $1 AND warehouse_id = $2
-                """, si_batch_id, posting_warehouse_id, quantity)
+                """,
+                    si_batch_id,
+                    posting_warehouse_id,
+                    quantity,
+                )
 
                 # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
 
                 # Mark depleted if needed
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE item_batches SET status = 'depleted'
                     WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
-                """, si_batch_id)
-
+                """,
+                    si_batch_id,
+                )
 
     # Create COGS journal if there are inventory items
     cogs_journal_id = None
@@ -916,9 +977,13 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         cogs_trace_id = str(uuid.uuid4())
 
         # Get account IDs
-        hpp_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '5-10100')}
+        hpp_account = {
+            "id": await resolve_account_id(conn, ctx["tenant_id"], "5-10100")
+        }
 
-        inventory_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10600')}
+        inventory_account = {
+            "id": await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
+        }
 
         if hpp_account and inventory_account:
             # Get COGS journal number using sequence
@@ -972,11 +1037,11 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 total_cogs,
                 inventory_account["id"],
             )
-            
+
             # Law 20: DRAFT->POSTED triggers hash chain
             await conn.execute(
                 "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                cogs_journal_id
+                cogs_journal_id,
             )
 
             import logging
@@ -1043,7 +1108,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 # Invoice-level discount
                 invoice_discount = body.discount_amount
                 if body.discount_percent > 0:
-                    invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
+                    invoice_discount = _r2(
+                        _d(subtotal) * _d(body.discount_percent) / Decimal("100")
+                    )
 
                 total_amount = (
                     subtotal - total_item_discount - invoice_discount + total_tax
@@ -1069,7 +1136,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                            WHERE tenant_id = $1 AND nama = $2
                              AND is_active = true AND deleted_at IS NULL
                            LIMIT 1""",
-                        ctx["tenant_id"], body.customer_name
+                        ctx["tenant_id"],
+                        body.customer_name,
                     )
                     # Fallback: case-insensitive ILIKE match
                     if not resolved_id:
@@ -1078,7 +1146,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                                WHERE tenant_id = $1 AND nama ILIKE $2
                                  AND is_active = true AND deleted_at IS NULL
                                LIMIT 1""",
-                            ctx["tenant_id"], body.customer_name
+                            ctx["tenant_id"],
+                            body.customer_name,
                         )
                     if resolved_id:
                         customer_id_str = str(resolved_id)
@@ -1128,11 +1197,14 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     if isinstance(item_exp_date, str):
                         try:
                             from datetime import date as _date
+
                             parts = item_exp_date.split("-")
                             if len(parts) == 2:  # "YYYY-MM" format
                                 item_exp_date = _date(int(parts[0]), int(parts[1]), 1)
                             elif len(parts) == 3:  # "YYYY-MM-DD" format
-                                item_exp_date = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+                                item_exp_date = _date(
+                                    int(parts[0]), int(parts[1]), int(parts[2])
+                                )
                             else:
                                 item_exp_date = None
                         except (ValueError, TypeError):
@@ -1141,7 +1213,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     if item_batch_id and (not item_batch_no or not item_exp_date):
                         batch_info = await conn.fetchrow(
                             "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
-                            UUID(item_batch_id) if isinstance(item_batch_id, str) else item_batch_id
+                            UUID(item_batch_id)
+                            if isinstance(item_batch_id, str)
+                            else item_batch_id,
                         )
                         if batch_info:
                             if not item_batch_no:
@@ -1309,11 +1383,16 @@ async def update_invoice(
                         if isinstance(item_exp_date, str):
                             try:
                                 from datetime import date as _date
+
                                 parts = item_exp_date.split("-")
                                 if len(parts) == 2:
-                                    item_exp_date = _date(int(parts[0]), int(parts[1]), 1)
+                                    item_exp_date = _date(
+                                        int(parts[0]), int(parts[1]), 1
+                                    )
                                 elif len(parts) == 3:
-                                    item_exp_date = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+                                    item_exp_date = _date(
+                                        int(parts[0]), int(parts[1]), int(parts[2])
+                                    )
                                 else:
                                     item_exp_date = None
                             except (ValueError, TypeError):
@@ -1322,7 +1401,9 @@ async def update_invoice(
                         if item_batch_id and (not item_batch_no or not item_exp_date):
                             batch_info = await conn.fetchrow(
                                 "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
-                                UUID(item_batch_id) if isinstance(item_batch_id, str) else item_batch_id
+                                UUID(item_batch_id)
+                                if isinstance(item_batch_id, str)
+                                else item_batch_id,
                             )
                             if batch_info:
                                 if not item_batch_no:
@@ -1364,7 +1445,9 @@ async def update_invoice(
                     # Update invoice totals
                     invoice_discount = body.discount_amount or 0
                     if body.discount_percent and body.discount_percent > 0:
-                        invoice_discount = _r2(_d(subtotal) * _d(body.discount_percent) / Decimal("100"))
+                        invoice_discount = _r2(
+                            _d(subtotal) * _d(body.discount_percent) / Decimal("100")
+                        )
 
                     total_amount = (
                         subtotal - total_item_discount - invoice_discount + total_tax
@@ -1424,11 +1507,19 @@ async def update_invoice(
                         "total_amount": float(updated["total_amount"] or 0),
                         "amount_paid": float(updated["amount_paid"] or 0),
                         "status": updated["status"] or "draft",
-                        "invoice_date": str(updated["invoice_date"]) if updated["invoice_date"] else None,
-                        "due_date": str(updated["due_date"]) if updated["due_date"] else None,
-                        "customer_id": str(updated["customer_id"]) if updated["customer_id"] else None,
+                        "invoice_date": str(updated["invoice_date"])
+                        if updated["invoice_date"]
+                        else None,
+                        "due_date": str(updated["due_date"])
+                        if updated["due_date"]
+                        else None,
+                        "customer_id": str(updated["customer_id"])
+                        if updated["customer_id"]
+                        else None,
                         "customer_name": updated["customer_name"],
-                        "created_at": str(updated["created_at"]) if updated["created_at"] else None,
+                        "created_at": str(updated["created_at"])
+                        if updated["created_at"]
+                        else None,
                     },
                 }
 
@@ -1497,9 +1588,9 @@ async def post_invoice(
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"INVOICE:{str(invoice_id)}"
+                    f"INVOICE:{str(invoice_id)}",
                 )
-                
+
                 # Create AR record
                 ar_id = await conn.fetchval(
                     """
@@ -1569,8 +1660,12 @@ async def post_invoice(
                     ctx["user_id"],
                 )
                 # Get AR and Sales accounts
-                ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10400')}
-                sales_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '4-10100')}
+                ar_account = {
+                    "id": await resolve_account_id(conn, ctx["tenant_id"], "1-10400")
+                }
+                sales_account = {
+                    "id": await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
+                }
 
                 if ar_account and sales_account:
                     # Insert journal lines: Dr. AR, Cr. Sales
@@ -1597,7 +1692,7 @@ async def post_invoice(
                 # Law 20: DRAFT->POSTED triggers hash chain
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
 
                 # =============================================================
@@ -1697,21 +1792,34 @@ async def post_invoice(
 
                         # Resolve batch_id (explicit or FEFO auto-allocation)
                         si_batch_id = item.get("batch_id")
-                        if not si_batch_id and product.get("track_batches") and posting_warehouse_id:
+                        if (
+                            not si_batch_id
+                            and product.get("track_batches")
+                            and posting_warehouse_id
+                        ):
                             fefo_batches = await conn.fetch(
                                 "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
-                                ctx["tenant_id"], item["item_id"], posting_warehouse_id, quantity
+                                ctx["tenant_id"],
+                                item["item_id"],
+                                posting_warehouse_id,
+                                quantity,
                             )
                             if fefo_batches:
-                                total_allocated = sum(float(r["quantity_to_use"]) for r in fefo_batches)
+                                total_allocated = sum(
+                                    float(r["quantity_to_use"]) for r in fefo_batches
+                                )
                                 if total_allocated >= quantity:
                                     si_batch_id = fefo_batches[0]["batch_id"]
                                 else:
-                                    raise HTTPException(400,
-                                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                                    raise HTTPException(
+                                        400,
+                                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
+                                    )
                             else:
-                                raise HTTPException(400,
-                                    f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}")
+                                raise HTTPException(
+                                    400,
+                                    f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
+                                )
 
                         # Record inventory movement in ledger
                         await conn.execute(
@@ -1722,14 +1830,16 @@ async def post_invoice(
                                 source_type, source_id, source_number,
                                 quantity_in, quantity_out, quantity_balance,
                                 unit_cost, total_cost, average_cost,
-                                created_by, notes, warehouse_id, batch_id
+                                created_by, notes, warehouse_id, batch_id,
+                                transaction_unit, transaction_quantity, conversion_factor
                             ) VALUES (
                                 $1, $2, $3, $4,
                                 'SALE', $5,
                                 'SALES_INVOICE', $6, $7,
                                 0, $8, $9,
                                 $10, $11, $10,
-                                $12, $13, $14, $15
+                                $12, $13, $14, $15,
+                                $16, $17, $18
                             )
                         """,
                             ctx["tenant_id"],
@@ -1747,34 +1857,58 @@ async def post_invoice(
                             f"Sale: {invoice['invoice_number']}",
                             posting_warehouse_id,
                             si_batch_id,
+                            transaction_unit_si2,
+                            transaction_quantity_si2,
+                            float(conversion_factor_si2),
                         )
 
                         # Batch deduction (if batch tracking)
                         if si_batch_id:
-                            bws_row = await conn.fetchrow("""
+                            bws_row = await conn.fetchrow(
+                                """
                                 SELECT available_quantity FROM batch_warehouse_stock
                                 WHERE batch_id = $1 AND warehouse_id = $2
                                 FOR UPDATE
-                            """, si_batch_id, posting_warehouse_id)
+                            """,
+                                si_batch_id,
+                                posting_warehouse_id,
+                            )
 
-                            if bws_row is None or float(bws_row["available_quantity"]) < quantity:
-                                available = float(bws_row["available_quantity"]) if bws_row else 0
-                                raise HTTPException(400,
-                                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}")
+                            if (
+                                bws_row is None
+                                or float(bws_row["available_quantity"]) < quantity
+                            ):
+                                available = (
+                                    float(bws_row["available_quantity"])
+                                    if bws_row
+                                    else 0
+                                )
+                                raise HTTPException(
+                                    400,
+                                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}",
+                                )
 
-                            await conn.execute("""
+                            await conn.execute(
+                                """
                                 UPDATE batch_warehouse_stock
                                 SET quantity = quantity - $3,
                                     last_movement_date = NOW(), updated_at = NOW()
                                 WHERE batch_id = $1 AND warehouse_id = $2
-                            """, si_batch_id, posting_warehouse_id, quantity)
+                            """,
+                                si_batch_id,
+                                posting_warehouse_id,
+                                quantity,
+                            )
 
                             # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
 
-                            await conn.execute("""
+                            await conn.execute(
+                                """
                                 UPDATE item_batches SET status = 'depleted'
                                 WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
-                            """, si_batch_id)
+                            """,
+                                si_batch_id,
+                            )
 
                         # Stock is tracked via inventory_ledger, not products.stock_quantity
 
@@ -1785,9 +1919,17 @@ async def post_invoice(
                     cogs_trace_id = str(uuid.uuid4())
 
                     # Get account IDs
-                    hpp_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '5-10100')}
+                    hpp_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "5-10100"
+                        )
+                    }
 
-                    inventory_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10600')}
+                    inventory_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "1-10600"
+                        )
+                    }
 
                     if hpp_account and inventory_account:
                         # Get COGS journal number using sequence
@@ -1845,7 +1987,7 @@ async def post_invoice(
                         # Law 20: DRAFT->POSTED triggers hash chain
                         await conn.execute(
                             "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                            cogs_journal_id
+                            cogs_journal_id,
                         )
 
                         logger.info(
@@ -1928,7 +2070,7 @@ async def record_payment(
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"INVOICE_PAYMENT:{str(invoice_id)}"
+                    f"INVOICE_PAYMENT:{str(invoice_id)}",
                 )
 
                 # Law 14: Idempotency check
@@ -1937,28 +2079,38 @@ async def record_payment(
                 )
                 existing_idem = await conn.fetchrow(
                     "SELECT result FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
-                    ctx["tenant_id"], idem_key
+                    ctx["tenant_id"],
+                    idem_key,
                 )
-                if existing_idem and existing_idem['result']:
+                if existing_idem and existing_idem["result"]:
                     import json as json_mod
-                    return json_mod.loads(existing_idem['result'])
+
+                    return json_mod.loads(existing_idem["result"])
 
                 # Fetch invoice (FOR UPDATE)
-                invoice = await conn.fetchrow("""
+                invoice = await conn.fetchrow(
+                    """
                     SELECT id, invoice_number, customer_id, customer_name,
                            status, total_amount, amount_paid, ar_id
                     FROM sales_invoices
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
-                """, invoice_id, ctx["tenant_id"])
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
 
                 if not invoice:
                     raise HTTPException(status_code=404, detail="Invoice not found")
                 if invoice["status"] not in ("posted", "partial", "overdue"):
-                    raise HTTPException(status_code=400, detail="Invoice must be posted before recording payment")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invoice must be posted before recording payment",
+                    )
 
                 # Law 16: journal-derived remaining (same CTE as original)
-                journal_remaining = await conn.fetchval("""
+                journal_remaining = await conn.fetchval(
+                    """
                     SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
@@ -1992,7 +2144,10 @@ async def record_payment(
                                 WHERE sip.invoice_id = $1
                             ))
                         )
-                """, invoice_id, ctx["tenant_id"])
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
 
                 remaining = int(journal_remaining or 0)
                 if body.amount > remaining:
@@ -2012,7 +2167,8 @@ async def record_payment(
                 if body.bank_account_id:
                     bank_row = await conn.fetchrow(
                         "SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.bank_account_id), ctx["tenant_id"],
+                        UUID(body.bank_account_id),
+                        ctx["tenant_id"],
                     )
                     if bank_row:
                         bank_account_uuid = bank_row["id"]
@@ -2022,7 +2178,8 @@ async def record_payment(
                     # Try: account_id is coa_id → reverse lookup bank_account
                     bank_row = await conn.fetchrow(
                         "SELECT id, coa_id, account_name FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
-                        account_uuid, ctx["tenant_id"],
+                        account_uuid,
+                        ctx["tenant_id"],
                     )
                     if bank_row:
                         bank_account_uuid = bank_row["id"]
@@ -2032,7 +2189,8 @@ async def record_payment(
                         # Try: account_id IS a bank_accounts.id
                         bank_row = await conn.fetchrow(
                             "SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                            account_uuid, ctx["tenant_id"],
+                            account_uuid,
+                            ctx["tenant_id"],
                         )
                         if bank_row:
                             bank_account_uuid = bank_row["id"]
@@ -2040,15 +2198,20 @@ async def record_payment(
                             bank_coa_id = bank_row["coa_id"]
 
                 if not bank_account_uuid:
-                    raise HTTPException(status_code=400, detail="Could not resolve bank account from account_id")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Could not resolve bank account from account_id",
+                    )
 
                 # Resolve AR account (Law 27)
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10400')
+                ar_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], "1-10400"
+                )
 
                 # Map payment_method: receive_payments CHECK allows only 'cash' or 'bank_transfer'
                 pm = body.payment_method
-                if pm not in ('cash', 'bank_transfer'):
-                    pm = 'bank_transfer'
+                if pm not in ("cash", "bank_transfer"):
+                    pm = "bank_transfer"
 
                 # Generate payment number via DB function (same as golden pattern)
                 payment_number = await conn.fetchval(
@@ -2056,6 +2219,7 @@ async def record_payment(
                 )
 
                 import uuid as uuid_module
+
                 pay_amount = body.amount  # int from InvoicePaymentCreate schema
 
                 # === INSERT receive_payments ===
@@ -2063,7 +2227,8 @@ async def record_payment(
                 #   payment_method, bank_account_id, bank_account_name, source_type,
                 #   total_amount, allocated_amount, unapplied_amount, discount_amount
                 rp_id = uuid_module.uuid4()
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO receive_payments (
                         id, tenant_id, payment_number, customer_id, customer_name,
                         payment_date, payment_method, bank_account_id, bank_account_name,
@@ -2076,26 +2241,37 @@ async def record_payment(
                         0, $12, $13, 'draft', $14
                     )
                 """,
-                    rp_id, ctx["tenant_id"], payment_number,
-                    str(invoice['customer_id']) if invoice['customer_id'] else None,
-                    invoice['customer_name'],
-                    body.payment_date, pm, bank_account_uuid, bank_account_name,
-                    pay_amount, pay_amount,
-                    body.reference, body.notes, ctx["user_id"],
+                    rp_id,
+                    ctx["tenant_id"],
+                    payment_number,
+                    str(invoice["customer_id"]) if invoice["customer_id"] else None,
+                    invoice["customer_name"],
+                    body.payment_date,
+                    pm,
+                    bank_account_uuid,
+                    bank_account_name,
+                    pay_amount,
+                    pay_amount,
+                    body.reference,
+                    body.notes,
+                    ctx["user_id"],
                 )
 
                 # === INSERT receive_payment_allocations ===
                 # NOT NULL cols: tenant_id, payment_id, invoice_id, invoice_number,
                 #   invoice_amount, remaining_before, amount_applied, remaining_after
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO receive_payment_allocations (
                         tenant_id, payment_id, invoice_id, invoice_number,
                         invoice_amount, remaining_before, amount_applied, remaining_after
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
-                    ctx["tenant_id"], rp_id, invoice_id,
-                    invoice['invoice_number'],
-                    float(invoice['total_amount']),
+                    ctx["tenant_id"],
+                    rp_id,
+                    invoice_id,
+                    invoice["invoice_number"],
+                    float(invoice["total_amount"]),
                     remaining,
                     pay_amount,
                     remaining - pay_amount,
@@ -2111,78 +2287,110 @@ async def record_payment(
                 if not journal_number:
                     journal_number = f"JRN-PAY-{rp_id}"
 
-                inv_number = invoice['invoice_number']
+                inv_number = invoice["invoice_number"]
 
                 # source_type='RECEIVE_PAYMENT', source_id=rp_id (UUID)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'RECEIVE_PAYMENT', $6, $7, 'DRAFT', $8, $8, $9)
                 """,
-                    journal_id, ctx["tenant_id"], journal_number, body.payment_date,
+                    journal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    body.payment_date,
                     f"Penerimaan Pembayaran Faktur {inv_number}",
-                    rp_id, str(trace_id), pay_amount, ctx["user_id"],
+                    rp_id,
+                    str(trace_id),
+                    pay_amount,
+                    ctx["user_id"],
                 )
 
                 # Dr. Bank/Kas (line 1)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 1, $3, $4, 0, $5)
                 """,
-                    uuid_module.uuid4(), journal_id, bank_coa_id,
-                    pay_amount, f"Terima Pembayaran - {inv_number}",
+                    uuid_module.uuid4(),
+                    journal_id,
+                    bank_coa_id,
+                    pay_amount,
+                    f"Terima Pembayaran - {inv_number}",
                 )
 
                 # Cr. Piutang / AR (line 2)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 2, $3, 0, $4, $5)
                 """,
-                    uuid_module.uuid4(), journal_id, ar_account_id,
-                    pay_amount, f"Pelunasan Piutang - {inv_number}",
+                    uuid_module.uuid4(),
+                    journal_id,
+                    ar_account_id,
+                    pay_amount,
+                    f"Pelunasan Piutang - {inv_number}",
                 )
 
                 # DRAFT → POSTED (triggers hash chain)
                 await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
                 )
 
                 # Link journal to receive_payments + mark posted
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE receive_payments
                     SET journal_id = $1, journal_number = $2, status = 'posted',
                         posted_at = NOW(), posted_by = $3,
                         operational_status = 'CONFIRMED', accounting_status = 'POSTED'
                     WHERE id = $4
-                """, journal_id, journal_number, ctx["user_id"], rp_id)
+                """,
+                    journal_id,
+                    journal_number,
+                    ctx["user_id"],
+                    rp_id,
+                )
 
                 # Update invoice cache (Law 21: write-side only)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE sales_invoices
                     SET amount_paid = amount_paid + $1,
                         status = CASE WHEN total_amount <= (amount_paid + $1) THEN 'paid' ELSE 'partial' END,
                         updated_at = NOW()
                     WHERE id = $2 AND tenant_id = $3
-                """, pay_amount, invoice_id, ctx["tenant_id"])
+                """,
+                    pay_amount,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
 
                 # Update AR cache if exists
                 if invoice["ar_id"]:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE accounts_receivable
                         SET amount_paid = amount_paid + $2,
                             status = CASE WHEN amount - (amount_paid + $2) <= 0 THEN 'PAID' ELSE 'PARTIAL' END,
                             updated_at = NOW()
                         WHERE id = $1
-                    """, invoice["ar_id"], pay_amount)
+                    """,
+                        invoice["ar_id"],
+                        pay_amount,
+                    )
 
                 # Bank transaction (BankSync Rule 1: atomic journal + bank_txn)
                 if bank_account_uuid:
                     bank_tx_id = uuid_module.uuid4()
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO bank_transactions (
                             id, tenant_id, bank_account_id, transaction_date,
                             transaction_type, amount, running_balance,
@@ -2190,19 +2398,26 @@ async def record_payment(
                             payee_payer, journal_id, created_by
                         ) VALUES ($1, $2, $3, $4, 'payment_received', $5, 0, 'invoice', $6, $7, $8, $9, $10)
                     """,
-                        bank_tx_id, ctx["tenant_id"], bank_account_uuid,
-                        body.payment_date, pay_amount,
-                        invoice_id, f"Payment received for {inv_number}",
+                        bank_tx_id,
+                        ctx["tenant_id"],
+                        bank_account_uuid,
+                        body.payment_date,
+                        pay_amount,
+                        invoice_id,
+                        f"Payment received for {inv_number}",
                         body.reference or "Customer Payment",
-                        journal_id, ctx["user_id"],
+                        journal_id,
+                        ctx["user_id"],
                     )
                     await conn.execute(
                         "UPDATE receive_payments SET bank_transaction_id = $1 WHERE id = $2",
-                        bank_tx_id, rp_id,
+                        bank_tx_id,
+                        rp_id,
                     )
 
                 # Law 14: Store idempotency
                 import json as json_mod
+
                 result_payload = {
                     "success": True,
                     "message": "Payment recorded successfully",
@@ -2220,7 +2435,9 @@ async def record_payment(
                     """INSERT INTO idempotency_keys (key, tenant_id, source_type, result, result_status, expires_at)
                     VALUES ($1, $2, 'RECEIVE_PAYMENT', $3, 'SUCCESS', NOW() + interval '24 hours')
                     ON CONFLICT (tenant_id, key) DO NOTHING""",
-                    idem_key, ctx["tenant_id"], json_mod.dumps(result_payload, default=str)
+                    idem_key,
+                    ctx["tenant_id"],
+                    json_mod.dumps(result_payload, default=str),
                 )
 
                 logger.info(
@@ -2233,7 +2450,6 @@ async def record_payment(
     except Exception as e:
         logger.error(f"Error recording payment for {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to record payment")
-
 
 
 # =============================================================================
@@ -2271,7 +2487,8 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 raise HTTPException(status_code=400, detail="Invoice is already voided")
 
             # Pure Ledger: check if invoice has journal-based payments (Law 16)
-            journal_paid = await conn.fetchval("""
+            journal_paid = await conn.fetchval(
+                """
                 SELECT
                     COALESCE((SELECT SUM(rpa.amount_applied)
                         FROM receive_payment_allocations rpa
@@ -2297,7 +2514,10 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                               SELECT 1 FROM receive_payment_allocations rpa5
                               WHERE rpa5.payment_id = je5.source_id AND rpa5.tenant_id = $2
                           )), 0)
-            """, invoice_id, ctx["tenant_id"])
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
             if (journal_paid or 0) > 0:
                 raise HTTPException(
                     status_code=400,
@@ -2316,9 +2536,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"INVOICE_VOID:{str(invoice_id)}"
+                    f"INVOICE_VOID:{str(invoice_id)}",
                 )
-                
+
                 year_month_str = today.strftime("%y%m")
                 reversal_journal_id = None
                 cogs_reversal_journal_id = None
@@ -2370,8 +2590,16 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
                     # Get account IDs
-                    ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10400')}
-                    sales_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '4-10100')}
+                    ar_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "1-10400"
+                        )
+                    }
+                    sales_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "4-10100"
+                        )
+                    }
 
                     if ar_account and sales_account:
                         # REVERSAL: Dr. Sales (reverse of Cr), Cr. AR (reverse of Dr)
@@ -2392,9 +2620,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     # Law 20: DRAFT->POSTED triggers hash chain
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        reversal_journal_id
+                        reversal_journal_id,
                     )
-                    
+
                     # Mark original journal as reversed
                     await conn.execute(
                         """
@@ -2459,8 +2687,16 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
                     # Get account IDs
-                    hpp_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '5-10100')}
-                    inventory_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], '1-10600')}
+                    hpp_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "5-10100"
+                        )
+                    }
+                    inventory_account = {
+                        "id": await resolve_account_id(
+                            conn, ctx["tenant_id"], "1-10600"
+                        )
+                    }
 
                     if hpp_account and inventory_account:
                         # REVERSAL: Dr. Inventory (reverse of Cr), Cr. HPP (reverse of Dr)
@@ -2481,9 +2717,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     # Law 20: DRAFT->POSTED triggers hash chain
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        cogs_reversal_journal_id
+                        cogs_reversal_journal_id,
                     )
-                    
+
                     # Mark original COGS journal as reversed
                     await conn.execute(
                         """
@@ -2507,31 +2743,39 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 from ..services.inventory_helpers import record_inventory_reversal
 
                 await record_inventory_reversal(
-                    conn, ctx["tenant_id"],
-                    source_type='SALES_INVOICE',
+                    conn,
+                    ctx["tenant_id"],
+                    source_type="SALES_INVOICE",
                     source_id=invoice_id,
-                    reversal_journal_id=cogs_reversal_journal_id or (reversal_journal_id if reversal_journal_id else invoice_id),
+                    reversal_journal_id=cogs_reversal_journal_id
+                    or (reversal_journal_id if reversal_journal_id else invoice_id),
                     created_by=ctx["user_id"],
                     reversal_date=today,
                     notes_prefix="VOID",
                 )
 
-
                 # ============================================================
                 # 3.5. Reverse Bank Transactions (BankSync Rule 3)
                 # ============================================================
-                payment_bank_txns = await conn.fetch("""
+                payment_bank_txns = await conn.fetch(
+                    """
                     SELECT bt.id, bt.bank_account_id, bt.amount, bt.transaction_type,
                            bt.description, bt.journal_id
                     FROM bank_transactions bt
                     JOIN sales_invoice_payments sip ON sip.journal_id = bt.journal_id
                     WHERE sip.invoice_id = $1 AND bt.tenant_id = $2
-                """, invoice_id, ctx["tenant_id"])
-                
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+
                 for bt in payment_bank_txns:
                     reversal_bt_id = uuid.uuid4()
-                    reversed_type = 'CREDIT' if bt['transaction_type'] == 'DEBIT' else 'DEBIT'
-                    await conn.execute("""
+                    reversed_type = (
+                        "CREDIT" if bt["transaction_type"] == "DEBIT" else "DEBIT"
+                    )
+                    await conn.execute(
+                        """
                         INSERT INTO bank_transactions (
                             id, tenant_id, bank_account_id, transaction_date,
                             transaction_type, amount, running_balance,
@@ -2539,15 +2783,21 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                             journal_id, created_by
                     ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'invoice_void', $7, $8, $9, $10)
                     """,
-                        reversal_bt_id, ctx["tenant_id"], bt['bank_account_id'],
-                        today, reversed_type, -bt['amount'],
+                        reversal_bt_id,
+                        ctx["tenant_id"],
+                        bt["bank_account_id"],
+                        today,
+                        reversed_type,
+                        -bt["amount"],
                         invoice_id,
                         f"VOID: Reversal of {bt['description']}",
                         reversal_journal_id,
                         ctx["user_id"],
                     )
-                    logger.info(f"Bank transaction reversed: {bt['id']} -> {reversal_bt_id}")
-                
+                    logger.info(
+                        f"Bank transaction reversed: {bt['id']} -> {reversal_bt_id}"
+                    )
+
                 # ============================================================
                 # 4. Update AR status to VOID
                 # ============================================================
@@ -2791,37 +3041,55 @@ async def get_invoice_pdf(
             )
 
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
-            pdf_ar_row = await conn.fetchrow("""
+            pdf_ar_row = await conn.fetchrow(
+                """
                 SELECT paid_amount, outstanding
                 FROM compute_ar_outstanding($1)
                 WHERE invoice_id = $2
-            """, ctx["tenant_id"], invoice_id)
+            """,
+                ctx["tenant_id"],
+                invoice_id,
+            )
             # If no row from function: invoice is fully paid (outstanding=0) or draft/void
             if pdf_ar_row:
-                pdf_amount_paid = float(invoice["total_amount"] - pdf_ar_row["outstanding"])
+                pdf_amount_paid = float(
+                    invoice["total_amount"] - pdf_ar_row["outstanding"]
+                )
             elif invoice["status"] in ("paid",):
                 pdf_amount_paid = float(invoice["total_amount"])
             else:
                 pdf_amount_paid = 0
-
 
             # Fetch tenant info for PDF header
             tenant_row = await conn.fetchrow(
                 'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
                 ctx["tenant_id"],
             )
-            tenant_info = {
-                "name": tenant_row["display_name"] if tenant_row else ctx["tenant_id"],
-                "address": tenant_row["address"] if tenant_row else None,
-                "phone": tenant_row["phone"] if tenant_row else None,
-                "logo_url": tenant_row["logo_url"] if tenant_row else None,
-            } if tenant_row else {"name": ctx["tenant_id"], "address": None, "phone": None, "logo_url": None}
+            tenant_info = (
+                {
+                    "name": tenant_row["display_name"]
+                    if tenant_row
+                    else ctx["tenant_id"],
+                    "address": tenant_row["address"] if tenant_row else None,
+                    "phone": tenant_row["phone"] if tenant_row else None,
+                    "logo_url": tenant_row["logo_url"] if tenant_row else None,
+                }
+                if tenant_row
+                else {
+                    "name": ctx["tenant_id"],
+                    "address": None,
+                    "phone": None,
+                    "logo_url": None,
+                }
+            )
 
             # Resolve logo to base64 data URI for PDF embedding
             _logo_data = None
             _logo_filename = tenant_info.get("logo_url")
             if _logo_filename:
-                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                _logo_path = (
+                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                )
                 if _logo_path.exists():
                     with open(_logo_path, "rb") as _lf:
                         _logo_b64 = base64.b64encode(_lf.read()).decode()
@@ -2975,39 +3243,49 @@ async def get_invoice_activity(
 
             # 1. Created
             created_actor = await resolve_actor(invoice["created_by"])
-            activities.append({
-                "id": f"{invoice_id}-created",
-                "type": "created",
-                "description": "Faktur dibuat",
-                "actor_name": created_actor,
-                "timestamp": invoice["created_at"].isoformat() if invoice["created_at"] else None,
-                "amount": float(invoice["total_amount"]) if invoice["total_amount"] else None,
-                "details": f"Invoice #{invoice['invoice_number']}",
-            })
+            activities.append(
+                {
+                    "id": f"{invoice_id}-created",
+                    "type": "created",
+                    "description": "Faktur dibuat",
+                    "actor_name": created_actor,
+                    "timestamp": invoice["created_at"].isoformat()
+                    if invoice["created_at"]
+                    else None,
+                    "amount": float(invoice["total_amount"])
+                    if invoice["total_amount"]
+                    else None,
+                    "details": f"Invoice #{invoice['invoice_number']}",
+                }
+            )
 
             # 2. Posted (diterbitkan)
             if invoice["posted_at"]:
                 posted_actor = await resolve_actor(invoice["posted_by"])
-                activities.append({
-                    "id": f"{invoice_id}-posted",
-                    "type": "status_changed",
-                    "description": "Faktur diterbitkan",
-                    "actor_name": posted_actor,
-                    "timestamp": invoice["posted_at"].isoformat(),
-                    "old_value": "draft",
-                    "new_value": "posted",
-                })
+                activities.append(
+                    {
+                        "id": f"{invoice_id}-posted",
+                        "type": "status_changed",
+                        "description": "Faktur diterbitkan",
+                        "actor_name": posted_actor,
+                        "timestamp": invoice["posted_at"].isoformat(),
+                        "old_value": "draft",
+                        "new_value": "posted",
+                    }
+                )
 
             # 3. Voided (dibatalkan)
             if invoice["voided_at"]:
-                activities.append({
-                    "id": f"{invoice_id}-voided",
-                    "type": "voided",
-                    "description": "Faktur dibatalkan",
-                    "actor_name": None,
-                    "timestamp": invoice["voided_at"].isoformat(),
-                    "details": invoice["voided_reason"] or None,
-                })
+                activities.append(
+                    {
+                        "id": f"{invoice_id}-voided",
+                        "type": "voided",
+                        "description": "Faktur dibatalkan",
+                        "actor_name": None,
+                        "timestamp": invoice["voided_at"].isoformat(),
+                        "details": invoice["voided_reason"] or None,
+                    }
+                )
 
             # 4. Payments from receive_payments (not deprecated sales_invoice_payments)
             payments = await conn.fetch(
@@ -3025,16 +3303,20 @@ async def get_invoice_activity(
             )
             for p in payments:
                 p_actor = await resolve_actor(p["created_by"])
-                activities.append({
-                    "id": f"payment-{p['id']}",
-                    "type": "payment",
-                    "description": f"Pembayaran {'tunai' if p['payment_method'] == 'cash' else 'transfer'}",
-                    "actor_name": p_actor,
-                    "timestamp": p["created_at"].isoformat() if p["created_at"] else None,
-                    "amount": float(p["amount"]) if p["amount"] else None,
-                    "payment_method": p["payment_method"],
-                    "bank_account_name": p["bank_account_name"],
-                })
+                activities.append(
+                    {
+                        "id": f"payment-{p['id']}",
+                        "type": "payment",
+                        "description": f"Pembayaran {'tunai' if p['payment_method'] == 'cash' else 'transfer'}",
+                        "actor_name": p_actor,
+                        "timestamp": p["created_at"].isoformat()
+                        if p["created_at"]
+                        else None,
+                        "amount": float(p["amount"]) if p["amount"] else None,
+                        "payment_method": p["payment_method"],
+                        "bank_account_name": p["bank_account_name"],
+                    }
+                )
 
             # Sort by timestamp descending
             activities.sort(key=lambda x: x["timestamp"] or "", reverse=True)
@@ -3191,9 +3473,11 @@ async def get_invoice_journals(
         logger.error(f"Error getting invoice journals {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
 
+
 # =============================================================================
 # SALES INVOICE ATTACHMENTS
 # =============================================================================
+
 
 @router.post("/{invoice_id}/attachments", status_code=201)
 async def upload_invoice_attachment(
@@ -3228,7 +3512,8 @@ async def upload_invoice_attachment(
 
             inv = await conn.fetchrow(
                 "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-                invoice_id, tenant_id,
+                invoice_id,
+                tenant_id,
             )
             if not inv:
                 raise HTTPException(status_code=404, detail="Invoice not found")
@@ -3241,12 +3526,19 @@ async def upload_invoice_attachment(
             )
 
             import uuid as uuid_mod
+
             attachment_id = uuid_mod.uuid4()
             await conn.execute(
                 """INSERT INTO sales_invoice_attachments (id, invoice_id, tenant_id, filename, file_path, file_size, mime_type, uploaded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-                attachment_id, invoice_id, tenant_id, file.filename, result.file_path,
-                len(content), file.content_type, user_id,
+                attachment_id,
+                invoice_id,
+                tenant_id,
+                file.filename,
+                result.file_path,
+                len(content),
+                file.content_type,
+                user_id,
             )
 
             return {
@@ -3263,7 +3555,9 @@ async def upload_invoice_attachment(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading attachment for invoice {invoice_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error uploading attachment for invoice {invoice_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to upload attachment")
 
 
@@ -3282,7 +3576,8 @@ async def list_invoice_attachments(
 
         inv = await conn.fetchrow(
             "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-            invoice_id, tenant_id,
+            invoice_id,
+            tenant_id,
         )
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
@@ -3297,17 +3592,25 @@ async def list_invoice_attachments(
         attachments = []
         for r in rows:
             try:
-                url = await storage.generate_signed_url(r["file_path"]) if r["file_path"] else None
+                url = (
+                    await storage.generate_signed_url(r["file_path"])
+                    if r["file_path"]
+                    else None
+                )
             except Exception:
                 url = None
-            attachments.append({
-                "id": str(r["id"]),
-                "filename": r["filename"],
-                "url": url,
-                "size": r["file_size"],
-                "mime_type": r["mime_type"],
-                "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
-            })
+            attachments.append(
+                {
+                    "id": str(r["id"]),
+                    "filename": r["filename"],
+                    "url": url,
+                    "size": r["file_size"],
+                    "mime_type": r["mime_type"],
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
+                }
+            )
 
         return {"attachments": attachments}
 
@@ -3330,7 +3633,9 @@ async def delete_invoice_attachment(
             """SELECT sa.id, sa.file_path FROM sales_invoice_attachments sa
                JOIN sales_invoices si ON si.id = sa.invoice_id
                WHERE sa.id = $1 AND sa.invoice_id = $2 AND si.tenant_id = $3""",
-            attachment_id, invoice_id, tenant_id,
+            attachment_id,
+            invoice_id,
+            tenant_id,
         )
         if not row:
             raise HTTPException(status_code=404, detail="Attachment not found")
@@ -3341,7 +3646,9 @@ async def delete_invoice_attachment(
         except Exception:
             pass
 
-        await conn.execute("DELETE FROM sales_invoice_attachments WHERE id = $1", attachment_id)
+        await conn.execute(
+            "DELETE FROM sales_invoice_attachments WHERE id = $1", attachment_id
+        )
 
         return {"success": True, "message": "Attachment deleted"}
 
@@ -3363,14 +3670,18 @@ async def download_invoice_attachment(
             FROM sales_invoice_attachments sa
             JOIN sales_invoices si ON si.id = sa.invoice_id
             WHERE sa.id = $1 AND sa.invoice_id = $2 AND si.tenant_id = $3""",
-            attachment_id, invoice_id, tenant_id,
+            attachment_id,
+            invoice_id,
+            tenant_id,
         )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     storage = get_storage_service()
     try:
-        obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
+        obj = storage.client.get_object(
+            Bucket=storage.config.bucket, Key=row["file_path"]
+        )
         body = obj["Body"]
 
         def iter_body():
@@ -3387,5 +3698,7 @@ async def download_invoice_attachment(
             },
         )
     except Exception as e:
-        logger.error(f"Error downloading attachment {attachment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error downloading attachment {attachment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to download attachment")

@@ -38,10 +38,13 @@ TOOL_ENDPOINTS: Dict[str, Dict[str, str]] = {
     "get_invoice_detail": {"method": "GET", "path": "/api/sales-invoices/{id}"},
     "get_bills": {"method": "GET", "path": "/api/bills"},
     "get_bill_detail": {"method": "GET", "path": "/api/bills/{id}"},
-    "get_bill_journals":          {"method": "GET", "path": "/api/bills/{id}/journals"},
-    "get_bill_activity":          {"method": "GET", "path": "/api/bills/{id}/activity"},
-    "get_bill_payment_detail":    {"method": "GET", "path": "/api/bill-payments/{id}"},
-    "get_bill_payment_journals":  {"method": "GET", "path": "/api/bill-payments/{id}/journal-entries"},
+    "get_bill_journals": {"method": "GET", "path": "/api/bills/{id}/journals"},
+    "get_bill_activity": {"method": "GET", "path": "/api/bills/{id}/activity"},
+    "get_bill_payment_detail": {"method": "GET", "path": "/api/bill-payments/{id}"},
+    "get_bill_payment_journals": {
+        "method": "GET",
+        "path": "/api/bill-payments/{id}/journal-entries",
+    },
     "get_expenses": {"method": "GET", "path": "/api/expenses"},
     "get_expense_detail": {"method": "GET", "path": "/api/expenses/{id}"},
     "get_credit_notes": {"method": "GET", "path": "/api/credit-notes"},
@@ -433,7 +436,7 @@ READ_TOOLS: List[Dict[str, Any]] = [
     # ── Financial Documents ──
     {
         "name": "get_invoices",
-        "description": "List faktur penjualan. Filter: search, status, customer_id, periode.",
+        "description": "List faktur penjualan. Filter: search, status, customer_id, periode. PENTING: untuk query piutang/AR, WAJIB pakai status='active' agar draft & void tidak masuk.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -443,7 +446,7 @@ READ_TOOLS: List[Dict[str, Any]] = [
                 },
                 "status": {
                     "type": "string",
-                    "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published).",
+                    "description": "Filter: active, unpaid, partial, paid, overdue, draft, void, all. WAJIB: untuk piutang/AR, SELALU pakai 'active' (exclude draft & void). 'belum lunas' = unpaid. 'lunas' = paid.",
                 },
                 "customer_id": {
                     "type": "string",
@@ -468,13 +471,13 @@ READ_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "get_bills",
-        "description": "List tagihan/bill. Filter: status, search, vendor_id, periode.",
+        "description": "List tagihan/bill. Filter: status, search, vendor_id, periode. PENTING: untuk query hutang/AP, WAJIB pakai status='active' agar draft & void tidak masuk.",
         "parameters": {
             "type": "object",
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Filter: draft, posted, partial, paid, overdue, void. PENTING: 'sudah terbit' bukan status — jangan filter, tampilkan semua. 'belum lunas' = partial. 'lunas' = paid. Jangan pakai status selain yang tercantum (JANGAN pakai sent/issued/published).",
+                    "description": "Filter: active, unpaid, partial, paid, overdue, draft, void, all. WAJIB: untuk hutang/piutang/AP, SELALU pakai 'active' (exclude draft & void). 'belum lunas' = unpaid. 'lunas' = paid.",
                 },
                 "search": {
                     "type": "string",
@@ -1712,10 +1715,10 @@ ACTION_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "edits": {
                     "type": "object",
-                    "description": "Koreksi data dokumen. Contoh: {\"vendor_name\": \"PT X\"} atau {\"total_amount\": 5000000} atau {\"items\": {\"0\": {\"qty\": 5}}}"
+                    "description": 'Koreksi data dokumen. Contoh: {"vendor_name": "PT X"} atau {"total_amount": 5000000} atau {"items": {"0": {"qty": 5}}}',
                 }
             },
-            "required": ["edits"]
+            "required": ["edits"],
         },
     },
 ]
@@ -1912,144 +1915,132 @@ TUTORIAL_TOOLS: List[Dict[str, Any]] = [
 # ─── Phase 2A: Tool Domains ──────────────────────────────────────────────────
 from enum import Enum
 
+
 class ToolDomain(str, Enum):
-    CORE        = "CORE"
+    CORE = "CORE"
     MASTER_DATA = "MASTER_DATA"
     AR_INVOICES = "AR_INVOICES"
-    AP_BILLS    = "AP_BILLS"
-    ACCOUNTING  = "ACCOUNTING"
-    REPORTS     = "REPORTS"
-    BANKING     = "BANKING"
-    ACTIONS     = "ACTIONS"
-    WORKFLOW    = "WORKFLOW"
-    CHARTS      = "CHARTS"
-    EXPENSES    = "EXPENSES"
-    INVENTORY   = "INVENTORY"
-    ANALYTICS   = "ANALYTICS"
-    PIPELINE    = "PIPELINE"
+    AP_BILLS = "AP_BILLS"
+    ACCOUNTING = "ACCOUNTING"
+    REPORTS = "REPORTS"
+    BANKING = "BANKING"
+    ACTIONS = "ACTIONS"
+    WORKFLOW = "WORKFLOW"
+    CHARTS = "CHARTS"
+    EXPENSES = "EXPENSES"
+    INVENTORY = "INVENTORY"
+    ANALYTICS = "ANALYTICS"
+    PIPELINE = "PIPELINE"
+
 
 # Map each tool → set of domains it belongs to
 # CORE tools are loaded for EVERY request
 TOOL_DOMAINS: dict = {
     # ── CORE (always loaded) ──
-    "execute_query":          {"CORE"},
-    "get_dashboard_summary":  {"CORE"},
-    "search_customers":       {"CORE", "MASTER_DATA"},
-    "search_vendors":         {"CORE", "MASTER_DATA"},
-    "search_items":           {"CORE", "MASTER_DATA"},
-    "search_accounts":        {"CORE", "ACCOUNTING"},
-    "search_bank_accounts":   {"CORE", "BANKING"},
-
+    "execute_query": {"CORE"},
+    "get_dashboard_summary": {"CORE"},
+    "search_customers": {"CORE", "MASTER_DATA"},
+    "search_vendors": {"CORE", "MASTER_DATA"},
+    "search_items": {"CORE", "MASTER_DATA"},
+    "search_accounts": {"CORE", "ACCOUNTING"},
+    "search_bank_accounts": {"CORE", "BANKING"},
     # ── SESSION ──
-    "get_session_events":     {"CORE"},
-    "search_chat_history":    {"CORE"},
-    "review_next_unmatched":  {"WORKFLOW"},
-
+    "get_session_events": {"CORE"},
+    "search_chat_history": {"CORE"},
+    "review_next_unmatched": {"WORKFLOW"},
     # ── TUTORIAL ──
-    "get_tutorial":           {"CORE"},
-    "list_tutorials":         {"CORE"},
-    "start_tutorial":         {"CORE"},
-    "advance_tutorial":       {"CORE"},
-    "dismiss_tutorial":       {"CORE"},
-
+    "get_tutorial": {"CORE"},
+    "list_tutorials": {"CORE"},
+    "start_tutorial": {"CORE"},
+    "advance_tutorial": {"CORE"},
+    "dismiss_tutorial": {"CORE"},
     # ── MASTER DATA ──
-    "get_customer_detail":    {"MASTER_DATA"},
-    "get_vendor_detail":      {"MASTER_DATA"},
-    "get_item_detail":        {"MASTER_DATA", "INVENTORY"},
-    "get_customers":          {"MASTER_DATA"},
-    "get_vendors":            {"MASTER_DATA"},
-    "get_items":              {"MASTER_DATA", "INVENTORY"},
-
+    "get_customer_detail": {"MASTER_DATA"},
+    "get_vendor_detail": {"MASTER_DATA"},
+    "get_item_detail": {"MASTER_DATA", "INVENTORY"},
+    "get_customers": {"MASTER_DATA"},
+    "get_vendors": {"MASTER_DATA"},
+    "get_items": {"MASTER_DATA", "INVENTORY"},
     # ── AR / INVOICES ──
-    "get_invoices":           {"AR_INVOICES"},
-    "get_invoice_detail":     {"AR_INVOICES"},
-    "get_customer_invoices":  {"AR_INVOICES", "MASTER_DATA"},
-    "get_receive_payments":   {"AR_INVOICES"},
-    "get_ar_aging":           {"AR_INVOICES", "REPORTS"},
-    "get_overdue_invoices":   {"AR_INVOICES"},
-    "get_credit_notes":       {"AR_INVOICES"},
-
+    "get_invoices": {"AR_INVOICES"},
+    "get_invoice_detail": {"AR_INVOICES"},
+    "get_customer_invoices": {"AR_INVOICES", "MASTER_DATA"},
+    "get_receive_payments": {"AR_INVOICES"},
+    "get_ar_aging": {"AR_INVOICES", "REPORTS"},
+    "get_overdue_invoices": {"AR_INVOICES"},
+    "get_credit_notes": {"AR_INVOICES"},
     # ── AP / BILLS ──
-    "get_bills":              {"AP_BILLS"},
-    "get_bill_detail":        {"AP_BILLS"},
-    "get_bill_journals":          {"AP_BILLS", "ACCOUNTING"},
-    "get_bill_activity":          {"AP_BILLS"},
-    "get_bill_payment_detail":    {"AP_BILLS"},
-    "get_bill_payment_journals":  {"AP_BILLS", "ACCOUNTING"},
-    "get_vendor_bills":       {"AP_BILLS", "MASTER_DATA"},
-    "get_bill_payments":      {"AP_BILLS"},
-    "get_ap_aging":           {"AP_BILLS", "REPORTS"},
-    "get_overdue_bills":      {"AP_BILLS"},
-    "get_purchase_orders":    {"AP_BILLS", "PIPELINE"},
-
+    "get_bills": {"AP_BILLS"},
+    "get_bill_detail": {"AP_BILLS"},
+    "get_bill_journals": {"AP_BILLS", "ACCOUNTING"},
+    "get_bill_activity": {"AP_BILLS"},
+    "get_bill_payment_detail": {"AP_BILLS"},
+    "get_bill_payment_journals": {"AP_BILLS", "ACCOUNTING"},
+    "get_vendor_bills": {"AP_BILLS", "MASTER_DATA"},
+    "get_bill_payments": {"AP_BILLS"},
+    "get_ap_aging": {"AP_BILLS", "REPORTS"},
+    "get_overdue_bills": {"AP_BILLS"},
+    "get_purchase_orders": {"AP_BILLS", "PIPELINE"},
     # ── EXPENSES ──
-    "get_expenses":           {"EXPENSES"},
-    "get_expense_detail":     {"EXPENSES"},
-
+    "get_expenses": {"EXPENSES"},
+    "get_expense_detail": {"EXPENSES"},
     # ── ACCOUNTING ──
-    "get_journal_entries":    {"ACCOUNTING"},
-    "get_general_ledger":     {"ACCOUNTING"},
-    "get_trial_balance":      {"ACCOUNTING", "REPORTS"},
+    "get_journal_entries": {"ACCOUNTING"},
+    "get_general_ledger": {"ACCOUNTING"},
+    "get_trial_balance": {"ACCOUNTING", "REPORTS"},
     "get_accounting_periods": {"ACCOUNTING"},
-    "get_chart_of_accounts":  {"ACCOUNTING"},
-
+    "get_chart_of_accounts": {"ACCOUNTING"},
     # ── REPORTS ──
-    "get_profit_loss":        {"REPORTS"},
-    "get_balance_sheet":      {"REPORTS"},
-    "get_cash_flow":          {"REPORTS"},
-
+    "get_profit_loss": {"REPORTS"},
+    "get_balance_sheet": {"REPORTS"},
+    "get_cash_flow": {"REPORTS"},
     # ── BANKING ──
-    "get_bank_accounts":      {"BANKING"},
-    "get_bank_transactions":  {"BANKING"},
-    "get_bank_reconciliation":{"BANKING"},
-    "get_bank_transfers":     {"BANKING"},
-    "get_bank_transfer_detail":{"BANKING"},
-    "get_bank_transfer_summary":{"BANKING"},
-
+    "get_bank_accounts": {"BANKING"},
+    "get_bank_transactions": {"BANKING"},
+    "get_bank_reconciliation": {"BANKING"},
+    "get_bank_transfers": {"BANKING"},
+    "get_bank_transfer_detail": {"BANKING"},
+    "get_bank_transfer_summary": {"BANKING"},
     # ── INVENTORY ──
-    "get_top_products":       {"INVENTORY", "ANALYTICS"},
-    "get_slow_moving_products":{"INVENTORY", "ANALYTICS"},
-    "get_product_margins":    {"INVENTORY", "ANALYTICS"},
-    "get_stock_adjustments":  {"INVENTORY"},
-    "get_stock_adjustment_detail":{"INVENTORY"},
-
+    "get_top_products": {"INVENTORY", "ANALYTICS"},
+    "get_slow_moving_products": {"INVENTORY", "ANALYTICS"},
+    "get_product_margins": {"INVENTORY", "ANALYTICS"},
+    "get_stock_adjustments": {"INVENTORY"},
+    "get_stock_adjustment_detail": {"INVENTORY"},
     # ── ANALYTICS ──
-    "get_financial_ratios":   {"ANALYTICS", "REPORTS"},
-    "get_ratio_dashboard":    {"ANALYTICS", "REPORTS"},
-    "get_ratio_trend":        {"ANALYTICS"},
-    "get_ratio_alerts":       {"ANALYTICS"},
-    "get_budgets":            {"ANALYTICS"},
-    "get_budget_detail":      {"ANALYTICS"},
-    "get_cost_centers":       {"ANALYTICS"},
-    "get_cost_center_summary":{"ANALYTICS"},
-    "get_payroll_summary":    {"ANALYTICS"},
-
+    "get_financial_ratios": {"ANALYTICS", "REPORTS"},
+    "get_ratio_dashboard": {"ANALYTICS", "REPORTS"},
+    "get_ratio_trend": {"ANALYTICS"},
+    "get_ratio_alerts": {"ANALYTICS"},
+    "get_budgets": {"ANALYTICS"},
+    "get_budget_detail": {"ANALYTICS"},
+    "get_cost_centers": {"ANALYTICS"},
+    "get_cost_center_summary": {"ANALYTICS"},
+    "get_payroll_summary": {"ANALYTICS"},
     # ── PIPELINE (deposits, cheques, recurring, orders, quotes) ──
-    "get_vendor_deposits":    {"PIPELINE", "AP_BILLS"},
-    "get_vendor_deposit_detail":{"PIPELINE", "AP_BILLS"},
-    "get_customer_deposits":  {"PIPELINE", "AR_INVOICES"},
-    "get_customer_deposit_detail":{"PIPELINE", "AR_INVOICES"},
-    "get_cheques":            {"PIPELINE", "BANKING"},
+    "get_vendor_deposits": {"PIPELINE", "AP_BILLS"},
+    "get_vendor_deposit_detail": {"PIPELINE", "AP_BILLS"},
+    "get_customer_deposits": {"PIPELINE", "AR_INVOICES"},
+    "get_customer_deposit_detail": {"PIPELINE", "AR_INVOICES"},
+    "get_cheques": {"PIPELINE", "BANKING"},
     "get_recurring_invoices": {"PIPELINE", "AR_INVOICES"},
-    "get_recurring_invoices_due":{"PIPELINE", "AR_INVOICES"},
-    "get_recurring_bills":    {"PIPELINE", "AP_BILLS"},
-    "get_recurring_bills_due":{"PIPELINE", "AP_BILLS"},
-    "get_sales_orders":       {"PIPELINE"},
+    "get_recurring_invoices_due": {"PIPELINE", "AR_INVOICES"},
+    "get_recurring_bills": {"PIPELINE", "AP_BILLS"},
+    "get_recurring_bills_due": {"PIPELINE", "AP_BILLS"},
+    "get_sales_orders": {"PIPELINE"},
     "get_sales_order_detail": {"PIPELINE"},
-    "get_quotes":             {"PIPELINE"},
-    "get_fixed_assets":       {"PIPELINE"},
+    "get_quotes": {"PIPELINE"},
+    "get_fixed_assets": {"PIPELINE"},
     "get_fixed_asset_detail": {"PIPELINE"},
-    "review_document":        {"WORKFLOW"},
-
+    "review_document": {"WORKFLOW"},
     # ── ACTIONS (propose / simulate) ──
-    "propose_action":         {"ACTIONS"},
-    "simulate_action":        {"ACTIONS"},
-    "propose_direct_action":  {"ACTIONS"},
+    "propose_action": {"ACTIONS"},
+    "simulate_action": {"ACTIONS"},
+    "propose_direct_action": {"ACTIONS"},
     "update_document_context": {"ACTIONS"},
-
     # ── WORKFLOW ──
-    "start_workflow":         {"WORKFLOW"},
-    "cancel_workflow":        {"WORKFLOW"},
+    "start_workflow": {"WORKFLOW"},
+    "cancel_workflow": {"WORKFLOW"},
 }
 
 

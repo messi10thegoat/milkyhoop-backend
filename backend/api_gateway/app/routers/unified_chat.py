@@ -32,6 +32,7 @@ import json as _json_stream
 from ..services.unified_agent.session_orchestrator import SessionAwareAgent
 from ..services.unified_agent.telemetry import record_telemetry
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
+from ..services.unified_agent.orchestrator import _strip_draft_void_rows
 from ..services.action_executor_client import get_action_executor_client
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
 from ..services.unified_agent.db_utils import get_session_db_pool
@@ -375,7 +376,9 @@ class CancelActionRequest(BaseModel):
     pending_action_id: str = Field(
         ..., description="ID of the pending action to cancel"
     )
-    is_edit: bool = Field(False, description="If true, preserve pending_payload and set editing_mode")
+    is_edit: bool = Field(
+        False, description="If true, preserve pending_payload and set editing_mode"
+    )
 
 
 class ChatMessageResponse(BaseModel):
@@ -830,6 +833,12 @@ async def send_message(request: Request, body: ChatMessageRequest):
         session_id=body.session_id,
     )
 
+    # Post-process: strip draft/void rows from tables
+    if hasattr(agent_resp, "content") and agent_resp.content:
+        agent_resp.content = _strip_draft_void_rows(agent_resp.content)
+    elif isinstance(agent_resp, dict) and agent_resp.get("content"):
+        agent_resp["content"] = _strip_draft_void_rows(agent_resp["content"])
+
     # [PHASE A] Message persistence handled by session_orchestrator.py
     # Old gRPC conversation_service disabled - causes user_id schema conflict
     # await _save_to_chat_history(
@@ -875,7 +884,11 @@ async def send_message(request: Request, body: ChatMessageRequest):
     )
 
     # Extract token usage for monitoring
-    _usage = agent_resp.get("usage", {}) if isinstance(agent_resp, dict) else getattr(agent_resp, "usage", {}) or {}
+    _usage = (
+        agent_resp.get("usage", {})
+        if isinstance(agent_resp, dict)
+        else getattr(agent_resp, "usage", {}) or {}
+    )
     _tin = _usage.get("prompt_tokens", 0)
     _tout = _usage.get("completion_tokens", 0)
     _cached = 0
@@ -900,28 +913,30 @@ async def send_message(request: Request, body: ChatMessageRequest):
         _cls_lat = _usage.get("classifier_latency_ms", 0)
         _cls_fallback = _usage.get("low_confidence_fallback", False)
 
-        _asyncio_stream.create_task(record_telemetry(
-            db_pool=_agent.db_pool if hasattr(_agent, 'db_pool') else None,
-            tenant_id=ctx["tenant_id"],
-            user_id=ctx["user_id"],
-            session_id=body.session_id,
-            intent=_cls_intent or msg_type,
-            confidence=float(_cls_conf) if _cls_conf else None,
-            classifier_skipped=bool(_cls_skip),
-            classifier_tokens_in=int(_cls_tin),
-            classifier_tokens_out=int(_cls_tout),
-            classifier_latency_ms=int(_cls_lat),
-            low_confidence_fallback=bool(_cls_fallback),
-            tools_loaded=0,
-            tools_called=len(tool_calls),
-            iteration_count=iterations,
-            input_tokens=_tin,
-            output_tokens=_tout,
-            cached_tokens=_cached,
-            total_latency_ms=latency,
-            message_type=msg_type,
-            model_used=model_used,
-        ))
+        _asyncio_stream.create_task(
+            record_telemetry(
+                db_pool=_agent.db_pool if hasattr(_agent, "db_pool") else None,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+                session_id=body.session_id,
+                intent=_cls_intent or msg_type,
+                confidence=float(_cls_conf) if _cls_conf else None,
+                classifier_skipped=bool(_cls_skip),
+                classifier_tokens_in=int(_cls_tin),
+                classifier_tokens_out=int(_cls_tout),
+                classifier_latency_ms=int(_cls_lat),
+                low_confidence_fallback=bool(_cls_fallback),
+                tools_loaded=0,
+                tools_called=len(tool_calls),
+                iteration_count=iterations,
+                input_tokens=_tin,
+                output_tokens=_tout,
+                cached_tokens=_cached,
+                total_latency_ms=latency,
+                message_type=msg_type,
+                model_used=model_used,
+            )
+        )
     except Exception as _tel_err:
         logger.warning("[TELEMETRY] Failed to record: %s", _tel_err)
 
@@ -1392,10 +1407,16 @@ async def send_message_with_files(
         if _has_image:
             try:
                 from ..services.ocr_providers.openai_provider import OpenAIOCRProvider
-                from ..services.unified_agent.db_utils import get_session_db_pool as _get_ocr_pool
+                from ..services.unified_agent.db_utils import (
+                    get_session_db_pool as _get_ocr_pool,
+                )
                 import uuid as _ocr_uuid
                 import json as _ocr_json
-                from datetime import datetime as _ocr_dt, timedelta as _ocr_td, timezone as _ocr_tz
+                from datetime import (
+                    datetime as _ocr_dt,
+                    timedelta as _ocr_td,
+                    timezone as _ocr_tz,
+                )
                 from openai import AsyncOpenAI as _OCR_OpenAI
 
                 _ocr_pool = await _get_ocr_pool()
@@ -1403,30 +1424,44 @@ async def send_message_with_files(
                 # Ensure session
                 if not session_id:
                     _sm_ocr = SessionManager(
-                        db_pool=_ocr_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                        db_pool=_ocr_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
                     )
                     try:
                         _conv_uuid = str(_ocr_uuid.UUID(conversation_id))
                     except (ValueError, AttributeError):
                         _conv_uuid = str(_ocr_uuid.uuid4())
                     _ocr_sess = await _sm_ocr.get_or_create_session(_conv_uuid)
-                    session_id = str(_ocr_sess.session_id) if hasattr(_ocr_sess, "session_id") else str(_ocr_sess)
+                    session_id = (
+                        str(_ocr_sess.session_id)
+                        if hasattr(_ocr_sess, "session_id")
+                        else str(_ocr_sess)
+                    )
 
                 # Read first image file
                 _fm = next(
-                    (fm for fm in file_metas if fm.get("content_type", "").startswith("image/") or fm.get("extension", "").lower() == ".pdf"),
-                    file_metas[0]
+                    (
+                        fm
+                        for fm in file_metas
+                        if fm.get("content_type", "").startswith("image/")
+                        or fm.get("extension", "").lower() == ".pdf"
+                    ),
+                    file_metas[0],
                 )
                 _stored_path = _fm.get("stored_path", "")
                 if _stored_path and os.path.exists(_stored_path):
                     import base64 as _b64
+
                     with open(_stored_path, "rb") as _img_f:
                         _img_bytes = _img_f.read()
                     _img_b64 = _b64.b64encode(_img_bytes).decode()
                     _mime = _fm.get("content_type", "image/jpeg")
 
                     # Single gpt-4o call: OCR + extract + understand user intent
-                    _ocr_client = _OCR_OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+                    _ocr_client = _OCR_OpenAI(
+                        api_key=os.environ.get("OPENAI_API_KEY", "")
+                    )
                     _ocr_prompt = f"""Kamu adalah asisten akuntansi. User upload foto dokumen keuangan dengan pesan: "{text}"
 
 Tugas:
@@ -1459,13 +1494,21 @@ PENTING:
 
                     _ocr_response = await _ocr_client.chat.completions.create(
                         model="gpt-4o",
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": _ocr_prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:{_mime};base64,{_img_b64}", "detail": "high"}},
-                            ],
-                        }],
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": _ocr_prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{_mime};base64,{_img_b64}",
+                                            "detail": "high",
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
                         max_tokens=2000,
                         temperature=0.1,
                     )
@@ -1475,12 +1518,18 @@ PENTING:
                     if _ocr_text.startswith("```"):
                         _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
                     _ocr_data = _ocr_json.loads(_ocr_text)
-                    logger.info(f"[DocSimple] gpt-4o extracted: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}")
+                    logger.info(
+                        f"[DocSimple] gpt-4o extracted: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
+                    )
 
                     # Build DIRECT_ACTION_PREVIEW
                     _pending_id = str(_ocr_uuid.uuid4())
                     _doc_type = _ocr_data.get("doc_type", "unknown")
-                    _vendor = _ocr_data.get("vendor_name") or _ocr_data.get("customer_name") or "Unknown"
+                    _vendor = (
+                        _ocr_data.get("vendor_name")
+                        or _ocr_data.get("customer_name")
+                        or "Unknown"
+                    )
                     _total = float(_ocr_data.get("total_amount", 0))
                     _tax = float(_ocr_data.get("tax_amount", 0))
                     _items = _ocr_data.get("items", [])
@@ -1507,9 +1556,13 @@ PENTING:
                         _table_lines.append(f"| Tanggal | {_doc_date} |")
                     if _items:
                         _table_lines.append(f"| Items | {len(_items)} item |")
-                    _table_lines.append(f"| Total | Rp {_total:,.0f} |".replace(",", "."))
+                    _table_lines.append(
+                        f"| Total | Rp {_total:,.0f} |".replace(",", ".")
+                    )
                     if _tax > 0:
-                        _table_lines.append(f"| Pajak | Rp {_tax:,.0f} |".replace(",", "."))
+                        _table_lines.append(
+                            f"| Pajak | Rp {_tax:,.0f} |".replace(",", ".")
+                        )
                     _table_lines.append(f"| Confidence | {_confidence*100:.0f}% |")
 
                     _preview = {
@@ -1548,12 +1601,16 @@ PENTING:
                             _expires,
                         )
                     except Exception as _pa_err:
-                        logger.warning(f"[DocSimple] Failed to store pending: {_pa_err}")
+                        logger.warning(
+                            f"[DocSimple] Failed to store pending: {_pa_err}"
+                        )
 
                     # Persist to Layer 2 document_context
                     try:
                         _sm_persist = SessionManager(
-                            db_pool=_ocr_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+                            db_pool=_ocr_pool,
+                            tenant_id=ctx["tenant_id"],
+                            user_id=ctx["user_id"],
                         )
                         _doc_ctx = {
                             "document_id": _preview["payload"]["document_id"],
@@ -1568,12 +1625,20 @@ PENTING:
                             "pending_action_id": _pending_id,
                             "edits": {},
                         }
-                        await _sm_persist.update_state(session_id, document_context=_doc_ctx)
-                        logger.info(f"[DocSimple] Persisted document_context to Layer 2")
+                        await _sm_persist.update_state(
+                            session_id, document_context=_doc_ctx
+                        )
+                        logger.info(
+                            f"[DocSimple] Persisted document_context to Layer 2"
+                        )
                     except Exception as _l2_err:
-                        logger.warning(f"[DocSimple] Failed to persist Layer 2: {_l2_err}")
+                        logger.warning(
+                            f"[DocSimple] Failed to persist Layer 2: {_l2_err}"
+                        )
 
-                    _narration = f"Saya baca {_type_display.lower()} dari **{_vendor}**. Total Rp {_total:,.0f}.".replace(",", ".")
+                    _narration = f"Saya baca {_type_display.lower()} dari **{_vendor}**. Total Rp {_total:,.0f}.".replace(
+                        ",", "."
+                    )
 
                     _doc_pipeline_result = ChatMessageResponse(
                         message_type="DIRECT_ACTION_PREVIEW",
@@ -1731,7 +1796,9 @@ async def _propose_document_draft(
     from datetime import datetime as _dt, timedelta as _td
 
     draft_plan = proposal.get("draft_plan", {})
-    document_id = proposal.get("payload", {}).get("document_id") or proposal.get("document_id", "")
+    document_id = proposal.get("payload", {}).get("document_id") or proposal.get(
+        "document_id", ""
+    )
     narration = proposal.get("narration", "Dokumen siap di-review.")
 
     # -- Build confirmation table from draft_plan --
@@ -1754,7 +1821,9 @@ async def _propose_document_draft(
     lines.append(f"| Tipe | {doc_type_display} |")
     lines.append(f"| Counterparty | {counterparty} |")
 
-    line_items = draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []
+    line_items = (
+        draft_plan.get("line_items") or draft_plan.get("inventory_movements") or []
+    )
     if line_items:
         lines.append(f"| Items | {len(line_items)} item |")
 
@@ -1782,11 +1851,13 @@ async def _propose_document_draft(
             if credit > 0:
                 lines.append(f"- Cr. {name}: Rp {int(credit):,}".replace(",", "."))
 
-
     # -- Check dependencies (vendor/items existence) --
     from ..services.chat_document_bridge import check_draft_dependencies
+
     async with pool.acquire() as _dep_conn:
-        await _dep_conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await _dep_conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
         deps = await check_draft_dependencies(_dep_conn, draft_plan, ctx["tenant_id"])
     if not deps["all_resolved"]:
         lines.append("")
@@ -1834,18 +1905,26 @@ async def _propose_document_draft(
     for _li in _line_items_raw:
         if not isinstance(_li, dict):
             continue
-        _line_items_summary.append({
-            "description": _li.get("description") or _li.get("product_name") or "",
-            "qty": _li.get("quantity") or _li.get("qty"),
-            "unit_price": _li.get("unit_price") or _li.get("unit_cost"),
-            "total": _li.get("total_price") or _li.get("total") or _li.get("amount"),
-        })
+        _line_items_summary.append(
+            {
+                "description": _li.get("description") or _li.get("product_name") or "",
+                "qty": _li.get("quantity") or _li.get("qty"),
+                "unit_price": _li.get("unit_price") or _li.get("unit_cost"),
+                "total": _li.get("total_price")
+                or _li.get("total")
+                or _li.get("amount"),
+            }
+        )
 
     # Extract totals from journal_draft if not at top level
     _jd = draft_plan.get("journal_draft") or {}
     _jd_lines = _jd.get("lines") or []
-    _total_debit = sum(float(l.get("debit") or 0) for l in _jd_lines if isinstance(l, dict))
-    _total_credit = sum(float(l.get("credit") or 0) for l in _jd_lines if isinstance(l, dict))
+    _total_debit = sum(
+        float(l.get("debit") or 0) for l in _jd_lines if isinstance(l, dict)
+    )
+    _total_credit = sum(
+        float(l.get("credit") or 0) for l in _jd_lines if isinstance(l, dict)
+    )
 
     # Extract vendor/counterparty from multiple possible locations
     _matched = draft_plan.get("matched_to") or {}
@@ -1857,12 +1936,21 @@ async def _propose_document_draft(
 
     _doc_context = {
         "document_id": document_id,
-        "doc_type": draft_plan.get("action_type") or draft_plan.get("transaction_type") or "unknown",
-        "confidence": float(draft_plan.get("overall_confidence") or draft_plan.get("confidence") or 0),
+        "doc_type": draft_plan.get("action_type")
+        or draft_plan.get("transaction_type")
+        or "unknown",
+        "confidence": float(
+            draft_plan.get("overall_confidence") or draft_plan.get("confidence") or 0
+        ),
         "document_number": draft_plan.get("document_number"),
         "document_date": draft_plan.get("document_date"),
         "vendor_name": _vendor,
-        "total_amount": float(draft_plan.get("total_debit") or draft_plan.get("total_amount") or _total_debit or 0),
+        "total_amount": float(
+            draft_plan.get("total_debit")
+            or draft_plan.get("total_amount")
+            or _total_debit
+            or 0
+        ),
         "tax_amount": float(draft_plan.get("tax_amount") or 0),
         "items": _line_items_summary,
         "pending_action_id": pending_id,
@@ -1871,11 +1959,18 @@ async def _propose_document_draft(
 
     try:
         from ..services.unified_agent.session_manager import SessionManager as _DocSM
-        _doc_sm = _DocSM(db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+
+        _doc_sm = _DocSM(
+            db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+        )
         await _doc_sm.update_state(session_id, document_context=_doc_context)
-        logger.info(f"[DocDraft] Persisted document_context to Layer 2 for session {session_id}")
+        logger.info(
+            f"[DocDraft] Persisted document_context to Layer 2 for session {session_id}"
+        )
     except Exception as _e:
-        logger.warning(f"[DocDraft] Failed to persist document_context to Layer 2: {_e}")
+        logger.warning(
+            f"[DocDraft] Failed to persist document_context to Layer 2: {_e}"
+        )
 
     # -- Build preview data matching orchestrator format --
     preview_data = {
@@ -2114,11 +2209,18 @@ async def _confirm_direct_action(
             # Clear document_context from Layer 2 (only for document actions)
             if action_key == "confirm_document_draft" and session_id:
                 try:
-                    from ..services.unified_agent.session_manager import SessionManager as _ClearSM
-                    _clear_sm = _ClearSM(db_pool=pool, tenant_id=tenant_id, user_id=user_id)
+                    from ..services.unified_agent.session_manager import (
+                        SessionManager as _ClearSM,
+                    )
+
+                    _clear_sm = _ClearSM(
+                        db_pool=pool, tenant_id=tenant_id, user_id=user_id
+                    )
                     await _clear_sm.update_state(session_id, document_context=None)
                 except Exception as _e:
-                    logger.warning(f"[DocConfirm] Failed to clear document_context: {_e}")
+                    logger.warning(
+                        f"[DocConfirm] Failed to clear document_context: {_e}"
+                    )
 
             # Recon actions: signal frontend to auto-continue workflow
             recon_actions = {
@@ -2193,7 +2295,10 @@ async def _confirm_direct_action(
                 logger.warning(f"[Tutorial] Auto-advance failed: {_ta_err}")
 
             # Response composer: inject CTA buttons
-            from ..services.unified_agent.response_composer import compose_confirm_response
+            from ..services.unified_agent.response_composer import (
+                compose_confirm_response,
+            )
+
             _composed = compose_confirm_response(
                 action_key=action_key,
                 success_message=success_msg,
@@ -2332,7 +2437,12 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
                         sm, body.session_id, action_type, result
                     )
                     # Clear pending payload + FSM → IDLE on successful confirm
-                    await sm.update_state(body.session_id, pending_payload={}, pending_intent="", editing_mode=False)
+                    await sm.update_state(
+                        body.session_id,
+                        pending_payload={},
+                        pending_intent="",
+                        editing_mode=False,
+                    )
                     await sm.transition_fsm(body.session_id, FSMState.IDLE.value)
                     logger.info(
                         f"[Confirm] Layer 2 updated: session={body.session_id[:8]} "
@@ -2341,17 +2451,29 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
 
                     # Cancel crud_form workflow if active
                     try:
-                        from ..services.unified_agent.workflow_engine import WorkflowEngine
+                        from ..services.unified_agent.workflow_engine import (
+                            WorkflowEngine,
+                        )
+
                         _wf_db_confirm = await get_session_db_pool()
                         _wf_eng_confirm = WorkflowEngine(
-                            _wf_db_confirm, ctx["tenant_id"], ctx["user_id"], "",
+                            _wf_db_confirm,
+                            ctx["tenant_id"],
+                            ctx["user_id"],
+                            "",
                         )
-                        _wf_confirm = await _wf_eng_confirm.get_state(body.session_id, "crud_form")
+                        _wf_confirm = await _wf_eng_confirm.get_state(
+                            body.session_id, "crud_form"
+                        )
                         if _wf_confirm and _wf_confirm.status == "active":
                             await _wf_eng_confirm.cancel(body.session_id, "crud_form")
-                            logger.info("[Confirm] Cancelled crud_form workflow after confirm success")
+                            logger.info(
+                                "[Confirm] Cancelled crud_form workflow after confirm success"
+                            )
                     except Exception as _wf_err:
-                        logger.warning("[Confirm] crud_form cancel failed (non-fatal): %s", _wf_err)
+                        logger.warning(
+                            "[Confirm] crud_form cancel failed (non-fatal): %s", _wf_err
+                        )
 
             except Exception as hook_err:
                 logger.warning(f"[Confirm] Layer 2 hook failed (non-fatal): {hook_err}")
@@ -2360,11 +2482,19 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
             if body.session_id:
                 try:
                     _fb_pool = await get_session_db_pool()
-                    _fb_sm = SessionManager(db_pool=_fb_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                    _fb_sm = SessionManager(
+                        db_pool=_fb_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
                     _fb_state = await _fb_sm.get_state(body.session_id)
                     if _fb_state.fsm_state != "IDLE":
-                        await _fb_sm.transition_fsm(body.session_id, FSMState.IDLE.value)
-                        logger.warning("[Confirm] Fallback FSM→IDLE (was %s)", _fb_state.fsm_state)
+                        await _fb_sm.transition_fsm(
+                            body.session_id, FSMState.IDLE.value
+                        )
+                        logger.warning(
+                            "[Confirm] Fallback FSM→IDLE (was %s)", _fb_state.fsm_state
+                        )
                 except Exception:
                     pass
 
@@ -2445,7 +2575,10 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                          AND fsm_state = 'AWAITING_CONFIRMATION'""",
                     ctx["tenant_id"],
                 )
-                logger.warning("[Cancel] No session_id — cleared all AWAITING_CONFIRMATION for user %s", ctx["user_id"])
+                logger.warning(
+                    "[Cancel] No session_id — cleared all AWAITING_CONFIRMATION for user %s",
+                    ctx["user_id"],
+                )
         except Exception as fsm_err:
             logger.warning(f"[Cancel] FSM transition failed (non-fatal): {fsm_err}")
 
@@ -2478,13 +2611,17 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 )
                 # Set editing_mode=True, keep pending_payload and pending_intent
                 await sm_edit.update_state(body.session_id, editing_mode=True)
-                logger.warning("[Cancel-Edit] editing_mode=True for session=%s", body.session_id[:8])
+                logger.warning(
+                    "[Cancel-Edit] editing_mode=True for session=%s",
+                    body.session_id[:8],
+                )
             except Exception as edit_err:
                 logger.warning("[Cancel-Edit] Failed to set editing_mode: %s", edit_err)
 
             # Also rewind crud_form workflow to COLLECTING (keep payload)
             try:
                 from ..services.unified_agent.workflow_engine import WorkflowEngine
+
                 _pool_edit = await get_session_db_pool()
                 _eng_edit = WorkflowEngine(
                     db_pool=_pool_edit,
@@ -2496,13 +2633,19 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 if _wf_edit and _wf_edit.status == "active":
                     _wf_edit.current_state = "COLLECTING"
                     await _eng_edit._save(_wf_edit)
-                    logger.warning("[Cancel-Edit] Rewound crud_form to COLLECTING for session=%s", body.session_id[:8])
+                    logger.warning(
+                        "[Cancel-Edit] Rewound crud_form to COLLECTING for session=%s",
+                        body.session_id[:8],
+                    )
             except Exception as _wf_edit_err:
-                logger.warning("[Cancel-Edit] Workflow rewind failed (non-fatal): %s", _wf_edit_err)
+                logger.warning(
+                    "[Cancel-Edit] Workflow rewind failed (non-fatal): %s", _wf_edit_err
+                )
         elif not body.is_edit and body.session_id:
             # Full cancel — also cancel any active crud_form workflow
             try:
                 from ..services.unified_agent.workflow_engine import WorkflowEngine
+
                 _pool_cancel = await get_session_db_pool()
                 _eng_cancel = WorkflowEngine(
                     db_pool=_pool_cancel,
@@ -2512,9 +2655,14 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 )
                 _cancelled = await _eng_cancel.cancel(body.session_id, "crud_form")
                 if _cancelled:
-                    logger.warning("[Cancel] Cancelled crud_form workflow for session=%s", body.session_id[:8])
+                    logger.warning(
+                        "[Cancel] Cancelled crud_form workflow for session=%s",
+                        body.session_id[:8],
+                    )
             except Exception as _wf_cancel_err:
-                logger.warning("[Cancel] Workflow cancel failed (non-fatal): %s", _wf_cancel_err)
+                logger.warning(
+                    "[Cancel] Workflow cancel failed (non-fatal): %s", _wf_cancel_err
+                )
 
         # Build contextual cancel message with workflow info
         cancel_text = "Ok, dilewati."
