@@ -2213,35 +2213,35 @@ class BillsService:
             query = f"""
                 WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
-                    -- Total outstanding (all non-void, non-paid bills)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as total_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void'), 0) as total_outstanding,
-                    COUNT(DISTINCT b.vendor_name) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as vendor_count,
+                    -- Total outstanding (exclude draft & void — draft has no journal/obligation)
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as total_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')), 0) as total_outstanding,
+                    COUNT(DISTINCT b.vendor_name) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as vendor_count,
 
                     -- Paid: lunas (sisa = 0)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status != 'void') as paid_count,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status_v2 NOT IN ('draft', 'void')) as paid_count,
                     0 as paid_amount,
 
                     -- Partial: bayar sebagian, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status != 'void') as partial_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as partial_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as partial_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as partial_amount,
 
                     -- Unpaid: belum bayar sama sekali, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void') as unpaid_count,
-                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as unpaid_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
+                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_amount,
 
                     -- Overdue: jatuh tempo dan belum lunas (includes partial + unpaid yang sudah lewat due_date)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void') as overdue_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_amount,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_amount,
 
                     -- Urgency metrics
-                    COALESCE(MAX(CURRENT_DATE - b.due_date) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_oldest_days,
-                    COALESCE(MAX(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_largest,
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status != 'void') as due_within_7_days_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status != 'void'), 0) as due_within_7_days_amount
+                    COALESCE(MAX(CURRENT_DATE - b.due_date) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_oldest_days,
+                    COALESCE(MAX(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_largest,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status_v2 NOT IN ('draft', 'void')) as due_within_7_days_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status_v2 NOT IN ('draft', 'void')), 0) as due_within_7_days_amount
                 FROM bills b
                 LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
-                WHERE b.tenant_id = $1
+                WHERE b.tenant_id = $1 AND b.status_v2 NOT IN ('draft', 'void')
             """
 
             row = await conn.fetchrow(query, tenant_id)
