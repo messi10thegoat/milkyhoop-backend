@@ -2878,6 +2878,15 @@ class UnifiedAgent:
             user_text + " (WAJIB tampilkan dalam bentuk tabel markdown)" + _filter_hint
         )
 
+        # Store drilldown context for post-processing (filter paid, pre-compute total)
+        self._drilldown_context = {
+            "is_hutang": target_intent == "query_bills_list",
+            "is_piutang": target_intent == "query_sales_invoices_list",
+            "filter_unpaid": "belum lunas" in _t
+            or "belum dibayar" in _t
+            or "hutang" in _t,
+        }
+
         return await self._handle_query_pipeline(
             user_text=_table_hint,
             context=context,
@@ -3079,7 +3088,51 @@ class UnifiedAgent:
             "- Kalau tidak ada insight, tutup langsung tanpa basa-basi.\n"
         )
 
-        compact_str = _json.dumps(compact, ensure_ascii=False, default=str)[:1500]
+        compact_str = _json.dumps(compact, ensure_ascii=False, default=str)[:2500]
+
+        # Pre-compute totals for drilldown — prevent Gemini from hallucinating totals
+        _precomputed = ""
+        if hasattr(self, "_drilldown_context") and self._drilldown_context:
+            _dc = self._drilldown_context
+            try:
+                _items = []
+                if isinstance(data, dict):
+                    for _k in ("items", "data"):
+                        if _k in data and isinstance(data[_k], list):
+                            _items = data[_k]
+                            break
+                elif isinstance(data, list):
+                    _items = data
+
+                # Filter: for hutang drilldown, exclude paid (amount_due=0)
+                if _dc.get("filter_unpaid") or _dc.get("is_hutang"):
+                    _before = len(_items)
+                    _items = [
+                        i
+                        for i in _items
+                        if (i.get("amount", 0) - i.get("amount_paid", 0)) > 0
+                    ]
+                    if _before != len(_items):
+                        # Re-compact with filtered data
+                        compact = self._compact_query_data(
+                            query_config.action_key,
+                            {"items": _items, "total": len(_items)},
+                        )
+                        compact_str = _json.dumps(
+                            compact, ensure_ascii=False, default=str
+                        )[:2500]
+
+                # Compute total from data
+                _total = sum(
+                    (i.get("amount", 0) - i.get("amount_paid", 0)) for i in _items
+                )
+                _count = len(_items)
+                _precomputed = f"\nTOTAL YANG SUDAH DIHITUNG (JANGAN hitung ulang): {_count} faktur, total Rp {int(_total):,}.".replace(
+                    ",", "."
+                )
+            except Exception:
+                pass
+            self._drilldown_context = None  # Reset
 
         # ── Insight Engine: rule-based interpretation ──
         _insight_text = ""
@@ -3104,7 +3157,7 @@ class UnifiedAgent:
         polish_user = (
             f'Pertanyaan user: "{user_text}"\n'
             f"Tipe: {response_format}\n"
-            f"DATA:\n```json\n{compact_str}\n```{_insight_text}"
+            f"DATA:\n```json\n{compact_str}\n```{_insight_text}{_precomputed}"
         )
 
         try:
@@ -3115,7 +3168,7 @@ class UnifiedAgent:
                     LLMMessage(role="user", content=polish_user),
                 ],
                 temperature=0.3,
-                max_tokens=800,
+                max_tokens=1500,
             )
             self._last_polish_model = getattr(response, "model", None) or "pipeline"
             return (
@@ -3214,7 +3267,7 @@ class UnifiedAgent:
                     LLMMessage(role="user", content=user_prompt),
                 ],
                 temperature=0.4,
-                max_tokens=800,
+                max_tokens=1500,
             )
             return (
                 response.content or ""
