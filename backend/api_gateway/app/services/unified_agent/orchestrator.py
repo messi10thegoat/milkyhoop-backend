@@ -1217,7 +1217,7 @@ class UnifiedAgent:
                                 message_type="TEXT",
                                 content=_show,
                                 iterations=1,
-                                model_used="gpt-4o-mini-2024-07-18",
+                                model_used="pipeline",
                                 total_latency_ms=int(
                                     (_time.time() - start_time) * 1000
                                 ),
@@ -1709,7 +1709,7 @@ class UnifiedAgent:
                         "latency_ms": int((_time.time() - start_time) * 1000),
                     }
                 ],
-                model_used="gpt-4o-mini-2024-07-18",
+                model_used="pipeline",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
                 thinking_stages=["Menganalisis pesan", "Mencari data"],
             )
@@ -2093,7 +2093,7 @@ class UnifiedAgent:
                             message_type="TEXT",
                             content=_show_text,
                             iterations=1,
-                            model_used="gpt-4o-mini-2024-07-18",
+                            model_used="pipeline",
                             total_latency_ms=int((_time.time() - start_time) * 1000),
                             thinking_stages=["Menganalisis pesan", "Mencari data"],
                         )
@@ -2226,7 +2226,7 @@ class UnifiedAgent:
                         "success": True,
                     },
                 ],
-                model_used="gpt-4o-mini-2024-07-18",
+                model_used="pipeline",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
                 thinking_stages=[
                     "Menganalisis pesan",
@@ -2299,7 +2299,7 @@ class UnifiedAgent:
                 message_type="TEXT",
                 content=clarification,
                 iterations=1,
-                model_used="gpt-4o-mini-2024-07-18",
+                model_used="pipeline",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
                 thinking_stages=["Menganalisis pesan", "Validasi data"],
             )
@@ -2322,7 +2322,7 @@ class UnifiedAgent:
             message_type="TEXT",
             content=str(error_msg),
             iterations=1,
-            model_used="gpt-4o-mini-2024-07-18",
+            model_used="pipeline",
             total_latency_ms=int((_time.time() - start_time) * 1000),
             thinking_stages=["Menganalisis pesan", "Validasi data"],
         )
@@ -3987,6 +3987,40 @@ class UnifiedAgent:
         else:
             _intent_hint = get_intent_bias(user_text)
             _active_domains = resolve_domains(user_text, _intent_hint)
+
+            # Context-aware domain injection: if session state has AP/AR context,
+            # inject relevant domains so agent loop has access to bills/invoices tools
+            if (
+                tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                try:
+                    _ds = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    _last = getattr(_ds, "last_action_type", "") or ""
+                    _DOMAIN_INJECT = {
+                        "query_ap_outstanding": {"AP_BILLS", "MASTER_DATA"},
+                        "query_bills_list": {"AP_BILLS", "MASTER_DATA"},
+                        "query_bills_summary": {"AP_BILLS", "MASTER_DATA"},
+                        "query_ar_outstanding": {"AR_INVOICES", "MASTER_DATA"},
+                        "query_sales_invoices_list": {"AR_INVOICES", "MASTER_DATA"},
+                        "query_sales_invoices_summary": {"AR_INVOICES", "MASTER_DATA"},
+                        "query_expenses_list": {"EXPENSES"},
+                        "query_expenses_summary": {"EXPENSES"},
+                    }
+                    _injected = _DOMAIN_INJECT.get(_last, set())
+                    if _injected:
+                        _active_domains |= _injected
+                        logger.warning(
+                            "[DOMAIN] Injected %s from session last_action=%s",
+                            _injected,
+                            _last,
+                        )
+                except Exception:
+                    pass
+
             tools = get_tools_for_domains(_active_domains)
             logger.warning(
                 "[Phase2] domains=%d tools=%d active=%s",
