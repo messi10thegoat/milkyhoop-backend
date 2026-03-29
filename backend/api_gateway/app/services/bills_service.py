@@ -430,7 +430,10 @@ class BillsService:
                         "created_at": row["created_at"].isoformat(),
                         "updated_at": row["updated_at"].isoformat(),
                         "operational_status": row.get("operational_status") or "DRAFT",
-                        "doc_status": "draft"
+                        "doc_status": "void"
+                        if row.get("status") == "void"
+                        or (row.get("operational_status") or "") == "VOID"
+                        else "draft"
                         if (row.get("operational_status") or "DRAFT") == "DRAFT"
                         else "posted",
                         "accounting_status": row.get("accounting_status") or "UNPOSTED",
