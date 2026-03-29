@@ -2863,10 +2863,20 @@ class UnifiedAgent:
         extraction.confidence = 1.0
         extraction.needs_escalation = False
 
-        # Add table format hint to user_text for polish
-        _table_hint = user_text
-        if "tabel" not in user_text.lower():
-            _table_hint = user_text + " (dalam bentuk tabel)"
+        # Parse filter/sort hints from user text
+        _t = user_text.lower()
+        _filter_hint = ""
+        if any(
+            w in _t for w in ("belum lunas", "belum dibayar", "belum bayar", "unpaid")
+        ):
+            _filter_hint = " — FILTER: hanya yang belum lunas (unpaid + partial)"
+        if any(w in _t for w in ("jatuh tempo", "overdue", "paling dekat")):
+            _filter_hint += " — SORT: urutkan berdasarkan tanggal jatuh tempo terdekat"
+
+        # Always enforce table format in polish
+        _table_hint = (
+            user_text + " (WAJIB tampilkan dalam bentuk tabel markdown)" + _filter_hint
+        )
 
         return await self._handle_query_pipeline(
             user_text=_table_hint,

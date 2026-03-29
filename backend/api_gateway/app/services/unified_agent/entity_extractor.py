@@ -533,6 +533,80 @@ def classify_query_intent(user_text: str) -> tuple:
 
     t = user_text.strip().lower()
 
+    # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
+    # These override AP/AR summary when user wants list/table/detail, not total
+    _is_drilldown = (
+        bool(
+            _qre.search(
+                r"(?:rekapan|rekap|breakdown|rincian|detail)\s+(?:per|tiap|semua|hutang|piutang|faktur|tagihan)",
+                t,
+            )
+        )
+        or bool(
+            _qre.search(
+                r"(?:rekapan|rekap|daftar)\s+(?:hutang|piutang|tagihan|faktur).*(?:tabel|table)",
+                t,
+            )
+        )
+        or bool(
+            _qre.search(
+                r"(?:hutang|piutang|tagihan|faktur).*(?:per\s+(?:faktur|vendor|pelanggan|customer))",
+                t,
+            )
+        )
+        or bool(
+            _qre.search(
+                r"(?:yang|mana|apa)\s+(?:belum\s+(?:lunas|dibayar|bayar)|jatuh\s+tempo|overdue|paling\s+dekat)",
+                t,
+            )
+        )
+        or bool(
+            _qre.search(
+                r"(?:belum\s+lunas|belum\s+dibayar)\s+(?:apa|mana|yang)",
+                t,
+            )
+        )
+    )
+
+    # If drill-down signal detected AND has AP/AR keyword → route to drilldown
+    _has_ap = bool(_qre.search(r"\b(utang|hutang|payable|tagihan|bill|pembelian)\b", t))
+    _has_ar = bool(_qre.search(r"\b(piutang|receivable|invoice|penjualan)\b", t))
+
+    # Also catch: "rekapan semua faktur yang belum lunas" (no explicit AP/AR keyword)
+    if not _is_drilldown and _qre.search(
+        r"(?:rekapan|rekap|daftar|tampilkan)\s+(?:semua\s+)?(?:faktur|tagihan|invoice|bill).*(?:belum\s+lunas|belum\s+dibayar|unpaid|overdue|jatuh\s+tempo)",
+        t,
+    ):
+        _is_drilldown = True
+
+    if _is_drilldown and (_has_ap or _has_ar):
+        return "drilldown_table", None, None
+    # Drilldown even without AP/AR keyword if "faktur/tagihan" + filter keyword present
+    _has_filter = bool(
+        _qre.search(
+            r"(?:belum\s+lunas|belum\s+dibayar|jatuh\s+tempo|overdue|unpaid|per\s+(?:faktur|vendor|pelanggan))",
+            t,
+        )
+    )
+    if (
+        _is_drilldown
+        and _has_filter
+        and _qre.search(r"(?:faktur|tagihan|invoice|bill)", t)
+    ):
+        return "drilldown_table", None, None
+
+    # Contextual follow-up patterns (no AP/AR keyword needed — uses session state)
+    if _qre.search(
+        r"(?:yang|mana)\s+(?:paling\s+dekat|paling\s+besar|paling\s+lama)\s+(?:jatuh\s+tempo|hutang|piutang)",
+        t,
+    ):
+        return "drilldown_table", None, None
+    if _qre.search(
+        r"(?:belum\s+lunas|belum\s+dibayar|belum\s+bayar)\b.*(?:apa\s+aja|yang\s+mana|berapa)",
+        t,
+    ):
+        return "drilldown_table", None, None
+
     # AR
     if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(
         r"\bpiutang\b.*\b(kejar|tagih|prioritas)\b", t
