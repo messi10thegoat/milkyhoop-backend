@@ -2209,39 +2209,50 @@ class BillsService:
         async with self.pool.acquire() as conn:
             today = date.today()
 
-            # Law 16: Journal-derived amount_paid via CTE
-            query = f"""
-                WITH {BILL_JOURNAL_PAID_CTE}
+            # ARAP Rule 5: Single source of truth via compute_ap_outstanding()
+            # No inline CTE — all amounts derived from the same DB function
+            # that all other endpoints use (vendors, dashboard, reports)
+            query = """
+                WITH ap AS (
+                    SELECT bill_id, bill_number, due_date, bill_status,
+                           bill_total, paid_amount, outstanding
+                    FROM compute_ap_outstanding($1)
+                )
                 SELECT
-                    -- Total outstanding (exclude draft & void — draft has no journal/obligation)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as total_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')), 0) as total_outstanding,
-                    COUNT(DISTINCT b.vendor_name) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as vendor_count,
+                    -- Total outstanding
+                    COUNT(*) as total_count,
+                    COALESCE(SUM(outstanding), 0) as total_outstanding,
+                    COUNT(DISTINCT (SELECT vendor_id FROM bills WHERE id = ap.bill_id)) as vendor_count,
 
-                    -- Paid: lunas (sisa = 0)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status_v2 NOT IN ('draft', 'void')) as paid_count,
-                    0 as paid_amount,
+                    -- Paid: bills that exist in bills table but NOT in ap (outstanding=0, filtered out by function)
+                    (SELECT COUNT(*) FROM bills WHERE tenant_id = $1
+                     AND status_v2 NOT IN ('draft', 'void')
+                     AND id NOT IN (SELECT bill_id FROM ap)) as paid_count,
 
-                    -- Partial: bayar sebagian, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as partial_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as partial_amount,
+                    -- Partial: paid_amount > 0 AND outstanding > 0, not overdue
+                    COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0
+                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)) as partial_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE paid_amount > 0 AND outstanding > 0
+                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)), 0) as partial_amount,
 
-                    -- Unpaid: belum bayar sama sekali, belum jatuh tempo (mutually exclusive with overdue)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
-                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_amount,
+                    -- Unpaid: paid_amount = 0, not overdue
+                    COUNT(*) FILTER (WHERE paid_amount = 0
+                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)) as unpaid_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE paid_amount = 0
+                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)), 0) as unpaid_amount,
 
-                    -- Overdue: jatuh tempo dan belum lunas (includes partial + unpaid yang sudah lewat due_date)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_amount,
+                    -- Overdue: due_date < today AND outstanding > 0
+                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE) as overdue_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_amount,
 
-                    -- Urgency metrics
-                    COALESCE(MAX(CURRENT_DATE - b.due_date) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_oldest_days,
-                    COALESCE(MAX(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_largest,
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status_v2 NOT IN ('draft', 'void')) as due_within_7_days_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date >= CURRENT_DATE AND b.due_date <= CURRENT_DATE + INTERVAL '7 days' AND b.status_v2 NOT IN ('draft', 'void')), 0) as due_within_7_days_amount
-                FROM bills b
-                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
-                WHERE b.tenant_id = $1 AND b.status_v2 NOT IN ('draft', 'void')
+                    -- Urgency
+                    COALESCE(MAX(CURRENT_DATE - due_date) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_oldest_days,
+                    COALESCE(MAX(outstanding) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_largest,
+                    COUNT(*) FILTER (WHERE due_date >= CURRENT_DATE
+                        AND due_date <= CURRENT_DATE + INTERVAL '7 days') as due_within_7_days_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE due_date >= CURRENT_DATE
+                        AND due_date <= CURRENT_DATE + INTERVAL '7 days'), 0) as due_within_7_days_amount
+                FROM ap
             """
 
             row = await conn.fetchrow(query, tenant_id)
