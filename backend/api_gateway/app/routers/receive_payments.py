@@ -158,7 +158,8 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                 ))
             )
         """,
-        tenant_id, invoice_id,
+        tenant_id,
+        invoice_id,
     )
     return int(result or 0)
 
@@ -168,9 +169,8 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
 # =============================================================================
 
 
-
-
 # === Journal Preview (read-only, for DirectAction confirmation card) ===
+
 
 @router.post("/preview-journal")
 async def preview_journal(request: Request, body: dict = Body(...)):
@@ -193,12 +193,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         if bank_account_id:
             try:
                 from uuid import UUID
+
                 ba_row = await conn.fetchrow(
                     """SELECT ba.coa_id, ca.name, ca.account_code
                        FROM bank_accounts ba
                        JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
                        WHERE ba.id = $1::uuid AND ba.tenant_id = $2""",
-                    UUID(bank_account_id), ctx["tenant_id"]
+                    UUID(bank_account_id),
+                    ctx["tenant_id"],
                 )
                 if ba_row:
                     bank_name = ba_row["name"]
@@ -212,7 +214,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         try:
             ar_row = await conn.fetchrow(
                 "SELECT name, account_code FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
-                ctx["tenant_id"], AR_ACCOUNT
+                ctx["tenant_id"],
+                AR_ACCOUNT,
             )
             if ar_row:
                 ar_name = ar_row["name"]
@@ -221,8 +224,18 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             pass
 
         lines = [
-            {"account_name": bank_name, "account_code": bank_code, "debit": total_amount, "credit": 0},
-            {"account_name": ar_name, "account_code": ar_code, "debit": 0, "credit": total_amount},
+            {
+                "account_name": bank_name,
+                "account_code": bank_code,
+                "debit": total_amount,
+                "credit": 0,
+            },
+            {
+                "account_name": ar_name,
+                "account_code": ar_code,
+                "debit": 0,
+                "credit": total_amount,
+            },
         ]
 
         return {"journal_lines": lines}
@@ -307,7 +320,9 @@ async def list_receive_payments(
                 params.append(date_to)
                 param_idx += 1
 
-            outer_where = (" AND " + " AND ".join(outer_conditions)) if outer_conditions else ""
+            outer_where = (
+                (" AND " + " AND ".join(outer_conditions)) if outer_conditions else ""
+            )
 
             # ---------------------------------------------------------------
             # Sort mapping
@@ -478,9 +493,13 @@ async def list_receive_payments(
                 {
                     "id": str(row["id"]),
                     "payment_number": row["payment_number"],
-                    "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+                    "customer_id": str(row["customer_id"])
+                    if row["customer_id"]
+                    else None,
                     "customer_name": row["customer_name"],
-                    "payment_date": row["payment_date"].isoformat() if hasattr(row["payment_date"], "isoformat") else str(row["payment_date"]),
+                    "payment_date": row["payment_date"].isoformat()
+                    if hasattr(row["payment_date"], "isoformat")
+                    else str(row["payment_date"]),
                     "payment_method": row["payment_method"],
                     "source_type": row["source_type"],
                     "total_amount": row["total_amount"],
@@ -488,20 +507,24 @@ async def list_receive_payments(
                     "unapplied_amount": row["unapplied_amount"] or 0,
                     "status": row["status"],
                     "invoice_count": row["invoice_count"] or 0,
-                    "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                    "created_at": row["created_at"].isoformat()
+                    if hasattr(row["created_at"], "isoformat")
+                    else str(row["created_at"]),
                 }
                 for row in rows
             ]
 
-            return {"items": items, "total": total or 0, "has_more": (skip + limit) < (total or 0)}
+            return {
+                "items": items,
+                "total": total or 0,
+                "has_more": (skip + limit) < (total or 0),
+            }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing receive payments: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list receive payments")
-
-
 
 
 # =============================================================================
@@ -519,17 +542,33 @@ async def get_receive_payments_summary(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
+            # Law 16: Counts from table (metadata), amounts from journal (truth)
             query = """
+                WITH journal_amounts AS (
+                    SELECT rp.id as payment_id,
+                           COALESCE(SUM(jl.credit), 0) as journal_amount
+                    FROM receive_payments rp
+                    JOIN journal_entries je ON je.id = rp.journal_id
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE rp.tenant_id = $1
+                      AND rp.status = 'posted'
+                      AND je.status = 'POSTED'
+                      AND je.reversed_by_id IS NULL
+                      AND coa.account_type = 'RECEIVABLE'
+                      AND jl.credit > 0
+                    GROUP BY rp.id
+                )
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
-                    COUNT(*) FILTER (WHERE status = 'posted') as posted_count,
-                    COUNT(*) FILTER (WHERE status = 'voided') as voided_count,
-                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'posted'), 0) as total_received,
-                    COALESCE(SUM(allocated_amount) FILTER (WHERE status = 'posted'), 0) as total_allocated,
-                    COALESCE(SUM(unapplied_amount) FILTER (WHERE status = 'posted'), 0) as total_unapplied
-                FROM receive_payments
-                WHERE tenant_id = $1
+                    COUNT(*) FILTER (WHERE rp.status = 'draft') as draft_count,
+                    COUNT(*) FILTER (WHERE rp.status = 'posted') as posted_count,
+                    COUNT(*) FILTER (WHERE rp.status = 'voided') as voided_count,
+                    COALESCE((SELECT SUM(journal_amount) FROM journal_amounts), 0) as total_received,
+                    COALESCE(SUM(rp.allocated_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_allocated,
+                    COALESCE(SUM(rp.unapplied_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_unapplied
+                FROM receive_payments rp
+                WHERE rp.tenant_id = $1
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
 
@@ -594,11 +633,14 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     WHERE je.id = $1 AND je.tenant_id = $2
                       AND je.source_type = 'PAYMENT_RECEIVED'
                     """,
-                    payment_id, ctx["tenant_id"],
+                    payment_id,
+                    ctx["tenant_id"],
                 )
 
                 if not journal_row:
-                    raise HTTPException(status_code=404, detail="Receive payment not found")
+                    raise HTTPException(
+                        status_code=404, detail="Receive payment not found"
+                    )
 
                 # Try reverse lookup via source_id
                 if journal_row["source_id"]:
@@ -612,7 +654,8 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         LEFT JOIN customer_deposits cd ON rp.created_deposit_id = cd.id
                         WHERE rp.id = $1 AND rp.tenant_id = $2
                         """,
-                        journal_row["source_id"], ctx["tenant_id"],
+                        journal_row["source_id"],
+                        ctx["tenant_id"],
                     )
 
                 if not payment:
@@ -631,13 +674,24 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     # Parse customer name from description
                     desc = journal_row["description"] or ""
                     customer_name = "Settlement"
-                    for prefix in ["Penerimaan dari ", "Payment received from ", "Receive payment from ", "Pembayaran dari "]:
+                    for prefix in [
+                        "Penerimaan dari ",
+                        "Payment received from ",
+                        "Receive payment from ",
+                        "Pembayaran dari ",
+                    ]:
                         if desc.startswith(prefix):
-                            customer_name = desc[len(prefix):]
+                            customer_name = desc[len(prefix) :]
                             break
 
                     je_status = (journal_row["status"] or "POSTED").upper()
-                    mapped_status = "posted" if je_status == "POSTED" else "draft" if je_status == "DRAFT" else "voided"
+                    mapped_status = (
+                        "posted"
+                        if je_status == "POSTED"
+                        else "draft"
+                        if je_status == "DRAFT"
+                        else "voided"
+                    )
 
                     return {
                         "success": True,
@@ -646,7 +700,9 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                             "payment_number": journal_row["journal_number"],
                             "customer_id": "",
                             "customer_name": customer_name,
-                            "payment_date": journal_row["journal_date"].isoformat() if journal_row["journal_date"] else None,
+                            "payment_date": journal_row["journal_date"].isoformat()
+                            if journal_row["journal_date"]
+                            else None,
                             "payment_method": "bank_transfer",
                             "bank_account_id": "",
                             "bank_account_name": "",
@@ -667,14 +723,24 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                             "created_deposit_id": "",
                             "created_deposit_number": "",
                             "allocations": [],
-                            "posted_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "posted_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "posted_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "posted_by": str(journal_row["created_by"])
+                            if journal_row["created_by"]
+                            else None,
                             "voided_at": None,
                             "voided_by": None,
                             "void_reason": None,
-                            "created_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "updated_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "created_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "created_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "updated_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "created_by": str(journal_row["created_by"])
+                            if journal_row["created_by"]
+                            else None,
                             "is_journal_only": True,
                             "currency_code": "IDR",
                             "exchange_rate": 1,
@@ -810,7 +876,8 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 if body.idempotency_key:
                     existing = await conn.fetchrow(
                         "SELECT id, payment_number, status FROM receive_payments WHERE tenant_id = $1 AND idempotency_key = $2",
-                        ctx["tenant_id"], body.idempotency_key
+                        ctx["tenant_id"],
+                        body.idempotency_key,
                     )
                     if existing:
                         return ReceivePaymentDetailResponse(
@@ -819,10 +886,9 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                             data=ReceivePaymentDetail(
                                 id=str(existing["id"]),
                                 payment_number=existing["payment_number"],
-                                status=existing["status"]
-                            )
+                                status=existing["status"],
+                            ),
                         )
-
 
                 # Check if accounting period is open (only if not saving as draft)
                 if not body.save_as_draft:
@@ -886,7 +952,9 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 if not body.customer_name:
                     body.customer_name = customer["nama"] or body.customer_id
                 if not body.bank_account_name:
-                    body.bank_account_name = bank_account["name"] or bank_account["account_code"]
+                    body.bank_account_name = (
+                        bank_account["name"] or bank_account["account_code"]
+                    )
 
                 # Validate source deposit if source_type='deposit'
                 if body.source_type == "deposit":
@@ -1357,7 +1425,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
 
     # Get account IDs
     # Law 27: resolve accounts via resolve_account_id
-    deposit_account_id = UUID(await resolve_account_id(conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT))
+    deposit_account_id = UUID(
+        await resolve_account_id(conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT)
+    )
     ar_account_id = UUID(await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT))
 
     # Create journal entry
@@ -1436,7 +1506,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         discount_account = payment["discount_account_id"]
         if not discount_account:
             try:
-                discount_account = UUID(await resolve_account_id(conn, ctx["tenant_id"], "6-10100"))
+                discount_account = UUID(
+                    await resolve_account_id(conn, ctx["tenant_id"], "6-10100")
+                )
             except ValueError:
                 discount_account = None  # Sales discount account not configured
 
@@ -1522,7 +1594,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         logger.info(f"Auto-created deposit {deposit_number} from overpayment")
 
     # Law 20: DRAFT->POSTED after all journal lines are inserted
-    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+    )
 
     # Update invoices - reduce remaining, update status
     allocations = await conn.fetch(
@@ -1669,7 +1743,8 @@ async def post_receive_payment(request: Request, payment_id: UUID):
                 # Law 5: Check if accounting period is open
                 payment_date = await conn.fetchval(
                     "SELECT payment_date FROM receive_payments WHERE id = $1 AND tenant_id = $2",
-                    payment_id, ctx["tenant_id"],
+                    payment_id,
+                    ctx["tenant_id"],
                 )
                 if payment_date:
                     await check_period_is_open(conn, ctx["tenant_id"], payment_date)
@@ -1823,9 +1898,11 @@ async def void_receive_payment(
                             f"Reversal - {line['memo'] or ''}",
                         )
 
-
                     # Law 20: DRAFT->POSTED after all reversal journal lines are inserted
-                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", void_journal_id)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        void_journal_id,
+                    )
                     # Mark original journal as reversed
                     await conn.execute(
                         """
@@ -1958,7 +2035,6 @@ async def void_receive_payment(
         raise HTTPException(status_code=500, detail="Failed to void receive payment")
 
 
-
 @router.get("/{payment_id}/journal-entries")
 async def get_receive_payment_journal_entries(request: Request, payment_id: str):
     """
@@ -1981,17 +2057,21 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                 FROM receive_payments
                 WHERE id = $1::uuid AND tenant_id = $2
                 """,
-                payment_id, ctx["tenant_id"]
+                payment_id,
+                ctx["tenant_id"],
             )
 
             if not payment:
                 # Law 29 fallback: check if payment_id IS a journal_entries.id
                 je_exists = await conn.fetchval(
                     "SELECT id FROM journal_entries WHERE id = $1::uuid AND tenant_id = $2",
-                    payment_id, ctx["tenant_id"]
+                    payment_id,
+                    ctx["tenant_id"],
                 )
                 if not je_exists:
-                    raise HTTPException(status_code=404, detail="Receive payment not found")
+                    raise HTTPException(
+                        status_code=404, detail="Receive payment not found"
+                    )
                 # Use payment_id directly as journal_id
                 journal_ids = [je_exists]
             else:
@@ -2006,7 +2086,11 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                     "success": True,
                     "data": [],
                     "total": 0,
-                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True,
+                    },
                 }
 
             journals = await conn.fetch(
@@ -2017,7 +2101,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                journal_ids
+                journal_ids,
             )
 
             journal_data = []
@@ -2034,7 +2118,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -2046,7 +2130,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                         "account_name": line["account_name"],
                         "debit": int(line["debit"] or 0),
                         "credit": int(line["credit"] or 0),
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -2056,18 +2140,22 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": journal_debit,
-                    "total_credit": journal_credit,
-                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": journal_debit,
+                        "total_credit": journal_credit,
+                        "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -2076,11 +2164,13 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                 "summary": {
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "is_balanced": abs(total_debit - total_credit) < 0.01
-                }
+                    "is_balanced": abs(total_debit - total_credit) < 0.01,
+                },
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting receive payment journal entries: {e}", exc_info=True)
+        logger.error(
+            f"Error getting receive payment journal entries: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get journal entries")

@@ -55,9 +55,9 @@ router = APIRouter()
 _pool: Optional[asyncpg.Pool] = None
 
 # Account codes (resolved dynamically via Law 27)
-AR_ACCOUNT_CODE = "1-10300"         # Piutang Usaha
+AR_ACCOUNT_CODE = "1-10300"  # Piutang Usaha
 SALES_RETURN_ACCOUNT_CODE = "4-10300"  # Retur Penjualan
-TAX_PAYABLE_ACCOUNT_CODE = "2-10300"   # PPN Keluaran
+TAX_PAYABLE_ACCOUNT_CODE = "2-10300"  # PPN Keluaran
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -66,17 +66,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
+            **db_config, min_size=2, max_size=10, command_timeout=30
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -86,19 +83,16 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
-    quantity = Decimal(str(item.get('quantity', 0)))
-    unit_price = Decimal(str(item.get('unit_price', 0)))
-    discount_percent = Decimal(str(item.get('discount_percent', 0)))
-    discount_amount = Decimal(str(item.get('discount_amount', 0)))
-    tax_rate = Decimal(str(item.get('tax_rate', 0)))
+    quantity = Decimal(str(item.get("quantity", 0)))
+    unit_price = Decimal(str(item.get("unit_price", 0)))
+    discount_percent = Decimal(str(item.get("discount_percent", 0)))
+    discount_amount = Decimal(str(item.get("discount_amount", 0)))
+    tax_rate = Decimal(str(item.get("tax_rate", 0)))
 
     subtotal = quantity * unit_price
 
@@ -117,12 +111,11 @@ def calculate_item_totals(item: dict) -> dict:
 
     return {
         **item,
-        'subtotal': int(subtotal),
-        'discount_amount': int(discount),
-        'tax_amount': int(tax_amount),
-        'total': int(total)
+        "subtotal": int(subtotal),
+        "discount_amount": int(discount),
+        "tax_amount": int(tax_amount),
+        "total": int(total),
     }
-
 
 
 async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
@@ -136,7 +129,8 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
 
     Outstanding = SUM(debit) - SUM(credit) on AR for this invoice's journal chain
     """
-    result = await conn.fetchval("""
+    result = await conn.fetchval(
+        """
         SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
@@ -177,24 +171,35 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                     WHERE sip.invoice_id = $2
                 ))
             )
-    """, tenant_id, invoice_id)
+    """,
+        tenant_id,
+        invoice_id,
+    )
     return int(result or 0)
+
 
 # =============================================================================
 # LIST CREDIT NOTES
 # =============================================================================
 
+
 @router.get("", response_model=CreditNoteListResponse)
 async def list_credit_notes(
     request: Request,
-    status: Optional[Literal["all", "draft", "posted", "partial", "applied", "void"]] = Query("all"),
+    status: Optional[
+        Literal["all", "draft", "posted", "partial", "applied", "void"]
+    ] = Query("all"),
     customer_id: Optional[str] = Query(None),
-    search: Optional[str] = Query(None, description="Search by number or customer name"),
+    search: Optional[str] = Query(
+        None, description="Search by number or customer name"
+    ),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    sort_by: Literal["credit_note_date", "credit_note_number", "total_amount", "created_at"] = Query("created_at"),
+    sort_by: Literal[
+        "credit_note_date", "credit_note_number", "total_amount", "created_at"
+    ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List credit notes with filters and pagination."""
@@ -254,7 +259,7 @@ async def list_credit_notes(
                 "credit_note_date": "credit_note_date",
                 "credit_note_number": "credit_note_number",
                 "total_amount": "total_amount",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -281,13 +286,17 @@ async def list_credit_notes(
                 {
                     "id": str(row["id"]),
                     "credit_note_number": row["credit_note_number"],
-                    "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+                    "customer_id": str(row["customer_id"])
+                    if row["customer_id"]
+                    else None,
                     "customer_name": row["customer_name"],
                     "credit_note_date": row["credit_note_date"].isoformat(),
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": row["total_amount"] - (row["amount_applied"] or 0) - (row["amount_refunded"] or 0),
+                    "remaining_amount": row["total_amount"]
+                    - (row["amount_applied"] or 0)
+                    - (row["amount_refunded"] or 0),
                     "status": row["status"],
                     "reason": row["reason"],
                     "created_at": row["created_at"].isoformat(),
@@ -295,11 +304,7 @@ async def list_credit_notes(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -312,6 +317,7 @@ async def list_credit_notes(
 # SUMMARY
 # =============================================================================
 
+
 @router.get("/summary", response_model=CreditNoteSummaryResponse)
 async def get_credit_notes_summary(request: Request):
     """Get summary statistics for credit notes."""
@@ -320,20 +326,33 @@ async def get_credit_notes_summary(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Law 16: Counts from table, amounts from journal (truth)
             query = """
+                WITH cn_journal AS (
+                    SELECT cn.id,
+                           COALESCE(SUM(CASE WHEN coa.account_type = 'RECEIVABLE' AND jl.credit > 0 THEN jl.credit ELSE 0 END), 0) as journal_value
+                    FROM credit_notes cn
+                    JOIN journal_entries je ON je.source_id = cn.id AND je.source_type = 'CREDIT_NOTE'
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE cn.tenant_id = $1 AND cn.status != 'void'
+                      AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                    GROUP BY cn.id
+                )
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
-                    COUNT(*) FILTER (WHERE status = 'posted') as posted_count,
-                    COUNT(*) FILTER (WHERE status = 'partial') as partial_count,
-                    COUNT(*) FILTER (WHERE status = 'applied') as applied_count,
-                    COALESCE(SUM(total_amount), 0) as total_value,
-                    COALESCE(SUM(amount_applied), 0) as total_applied,
-                    COALESCE(SUM(amount_refunded), 0) as total_refunded,
-                    COALESCE(SUM(total_amount - COALESCE(amount_applied, 0) - COALESCE(amount_refunded, 0))
-                        FILTER (WHERE status IN ('posted', 'partial')), 0) as available_balance
-                FROM credit_notes
-                WHERE tenant_id = $1 AND status != 'void'
+                    COUNT(*) FILTER (WHERE cn.status = 'draft') as draft_count,
+                    COUNT(*) FILTER (WHERE cn.status = 'posted') as posted_count,
+                    COUNT(*) FILTER (WHERE cn.status = 'partial') as partial_count,
+                    COUNT(*) FILTER (WHERE cn.status = 'applied') as applied_count,
+                    COALESCE(SUM(cnj.journal_value), 0) as total_value,
+                    COALESCE(SUM(cn.amount_applied), 0) as total_applied,
+                    COALESCE(SUM(cn.amount_refunded), 0) as total_refunded,
+                    COALESCE(SUM(cnj.journal_value - COALESCE(cn.amount_applied, 0) - COALESCE(cn.amount_refunded, 0))
+                        FILTER (WHERE cn.status IN ('posted', 'partial')), 0) as available_balance
+                FROM credit_notes cn
+                LEFT JOIN cn_journal cnj ON cnj.id = cn.id
+                WHERE cn.tenant_id = $1 AND cn.status != 'void'
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
 
@@ -349,7 +368,7 @@ async def get_credit_notes_summary(request: Request):
                     "total_applied": int(row["total_applied"] or 0),
                     "total_refunded": int(row["total_refunded"] or 0),
                     "available_balance": int(row["available_balance"] or 0),
-                }
+                },
             }
 
     except HTTPException:
@@ -363,6 +382,7 @@ async def get_credit_notes_summary(request: Request):
 # GET CREDIT NOTE DETAIL
 # =============================================================================
 
+
 @router.get("/{credit_note_id}", response_model=CreditNoteDetailResponse)
 async def get_credit_note(request: Request, credit_note_id: UUID):
     """Get detailed information for a credit note."""
@@ -372,48 +392,69 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 
         async with pool.acquire() as conn:
             # Get credit note
-            cn = await conn.fetchrow("""
+            cn = await conn.fetchrow(
+                """
                 SELECT * FROM credit_notes
                 WHERE id = $1 AND tenant_id = $2
-            """, credit_note_id, ctx["tenant_id"])
+            """,
+                credit_note_id,
+                ctx["tenant_id"],
+            )
 
             if not cn:
                 raise HTTPException(status_code=404, detail="Credit note not found")
 
             # Get items
-            items = await conn.fetch("""
+            items = await conn.fetch(
+                """
                 SELECT * FROM credit_note_items
                 WHERE credit_note_id = $1
                 ORDER BY line_number
-            """, credit_note_id)
+            """,
+                credit_note_id,
+            )
 
             # Get applications with invoice numbers
-            applications = await conn.fetch("""
+            applications = await conn.fetch(
+                """
                 SELECT a.*, i.invoice_number
                 FROM credit_note_applications a
                 LEFT JOIN sales_invoices i ON a.invoice_id = i.id
                 WHERE a.credit_note_id = $1
                 ORDER BY a.application_date
-            """, credit_note_id)
+            """,
+                credit_note_id,
+            )
 
             # Get refunds
-            refunds = await conn.fetch("""
+            refunds = await conn.fetch(
+                """
                 SELECT * FROM credit_note_refunds
                 WHERE credit_note_id = $1
                 ORDER BY refund_date
-            """, credit_note_id)
+            """,
+                credit_note_id,
+            )
 
             # Build response
-            remaining = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
+            remaining = (
+                cn["total_amount"]
+                - (cn["amount_applied"] or 0)
+                - (cn["amount_refunded"] or 0)
+            )
 
             return {
                 "success": True,
                 "data": {
                     "id": str(cn["id"]),
                     "credit_note_number": cn["credit_note_number"],
-                    "customer_id": str(cn["customer_id"]) if cn["customer_id"] else None,
+                    "customer_id": str(cn["customer_id"])
+                    if cn["customer_id"]
+                    else None,
                     "customer_name": cn["customer_name"],
-                    "original_invoice_id": str(cn["original_invoice_id"]) if cn["original_invoice_id"] else None,
+                    "original_invoice_id": str(cn["original_invoice_id"])
+                    if cn["original_invoice_id"]
+                    else None,
                     "original_invoice_number": cn["original_invoice_number"],
                     "subtotal": cn["subtotal"],
                     "discount_percent": float(cn["discount_percent"] or 0),
@@ -435,7 +476,9 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     "items": [
                         {
                             "id": str(item["id"]),
-                            "item_id": str(item["item_id"]) if item["item_id"] else None,
+                            "item_id": str(item["item_id"])
+                            if item["item_id"]
+                            else None,
                             "item_code": item["item_code"],
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
@@ -475,14 +518,18 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                         }
                         for ref in refunds
                     ],
-                    "posted_at": cn["posted_at"].isoformat() if cn["posted_at"] else None,
+                    "posted_at": cn["posted_at"].isoformat()
+                    if cn["posted_at"]
+                    else None,
                     "posted_by": str(cn["posted_by"]) if cn["posted_by"] else None,
-                    "voided_at": cn["voided_at"].isoformat() if cn["voided_at"] else None,
+                    "voided_at": cn["voided_at"].isoformat()
+                    if cn["voided_at"]
+                    else None,
                     "voided_reason": cn["voided_reason"],
                     "created_at": cn["created_at"].isoformat(),
                     "updated_at": cn["updated_at"].isoformat(),
                     "created_by": str(cn["created_by"]) if cn["created_by"] else None,
-                }
+                },
             }
 
     except HTTPException:
@@ -495,6 +542,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 # =============================================================================
 # CREATE CREDIT NOTE (DRAFT)
 # =============================================================================
+
 
 @router.post("", response_model=CreditNoteResponse, status_code=201)
 async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
@@ -514,25 +562,30 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
             async with conn.transaction():
                 # Generate credit note number
                 cn_number = await conn.fetchval(
-                    "SELECT generate_credit_note_number($1, 'CN')",
-                    ctx["tenant_id"]
+                    "SELECT generate_credit_note_number($1, 'CN')", ctx["tenant_id"]
                 )
 
                 # Calculate items and totals
-                calculated_items = [calculate_item_totals(item.model_dump()) for item in body.items]
-                subtotal = sum(item['subtotal'] for item in calculated_items)
-                total_tax = sum(item['tax_amount'] for item in calculated_items)
+                calculated_items = [
+                    calculate_item_totals(item.model_dump()) for item in body.items
+                ]
+                subtotal = sum(item["subtotal"] for item in calculated_items)
+                total_tax = sum(item["tax_amount"] for item in calculated_items)
 
                 # Apply overall discount
                 if body.discount_percent > 0:
-                    overall_discount = int(subtotal * Decimal(str(body.discount_percent)) / 100)
+                    overall_discount = int(
+                        subtotal * Decimal(str(body.discount_percent)) / 100
+                    )
                 else:
                     overall_discount = body.discount_amount
 
                 # Apply overall tax if specified
                 after_discount = subtotal - overall_discount
                 if body.tax_rate > 0:
-                    overall_tax = int(after_discount * Decimal(str(body.tax_rate)) / 100)
+                    overall_tax = int(
+                        after_discount * Decimal(str(body.tax_rate)) / 100
+                    )
                 else:
                     overall_tax = total_tax
 
@@ -543,13 +596,14 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                 if body.original_invoice_id:
                     inv = await conn.fetchrow(
                         "SELECT invoice_number FROM sales_invoices WHERE id = $1",
-                        UUID(body.original_invoice_id)
+                        UUID(body.original_invoice_id),
                     )
                     if inv:
                         original_invoice_number = inv["invoice_number"]
 
                 # Insert credit note
-                cn_id = await conn.fetchval("""
+                cn_id = await conn.fetchval(
+                    """
                     INSERT INTO credit_notes (
                         tenant_id, credit_note_number, customer_id, customer_name,
                         original_invoice_id, original_invoice_number,
@@ -565,7 +619,9 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                     cn_number,
                     str(body.customer_id) if body.customer_id else None,
                     body.customer_name,
-                    UUID(body.original_invoice_id) if body.original_invoice_id else None,
+                    UUID(body.original_invoice_id)
+                    if body.original_invoice_id
+                    else None,
                     original_invoice_number,
                     subtotal,
                     body.discount_percent,
@@ -578,12 +634,13 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                     body.reason_detail,
                     body.ref_no,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Insert items
                 for idx, item in enumerate(calculated_items, 1):
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO credit_note_items (
                             credit_note_id, item_id, item_code, description,
                             quantity, unit, unit_price,
@@ -593,20 +650,20 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         cn_id,
-                        UUID(item['item_id']) if item.get('item_id') else None,
-                        item.get('item_code'),
-                        item['description'],
-                        item['quantity'],
-                        item.get('unit'),
-                        item['unit_price'],
-                        item.get('discount_percent', 0),
-                        item.get('discount_amount', 0),
-                        item.get('tax_code'),
-                        item.get('tax_rate', 0),
-                        item.get('tax_amount', 0),
-                        item['subtotal'],
-                        item['total'],
-                        idx
+                        UUID(item["item_id"]) if item.get("item_id") else None,
+                        item.get("item_code"),
+                        item["description"],
+                        item["quantity"],
+                        item.get("unit"),
+                        item["unit_price"],
+                        item.get("discount_percent", 0),
+                        item.get("discount_amount", 0),
+                        item.get("tax_code"),
+                        item.get("tax_rate", 0),
+                        item.get("tax_amount", 0),
+                        item["subtotal"],
+                        item["total"],
+                        idx,
                     )
 
                 logger.info(f"Credit note created: {cn_id}, number={cn_number}")
@@ -618,8 +675,8 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                         "id": str(cn_id),
                         "credit_note_number": cn_number,
                         "total_amount": total_amount,
-                        "status": "draft"
-                    }
+                        "status": "draft",
+                    },
                 }
 
     except HTTPException:
@@ -633,8 +690,11 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
 # UPDATE CREDIT NOTE (DRAFT ONLY)
 # =============================================================================
 
+
 @router.patch("/{credit_note_id}", response_model=CreditNoteResponse)
-async def update_credit_note(request: Request, credit_note_id: UUID, body: UpdateCreditNoteRequest):
+async def update_credit_note(
+    request: Request, credit_note_id: UUID, body: UpdateCreditNoteRequest
+):
     """
     Update a draft credit note.
 
@@ -647,18 +707,21 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Check status
-                cn = await conn.fetchrow("""
+                cn = await conn.fetchrow(
+                    """
                     SELECT id, status FROM credit_notes
                     WHERE id = $1 AND tenant_id = $2
-                """, credit_note_id, ctx["tenant_id"])
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
 
                 if cn["status"] != "draft":
                     raise HTTPException(
-                        status_code=400,
-                        detail="Only draft credit notes can be updated"
+                        status_code=400, detail="Only draft credit notes can be updated"
                     )
 
                 # Build update data
@@ -668,7 +731,7 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
                     return {
                         "success": True,
                         "message": "No changes provided",
-                        "data": {"id": str(credit_note_id)}
+                        "data": {"id": str(credit_note_id)},
                     }
 
                 # Handle items if provided
@@ -676,25 +739,26 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
                     # Delete existing items
                     await conn.execute(
                         "DELETE FROM credit_note_items WHERE credit_note_id = $1",
-                        credit_note_id
+                        credit_note_id,
                     )
 
                     # Calculate and insert new items
                     calculated_items = [
-                        calculate_item_totals(item.model_dump())
-                        for item in body.items
+                        calculate_item_totals(item.model_dump()) for item in body.items
                     ]
 
-                    subtotal = sum(item['subtotal'] for item in calculated_items)
-                    total_tax = sum(item['tax_amount'] for item in calculated_items)
+                    subtotal = sum(item["subtotal"] for item in calculated_items)
+                    total_tax = sum(item["tax_amount"] for item in calculated_items)
 
                     # Recalculate totals
-                    discount_percent = update_data.get('discount_percent', 0)
-                    discount_amount = update_data.get('discount_amount', 0)
-                    tax_rate = update_data.get('tax_rate', 0)
+                    discount_percent = update_data.get("discount_percent", 0)
+                    discount_amount = update_data.get("discount_amount", 0)
+                    tax_rate = update_data.get("tax_rate", 0)
 
                     if discount_percent > 0:
-                        overall_discount = int(subtotal * Decimal(str(discount_percent)) / 100)
+                        overall_discount = int(
+                            subtotal * Decimal(str(discount_percent)) / 100
+                        )
                     else:
                         overall_discount = discount_amount
 
@@ -708,15 +772,23 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
                     total_amount = after_discount + overall_tax
 
                     # Update totals
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE credit_notes
                         SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5
                         WHERE id = $1
-                    """, credit_note_id, subtotal, overall_discount, overall_tax, total_amount)
+                    """,
+                        credit_note_id,
+                        subtotal,
+                        overall_discount,
+                        overall_tax,
+                        total_amount,
+                    )
 
                     # Insert new items
                     for idx, item in enumerate(calculated_items, 1):
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO credit_note_items (
                                 credit_note_id, item_id, item_code, description,
                                 quantity, unit, unit_price,
@@ -726,20 +798,20 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         """,
                             credit_note_id,
-                            UUID(item['item_id']) if item.get('item_id') else None,
-                            item.get('item_code'),
-                            item['description'],
-                            item['quantity'],
-                            item.get('unit'),
-                            item['unit_price'],
-                            item.get('discount_percent', 0),
-                            item.get('discount_amount', 0),
-                            item.get('tax_code'),
-                            item.get('tax_rate', 0),
-                            item.get('tax_amount', 0),
-                            item['subtotal'],
-                            item['total'],
-                            idx
+                            UUID(item["item_id"]) if item.get("item_id") else None,
+                            item.get("item_code"),
+                            item["description"],
+                            item["quantity"],
+                            item.get("unit"),
+                            item["unit_price"],
+                            item.get("discount_percent", 0),
+                            item.get("discount_amount", 0),
+                            item.get("tax_code"),
+                            item.get("tax_rate", 0),
+                            item.get("tax_amount", 0),
+                            item["subtotal"],
+                            item["total"],
+                            idx,
                         )
 
                     del update_data["items"]
@@ -775,7 +847,7 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
                 return {
                     "success": True,
                     "message": "Credit note updated successfully",
-                    "data": {"id": str(credit_note_id)}
+                    "data": {"id": str(credit_note_id)},
                 }
 
     except HTTPException:
@@ -788,6 +860,7 @@ async def update_credit_note(request: Request, credit_note_id: UUID, body: Updat
 # =============================================================================
 # DELETE CREDIT NOTE (DRAFT ONLY)
 # =============================================================================
+
 
 @router.delete("/{credit_note_id}", response_model=CreditNoteResponse)
 async def delete_credit_note(request: Request, credit_note_id: UUID):
@@ -802,10 +875,14 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
 
         async with pool.acquire() as conn:
             # Check status
-            cn = await conn.fetchrow("""
+            cn = await conn.fetchrow(
+                """
                 SELECT id, status, credit_note_number FROM credit_notes
                 WHERE id = $1 AND tenant_id = $2
-            """, credit_note_id, ctx["tenant_id"])
+            """,
+                credit_note_id,
+                ctx["tenant_id"],
+            )
 
             if not cn:
                 raise HTTPException(status_code=404, detail="Credit note not found")
@@ -813,14 +890,11 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
             if cn["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft credit notes can be deleted. Use void for posted."
+                    detail="Only draft credit notes can be deleted. Use void for posted.",
                 )
 
             # Delete (cascade will delete items)
-            await conn.execute(
-                "DELETE FROM credit_notes WHERE id = $1",
-                credit_note_id
-            )
+            await conn.execute("DELETE FROM credit_notes WHERE id = $1", credit_note_id)
 
             logger.info(f"Credit note deleted: {credit_note_id}")
 
@@ -829,8 +903,8 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
                 "message": "Credit note deleted successfully",
                 "data": {
                     "id": str(credit_note_id),
-                    "credit_note_number": cn["credit_note_number"]
-                }
+                    "credit_note_number": cn["credit_note_number"],
+                },
             }
 
     except HTTPException:
@@ -843,6 +917,7 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
 # =============================================================================
 # POST CREDIT NOTE TO ACCOUNTING
 # =============================================================================
+
 
 @router.post("/{credit_note_id}/post", response_model=CreditNoteResponse)
 async def post_credit_note(request: Request, credit_note_id: UUID):
@@ -866,13 +941,20 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE:{credit_note_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CREDIT_NOTE:{credit_note_id}",
+                )
 
                 # Get credit note
-                cn = await conn.fetchrow("""
+                cn = await conn.fetchrow(
+                    """
                     SELECT * FROM credit_notes
                     WHERE id = $1 AND tenant_id = $2
-                """, credit_note_id, ctx["tenant_id"])
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
@@ -880,36 +962,47 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 if cn["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot post credit note with status '{cn['status']}'"
+                        detail=f"Cannot post credit note with status '{cn['status']}'",
                     )
-
 
                 # Law 5: Period lock check
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"], cn["credit_note_date"])
-                if period_row and period_row["status"] != 'OPEN':
-                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+                    ctx["tenant_id"],
+                    cn["credit_note_date"],
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                    )
 
                 # Get account IDs
                 # Law 27: Resolve account IDs dynamically
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT_CODE)
-                sales_return_account_id = await resolve_account_id(conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE)
+                ar_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], AR_ACCOUNT_CODE
+                )
+                sales_return_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE
+                )
 
                 if not ar_account_id or not sales_return_account_id:
                     raise HTTPException(
-                        status_code=500,
-                        detail="Required accounts not found in CoA"
+                        status_code=500, detail="Required accounts not found in CoA"
                     )
 
                 # Generate journal number
                 import uuid as uuid_module
+
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
 
-                journal_number = await conn.fetchval("""
+                journal_number = await conn.fetchval(
+                    """
                     SELECT get_next_journal_number($1, 'CN')
-                """, ctx["tenant_id"])
+                """,
+                    ctx["tenant_id"],
+                )
 
                 if not journal_number:
                     # Fallback if function doesn't exist
@@ -921,7 +1014,8 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 subtotal = total_amount - tax_amount
 
                 # Create journal entry
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
@@ -936,14 +1030,15 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     credit_note_id,
                     str(trace_id),
                     total_amount,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Journal lines
                 line_number = 1
 
                 # Dr. Sales Returns (subtotal)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, $3, $4, $5, 0, $6)
@@ -953,16 +1048,19 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     line_number,
                     sales_return_account_id,
                     subtotal,
-                    f"Retur Penjualan - {cn['credit_note_number']}"
+                    f"Retur Penjualan - {cn['credit_note_number']}",
                 )
                 line_number += 1
 
                 # Dr. VAT Payable (if tax)
                 if tax_amount > 0:
-                    tax_account_id = await resolve_account_id(conn, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT_CODE)
+                    tax_account_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT_CODE
+                    )
 
                     if tax_account_id:
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (
                                 id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, $5, 0, $6)
@@ -972,12 +1070,13 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                             line_number,
                             tax_account_id,
                             tax_amount,
-                            f"PPN Retur - {cn['credit_note_number']}"
+                            f"PPN Retur - {cn['credit_note_number']}",
                         )
                         line_number += 1
 
                 # Cr. Accounts Receivable
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, $3, $4, 0, $5, $6)
@@ -987,21 +1086,31 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     line_number,
                     ar_account_id,
                     total_amount,
-                    f"Pengurangan Piutang - {cn['credit_note_number']}"
+                    f"Pengurangan Piutang - {cn['credit_note_number']}",
                 )
 
                 # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
 
                 # Update credit note status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE credit_notes
                     SET status = 'posted', journal_id = $2,
                         posted_at = NOW(), posted_by = $3, updated_at = NOW()
                     WHERE id = $1
-                """, credit_note_id, journal_id, ctx["user_id"])
+                """,
+                    credit_note_id,
+                    journal_id,
+                    ctx["user_id"],
+                )
 
-                logger.info(f"Credit note posted: {credit_note_id}, journal={journal_id}")
+                logger.info(
+                    f"Credit note posted: {credit_note_id}, journal={journal_id}"
+                )
 
                 return {
                     "success": True,
@@ -1010,8 +1119,8 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         "id": str(credit_note_id),
                         "journal_id": str(journal_id),
                         "journal_number": journal_number,
-                        "status": "posted"
-                    }
+                        "status": "posted",
+                    },
                 }
 
     except HTTPException:
@@ -1025,8 +1134,11 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
 # APPLY CREDIT NOTE TO INVOICE(S)
 # =============================================================================
 
+
 @router.post("/{credit_note_id}/apply", response_model=CreditNoteResponse)
-async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyCreditNoteRequest):
+async def apply_credit_note(
+    request: Request, credit_note_id: UUID, body: ApplyCreditNoteRequest
+):
     """
     Apply credit note to one or more invoices.
 
@@ -1043,13 +1155,20 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_APPLY:{credit_note_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CREDIT_NOTE_APPLY:{credit_note_id}",
+                )
 
                 # Get credit note
-                cn = await conn.fetchrow("""
+                cn = await conn.fetchrow(
+                    """
                     SELECT * FROM credit_notes
                     WHERE id = $1 AND tenant_id = $2
-                """, credit_note_id, ctx["tenant_id"])
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
@@ -1057,17 +1176,21 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
                 if cn["status"] not in ("posted", "partial"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot apply credit note with status '{cn['status']}'"
+                        detail=f"Cannot apply credit note with status '{cn['status']}'",
                     )
 
                 # Calculate remaining
-                remaining = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
+                remaining = (
+                    cn["total_amount"]
+                    - (cn["amount_applied"] or 0)
+                    - (cn["amount_refunded"] or 0)
+                )
                 total_to_apply = sum(app.amount for app in body.applications)
 
                 if total_to_apply > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})"
+                        detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
                     )
 
                 application_date = body.application_date or date.today()
@@ -1075,23 +1198,30 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
 
                 for app in body.applications:
                     # Validate invoice
-                    invoice = await conn.fetchrow("""
+                    invoice = await conn.fetchrow(
+                        """
                         SELECT id, customer_id, total_amount, status
                         FROM sales_invoices
                         WHERE id = $1 AND tenant_id = $2
-                    """, UUID(app.invoice_id), ctx["tenant_id"])
+                    """,
+                        UUID(app.invoice_id),
+                        ctx["tenant_id"],
+                    )
 
                     if not invoice:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Invoice {app.invoice_id} not found"
+                            detail=f"Invoice {app.invoice_id} not found",
                         )
 
                     # Verify same customer
-                    if cn["customer_id"] and invoice["customer_id"] != cn["customer_id"]:
+                    if (
+                        cn["customer_id"]
+                        and invoice["customer_id"] != cn["customer_id"]
+                    ):
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Invoice {app.invoice_id} belongs to different customer"
+                            detail=f"Invoice {app.invoice_id} belongs to different customer",
                         )
 
                     # Check invoice has balance (Law 16: journal-based)
@@ -1101,26 +1231,32 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
                     if app.amount > invoice_remaining:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Application amount exceeds invoice remaining balance"
+                            detail=f"Application amount exceeds invoice remaining balance",
                         )
 
                     # Check for existing application
-                    existing = await conn.fetchval("""
+                    existing = await conn.fetchval(
+                        """
                         SELECT id FROM credit_note_applications
                         WHERE credit_note_id = $1 AND invoice_id = $2
-                    """, credit_note_id, UUID(app.invoice_id))
+                    """,
+                        credit_note_id,
+                        UUID(app.invoice_id),
+                    )
 
                     if existing:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Credit note already applied to invoice {app.invoice_id}"
+                            detail=f"Credit note already applied to invoice {app.invoice_id}",
                         )
 
                     # Create application
                     import uuid as uuid_module
+
                     app_id = uuid_module.uuid4()
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO credit_note_applications (
                             id, tenant_id, credit_note_id, invoice_id,
                             amount_applied, application_date, created_by
@@ -1132,21 +1268,33 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
                         UUID(app.invoice_id),
                         app.amount,
                         application_date,
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                     # Update invoice (derive amount_paid from journal-based remaining)
-                    new_amount_paid = invoice["total_amount"] - int(invoice_remaining) + app.amount
-                    new_status = "paid" if new_amount_paid >= invoice["total_amount"] else "partial"
+                    new_amount_paid = (
+                        invoice["total_amount"] - int(invoice_remaining) + app.amount
+                    )
+                    new_status = (
+                        "paid"
+                        if new_amount_paid >= invoice["total_amount"]
+                        else "partial"
+                    )
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE sales_invoices
                         SET amount_paid = $2, status = $3, updated_at = NOW()
                         WHERE id = $1
-                    """, UUID(app.invoice_id), new_amount_paid, new_status)
+                    """,
+                        UUID(app.invoice_id),
+                        new_amount_paid,
+                        new_status,
+                    )
 
                     # Update AR if exists
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE accounts_receivable
                         SET amount_paid = amount_paid + $2,
                             status = CASE
@@ -1155,24 +1303,31 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
                             END,
                             updated_at = NOW()
                         WHERE source_id = $1 AND source_type = 'INVOICE'
-                    """, UUID(app.invoice_id), app.amount)
+                    """,
+                        UUID(app.invoice_id),
+                        app.amount,
+                    )
 
-                    applications_created.append({
-                        "application_id": str(app_id),
-                        "invoice_id": app.invoice_id,
-                        "amount": app.amount
-                    })
+                    applications_created.append(
+                        {
+                            "application_id": str(app_id),
+                            "invoice_id": app.invoice_id,
+                            "amount": app.amount,
+                        }
+                    )
 
                 # Credit note status will be updated by trigger
-                logger.info(f"Credit note applied: {credit_note_id}, applications={len(applications_created)}")
+                logger.info(
+                    f"Credit note applied: {credit_note_id}, applications={len(applications_created)}"
+                )
 
                 return {
                     "success": True,
                     "message": f"Credit note applied to {len(applications_created)} invoice(s)",
                     "data": {
                         "id": str(credit_note_id),
-                        "applications": applications_created
-                    }
+                        "applications": applications_created,
+                    },
                 }
 
     except HTTPException:
@@ -1186,8 +1341,11 @@ async def apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyC
 # REFUND CREDIT NOTE
 # =============================================================================
 
+
 @router.post("/{credit_note_id}/refund", response_model=CreditNoteResponse)
-async def refund_credit_note(request: Request, credit_note_id: UUID, body: RefundCreditNoteRequest):
+async def refund_credit_note(
+    request: Request, credit_note_id: UUID, body: RefundCreditNoteRequest
+):
     """
     Issue a cash refund from credit note.
 
@@ -1207,13 +1365,20 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_REFUND:{credit_note_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CREDIT_NOTE_REFUND:{credit_note_id}",
+                )
 
                 # Get credit note
-                cn = await conn.fetchrow("""
+                cn = await conn.fetchrow(
+                    """
                     SELECT * FROM credit_notes
                     WHERE id = $1 AND tenant_id = $2
-                """, credit_note_id, ctx["tenant_id"])
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
@@ -1221,59 +1386,84 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                 if cn["status"] not in ("posted", "partial"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot refund credit note with status '{cn['status']}'"
+                        detail=f"Cannot refund credit note with status '{cn['status']}'",
                     )
 
                 # Check remaining
-                remaining = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
+                remaining = (
+                    cn["total_amount"]
+                    - (cn["amount_applied"] or 0)
+                    - (cn["amount_refunded"] or 0)
+                )
 
                 if body.amount > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})"
+                        detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
                     )
 
                 # Validate account — resolve from bank_account_id if provided
                 if body.bank_account_id:
                     bank_acc = await conn.fetchrow(
                         "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.bank_account_id), ctx["tenant_id"]
+                        UUID(body.bank_account_id),
+                        ctx["tenant_id"],
                     )
                     if not bank_acc:
-                        raise HTTPException(status_code=400, detail="Bank account not found")
+                        raise HTTPException(
+                            status_code=400, detail="Bank account not found"
+                        )
                     resolved_account_id = bank_acc["coa_id"]
                 elif body.account_id:
                     resolved_account_id = UUID(body.account_id)
                 else:
-                    raise HTTPException(status_code=400, detail="Either account_id or bank_account_id is required")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Either account_id or bank_account_id is required",
+                    )
 
-                account = await conn.fetchrow("""
+                account = await conn.fetchrow(
+                    """
                     SELECT id, account_code as code, name FROM chart_of_accounts
                     WHERE id = $1 AND tenant_id = $2
-                """, resolved_account_id, ctx["tenant_id"])
+                """,
+                    resolved_account_id,
+                    ctx["tenant_id"],
+                )
 
                 if not account:
-                    raise HTTPException(status_code=400, detail="Payment account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Payment account not found"
+                    )
 
                 import uuid as uuid_module
+
                 refund_id = uuid_module.uuid4()
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
 
-                                # Law 5: Period lock check
+                # Law 5: Period lock check
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"], body.refund_date)
-                if period_row and period_row["status"] != 'OPEN':
-                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+                    ctx["tenant_id"],
+                    body.refund_date,
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                    )
 
-# Create refund journal
-                journal_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, 'RF')",
-                    ctx["tenant_id"]
-                ) or f"RF-{cn['credit_note_number']}"
+                # Create refund journal
+                journal_number = (
+                    await conn.fetchval(
+                        "SELECT get_next_journal_number($1, 'RF')", ctx["tenant_id"]
+                    )
+                    or f"RF-{cn['credit_note_number']}"
+                )
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, trace_id,
@@ -1288,15 +1478,18 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     credit_note_id,
                     str(trace_id),
                     body.amount,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Get AR account
                 # Law 27: Resolve AR account dynamically
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT_CODE)
+                ar_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], AR_ACCOUNT_CODE
+                )
 
                 # Dr. AR (reverse the credit)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 1, $3, $4, 0, $5)
@@ -1305,11 +1498,12 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     journal_id,
                     ar_account_id,
                     body.amount,
-                    f"Refund Piutang - {cn['credit_note_number']}"
+                    f"Refund Piutang - {cn['credit_note_number']}",
                 )
 
                 # Cr. Cash/Bank
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_lines (
                         id, journal_id, line_number, account_id, debit, credit, memo
                     ) VALUES ($1, $2, 2, $3, 0, $4, $5)
@@ -1318,14 +1512,18 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     journal_id,
                     UUID(body.account_id),
                     body.amount,
-                    f"Pembayaran Refund - {cn['credit_note_number']}"
+                    f"Pembayaran Refund - {cn['credit_note_number']}",
                 )
 
-                                # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+                # Law 20: Promote DRAFT -> POSTED after all lines inserted
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
 
-# Create refund record
-                await conn.execute("""
+                # Create refund record
+                await conn.execute(
+                    """
                     INSERT INTO credit_note_refunds (
                         id, tenant_id, credit_note_id, amount, refund_date,
                         payment_method, account_id, bank_account_id,
@@ -1343,11 +1541,13 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                     body.reference,
                     body.notes,
                     journal_id,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Status will be updated by trigger
-                logger.info(f"Credit note refunded: {credit_note_id}, amount={body.amount}")
+                logger.info(
+                    f"Credit note refunded: {credit_note_id}, amount={body.amount}"
+                )
 
                 return {
                     "success": True,
@@ -1356,14 +1556,16 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
                         "id": str(credit_note_id),
                         "refund_id": str(refund_id),
                         "journal_id": str(journal_id),
-                        "amount": body.amount
-                    }
+                        "amount": body.amount,
+                    },
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error refunding credit note {credit_note_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error refunding credit note {credit_note_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to issue refund")
 
 
@@ -1371,8 +1573,11 @@ async def refund_credit_note(request: Request, credit_note_id: UUID, body: Refun
 # VOID CREDIT NOTE
 # =============================================================================
 
+
 @router.post("/{credit_note_id}/void", response_model=CreditNoteResponse)
-async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCreditNoteRequest):
+async def void_credit_note(
+    request: Request, credit_note_id: UUID, body: VoidCreditNoteRequest
+):
     """
     Void a credit note.
 
@@ -1389,69 +1594,89 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE_VOID:{credit_note_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CREDIT_NOTE_VOID:{credit_note_id}",
+                )
 
                 # Get credit note
-                cn = await conn.fetchrow("""
+                cn = await conn.fetchrow(
+                    """
                     SELECT * FROM credit_notes
                     WHERE id = $1 AND tenant_id = $2
-                """, credit_note_id, ctx["tenant_id"])
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
 
                 if cn["status"] == "void":
-                    raise HTTPException(status_code=400, detail="Credit note already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Credit note already voided"
+                    )
 
                 if cn["status"] == "draft":
                     # Just delete draft
                     await conn.execute(
-                        "DELETE FROM credit_notes WHERE id = $1",
-                        credit_note_id
+                        "DELETE FROM credit_notes WHERE id = $1", credit_note_id
                     )
                     return {
                         "success": True,
                         "message": "Draft credit note deleted",
-                        "data": {"id": str(credit_note_id)}
+                        "data": {"id": str(credit_note_id)},
                     }
 
                 # Check for applications or refunds
                 if (cn["amount_applied"] or 0) > 0:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot void credit note with applications. Reverse applications first."
+                        detail="Cannot void credit note with applications. Reverse applications first.",
                     )
 
                 if (cn["amount_refunded"] or 0) > 0:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot void credit note with refunds. Reverse refunds first."
+                        detail="Cannot void credit note with refunds. Reverse refunds first.",
                     )
 
-                                # Law 5: Period lock check
+                    # Law 5: Period lock check
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"], date.today())
-                if period_row and period_row["status"] != 'OPEN':
-                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+                    ctx["tenant_id"],
+                    date.today(),
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                    )
 
-# Create reversal journal if original was posted
+                # Create reversal journal if original was posted
                 if cn["journal_id"]:
                     import uuid as uuid_module
+
                     reversal_journal_id = uuid_module.uuid4()
 
                     # Get original journal lines
-                    original_lines = await conn.fetch("""
+                    original_lines = await conn.fetch(
+                        """
                         SELECT * FROM journal_lines WHERE journal_id = $1
-                    """, cn["journal_id"])
+                    """,
+                        cn["journal_id"],
+                    )
 
-                    journal_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, 'RV')",
-                        ctx["tenant_id"]
-                    ) or f"RV-{cn['credit_note_number']}"
+                    journal_number = (
+                        await conn.fetchval(
+                            "SELECT get_next_journal_number($1, 'RV')", ctx["tenant_id"]
+                        )
+                        or f"RV-{cn['credit_note_number']}"
+                    )
 
                     # Create reversal header
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
@@ -1465,12 +1690,13 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                         credit_note_id,
                         cn["journal_id"],
                         cn["total_amount"],
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                     # Create reversed lines (swap debit/credit)
                     for idx, line in enumerate(original_lines, 1):
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (
                                 id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1480,37 +1706,46 @@ async def void_credit_note(request: Request, credit_note_id: UUID, body: VoidCre
                             idx,
                             line["account_id"],
                             line["credit"],  # Swap: original credit becomes debit
-                            line["debit"],   # Swap: original debit becomes credit
-                            f"Reversal - {line['memo'] or ''}"
+                            line["debit"],  # Swap: original debit becomes credit
+                            f"Reversal - {line['memo'] or ''}",
                         )
 
-                                        # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)
+                        # Law 20: Promote DRAFT -> POSTED after all lines inserted
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        reversal_journal_id,
+                    )
 
-# Mark original journal as reversed
-                    await conn.execute("""
+                    # Mark original journal as reversed
+                    await conn.execute(
+                        """
                         UPDATE journal_entries
                         SET reversed_by_id = $2, status = 'VOID'
                         WHERE id = $1
-                    """, cn["journal_id"], reversal_journal_id)
+                    """,
+                        cn["journal_id"],
+                        reversal_journal_id,
+                    )
 
                 # Update credit note status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE credit_notes
                     SET status = 'void', voided_at = NOW(),
                         voided_by = $2, voided_reason = $3, updated_at = NOW()
                     WHERE id = $1
-                """, credit_note_id, ctx["user_id"], body.reason)
+                """,
+                    credit_note_id,
+                    ctx["user_id"],
+                    body.reason,
+                )
 
                 logger.info(f"Credit note voided: {credit_note_id}")
 
                 return {
                     "success": True,
                     "message": "Credit note voided successfully",
-                    "data": {
-                        "id": str(credit_note_id),
-                        "status": "void"
-                    }
+                    "data": {"id": str(credit_note_id), "status": "void"},
                 }
 
     except HTTPException:
@@ -1532,7 +1767,8 @@ async def create_tax_invoice_from_cn(request: Request, credit_note_id: str):
         cn = await conn.fetchrow(
             "SELECT id, status, tax_invoice_id FROM credit_notes "
             "WHERE id = $1 AND tenant_id = $2",
-            credit_note_id, ctx["tenant_id"]
+            credit_note_id,
+            ctx["tenant_id"],
         )
         if not cn:
             raise HTTPException(404, "Credit note tidak ditemukan")
@@ -1543,13 +1779,14 @@ async def create_tax_invoice_from_cn(request: Request, credit_note_id: str):
 
     # Delegate to main tax-invoices create endpoint via internal HTTP
     import httpx
+
     auth_header = request.headers.get("authorization", "")
     async with httpx.AsyncClient(verify=False) as client:
         resp = await client.post(
             "http://localhost:8000/api/tax-invoices",
             json={"source_type": "credit_note", "source_ids": [credit_note_id]},
             headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            timeout=30.0
+            timeout=30.0,
         )
     if resp.status_code >= 400:
         try:
