@@ -3993,6 +3993,7 @@ class UnifiedAgent:
             extractor = EntityExtractor(_extract_client, _extract_model)
 
             _ctx_summary = ""
+            _state = None
             if (
                 tool_executor
                 and tool_executor.session_manager
@@ -4028,8 +4029,25 @@ class UnifiedAgent:
                     _code_name_field or "",
                 )
 
+            # ── Context hint for follow-up queries ──
+            _context_hint = ""
+            if _state and not _code_intent:
+                _last_action = getattr(_state, "last_action_type", None)
+                if _last_action:
+                    from .entity_extractor import SESSION_CONTEXT_HINTS
+
+                    _context_hint = SESSION_CONTEXT_HINTS.get(_last_action, "")
+                    if _context_hint:
+                        logger.warning(
+                            "[PIPELINE] Context hint injected: last=%s hint='%s'",
+                            _last_action,
+                            _context_hint,
+                        )
+
             extraction = await extractor.extract(
-                user_text, context_summary=_ctx_summary
+                user_text,
+                context_summary=_ctx_summary,
+                context_hint=_context_hint,
             )
             if _code_intent:
                 extraction.intent = _code_intent

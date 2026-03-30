@@ -15,6 +15,56 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("unified_agent.entity_extractor")
 
 
+SESSION_CONTEXT_HINTS = {
+    # AR domain
+    "query_ar_outstanding": "Topik sebelumnya: piutang (AR outstanding, faktur penjualan belum lunas)",
+    "query_ar_invoices": "Topik sebelumnya: daftar faktur penjualan / piutang",
+    "query_customer_ar": "Topik sebelumnya: piutang pelanggan tertentu",
+    "query_sales_invoices_list": "Topik sebelumnya: daftar faktur penjualan",
+    "query_sales_invoice_detail": "Topik sebelumnya: detail faktur penjualan",
+    "query_sales_invoices_overdue": "Topik sebelumnya: faktur penjualan jatuh tempo",
+    "query_receive_payments_list": "Topik sebelumnya: daftar penerimaan pembayaran",
+    "query_sales_invoices_summary": "Topik sebelumnya: ringkasan penjualan",
+    # AP domain
+    "query_ap_outstanding": "Topik sebelumnya: hutang (AP outstanding, faktur pembelian belum lunas)",
+    "query_bills_list": "Topik sebelumnya: daftar faktur pembelian / hutang",
+    "query_vendor_ap": "Topik sebelumnya: hutang ke vendor tertentu",
+    "query_bill_detail": "Topik sebelumnya: detail faktur pembelian",
+    "query_bills_overdue": "Topik sebelumnya: tagihan jatuh tempo",
+    "query_bill_payments_list": "Topik sebelumnya: daftar pembayaran keluar",
+    "query_bills_summary": "Topik sebelumnya: ringkasan pembelian",
+    # Items domain
+    "query_item_detail": "Topik sebelumnya: detail barang/produk",
+    "query_items_summary": "Topik sebelumnya: ringkasan barang",
+    "query_items_low_stock": "Topik sebelumnya: stok rendah",
+    # Customer/Vendor domain
+    "query_customer_detail": "Topik sebelumnya: detail pelanggan",
+    "query_customers_list": "Topik sebelumnya: daftar pelanggan",
+    "query_customers_summary": "Topik sebelumnya: ringkasan pelanggan",
+    "query_vendor_detail": "Topik sebelumnya: detail pemasok/vendor",
+    "query_vendors_list": "Topik sebelumnya: daftar pemasok/vendor",
+    "query_vendors_summary": "Topik sebelumnya: ringkasan vendor",
+    # Bank domain
+    "query_cash_balance": "Topik sebelumnya: saldo kas/bank",
+    "query_bank_accounts_list": "Topik sebelumnya: daftar rekening bank",
+    "query_bank_account_balance": "Topik sebelumnya: saldo rekening tertentu",
+    "query_bank_transactions": "Topik sebelumnya: transaksi bank",
+    # Expense domain
+    "query_expenses_list": "Topik sebelumnya: daftar pengeluaran/biaya",
+    "query_expenses_summary": "Topik sebelumnya: ringkasan pengeluaran",
+    "query_expenses_by_account": "Topik sebelumnya: pengeluaran per akun",
+    # Journal/Accounts
+    "query_journals_list": "Topik sebelumnya: daftar jurnal",
+    "query_accounts_list": "Topik sebelumnya: daftar akun",
+    # Calc intents
+    "calc_rank_customers_by_ar": "Topik sebelumnya: ranking pelanggan berdasarkan piutang",
+    "calc_rank_vendors_by_ap": "Topik sebelumnya: ranking vendor berdasarkan hutang",
+    "calc_sum_sales_this_month": "Topik sebelumnya: total penjualan bulan ini",
+    "calc_sum_purchases_this_month": "Topik sebelumnya: total pembelian bulan ini",
+    "calc_sum_expenses_this_month": "Topik sebelumnya: total pengeluaran bulan ini",
+}
+
+
 @dataclass
 class ExtractionResult:
     """Result of entity extraction."""
@@ -1073,6 +1123,7 @@ class EntityExtractor:
         self,
         user_text: str,
         context_summary: str = "",
+        context_hint: str = "",
         model: str = None,
     ) -> ExtractionResult:
         from ..llm import LLMMessage
@@ -1081,9 +1132,13 @@ class EntityExtractor:
         if context_summary:
             system_content += f"\n\nKONTEKS SESI AKTIF:\n{context_summary}"
 
+        _extraction_text = user_text
+        if context_hint:
+            _extraction_text = f"{user_text}\n\n[{context_hint}]"
+
         messages = [
             LLMMessage(role="system", content=system_content),
-            LLMMessage(role="user", content=user_text),
+            LLMMessage(role="user", content=_extraction_text),
         ]
 
         try:
