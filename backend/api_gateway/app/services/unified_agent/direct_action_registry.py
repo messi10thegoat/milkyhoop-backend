@@ -3587,6 +3587,213 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             "ada kategori apa",
         ],
     ),
+    # ═══════════════ BATCH 1 QUERY INTENTS ═══════════════
+    # Customer AR (entity-specific)
+    "query_customer_ar": QueryActionConfig(
+        action_key="query_customer_ar",
+        display_name="Piutang Pelanggan",
+        rest_endpoint="/api/customers/{id}",
+        response_format="detail",
+        description="Detail pelanggan termasuk saldo piutang (AR). Resolve customer by name first.",
+        signal_words=["piutang pelanggan", "ar pelanggan", "tagihan pelanggan"],
+        query_params=[
+            QueryParam(
+                name="id", label="Customer ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Vendor AP (entity-specific)
+    "query_vendor_ap": QueryActionConfig(
+        action_key="query_vendor_ap",
+        display_name="Hutang Vendor",
+        rest_endpoint="/api/vendors/{id}",
+        response_format="detail",
+        description="Detail vendor termasuk saldo hutang (AP). Resolve vendor by name first.",
+        signal_words=["hutang vendor", "ap vendor", "utang vendor"],
+        query_params=[
+            QueryParam(
+                name="id", label="Vendor ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Sales invoices overdue
+    "query_sales_invoices_overdue": QueryActionConfig(
+        action_key="query_sales_invoices_overdue",
+        display_name="Faktur Penjualan Jatuh Tempo",
+        rest_endpoint="/api/sales-invoices",
+        response_format="list",
+        description="Faktur penjualan yang jatuh tempo. Polish: filter overdue dari response.",
+        signal_words=["faktur jatuh tempo", "invoice overdue", "faktur terlambat"],
+        query_params=[
+            QueryParam(
+                name="status", label="Status", param_type="string", default="active"
+            ),
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
+    ),
+    # Bills overdue
+    "query_bills_overdue": QueryActionConfig(
+        action_key="query_bills_overdue",
+        display_name="Tagihan Jatuh Tempo",
+        rest_endpoint="/api/bills",
+        response_format="list",
+        description="Tagihan/faktur pembelian yang jatuh tempo. Polish: filter overdue dari response.",
+        signal_words=["tagihan jatuh tempo", "bill overdue", "tagihan terlambat"],
+        query_params=[
+            QueryParam(
+                name="status", label="Status", param_type="string", default="active"
+            ),
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
+    ),
+    # Expenses by account
+    "query_expenses_by_account": QueryActionConfig(
+        action_key="query_expenses_by_account",
+        display_name="Pengeluaran per Akun",
+        rest_endpoint="/api/expenses",
+        response_format="list",
+        description="Daftar pengeluaran. Polish: filter by account name dari response.",
+        signal_words=["pengeluaran untuk", "biaya untuk", "expense akun"],
+        query_params=[
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
+    ),
+    # Receive payments list
+    "query_receive_payments_list": QueryActionConfig(
+        action_key="query_receive_payments_list",
+        display_name="Daftar Penerimaan Pembayaran",
+        rest_endpoint="/api/receive-payments",
+        response_format="list",
+        description="Daftar semua penerimaan pembayaran.",
+        signal_words=["daftar penerimaan", "list receive payment", "pembayaran masuk"],
+        query_params=[
+            QueryParam(name="limit", label="Limit", param_type="number", default="20"),
+        ],
+    ),
+    # Receive payment detail
+    "query_receive_payment_detail": QueryActionConfig(
+        action_key="query_receive_payment_detail",
+        display_name="Detail Penerimaan Pembayaran",
+        rest_endpoint="/api/receive-payments/{id}",
+        response_format="detail",
+        description="Detail 1 penerimaan pembayaran.",
+        signal_words=["detail penerimaan", "detail receive payment"],
+        query_params=[
+            QueryParam(
+                name="id", label="Payment ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Bill payments list
+    "query_bill_payments_list": QueryActionConfig(
+        action_key="query_bill_payments_list",
+        display_name="Daftar Pembayaran Tagihan",
+        rest_endpoint="/api/bill-payments",
+        response_format="list",
+        description="Daftar semua pembayaran tagihan.",
+        signal_words=[
+            "daftar pembayaran tagihan",
+            "list bill payment",
+            "pembayaran keluar",
+        ],
+        query_params=[
+            QueryParam(name="limit", label="Limit", param_type="number", default="20"),
+        ],
+    ),
+    # Bill payment detail
+    "query_bill_payment_detail": QueryActionConfig(
+        action_key="query_bill_payment_detail",
+        display_name="Detail Pembayaran Tagihan",
+        rest_endpoint="/api/bill-payments/{id}",
+        response_format="detail",
+        description="Detail 1 pembayaran tagihan.",
+        signal_words=["detail pembayaran tagihan", "detail bill payment"],
+        query_params=[
+            QueryParam(
+                name="id", label="Payment ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Journals list
+    "query_journals_list": QueryActionConfig(
+        action_key="query_journals_list",
+        display_name="Daftar Jurnal",
+        rest_endpoint="/api/journals",
+        response_format="list",
+        description="Daftar semua jurnal.",
+        signal_words=["daftar jurnal", "list jurnal", "semua jurnal"],
+        query_params=[
+            QueryParam(name="limit", label="Limit", param_type="number", default="20"),
+        ],
+    ),
+    # Journal detail
+    "query_journal_detail": QueryActionConfig(
+        action_key="query_journal_detail",
+        display_name="Detail Jurnal",
+        rest_endpoint="/api/journals/{id}",
+        response_format="detail",
+        description="Detail 1 jurnal entry.",
+        signal_words=["detail jurnal", "info jurnal"],
+        query_params=[
+            QueryParam(
+                name="id", label="Journal ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Accounts list
+    "query_accounts_list": QueryActionConfig(
+        action_key="query_accounts_list",
+        display_name="Daftar Akun",
+        rest_endpoint="/api/accounts",
+        response_format="list",
+        description="Daftar semua akun (chart of accounts).",
+        signal_words=["daftar akun", "list akun", "chart of accounts", "coa"],
+        query_params=[
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
+    ),
+    # Account detail
+    "query_account_detail": QueryActionConfig(
+        action_key="query_account_detail",
+        display_name="Detail Akun",
+        rest_endpoint="/api/accounts/{account_id}",
+        response_format="detail",
+        description="Detail 1 akun.",
+        signal_words=["detail akun", "info akun"],
+        query_params=[
+            QueryParam(
+                name="id", label="Account ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Stock adjustment detail
+    "query_stock_adjustment_detail": QueryActionConfig(
+        action_key="query_stock_adjustment_detail",
+        display_name="Detail Penyesuaian Stok",
+        rest_endpoint="/api/stock-adjustments/{id}",
+        response_format="detail",
+        description="Detail 1 penyesuaian stok.",
+        signal_words=["detail penyesuaian", "detail stock adjustment"],
+        query_params=[
+            QueryParam(
+                name="id", label="Adjustment ID", param_type="string", required=True
+            ),
+        ],
+    ),
+    # Bank account balance (journal-derived)
+    "query_bank_account_balance": QueryActionConfig(
+        action_key="query_bank_account_balance",
+        display_name="Saldo Rekening",
+        rest_endpoint="/api/bank-accounts/{id}",
+        response_format="detail",
+        description="Saldo 1 rekening bank/kas (journal-derived). Resolve bank by name first.",
+        signal_words=["saldo rekening", "saldo bank", "balance rekening"],
+        query_params=[
+            QueryParam(
+                name="id", label="Account ID", param_type="string", required=True
+            ),
+        ],
+    ),
 }
 
 

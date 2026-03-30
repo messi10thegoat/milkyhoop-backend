@@ -748,13 +748,11 @@ def _strip_draft_void_rows(text: str) -> str:
     lines = text.split("\n")
     result = []
     in_table = False
-    header_line = ""
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("|") and stripped.endswith("|"):
             if not in_table:
                 in_table = True
-                header_line = stripped.lower()
             # Skip rows containing Draft or Void status
             cells = [c.strip().lower() for c in stripped.split("|")]
             if any(cell in ("draft", "void") for cell in cells):
@@ -2665,6 +2663,89 @@ class UnifiedAgent:
                     total_latency_ms=int((_time.time() - start_time) * 1000),
                 )
 
+        # Resolve bank account by name -> get ID for {id} endpoints (e.g. "saldo BCA")
+        # Fallback: extract bank name from user text if LLM did not populate bank_name
+        if (
+            "{id}" in endpoint
+            and extraction.intent == "query_bank_account_balance"
+            and not extraction.entities.get("bank_name")
+        ):
+            import re as _bk_re
+
+            _bk_match = _bk_re.search(r"saldo\s+(.+)", user_text.strip().lower())
+            if _bk_match:
+                _bk_name = _bk_match.group(1).strip()
+                _bk_name = _bk_re.sub(
+                    r"\s+(saya|kita|ku|gue|aku|dong|ya)$", "", _bk_name
+                )
+                if _bk_name:
+                    extraction.entities["bank_name"] = _bk_name
+
+        if "{id}" in endpoint and extraction.entities.get("bank_name"):
+            from .entity_resolver import EntityResolver
+            from .db_utils import get_session_db_pool
+
+            pool = await get_session_db_pool()
+            resolver = EntityResolver(pool, context.tenant_id)
+            resolved_bank = await resolver._resolve_bank_account(
+                extraction.entities["bank_name"]
+            )
+            if (
+                resolved_bank
+                and resolved_bank.entity_id
+                and resolved_bank.confidence >= 0.5
+            ):
+                endpoint = endpoint.replace("{id}", resolved_bank.entity_id)
+            else:
+                bank_name = extraction.entities.get("bank_name", "")
+                return AgentResponse(
+                    message_type="TEXT",
+                    content=f"Rekening {bank_name} tidak ditemukan.",
+                    iterations=1,
+                    model_used="gpt-4o-mini",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
+        # Resolve CoA account by name -> get ID for {id} endpoints (e.g. "detail akun kas")
+        if "{account_id}" in endpoint and extraction.intent == "query_account_detail":
+            # Extract account name from user text (everything after "akun"/"account"/"coa")
+            import re as _acc_re
+
+            _acc_match = _acc_re.search(
+                r"(?:akun|account|coa)\s+(.+)",
+                user_text.strip().lower(),
+            )
+            if _acc_match:
+                _acc_name = _acc_match.group(1).strip()
+                from .db_utils import get_session_db_pool
+
+                pool = await get_session_db_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(f"SET app.tenant_id = {context.tenant_id}")
+                    row = await conn.fetchrow(
+                        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND LOWER(name) ILIKE $2 AND is_active = true ORDER BY LENGTH(name) LIMIT 1",
+                        context.tenant_id,
+                        f"%{_acc_name}%",
+                    )
+                    if row:
+                        endpoint = endpoint.replace("{account_id}", str(row["id"]))
+                    else:
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=f"Akun {_acc_name} tidak ditemukan.",
+                            iterations=1,
+                            model_used="gpt-4o-mini",
+                            total_latency_ms=int((_time.time() - start_time) * 1000),
+                        )
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content="Mohon sebutkan nama akun yang ingin dicek.",
+                    iterations=1,
+                    model_used="gpt-4o-mini",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
         # Resolve item_id query param (for endpoints like /api/item-batches?item_id=UUID)
         if any(
             qp.name == "item_id" for qp in (query_config.query_params or [])
@@ -2712,13 +2793,28 @@ class UnifiedAgent:
             elif qp.default:
                 query_params[qp.name] = qp.default
 
-        # Bail if still unresolved {id}
-        if "{id}" in endpoint:
-            _entity_hint = "barang"
-            if "customer" in query_config.action_key:
-                _entity_hint = "pelanggan"
-            elif "vendor" in query_config.action_key:
-                _entity_hint = "vendor"
+        # Bail if still unresolved {id} or {account_id} or other path params
+        import re as _bail_re
+
+        if _bail_re.search(r"\\{\w+\\}", endpoint):
+            _entity_hint_map = {
+                "customer": "pelanggan",
+                "vendor": "vendor",
+                "bank_account": "rekening bank",
+                "bank": "rekening bank",
+                "account": "akun",
+                "item": "barang",
+                "invoice": "faktur",
+                "bill": "tagihan",
+                "expense": "pengeluaran",
+                "journal": "jurnal",
+            }
+            _entity_hint = "barang"  # fallback
+            _ak = query_config.action_key.lower()
+            for _key, _label in _entity_hint_map.items():
+                if _key in _ak:
+                    _entity_hint = _label
+                    break
             return AgentResponse(
                 message_type="TEXT",
                 content=f"Mohon sebutkan nama {_entity_hint} yang ingin dicek.",
@@ -2819,6 +2915,7 @@ class UnifiedAgent:
                     last_action_result={
                         "response_text": response_text[:2000],
                         "query_text": user_text,
+                        "last_query_params": query_params,
                     },
                 )
         except Exception as _save_err:
@@ -2857,9 +2954,7 @@ class UnifiedAgent:
         E.g., after 'hutang berapa' (query_ap_outstanding) → 'per faktur' → query_bills_list.
         ~1.5s via pipeline instead of ~50s via agent loop.
         """
-        import time as _time
-
-        start_time = _time.time()
+        # start_time removed (unused)
 
         # Determine drill-down target from session state
         _last_intent = None
@@ -2936,6 +3031,117 @@ class UnifiedAgent:
             or "belum dibayar" in _t
             or "hutang" in _t,
         }
+
+        return await self._handle_query_pipeline(
+            user_text=_table_hint,
+            context=context,
+            extraction=extraction,
+            tool_executor=tool_executor,
+            event_callback=event_callback,
+        )
+
+    async def _handle_contextual_drill_down(
+        self,
+        user_text,
+        context,
+        extraction,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """Contextual drill-down with param forwarding from previous query.
+        Maps last_action_type to list query, forwarding params like vendor_id/customer_id.
+        """
+        import time as _time
+
+        start_time = _time.time()
+
+        # Get session state
+        _last_intent = None
+        _last_query_params = {}
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                state = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
+                if state:
+                    _last_intent = getattr(state, "last_action_type", None)
+                    _last_result = getattr(state, "last_action_result", None)
+                    if isinstance(_last_result, dict):
+                        _last_query_params = _last_result.get("last_query_params", {})
+            except Exception:
+                pass
+
+        # Drill-down mapping with param forwarding
+        _CONTEXT_DRILL_MAP = {
+            "query_ap_outstanding": ("query_bills_list", {"status": "active"}),
+            "query_ar_outstanding": ("query_sales_invoices_list", {"status": "active"}),
+            "query_customer_ar": ("query_sales_invoices_list", {"status": "active"}),
+            "query_vendor_ap": ("query_bills_list", {"status": "active"}),
+            "query_expenses_summary": ("query_expenses_list", {}),
+            "query_bills_summary": ("query_bills_list", {}),
+            "query_sales_invoices_summary": ("query_sales_invoices_list", {}),
+        }
+
+        mapping = _CONTEXT_DRILL_MAP.get(_last_intent)
+
+        if not mapping:
+            # No context — fallback: try to infer from user text
+            t = user_text.lower()
+            if any(w in t for w in ("tagihan", "hutang", "bill", "ap", "pembelian")):
+                mapping = ("query_bills_list", {"status": "active"})
+            elif any(w in t for w in ("piutang", "invoice", "ar", "penjualan")):
+                mapping = ("query_sales_invoices_list", {"status": "active"})
+            elif any(w in t for w in ("pengeluaran", "biaya", "expense")):
+                mapping = ("query_expenses_list", {})
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content="Mau detail tentang apa? Coba sebutkan lebih spesifik, misalnya: hutang, piutang, atau pengeluaran.",
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
+        target_intent, extra_params = mapping
+
+        # Forward relevant params from previous query
+        _forwarded_params = {}
+        for key in ("customer_id", "vendor_id"):
+            if key in _last_query_params:
+                _forwarded_params[key] = _last_query_params[key]
+
+        _all_params = dict(extra_params)
+        _all_params.update(_forwarded_params)
+
+        logger.warning(
+            "[CONTEXTUAL_DRILL_DOWN] last_intent=%s target=%s params=%s user='%s'",
+            _last_intent,
+            target_intent,
+            _all_params,
+            user_text[:50],
+        )
+
+        # Override extraction and merge params
+        extraction.intent = target_intent
+        extraction.confidence = 1.0
+        extraction.needs_escalation = False
+
+        # Inject forwarded params into entities so _handle_query_pipeline picks them up
+        for k, v in _all_params.items():
+            extraction.entities[k] = v
+
+        # Store drilldown context
+        self._drilldown_context = {
+            "is_hutang": target_intent == "query_bills_list",
+            "is_piutang": target_intent == "query_sales_invoices_list",
+            "filter_unpaid": True,
+        }
+
+        _table_hint = user_text + " (WAJIB tampilkan dalam bentuk tabel markdown)"
 
         return await self._handle_query_pipeline(
             user_text=_table_hint,
@@ -4024,6 +4230,18 @@ class UnifiedAgent:
                         )
 
             # ── Reformat-as-table: re-format last response ──
+            if extraction.intent == "contextual_drill_down":
+                logger.warning(
+                    "[CONTEXTUAL_DRILL_DOWN] Routing to contextual drill-down handler"
+                )
+                return await self._handle_contextual_drill_down(
+                    user_text=user_text,
+                    context=context,
+                    extraction=extraction,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
             if extraction.intent == "drilldown_table":
                 logger.warning("[DRILLDOWN] Routing to drilldown handler")
                 return await self._handle_drilldown_table(

@@ -108,7 +108,35 @@ EXTRACTION_SCHEMAS = {
                             "calc_sum_invoices_outstanding",
                             "calc_count_bank_accounts",
                             "calc_sum_bank_balance",
+                            "calc_sum_all_bank_balances",
                             "calc_count_expenses_month",
+                            "calc_rank_items_by_stock",
+                            "calc_sum_harga_beli",
+                            "calc_rank_customers_by_ar",
+                            "calc_rank_vendors_by_ap",
+                            "calc_sum_sales_this_month",
+                            "calc_sum_purchases_this_month",
+                            "calc_sum_expenses_this_month",
+                            "calc_sum_received_this_month",
+                            "calc_sum_paid_this_month",
+                            "calc_count_sales_invoices_active",
+                            "calc_count_bills_active",
+                            "contextual_drill_down",
+                            "query_customer_ar",
+                            "query_vendor_ap",
+                            "query_sales_invoices_overdue",
+                            "query_bills_overdue",
+                            "query_expenses_by_account",
+                            "query_receive_payments_list",
+                            "query_receive_payment_detail",
+                            "query_bill_payments_list",
+                            "query_bill_payment_detail",
+                            "query_journals_list",
+                            "query_journal_detail",
+                            "query_accounts_list",
+                            "query_account_detail",
+                            "query_stock_adjustment_detail",
+                            "query_bank_account_balance",
                             "chitchat",
                             "query",
                             "ambiguous",
@@ -293,7 +321,19 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 - "total piutang outstanding" -> calc_sum_invoices_outstanding
 - "berapa rekening" -> calc_count_bank_accounts
 - "total saldo kas dan bank" -> calc_sum_bank_balance
+- "total saldo semua rekening" -> calc_sum_all_bank_balances
 - "berapa pengeluaran bulan ini" -> calc_count_expenses_month
+- "ranking stok" / "item stok terbanyak" -> calc_rank_items_by_stock
+- "total harga beli" / "jumlah semua harga beli" -> calc_sum_harga_beli
+- "ranking piutang pelanggan" / "pelanggan hutang terbesar" -> calc_rank_customers_by_ar
+- "ranking hutang vendor" / "vendor hutang terbesar" -> calc_rank_vendors_by_ap
+- "total penjualan bulan ini" / "penjualan outstanding" -> calc_sum_sales_this_month
+- "total pembelian bulan ini" -> calc_sum_purchases_this_month
+- "total pengeluaran bulan ini" -> calc_sum_expenses_this_month
+- "total diterima bulan ini" / "total pembayaran masuk" -> calc_sum_received_this_month
+- "total dibayar bulan ini" / "total pembayaran keluar" -> calc_sum_paid_this_month
+- "berapa faktur penjualan aktif" -> calc_count_sales_invoices_active
+- "berapa faktur pembelian aktif" -> calc_count_bills_active
 PENTING: Kalkulasi numerik (rata-rata, total, jumlah, ranking) -> WAJIB pakai calc_* intent.
 
 == FALLBACK ==
@@ -304,6 +344,7 @@ PIPELINE_ENABLED_INTENTS = {
     # Re-format + drill-down
     "reformat_as_table",
     "drilldown_table",
+    "contextual_drill_down",
     # Tahap 1 (master data)
     "create_customer",
     "create_vendor",
@@ -396,6 +437,34 @@ PIPELINE_ENABLED_INTENTS = {
     "calc_count_bank_accounts",
     "calc_sum_bank_balance",
     "calc_count_expenses_month",
+    "calc_rank_items_by_stock",
+    "calc_sum_harga_beli",
+    "calc_rank_customers_by_ar",
+    "calc_rank_vendors_by_ap",
+    "calc_sum_sales_this_month",
+    "calc_sum_purchases_this_month",
+    "calc_sum_expenses_this_month",
+    "calc_sum_received_this_month",
+    "calc_sum_paid_this_month",
+    "calc_count_sales_invoices_active",
+    "calc_count_bills_active",
+    "calc_sum_all_bank_balances",
+    # Batch 1 query intents
+    "query_customer_ar",
+    "query_vendor_ap",
+    "query_sales_invoices_overdue",
+    "query_bills_overdue",
+    "query_expenses_by_account",
+    "query_receive_payments_list",
+    "query_receive_payment_detail",
+    "query_bill_payments_list",
+    "query_bill_payment_detail",
+    "query_journals_list",
+    "query_journal_detail",
+    "query_accounts_list",
+    "query_account_detail",
+    "query_stock_adjustment_detail",
+    "query_bank_account_balance",
     # Voids
     "void_sales_invoice",
     "void_bill",
@@ -533,6 +602,32 @@ def classify_query_intent(user_text: str) -> tuple:
 
     t = user_text.strip().lower()
 
+    # ── Calc engine intents (Batch 1 expansion) ──
+    if _qre.search(
+        r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
+    ) or _qre.search(
+        r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
+    ):
+        return "calc_rank_customers_by_ar", None, None
+    if _qre.search(
+        r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
+    ) or _qre.search(
+        r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
+    ):
+        return "calc_rank_vendors_by_ap", None, None
+    if _qre.search(r"(?:total|jumlah).*(?:penjualan|sales).*(?:bulan\s*ini)", t):
+        return "calc_sum_sales_this_month", None, None
+    if _qre.search(r"(?:total|jumlah).*(?:pembelian|purchase).*(?:bulan\s*ini)", t):
+        return "calc_sum_purchases_this_month", None, None
+    if _qre.search(
+        r"(?:total|jumlah).*(?:pengeluaran|biaya|expense).*(?:bulan\s*ini)", t
+    ):
+        return "calc_sum_expenses_this_month", None, None
+    if _qre.search(
+        r"(?:total|jumlah).*(?:saldo|balance).*(?:semua|seluruh).*(?:rekening|bank)", t
+    ) or _qre.search(r"(?:total|jumlah).*(?:semua|seluruh).*(?:saldo|balance)", t):
+        return "calc_sum_all_bank_balances", None, None
+
     # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
     # These override AP/AR summary when user wants list/table/detail, not total
     _is_drilldown = (
@@ -607,6 +702,53 @@ def classify_query_intent(user_text: str) -> tuple:
     ):
         return "drilldown_table", None, None
 
+    # ── Batch 1: Entity-specific queries (Priority 2) ──
+    # Customer AR with entity name
+    if _qre.search(
+        r"(?:piutang|receivable)\s+(?!saya|kita|semua|total|berapa|yang|apa)\w+", t
+    ):
+        return "query_customer_ar", None, None
+    # Vendor AP with entity name
+    if _qre.search(
+        r"(?:hutang|utang|payable)\s+(?:ke\s+|dari\s+)?(?!saya|kita|semua|total|berapa|yang|apa)\w+",
+        t,
+    ):
+        if _qre.search(r"(?:vendor|supplier|pemasok|toko|cv|pt)\b", t):
+            return "query_vendor_ap", None, None
+    # Bank balance with specific bank name
+    if _qre.search(
+        r"saldo\s+(?!saya|kita|semua|total|berapa|yang|apa|kas|bank\b)\w+", t
+    ):
+        return "query_bank_account_balance", None, None
+
+    # ── Batch 1: Overdue / specific list queries ──
+    # Sales invoices overdue
+    if _qre.search(r"faktur.*jatuh\s*tempo|overdue.*(?:penjualan|invoice)", t):
+        return "query_sales_invoices_overdue", None, None
+    # Bills overdue
+    if _qre.search(r"tagihan.*jatuh\s*tempo|overdue.*(?:pembelian|bill)", t):
+        return "query_bills_overdue", None, None
+    # Expenses by account
+    if _qre.search(r"(?:pengeluaran|biaya).*(?:untuk|akun)", t):
+        return "query_expenses_by_account", None, None
+    # Receive payments list
+    if _qre.search(
+        r"(?:daftar|list).*(?:penerimaan|pembayaran\s*masuk|receive\s*payment)", t
+    ):
+        return "query_receive_payments_list", None, None
+    # Bill payments list
+    if _qre.search(
+        r"(?:daftar|list).*(?:pembayaran\s*keluar|payment\s*out|bill\s*payment|pembayaran\s*tagihan)",
+        t,
+    ):
+        return "query_bill_payments_list", None, None
+    # Journals list
+    if _qre.search(r"(?:daftar|list|semua)\s+jurnal", t):
+        return "query_journals_list", None, None
+    # Accounts list
+    if _qre.search(r"(?:daftar|list).*(?:akun|coa|chart\s*of\s*accounts)", t):
+        return "query_accounts_list", None, None
+
     # AR
     if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(
         r"\bpiutang\b.*\b(kejar|tagih|prioritas)\b", t
@@ -669,6 +811,13 @@ def classify_query_intent(user_text: str) -> tuple:
     if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
         return "query_categories_list", None, None
 
+    # Account (CoA) detail — "detail akun kas", "info akun beban gaji"
+    if _qre.search(
+        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:akun|account|coa)",
+        t,
+    ):
+        return "query_account_detail", None, None
+
     # Customer/Vendor detail — "data pelanggan X", "detail vendor Y", "info customer Z"
     if _qre.search(
         r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:pelanggan|customer)",
@@ -699,6 +848,60 @@ def classify_query_intent(user_text: str) -> tuple:
         return "drilldown_table", None, None
     if _qre.search(r"(?:detailnya|rinciannya|breakdownnya)", t):
         return "drilldown_table", None, None
+
+    # ── contextual_drill_down — "per faktur", "breakdown", "rinci" after a previous query ──
+    # Primary triggers: always match
+    if _qre.search(
+        r"(?:per\s+faktur|per\s+vendor|per\s+pelanggan|breakdown|\brinci\b|\brincian\b)",
+        t,
+    ):
+        return "contextual_drill_down", None, None
+
+    # Secondary trigger: "detail*" — match ONLY when NO entity identifier, NO temporal keyword, AND NO entity type word
+    if _qre.search(r"\bdetail(?:nya|kan|in)?\b", t):
+        _has_entity_id = bool(
+            _qre.search(
+                r"(?:INV-|PB-|EXP-|JE-|[0-9a-f]{8}-[0-9a-f]{4})", t, _qre.IGNORECASE
+            )
+        )
+        _has_temporal = bool(
+            _qre.search(
+                r"(?:bulan\s+ini|kemarin|minggu|tahun\s+ini|hari\s+ini|periode|\bQ[1-4]\b)",
+                t,
+                _qre.IGNORECASE,
+            )
+        )
+        _ENTITY_TYPE_WORDS = {
+            "akun",
+            "account",
+            "coa",
+            "jurnal",
+            "journal",
+            "stok",
+            "stock",
+            "penyesuaian",
+            "penerimaan",
+            "pembayaran",
+            "payment",
+            "receive",
+            "faktur",
+            "invoice",
+            "bill",
+            "tagihan",
+            "vendor",
+            "pelanggan",
+            "customer",
+            "barang",
+            "item",
+            "bank",
+            "rekening",
+            "biaya",
+            "expense",
+        }
+        _msg_words = set(t.split())
+        _has_entity_type = bool(_msg_words & _ENTITY_TYPE_WORDS)
+        if not _has_entity_id and not _has_temporal and not _has_entity_type:
+            return "contextual_drill_down", None, None
 
     # Re-format requests — user wants last response as table
     if _qre.search(
