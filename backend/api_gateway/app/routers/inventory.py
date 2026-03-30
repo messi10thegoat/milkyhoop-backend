@@ -23,10 +23,10 @@ async def get_db_connection():
     return await asyncpg.connect(**db_config)
 
 
-
 # ========================================
 # Response Models
 # ========================================
+
 
 class ProductListItem(BaseModel):
     id: str
@@ -45,6 +45,7 @@ class ProductListItem(BaseModel):
 
 class ProductStockItem(ProductListItem):
     """Extended product info for stock card with updated_at"""
+
     updated_at: Optional[str] = None
 
 
@@ -117,22 +118,25 @@ class CategoryListResponse(BaseModel):
 
 class InventorySummaryResponse(BaseModel):
     """Summary counts for inventory dashboard categories"""
-    total_products: int      # All products
-    melimpah_count: int      # stok > minimum_stock
-    menipis_count: int       # 0 < stok <= minimum_stock
-    habis_count: int         # stok <= 0
-    aset_count: int          # Fixed assets (placeholder)
-    reorder_count: int       # Reorder list (placeholder)
+
+    total_products: int  # All products
+    melimpah_count: int  # stok > minimum_stock
+    menipis_count: int  # 0 < stok <= minimum_stock
+    habis_count: int  # stok <= 0
+    aset_count: int  # Fixed assets (placeholder)
+    reorder_count: int  # Reorder list (placeholder)
 
 
 class SupplierItem(BaseModel):
     """Supplier info from purchase transactions"""
+
     nama_supplier: str
     total_purchases: int
 
 
 class TransactionHistoryItem(BaseModel):
     """Transaction history for stock card"""
+
     id: str
     tanggal: str
     jenis_transaksi: str  # pembelian, penjualan
@@ -145,6 +149,7 @@ class TransactionHistoryItem(BaseModel):
 
 class StockInsight(BaseModel):
     """Aggregated insights for a product"""
+
     total_masuk: float
     total_keluar: float
     rata_rata_penjualan: Optional[float] = None
@@ -153,24 +158,28 @@ class StockInsight(BaseModel):
 
 class ProductStockCardResponse(BaseModel):
     """Complete stock card data for a product"""
+
     product: ProductStockItem
     minimum_stock: Optional[float] = None
     suppliers: List[SupplierItem]
     transaction_history: List[TransactionHistoryItem]
     insight: StockInsight
     # Unit conversion fields (V007)
-    base_unit: Optional[str] = None           # e.g., "pcs" (smallest sellable unit)
-    wholesale_unit: Optional[str] = None      # e.g., "dus" (bulk purchase unit)
+    base_unit: Optional[str] = None  # e.g., "pcs" (smallest sellable unit)
+    wholesale_unit: Optional[str] = None  # e.g., "dus" (bulk purchase unit)
     units_per_wholesale: Optional[int] = None  # e.g., 12 (1 dus = 12 pcs)
     # Legacy aliases for backward compatibility
-    units_per_pack: Optional[int] = None      # same as units_per_wholesale
-    content_unit: Optional[str] = None        # same as base_unit
-    stok_satuan_terkecil: Optional[float] = None  # stock already in base unit after V008
+    units_per_pack: Optional[int] = None  # same as units_per_wholesale
+    content_unit: Optional[str] = None  # same as base_unit
+    stok_satuan_terkecil: Optional[
+        float
+    ] = None  # stock already in base unit after V008
 
 
 # ========================================
 # Endpoints
 # ========================================
+
 
 @router.get("/products", response_model=ProductListResponse)
 async def list_products(
@@ -179,14 +188,14 @@ async def list_products(
     kategori: Optional[str] = Query(None, description="Filter by category"),
     low_stock_only: bool = Query(False, description="Only show low stock items"),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
 ):
     """
     List all products with stock information.
     Supports search, category filter, and pagination.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -198,12 +207,17 @@ async def list_products(
         try:
             # Build query with optional filters
             # Only show items with track_inventory=true in inventory views
-            where_clauses = ["p.tenant_id = $1", "COALESCE(p.track_inventory, true) = true"]
+            where_clauses = [
+                "p.tenant_id = $1",
+                "COALESCE(p.track_inventory, true) = true",
+            ]
             params = [tenant_id]
             param_idx = 2
 
             if search:
-                where_clauses.append(f"(LOWER(p.nama_produk) LIKE LOWER(${param_idx}) OR p.barcode = ${param_idx + 1})")
+                where_clauses.append(
+                    f"(LOWER(p.nama_produk) LIKE LOWER(${param_idx}) OR p.barcode = ${param_idx + 1})"
+                )
                 params.append(f"%{search}%")
                 params.append(search)
                 param_idx += 2
@@ -274,28 +288,34 @@ async def list_products(
 
             products = [
                 ProductListItem(
-                    id=str(row['id']),
-                    nama_produk=row['nama_produk'],
-                    satuan=row['satuan'] or 'pcs',
-                    kategori=row['kategori'],
-                    barcode=row['barcode'],
-                    harga_jual=int(row['harga_jual']) if row['harga_jual'] else None,
-                    stok=float(row['stok']),
-                    nilai_per_unit=float(row['nilai_per_unit']) if row['nilai_per_unit'] else None,
-                    total_nilai=float(row['total_nilai']) if row['total_nilai'] else None,
-                    minimum_stock=float(row['minimum_stock']) if row['minimum_stock'] else None,
-                    is_low_stock=row['is_low_stock'],
-                    lokasi_gudang=row['lokasi_gudang']
+                    id=str(row["id"]),
+                    nama_produk=row["nama_produk"],
+                    satuan=row["satuan"] or "pcs",
+                    kategori=row["kategori"],
+                    barcode=row["barcode"],
+                    harga_jual=int(row["harga_jual"]) if row["harga_jual"] else None,
+                    stok=float(row["stok"]),
+                    nilai_per_unit=float(row["nilai_per_unit"])
+                    if row["nilai_per_unit"]
+                    else None,
+                    total_nilai=float(row["total_nilai"])
+                    if row["total_nilai"]
+                    else None,
+                    minimum_stock=float(row["minimum_stock"])
+                    if row["minimum_stock"]
+                    else None,
+                    is_low_stock=row["is_low_stock"],
+                    lokasi_gudang=row["lokasi_gudang"],
                 )
                 for row in rows
             ]
 
-            logger.info(f"List products: tenant={tenant_id}, search={search}, total={total}, returned={len(products)}")
+            logger.info(
+                f"List products: tenant={tenant_id}, search={search}, total={total}, returned={len(products)}"
+            )
 
             return ProductListResponse(
-                products=products,
-                total=total,
-                has_more=(offset + limit) < total
+                products=products, total=total, has_more=(offset + limit) < total
             )
 
         finally:
@@ -309,15 +329,12 @@ async def list_products(
 
 
 @router.get("/products/{product_id}", response_model=ProductDetailResponse)
-async def get_product_detail(
-    request: Request,
-    product_id: str
-):
+async def get_product_detail(request: Request, product_id: str):
     """
     Get detailed product information including stock and margin.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -369,32 +386,42 @@ async def get_product_detail(
             # Calculate margin
             margin = None
             margin_persen = None
-            if row['harga_jual'] and row['nilai_per_unit'] and row['nilai_per_unit'] > 0:
-                margin = float(row['harga_jual']) - float(row['nilai_per_unit'])
-                margin_persen = round((margin / float(row['nilai_per_unit'])) * 100, 1)
+            if (
+                row["harga_jual"]
+                and row["nilai_per_unit"]
+                and row["nilai_per_unit"] > 0
+            ):
+                margin = float(row["harga_jual"]) - float(row["nilai_per_unit"])
+                margin_persen = round((margin / float(row["nilai_per_unit"])) * 100, 1)
 
             product = ProductListItem(
-                id=str(row['id']),
-                nama_produk=row['nama_produk'],
-                satuan=row['satuan'] or 'pcs',
-                kategori=row['kategori'],
-                barcode=row['barcode'],
-                harga_jual=int(row['harga_jual']) if row['harga_jual'] else None,
-                stok=float(row['stok']),
-                nilai_per_unit=float(row['nilai_per_unit']) if row['nilai_per_unit'] else None,
-                total_nilai=float(row['total_nilai']) if row['total_nilai'] else None,
-                minimum_stock=float(row['minimum_stock']) if row['minimum_stock'] else None,
-                is_low_stock=row['is_low_stock'],
-                lokasi_gudang=row['lokasi_gudang']
+                id=str(row["id"]),
+                nama_produk=row["nama_produk"],
+                satuan=row["satuan"] or "pcs",
+                kategori=row["kategori"],
+                barcode=row["barcode"],
+                harga_jual=int(row["harga_jual"]) if row["harga_jual"] else None,
+                stok=float(row["stok"]),
+                nilai_per_unit=float(row["nilai_per_unit"])
+                if row["nilai_per_unit"]
+                else None,
+                total_nilai=float(row["total_nilai"]) if row["total_nilai"] else None,
+                minimum_stock=float(row["minimum_stock"])
+                if row["minimum_stock"]
+                else None,
+                is_low_stock=row["is_low_stock"],
+                lokasi_gudang=row["lokasi_gudang"],
             )
 
             return ProductDetailResponse(
                 product=product,
                 margin=margin,
                 margin_persen=margin_persen,
-                deskripsi=row['deskripsi'],
-                created_at=row['created_at'].isoformat() if row['created_at'] else None,
-                last_movement_at=row['last_movement_at'].isoformat() if row['last_movement_at'] else None
+                deskripsi=row["deskripsi"],
+                created_at=row["created_at"].isoformat() if row["created_at"] else None,
+                last_movement_at=row["last_movement_at"].isoformat()
+                if row["last_movement_at"]
+                else None,
             )
 
         finally:
@@ -408,16 +435,13 @@ async def get_product_detail(
 
 
 @router.post("/products", response_model=AddProductResponse)
-async def add_product(
-    request: Request,
-    body: AddProductRequest
-):
+async def add_product(request: Request, body: AddProductRequest):
     """
     Add a new product to inventory.
     Creates entry in Products table and optionally initializes stock via inventory_ledger.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -440,11 +464,12 @@ async def add_product(
                 SELECT id FROM public.products
                 WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2)
             """
-            duplicate = await conn.fetchrow(duplicate_query, tenant_id, body.nama_produk.strip())
+            duplicate = await conn.fetchrow(
+                duplicate_query, tenant_id, body.nama_produk.strip()
+            )
             if duplicate:
                 raise HTTPException(
-                    status_code=409,
-                    detail=f"Produk '{body.nama_produk}' sudah ada"
+                    status_code=409, detail=f"Produk '{body.nama_produk}' sudah ada"
                 )
 
             # Check for duplicate barcode if provided
@@ -453,11 +478,13 @@ async def add_product(
                     SELECT id, nama_produk FROM public.products
                     WHERE tenant_id = $1 AND barcode = $2
                 """
-                barcode_dup = await conn.fetchrow(barcode_query, tenant_id, body.barcode)
+                barcode_dup = await conn.fetchrow(
+                    barcode_query, tenant_id, body.barcode
+                )
                 if barcode_dup:
                     raise HTTPException(
                         status_code=409,
-                        detail=f"Barcode '{body.barcode}' sudah terdaftar untuk produk '{barcode_dup['nama_produk']}'"
+                        detail=f"Barcode '{body.barcode}' sudah terdaftar untuk produk '{barcode_dup['nama_produk']}'",
                     )
 
             # Insert product
@@ -475,10 +502,10 @@ async def add_product(
                 body.kategori,
                 body.barcode,
                 body.harga_jual,
-                body.deskripsi
+                body.deskripsi,
             )
 
-            product_id = str(row['id'])
+            product_id = str(row["id"])
 
             # If initial stock provided, create inventory_ledger opening balance entry
             if body.stok_awal and body.stok_awal > 0:
@@ -499,16 +526,18 @@ async def add_product(
                     product_id,
                     body.nama_produk.strip(),
                     body.stok_awal,
-                    body.nilai_per_unit or 0
+                    body.nilai_per_unit or 0,
                 )
 
-            logger.info(f"Product created: id={product_id}, name={body.nama_produk}, tenant={tenant_id}")
+            logger.info(
+                f"Product created: id={product_id}, name={body.nama_produk}, tenant={tenant_id}"
+            )
 
             return AddProductResponse(
                 success=True,
                 message=f"Produk '{body.nama_produk}' berhasil ditambahkan",
                 product_id=product_id,
-                nama_produk=body.nama_produk
+                nama_produk=body.nama_produk,
             )
 
         finally:
@@ -533,15 +562,12 @@ async def adjust_stock(
     """
     raise HTTPException(
         status_code=410,
-        detail="This endpoint has been removed. Use POST /api/items/{product_id}/stock-adjustment instead."
+        detail="This endpoint has been removed. Use POST /api/items/{product_id}/stock-adjustment instead.",
     )
 
 
 @router.get("/low-stock", response_model=LowStockAlertsResponse)
-async def get_low_stock_alerts(
-    request: Request,
-    limit: int = Query(50, ge=1, le=200)
-):
+async def get_low_stock_alerts(request: Request, limit: int = Query(50, ge=1, le=200)):
     """
     Get all products with low stock (below minimum threshold).
     Queries inventory_ledger directly for current stock.
@@ -549,7 +575,7 @@ async def get_low_stock_alerts(
     products.reorder_level if persediaan row doesn't exist.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -586,23 +612,22 @@ async def get_low_stock_alerts(
 
             alerts = [
                 LowStockAlertItem(
-                    id=row['id'],
-                    nama_produk=row['nama_produk'],
-                    satuan=row['satuan'] or 'pcs',
-                    current_stock=float(row['current_stock']),
-                    minimum_stock=float(row['minimum_stock']),
-                    shortfall=float(row['shortfall']),
-                    days_since_movement=row['days_since_movement'] if row['days_since_movement'] and row['days_since_movement'] > 0 else None
+                    id=row["id"],
+                    nama_produk=row["nama_produk"],
+                    satuan=row["satuan"] or "pcs",
+                    current_stock=float(row["current_stock"]),
+                    minimum_stock=float(row["minimum_stock"]),
+                    shortfall=float(row["shortfall"]),
+                    days_since_movement=row["days_since_movement"]
+                    if row["days_since_movement"] and row["days_since_movement"] > 0
+                    else None,
                 )
                 for row in rows
             ]
 
             logger.info(f"Low stock alerts: tenant={tenant_id}, count={len(alerts)}")
 
-            return LowStockAlertsResponse(
-                alerts=alerts,
-                total_count=len(alerts)
-            )
+            return LowStockAlertsResponse(alerts=alerts, total_count=len(alerts))
 
         finally:
             await conn.close()
@@ -615,14 +640,12 @@ async def get_low_stock_alerts(
 
 
 @router.get("/categories", response_model=CategoryListResponse)
-async def get_categories(
-    request: Request
-):
+async def get_categories(request: Request):
     """
     Get list of categories used by this tenant.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -639,7 +662,7 @@ async def get_categories(
                 ORDER BY kategori ASC
             """
             rows = await conn.fetch(query, tenant_id)
-            categories = [row['kategori'] for row in rows]
+            categories = [row["kategori"] for row in rows]
 
             return CategoryListResponse(categories=categories)
 
@@ -660,7 +683,7 @@ async def get_inventory_summary(request: Request):
     Returns counts for: total, melimpah (>=24), menipis (0<stok<12), habis (<=0)
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -691,15 +714,17 @@ async def get_inventory_summary(request: Request):
             """
             row = await conn.fetchrow(query, tenant_id)
 
-            logger.info(f"Inventory summary: tenant={tenant_id}, total={row['total_products']}")
+            logger.info(
+                f"Inventory summary: tenant={tenant_id}, total={row['total_products']}"
+            )
 
             return InventorySummaryResponse(
-                total_products=row['total_products'] or 0,
-                melimpah_count=row['melimpah_count'] or 0,
-                menipis_count=row['menipis_count'] or 0,
-                habis_count=row['habis_count'] or 0,
-                aset_count=0,      # Placeholder - different table
-                reorder_count=0    # Placeholder - not implemented yet
+                total_products=row["total_products"] or 0,
+                melimpah_count=row["melimpah_count"] or 0,
+                menipis_count=row["menipis_count"] or 0,
+                habis_count=row["habis_count"] or 0,
+                aset_count=0,  # Placeholder - different table
+                reorder_count=0,  # Placeholder - not implemented yet
             )
 
         finally:
@@ -712,7 +737,9 @@ async def get_inventory_summary(request: Request):
         raise HTTPException(status_code=500, detail="Failed to fetch inventory summary")
 
 
-@router.get("/products/{product_id}/stock-card", response_model=ProductStockCardResponse)
+@router.get(
+    "/products/{product_id}/stock-card", response_model=ProductStockCardResponse
+)
 async def get_product_stock_card(request: Request, product_id: str):
     """
     Get comprehensive stock card data for a product.
@@ -764,21 +791,29 @@ async def get_product_stock_card(request: Request, product_id: str):
                 raise HTTPException(status_code=404, detail="Product not found")
 
             product = ProductStockItem(
-                id=str(product_row['id']),
-                nama_produk=product_row['nama_produk'],
-                satuan=product_row['satuan'],
-                kategori=product_row['kategori'],
-                barcode=product_row['barcode'],
-                harga_jual=product_row['harga_jual'],
-                stok=float(product_row['stok']),
-                nilai_per_unit=float(product_row['nilai_per_unit']) if product_row['nilai_per_unit'] else None,
-                total_nilai=float(product_row['total_nilai']) if product_row['total_nilai'] else None,
-                minimum_stock=float(product_row['minimum_stock']) if product_row['minimum_stock'] else None,
-                is_low_stock=product_row['is_low_stock'] or False,
-                lokasi_gudang=product_row['lokasi_gudang'],
-                updated_at=product_row['updated_at'].isoformat() if product_row['updated_at'] else None
+                id=str(product_row["id"]),
+                nama_produk=product_row["nama_produk"],
+                satuan=product_row["satuan"],
+                kategori=product_row["kategori"],
+                barcode=product_row["barcode"],
+                harga_jual=product_row["harga_jual"],
+                stok=float(product_row["stok"]),
+                nilai_per_unit=float(product_row["nilai_per_unit"])
+                if product_row["nilai_per_unit"]
+                else None,
+                total_nilai=float(product_row["total_nilai"])
+                if product_row["total_nilai"]
+                else None,
+                minimum_stock=float(product_row["minimum_stock"])
+                if product_row["minimum_stock"]
+                else None,
+                is_low_stock=product_row["is_low_stock"] or False,
+                lokasi_gudang=product_row["lokasi_gudang"],
+                updated_at=product_row["updated_at"].isoformat()
+                if product_row["updated_at"]
+                else None,
             )
-            nama_produk = product_row['nama_produk']
+            nama_produk = product_row["nama_produk"]
 
             # 2. Get suppliers from bills (Pure Ledger)
             suppliers_query = """
@@ -792,17 +827,19 @@ async def get_product_stock_card(request: Request, product_id: str):
                         bi.product_id = $2::uuid
                         OR LOWER(bi.product_name) = LOWER($3)
                     )
-                    AND b.status != 'void'
+                    AND b.status_v2 NOT IN ('draft', 'void')
                     AND b.vendor_name IS NOT NULL
                     AND b.vendor_name != ''
                 GROUP BY b.vendor_name
                 ORDER BY total_purchases DESC
             """
-            supplier_rows = await conn.fetch(suppliers_query, tenant_id, product_id, nama_produk)
+            supplier_rows = await conn.fetch(
+                suppliers_query, tenant_id, product_id, nama_produk
+            )
             suppliers = [
                 SupplierItem(
-                    nama_supplier=row['nama_supplier'],
-                    total_purchases=row['total_purchases']
+                    nama_supplier=row["nama_supplier"],
+                    total_purchases=row["total_purchases"],
                 )
                 for row in supplier_rows
             ]
@@ -836,14 +873,14 @@ async def get_product_stock_card(request: Request, product_id: str):
             history_rows = await conn.fetch(history_query, tenant_id, product_id)
             transaction_history = [
                 TransactionHistoryItem(
-                    id=row['id'],
-                    tanggal=row['tanggal'],
-                    jenis_transaksi=row['jenis_transaksi'],
-                    jumlah=float(row['jumlah']),
-                    satuan=product_row['satuan'],
-                    harga_satuan=float(row['harga_satuan']),
-                    subtotal=float(row['subtotal']),
-                    nama_pihak=row['nama_pihak']
+                    id=row["id"],
+                    tanggal=row["tanggal"],
+                    jenis_transaksi=row["jenis_transaksi"],
+                    jumlah=float(row["jumlah"]),
+                    satuan=product_row["satuan"],
+                    harga_satuan=float(row["harga_satuan"]),
+                    subtotal=float(row["subtotal"]),
+                    nama_pihak=row["nama_pihak"],
                 )
                 for row in history_rows
             ]
@@ -862,27 +899,33 @@ async def get_product_stock_card(request: Request, product_id: str):
 
             insight_row = await conn.fetchrow(insight_query, tenant_id, product_id)
             insight = StockInsight(
-                total_masuk=float(insight_row['total_masuk']),
-                total_keluar=float(insight_row['total_keluar']),
-                rata_rata_penjualan=float(insight_row['rata_rata_penjualan']) if insight_row['rata_rata_penjualan'] else None,
-                jumlah_transaksi_penjualan=insight_row['jumlah_transaksi_penjualan']
+                total_masuk=float(insight_row["total_masuk"]),
+                total_keluar=float(insight_row["total_keluar"]),
+                rata_rata_penjualan=float(insight_row["rata_rata_penjualan"])
+                if insight_row["rata_rata_penjualan"]
+                else None,
+                jumlah_transaksi_penjualan=insight_row["jumlah_transaksi_penjualan"],
             )
 
             # 5. Unit conversion - now from V007 fields in products table
             # No need to calculate from transactions anymore
-            base_unit = product_row['base_unit'] or 'pcs'
-            wholesale_unit = product_row['wholesale_unit']
-            units_per_wholesale = product_row['units_per_wholesale']
+            base_unit = product_row["base_unit"] or "pcs"
+            wholesale_unit = product_row["wholesale_unit"]
+            units_per_wholesale = product_row["units_per_wholesale"]
 
             # Stock is already in base unit after V008 migration
             # So stok_satuan_terkecil = stok (no multiplication needed)
-            stok_satuan_terkecil = float(product_row['stok'])
+            stok_satuan_terkecil = float(product_row["stok"])
 
-            logger.info(f"Stock card retrieved: product={nama_produk}, tenant={tenant_id}, units_per_wholesale={units_per_wholesale}, stok={stok_satuan_terkecil} {base_unit}")
+            logger.info(
+                f"Stock card retrieved: product={nama_produk}, tenant={tenant_id}, units_per_wholesale={units_per_wholesale}, stok={stok_satuan_terkecil} {base_unit}"
+            )
 
             return ProductStockCardResponse(
                 product=product,
-                minimum_stock=float(product_row['minimum_stock']) if product_row['minimum_stock'] else None,
+                minimum_stock=float(product_row["minimum_stock"])
+                if product_row["minimum_stock"]
+                else None,
                 suppliers=suppliers,
                 transaction_history=transaction_history,
                 insight=insight,
@@ -893,7 +936,7 @@ async def get_product_stock_card(request: Request, product_id: str):
                 # Legacy aliases for backward compatibility
                 units_per_pack=units_per_wholesale,
                 content_unit=base_unit,
-                stok_satuan_terkecil=stok_satuan_terkecil
+                stok_satuan_terkecil=stok_satuan_terkecil,
             )
 
         finally:
@@ -903,7 +946,9 @@ async def get_product_stock_card(request: Request, product_id: str):
         raise
     except Exception as e:
         logger.error(f"Get product stock card error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch product stock card")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch product stock card"
+        )
 
 
 @router.get("/health")
@@ -916,10 +961,13 @@ async def health_check():
 # Top Products (Sales Analytics)
 # ========================================
 
+
 @router.get("/top-products")
 async def get_top_products(
     request: Request,
-    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    period: str = Query(
+        "all", description="Period filter: all, this_month, last_month, this_year"
+    ),
     limit: int = Query(10, ge=1, le=50, description="Max products to return"),
 ):
     """
@@ -927,7 +975,7 @@ async def get_top_products(
     Source: inventory_ledger outbound movements (Iron Law 16 compliant).
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -949,7 +997,8 @@ async def get_top_products(
 
         conn = await get_db_connection()
         try:
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT
                     il.product_id,
                     p.nama_produk AS product_name,
@@ -969,20 +1018,29 @@ async def get_top_products(
                 GROUP BY il.product_id, p.nama_produk, p.sku, p.base_unit, p.satuan
                 ORDER BY total_qty_sold DESC
                 LIMIT $2
-            """, tenant_id, limit)
+            """,
+                tenant_id,
+                limit,
+            )
 
             products = []
             for r in rows:
-                products.append({
-                    "product_id": str(r["product_id"]),
-                    "product_name": r["product_name"] or "",
-                    "sku": r["sku"] or "",
-                    "unit": r["unit"],
-                    "total_qty_sold": float(r["total_qty_sold"]),
-                    "transaction_count": r["transaction_count"],
-                    "first_sale": r["first_sale"].isoformat() if r["first_sale"] else None,
-                    "last_sale": r["last_sale"].isoformat() if r["last_sale"] else None,
-                })
+                products.append(
+                    {
+                        "product_id": str(r["product_id"]),
+                        "product_name": r["product_name"] or "",
+                        "sku": r["sku"] or "",
+                        "unit": r["unit"],
+                        "total_qty_sold": float(r["total_qty_sold"]),
+                        "transaction_count": r["transaction_count"],
+                        "first_sale": r["first_sale"].isoformat()
+                        if r["first_sale"]
+                        else None,
+                        "last_sale": r["last_sale"].isoformat()
+                        if r["last_sale"]
+                        else None,
+                    }
+                )
 
             return {
                 "success": True,
@@ -990,7 +1048,7 @@ async def get_top_products(
                     "period": period,
                     "products": products,
                     "total_products": len(products),
-                }
+                },
             }
         finally:
             await conn.close()
@@ -1006,10 +1064,13 @@ async def get_top_products(
 # Slow-Moving Products
 # ========================================
 
+
 @router.get("/slow-moving-products")
 async def get_slow_moving_products(
     request: Request,
-    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    period: str = Query(
+        "all", description="Period filter: all, this_month, last_month, this_year"
+    ),
     limit: int = Query(10, ge=1, le=50, description="Max products to return"),
 ):
     """
@@ -1017,7 +1078,7 @@ async def get_slow_moving_products(
     Source: products LEFT JOIN inventory_ledger (Iron Law 16 compliant).
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1038,7 +1099,8 @@ async def get_slow_moving_products(
 
         conn = await get_db_connection()
         try:
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT
                     p.id AS product_id,
                     p.nama_produk AS product_name,
@@ -1061,19 +1123,26 @@ async def get_slow_moving_products(
                 GROUP BY p.id, p.nama_produk, p.sku, p.base_unit, p.satuan
                 ORDER BY total_qty_sold ASC, p.nama_produk ASC
                 LIMIT $2
-            """, tenant_id, limit)
+            """,
+                tenant_id,
+                limit,
+            )
 
             products = []
             for r in rows:
-                products.append({
-                    "product_id": str(r["product_id"]),
-                    "product_name": r["product_name"] or "",
-                    "sku": r["sku"] or "",
-                    "unit": r["unit"],
-                    "total_qty_sold": float(r["total_qty_sold"]),
-                    "transaction_count": r["transaction_count"],
-                    "last_sale": r["last_sale"].isoformat() if r["last_sale"] else None,
-                })
+                products.append(
+                    {
+                        "product_id": str(r["product_id"]),
+                        "product_name": r["product_name"] or "",
+                        "sku": r["sku"] or "",
+                        "unit": r["unit"],
+                        "total_qty_sold": float(r["total_qty_sold"]),
+                        "transaction_count": r["transaction_count"],
+                        "last_sale": r["last_sale"].isoformat()
+                        if r["last_sale"]
+                        else None,
+                    }
+                )
 
             return {
                 "success": True,
@@ -1081,7 +1150,7 @@ async def get_slow_moving_products(
                     "period": period,
                     "products": products,
                     "total_products": len(products),
-                }
+                },
             }
         finally:
             await conn.close()
@@ -1090,19 +1159,27 @@ async def get_slow_moving_products(
         raise
     except Exception as e:
         logger.error(f"Get slow moving products error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch slow moving products")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch slow moving products"
+        )
 
 
 # ========================================
 # Product Profit Margins
 # ========================================
 
+
 @router.get("/product-margins")
 async def get_product_margins(
     request: Request,
-    period: str = Query("all", description="Period filter: all, this_month, last_month, this_year"),
+    period: str = Query(
+        "all", description="Period filter: all, this_month, last_month, this_year"
+    ),
     limit: int = Query(10, ge=1, le=50, description="Max products to return"),
-    sort: str = Query("margin_desc", description="Sort: margin_desc, margin_asc, revenue_desc, profit_desc"),
+    sort: str = Query(
+        "margin_desc",
+        description="Sort: margin_desc, margin_asc, revenue_desc, profit_desc",
+    ),
 ):
     """
     Product profit margins — derives actual realized margins from transaction data.
@@ -1111,7 +1188,7 @@ async def get_product_margins(
     Catalog sell_price and buy_price retained as reference/display fields only.
     """
     try:
-        if not hasattr(request.state, 'user') or not request.state.user:
+        if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
@@ -1141,7 +1218,8 @@ async def get_product_margins(
 
         conn = await get_db_connection()
         try:
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT
                     p.id AS product_id,
                     p.nama_produk AS product_name,
@@ -1181,24 +1259,29 @@ async def get_product_margins(
                     AND p.deleted_at IS NULL
                 ORDER BY {order_clause}
                 LIMIT $2
-            """, tenant_id, limit)
+            """,
+                tenant_id,
+                limit,
+            )
 
             products = []
             for r in rows:
-                products.append({
-                    "product_id": str(r["product_id"]),
-                    "product_name": r["product_name"] or "",
-                    "sku": r["sku"] or "",
-                    "unit": r["unit"],
-                    "sell_price": float(r["sell_price"]),
-                    "buy_price": float(r["buy_price"]),
-                    "unit_margin": float(r["unit_margin"]),
-                    "margin_percent": float(r["margin_percent"]),
-                    "total_qty_sold": float(r["total_qty_sold"]),
-                    "total_revenue": float(r["total_revenue"]),
-                    "total_cogs": float(r["total_cogs"]),
-                    "total_profit": float(r["total_profit"]),
-                })
+                products.append(
+                    {
+                        "product_id": str(r["product_id"]),
+                        "product_name": r["product_name"] or "",
+                        "sku": r["sku"] or "",
+                        "unit": r["unit"],
+                        "sell_price": float(r["sell_price"]),
+                        "buy_price": float(r["buy_price"]),
+                        "unit_margin": float(r["unit_margin"]),
+                        "margin_percent": float(r["margin_percent"]),
+                        "total_qty_sold": float(r["total_qty_sold"]),
+                        "total_revenue": float(r["total_revenue"]),
+                        "total_cogs": float(r["total_cogs"]),
+                        "total_profit": float(r["total_profit"]),
+                    }
+                )
 
             return {
                 "success": True,
@@ -1207,7 +1290,7 @@ async def get_product_margins(
                     "sort": sort,
                     "products": products,
                     "total_products": len(products),
-                }
+                },
             }
         finally:
             await conn.close()

@@ -14,7 +14,8 @@ V2 Extensions:
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
-from datetime import date, datetime
+from datetime import date
+from .status_helpers import derive_doc_status
 from decimal import Decimal
 
 _Dec = Decimal
@@ -430,12 +431,7 @@ class BillsService:
                         "created_at": row["created_at"].isoformat(),
                         "updated_at": row["updated_at"].isoformat(),
                         "operational_status": row.get("operational_status") or "DRAFT",
-                        "doc_status": "void"
-                        if row.get("status") == "void"
-                        or (row.get("operational_status") or "") == "VOID"
-                        else "draft"
-                        if (row.get("operational_status") or "DRAFT") == "DRAFT"
-                        else "posted",
+                        "doc_status": derive_doc_status(row),
                         "accounting_status": row.get("accounting_status") or "UNPOSTED",
                         "vendor_id": str(row["vendor_id"])
                         if row["vendor_id"]
@@ -641,9 +637,7 @@ class BillsService:
                     ),
                 },
                 "operational_status": bill.get("operational_status") or "DRAFT",
-                "doc_status": "draft"
-                if (bill.get("operational_status") or "DRAFT") == "DRAFT"
-                else "posted",
+                "doc_status": derive_doc_status(bill),
                 "accounting_status": bill.get("accounting_status") or "UNPOSTED",
                 "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
                 "vendor_name": bill["vendor_name"],
@@ -2127,23 +2121,23 @@ class BillsService:
                     COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)), 0) as total_remaining,
                     COUNT(DISTINCT b.vendor_name) as vendor_count,
                     -- Paid: sudah lunas, sisa = 0
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status != 'void') as paid_count,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status_v2 NOT IN ('draft', 'void')) as paid_count,
                     0 as paid_remaining,
                     -- Partial: bayar sebagian, sisa = amount - journal_paid
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void') as partial_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status != 'void'), 0) as partial_remaining,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as partial_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')), 0) as partial_remaining,
                     -- Unpaid: belum bayar sama sekali, sisa = amount (full)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void') as unpaid_count,
-                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status != 'void'), 0) as unpaid_remaining,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
+                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_remaining,
                     -- Overdue: jatuh tempo dan belum lunas, sisa = amount - journal_paid
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void') as overdue_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status != 'void'), 0) as overdue_remaining
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_remaining
                 FROM bills b
                 LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
                 WHERE b.tenant_id = $1
                     AND b.issue_date >= $2
                     AND b.issue_date < $3
-                    AND b.status != 'void'
+                    AND b.status_v2 NOT IN ('draft', 'void')
             """
 
             row = await conn.fetchrow(query, tenant_id, start_date, end_date)
@@ -3708,9 +3702,7 @@ class BillsService:
                 "amount_due": self._money_str(bill["amount_due"]),
                 "notes": bill["notes"],
                 "operational_status": bill.get("operational_status") or "DRAFT",
-                "doc_status": "draft"
-                if (bill.get("operational_status") or "DRAFT") == "DRAFT"
-                else "posted",
+                "doc_status": derive_doc_status(bill),
                 "accounting_status": bill.get("accounting_status") or "UNPOSTED",
                 "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
                 "vendor_name": bill["vendor_name"],

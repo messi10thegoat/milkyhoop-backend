@@ -142,7 +142,9 @@ async def list_items(
     stock_status: Optional[str] = Query(
         None, description="Filter by stock status: in_stock, low_stock, out_of_stock"
     ),
-    status: Optional[str] = Query(None, description="Filter by status: active, inactive"),
+    status: Optional[str] = Query(
+        None, description="Filter by status: active, inactive"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -426,6 +428,7 @@ async def create_item(request: Request, body: CreateItemRequest):
             )
 
             import re as re_module
+
             if row and row["item_code"]:
                 match = re_module.search(r"([0-9]+)$", row["item_code"])
                 if match:
@@ -564,18 +567,33 @@ async def create_item(request: Request, body: CreateItemRequest):
             # Create initial stock entry (if track_inventory)
             if body.track_inventory and body.item_type == "goods":
                 # Determine opening stock values
-                initial_qty = Decimal(str(body.opening_stock)) if body.opening_stock else Decimal('0')
-                initial_rate = Decimal(str(body.opening_stock_rate)) if body.opening_stock_rate else (Decimal(str(body.purchase_price)) if body.purchase_price else Decimal('0'))
+                initial_qty = (
+                    Decimal(str(body.opening_stock))
+                    if body.opening_stock
+                    else Decimal("0")
+                )
+                initial_rate = (
+                    Decimal(str(body.opening_stock_rate))
+                    if body.opening_stock_rate
+                    else (
+                        Decimal(str(body.purchase_price))
+                        if body.purchase_price
+                        else Decimal("0")
+                    )
+                )
                 initial_value = initial_qty * initial_rate
 
                 # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
                 # (Law 16: stock derived from inventory_ledger, no persediaan writes)
                 if initial_qty > 0:
                     from datetime import date as dateclass_today
+
                     ob_date = None
                     if body.opening_stock_date:
                         try:
-                            ob_date = dateclass_today.fromisoformat(str(body.opening_stock_date))
+                            ob_date = dateclass_today.fromisoformat(
+                                str(body.opening_stock_date)
+                            )
                         except (ValueError, TypeError):
                             ob_date = dateclass_today.today()
                     else:
@@ -876,11 +894,13 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                                 return Decimal(str(v))
                             except (ValueError, TypeError, ArithmeticError):
                                 return str(v)
-                        
+
                         old_norm = normalize_val(old_val)
                         new_norm = normalize_val(new_val)
-                        
-                        if old_norm != new_norm and not (old_norm is None and new_norm is None):
+
+                        if old_norm != new_norm and not (
+                            old_norm is None and new_norm is None
+                        ):
                             if is_price:
                                 old_display = (
                                     f"Rp {int(old_val):,}".replace(",", ".")
@@ -996,7 +1016,7 @@ async def delete_item(request: Request, item_id: UUID):
         if txn_count and txn_count > 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"Item \'{existing['nama_produk']}\' tidak bisa dihapus karena masih memiliki {txn_count} transaksi. Gunakan fitur Nonaktifkan.",
+                detail=f"Item '{existing['nama_produk']}' tidak bisa dihapus karena masih memiliki {txn_count} transaksi. Gunakan fitur Nonaktifkan.",
             )
 
         # Soft delete: mark as inactive with deleted_at timestamp
@@ -1009,7 +1029,8 @@ async def delete_item(request: Request, item_id: UUID):
         logger.info(f"Soft-deleted item {item_id} for tenant {tenant_id}")
 
         return DeleteItemResponse(
-            success=True, message=f"Item '{existing['nama_produk']}' berhasil dinonaktifkan"
+            success=True,
+            message=f"Item '{existing['nama_produk']}' berhasil dinonaktifkan",
         )
 
     except HTTPException:
@@ -1020,6 +1041,58 @@ async def delete_item(request: Request, item_id: UUID):
     finally:
         if conn:
             await conn.close()
+
+
+# =============================================================================
+# UNIT CONVERSIONS (all products)
+# =============================================================================
+
+
+@router.get("/items/conversions")
+async def list_all_conversions(request: Request):
+    """List all unit conversions for the tenant — for Satuan desktop page."""
+    tenant_id = get_tenant_id(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT uc.id, uc.product_id,
+                       COALESCE(p.nama_produk, '') AS product_name,
+                       COALESCE(p.sku, '') AS product_code,
+                       uc.base_unit, uc.conversion_unit, uc.conversion_factor,
+                       uc.sales_price, uc.purchase_price
+                FROM unit_conversions uc
+                JOIN products p ON p.id = uc.product_id AND p.tenant_id = uc.tenant_id
+                WHERE uc.tenant_id = $1 AND uc.is_active = true
+                ORDER BY product_name ASC, uc.conversion_factor ASC
+            """,
+                tenant_id,
+            )
+
+            conversions = [
+                {
+                    "id": str(r["id"]),
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"],
+                    "product_code": r["product_code"],
+                    "base_unit": r["base_unit"],
+                    "conversion_unit": r["conversion_unit"],
+                    "conversion_factor": float(r["conversion_factor"]),
+                    "sales_price": float(r["sales_price"])
+                    if r["sales_price"]
+                    else None,
+                    "purchase_price": float(r["purchase_price"])
+                    if r["purchase_price"]
+                    else None,
+                }
+                for r in rows
+            ]
+
+            return {"success": True, "conversions": conversions}
+        except Exception as e:
+            logger.error(f"Error listing all conversions: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Gagal memuat konversi")
 
 
 # =============================================================================
@@ -1228,7 +1301,7 @@ async def list_inventory_accounts(request: Request):
               AND (
                   name ILIKE '%persediaan%'
                   OR name ILIKE '%inventory%'
-                  
+
               )
             ORDER BY account_code ASC
         """
@@ -1530,8 +1603,11 @@ async def autocomplete_items(
                     "name": row["name"],
                     "type": row["item_type"],
                     "unit": row["unit"],
-                    "sales_price": row["selling_price"], "selling_price": row["selling_price"],
-                    "purchase_price": row["purchase_price"], "track_batches": row.get("track_batches", False), "track_expiry": row.get("track_expiry", False),
+                    "sales_price": row["selling_price"],
+                    "selling_price": row["selling_price"],
+                    "purchase_price": row["purchase_price"],
+                    "track_batches": row.get("track_batches", False),
+                    "track_expiry": row.get("track_expiry", False),
                 }
                 for row in rows
             ]
@@ -1560,8 +1636,8 @@ async def get_next_item_code(
         async with pool.acquire() as conn:
             # Prefix based on item type (Indonesian)
             prefix_map = {
-                "goods": "BRG",        # Barang
-                "service": "JSA",      # Jasa
+                "goods": "BRG",  # Barang
+                "service": "JSA",  # Jasa
                 "non_inventory": "NIN",  # Non-Inventory
             }
             prefix = prefix_map.get(item_type, "BRG")
@@ -1711,29 +1787,29 @@ async def bulk_import_items(request: Request):
         errors = []
 
         async with pool.acquire() as conn:
-          async with conn.transaction():
-            for idx, item in enumerate(items_data):
-                try:
-                    code = item.get("code")
-                    name = item.get("name")
+            async with conn.transaction():
+                for idx, item in enumerate(items_data):
+                    try:
+                        code = item.get("code")
+                        name = item.get("name")
 
-                    if not name:
-                        errors.append({"row": idx + 1, "error": "Name is required"})
-                        continue
+                        if not name:
+                            errors.append({"row": idx + 1, "error": "Name is required"})
+                            continue
 
-                    # Check if item exists by code
-                    existing = None
-                    if code:
-                        existing = await conn.fetchrow(
-                            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2",
-                            ctx["tenant_id"],
-                            code,
-                        )
+                        # Check if item exists by code
+                        existing = None
+                        if code:
+                            existing = await conn.fetchrow(
+                                "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2",
+                                ctx["tenant_id"],
+                                code,
+                            )
 
-                    if existing:
-                        # Update existing
-                        await conn.execute(
-                            """
+                        if existing:
+                            # Update existing
+                            await conn.execute(
+                                """
                             UPDATE products SET
                                 nama_produk = $1,
                                 item_type = COALESCE($2, item_type),
@@ -1743,40 +1819,40 @@ async def bulk_import_items(request: Request):
                                 updated_at = NOW()
                             WHERE id = $6 AND tenant_id = $7
                         """,
-                            name,
-                            item.get("type"),
-                            item.get("unit"),
-                            item.get("selling_price"),
-                            item.get("purchase_price"),
-                            existing["id"],
-                            ctx["tenant_id"],
-                        )
-                        updated += 1
-                    else:
-                        # Create new
-                        import uuid as uuid_mod
+                                name,
+                                item.get("type"),
+                                item.get("unit"),
+                                item.get("selling_price"),
+                                item.get("purchase_price"),
+                                existing["id"],
+                                ctx["tenant_id"],
+                            )
+                            updated += 1
+                        else:
+                            # Create new
+                            import uuid as uuid_mod
 
-                        new_id = str(uuid_mod.uuid4())
-                        await conn.execute(
-                            """
+                            new_id = str(uuid_mod.uuid4())
+                            await conn.execute(
+                                """
                             INSERT INTO products (
                                 id, tenant_id, item_code, nama_produk, satuan, item_type, base_unit,
                                 sales_price, purchase_price, status, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $6, $5, $6, $7, $8, 'active', NOW(), NOW())
                         """,
-                            new_id,
-                            ctx["tenant_id"],
-                            code,
-                            name,
-                            item.get("type", "product"),
-                            item.get("unit", "pcs"),
-                            item.get("selling_price", 0),
-                            item.get("purchase_price", 0),
-                        )
-                        created += 1
+                                new_id,
+                                ctx["tenant_id"],
+                                code,
+                                name,
+                                item.get("type", "product"),
+                                item.get("unit", "pcs"),
+                                item.get("selling_price", 0),
+                                item.get("purchase_price", 0),
+                            )
+                            created += 1
 
-                except Exception as row_error:
-                    errors.append({"row": idx + 1, "error": str(row_error)})
+                    except Exception as row_error:
+                        errors.append({"row": idx + 1, "error": str(row_error)})
 
         return {
             "success": True,
@@ -1841,7 +1917,9 @@ async def update_item_status(request: Request, item_id: str):
 async def get_item_activity(
     request: Request,
     item_id: UUID,
-    status: Optional[str] = Query(None, description="Filter by status: active, inactive"),
+    status: Optional[str] = Query(
+        None, description="Filter by status: active, inactive"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -1986,25 +2064,35 @@ async def get_item_history(
 
         movements = []
         for row in rows:
-            movements.append({
-                "id": str(row["id"]),
-                "movement_type": row["movement_type"],
-                "movement_date": row["movement_date"].isoformat() if row["movement_date"] else None,
-                "source_type": row["source_type"],
-                "source_id": str(row["source_id"]) if row["source_id"] else None,
-                "source_number": row["source_number"],
-                "quantity_in": row["quantity_in"] or 0,
-                "quantity_out": row["quantity_out"] or 0,
-                "quantity_balance": row["quantity_balance"] or 0,
-                "unit_cost": int(row["unit_cost"] or 0),
-                "total_cost": int(row["total_cost"] or 0),
-                "average_cost": int(row["average_cost"] or 0) if row["average_cost"] else None,
-                "warehouse_id": str(row["warehouse_id"]) if row["warehouse_id"] else None,
-                "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
-                "notes": row["notes"],
-                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                "counterparty": row["counterparty"],
-            })
+            movements.append(
+                {
+                    "id": str(row["id"]),
+                    "movement_type": row["movement_type"],
+                    "movement_date": row["movement_date"].isoformat()
+                    if row["movement_date"]
+                    else None,
+                    "source_type": row["source_type"],
+                    "source_id": str(row["source_id"]) if row["source_id"] else None,
+                    "source_number": row["source_number"],
+                    "quantity_in": row["quantity_in"] or 0,
+                    "quantity_out": row["quantity_out"] or 0,
+                    "quantity_balance": row["quantity_balance"] or 0,
+                    "unit_cost": int(row["unit_cost"] or 0),
+                    "total_cost": int(row["total_cost"] or 0),
+                    "average_cost": int(row["average_cost"] or 0)
+                    if row["average_cost"]
+                    else None,
+                    "warehouse_id": str(row["warehouse_id"])
+                    if row["warehouse_id"]
+                    else None,
+                    "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
+                    "notes": row["notes"],
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "counterparty": row["counterparty"],
+                }
+            )
 
         return {
             "success": True,
@@ -2017,7 +2105,7 @@ async def get_item_history(
                 "id": str(item["id"]),
                 "code": item["item_code"],
                 "name": item["nama_produk"],
-            }
+            },
         }
 
     except HTTPException:
@@ -2028,7 +2116,6 @@ async def get_item_history(
     finally:
         if conn:
             await conn.close()
-
 
 
 # GET ITEM DETAIL
@@ -2111,7 +2198,8 @@ async def get_item(request: Request, item_id: UUID):
                 "kategori": row.get("kategori"),
                 "deskripsi": row.get("deskripsi"),
                 "is_returnable": row.get("is_returnable", True),
-                "track_batches": row.get("track_batches", False), "track_expiry": row.get("track_expiry", False),
+                "track_batches": row.get("track_batches", False),
+                "track_expiry": row.get("track_expiry", False),
                 "track_expiry": row.get("track_expiry", False),
                 "default_expiry_days": row.get("default_expiry_days"),
                 "image_url": row.get("image_url"),
@@ -2471,9 +2559,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                 item_row.get("sales_price"),
                 item_row.get("purchase_price"),
                 item_row.get("sales_price"),  # harga_jual
-                item_row["reorder_level"]
-                if item_row.get("reorder_level")
-                else None,
+                item_row["reorder_level"] if item_row.get("reorder_level") else None,
                 str(item_row["preferred_vendor_id"])
                 if item_row.get("preferred_vendor_id")
                 else None,
@@ -2619,7 +2705,10 @@ async def create_stock_adjustment(request: Request, item_id: str):
 
         # Validate
         if adjustment_type not in ("set", "add", "subtract"):
-            raise HTTPException(status_code=422, detail="Invalid adjustment_type. Must be: set, add, subtract")
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid adjustment_type. Must be: set, add, subtract",
+            )
         if quantity is None:
             raise HTTPException(status_code=422, detail="quantity is required")
         try:
@@ -2627,7 +2716,9 @@ async def create_stock_adjustment(request: Request, item_id: str):
         except (TypeError, ValueError, ArithmeticError):
             raise HTTPException(status_code=422, detail="quantity must be a number")
         if qty_check <= 0:
-            raise HTTPException(status_code=422, detail="quantity must be greater than 0")
+            raise HTTPException(
+                status_code=422, detail="quantity must be greater than 0"
+            )
         if not reason:
             raise HTTPException(status_code=422, detail="reason is required")
 
@@ -2644,13 +2735,14 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 # Law 13: Advisory lock BEFORE any reads/writes
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"STOCK_ADJ_CREATE:{item_id}"
+                    f"STOCK_ADJ_CREATE:{item_id}",
                 )
 
                 # Get product info
                 item = await conn.fetchrow(
                     "SELECT id, nama_produk, item_code FROM products WHERE id = $1 AND tenant_id = $2",
-                    product_uuid, ctx["tenant_id"],
+                    product_uuid,
+                    ctx["tenant_id"],
                 )
                 if not item:
                     raise HTTPException(status_code=404, detail="Item not found")
@@ -2661,7 +2753,8 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 # Get current stock from inventory_ledger (Law 16)
                 old_stock_row = await conn.fetchval(
                     "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
-                    product_uuid, ctx["tenant_id"],
+                    product_uuid,
+                    ctx["tenant_id"],
                 )
                 old_stock = Decimal(str(old_stock_row or 0))
 
@@ -2681,12 +2774,19 @@ async def create_stock_adjustment(request: Request, item_id: str):
 
                 adj_diff = new_stock - old_stock
                 if adj_diff == 0:
-                    return {"success": True, "message": "Stock unchanged", "old_stock": str(old_stock), "new_stock": str(new_stock), "adjustment": 0}
+                    return {
+                        "success": True,
+                        "message": "Stock unchanged",
+                        "old_stock": str(old_stock),
+                        "new_stock": str(new_stock),
+                        "adjustment": 0,
+                    }
 
                 adjustment_qty = abs(adj_diff)
 
                 # Get unit cost with fallbacks: WAC → purchase_price → sales_price
-                cost_row = await conn.fetchrow("""
+                cost_row = await conn.fetchrow(
+                    """
                     SELECT
                         COALESCE(il.average_cost, 0) as ledger_cost,
                         COALESCE(p.purchase_price, 0) as purchase_price,
@@ -2699,7 +2799,10 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         ORDER BY movement_date DESC, created_at DESC LIMIT 1
                     ) il ON true
                     WHERE p.id = $1 AND p.tenant_id = $2
-                """, product_uuid, ctx["tenant_id"])
+                """,
+                    product_uuid,
+                    ctx["tenant_id"],
+                )
 
                 unit_cost = Decimal("0")
                 cost_source = None
@@ -2717,18 +2820,28 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         unit_cost = sales_price
                         cost_source = "sales_price"
 
-                total_value = (adjustment_qty * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                total_value = (adjustment_qty * unit_cost).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
                 journal_id = None
                 journal_note = None
 
                 if total_value == 0:
-                    journal_note = "Jurnal tidak dibuat karena item belum memiliki harga beli/jual"
-                    logger.info(f"Stock adjustment on {item_id}: no journal created (unit_cost=0)")
+                    journal_note = (
+                        "Jurnal tidak dibuat karena item belum memiliki harga beli/jual"
+                    )
+                    logger.info(
+                        f"Stock adjustment on {item_id}: no journal created (unit_cost=0)"
+                    )
 
                 # --- GL Journal (Law 20: DRAFT→POSTED) ---
                 if total_value > 0:
-                    inv_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10600')
-                    adj_account_id = await resolve_account_id(conn, ctx["tenant_id"], '5-50100')
+                    inv_account_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], "1-10600"
+                    )
+                    adj_account_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], "5-50100"
+                    )
 
                     if inv_account_id and adj_account_id:
                         journal_id = uuid_module.uuid4()
@@ -2740,7 +2853,8 @@ async def create_stock_adjustment(request: Request, item_id: str):
                             """SELECT id, period_name, status FROM fiscal_periods
                                WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
                                ORDER BY start_date DESC LIMIT 1""",
-                            ctx["tenant_id"], today,
+                            ctx["tenant_id"],
+                            today,
                         )
                         if period_row and period_row["status"] in ("CLOSED", "LOCKED"):
                             raise HTTPException(
@@ -2753,7 +2867,8 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         prefix = f"QSA-{date_str[2:4]}{date_str[5:7]}-"
                         seq_row = await conn.fetchrow(
                             "SELECT COUNT(*) + 1 as next_num FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
-                            ctx["tenant_id"], f"{prefix}%"
+                            ctx["tenant_id"],
+                            f"{prefix}%",
                         )
                         next_num = seq_row["next_num"] if seq_row else 1
                         journal_number = f"{prefix}{next_num:04d}"
@@ -2769,15 +2884,25 @@ async def create_stock_adjustment(request: Request, item_id: str):
                                 pass
 
                         # Law 20: INSERT as DRAFT first
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_entries (
                                 id, tenant_id, journal_number, journal_date, description,
                                 source_type, source_id, trace_id, status,
                                 total_debit, total_credit, created_by, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7,
                                 'DRAFT', $8, $8, $9, NOW(), NOW())
-                        """, journal_id, ctx["tenant_id"], journal_number, today, description,
-                             product_uuid, str(trace_id), total_value, created_by_uuid)
+                        """,
+                            journal_id,
+                            ctx["tenant_id"],
+                            journal_number,
+                            today,
+                            description,
+                            product_uuid,
+                            str(trace_id),
+                            total_value,
+                            created_by_uuid,
+                        )
 
                         # Determine debit/credit accounts
                         if adj_diff > 0:
@@ -2788,42 +2913,70 @@ async def create_stock_adjustment(request: Request, item_id: str):
                             credit_account = inv_account_id
 
                         # Journal lines
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
                             VALUES ($1, $2, 1, $3, $4, 0, $5, $6)
-                        """, uuid_module.uuid4(), journal_id, debit_account, total_value, description, product_uuid)
+                        """,
+                            uuid_module.uuid4(),
+                            journal_id,
+                            debit_account,
+                            total_value,
+                            description,
+                            product_uuid,
+                        )
 
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
                             VALUES ($1, $2, 2, $3, 0, $4, $5, $6)
-                        """, uuid_module.uuid4(), journal_id, credit_account, total_value, description, product_uuid)
+                        """,
+                            uuid_module.uuid4(),
+                            journal_id,
+                            credit_account,
+                            total_value,
+                            description,
+                            product_uuid,
+                        )
 
                         # Law 20: UPDATE to POSTED (triggers hash chain)
                         await conn.execute(
                             "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                            journal_id
+                            journal_id,
                         )
 
-                        logger.info(f"Journal {journal_number} created for stock adjustment on {item_id}")
+                        logger.info(
+                            f"Journal {journal_number} created for stock adjustment on {item_id}"
+                        )
 
                 # --- Inventory Ledger (Inventory Rule 1: Dual Ledger Sync) ---
                 qty_in = adj_diff if adj_diff > 0 else Decimal("0")
                 qty_out = abs(adj_diff) if adj_diff < 0 else Decimal("0")
 
                 # Inventory Rule 3: WAC recalculation (identical to bills_service.py + inventory_helpers.py)
-                avg_cost_row = await conn.fetchrow("""
+                avg_cost_row = await conn.fetchrow(
+                    """
                     SELECT
                         COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
                         COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
                     FROM inventory_ledger
                     WHERE tenant_id = $1 AND product_id = $2
-                """, ctx["tenant_id"], product_uuid)
+                """,
+                    ctx["tenant_id"],
+                    product_uuid,
+                )
 
-                if adj_diff > 0 and avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
+                if (
+                    adj_diff > 0
+                    and avg_cost_row
+                    and Decimal(str(avg_cost_row["total_qty"])) > 0
+                ):
                     # Inbound: recalculate WAC
                     old_value = Decimal(str(avg_cost_row["total_value"]))
                     old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                    new_avg_cost = (old_value + (adjustment_qty * unit_cost)) / (old_qty + adjustment_qty)
+                    new_avg_cost = (old_value + (adjustment_qty * unit_cost)) / (
+                        old_qty + adjustment_qty
+                    )
                 elif avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
                     # Outbound: WAC stays the same
                     old_value = Decimal(str(avg_cost_row["total_value"]))
@@ -2832,15 +2985,18 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 else:
                     new_avg_cost = unit_cost
 
-                adj_total_cost = (adjustment_qty * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                adj_total_cost = (adjustment_qty * unit_cost).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
 
                 # Resolve default warehouse for warehouse_stock trigger
                 warehouse_id = await conn.fetchval(
                     "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at ASC LIMIT 1",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO inventory_ledger (
                         id, tenant_id, product_id, product_code, product_name,
                         movement_type, movement_date,
@@ -2875,28 +3031,41 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 )
 
                 # --- Audit trail ---
-                reference_number = body.get("reference_number", body.get("reference", ""))
-                audit_metadata = json.dumps({
-                    "item_id": str(product_uuid),
-                    "item_name": item_name,
-                    "adjustment_type": adjustment_type,
-                    "old_stock": str(old_stock),
-                    "new_stock": str(new_stock),
-                    "reason": reason,
-                    "reference_number": reference_number,
-                    "journal_id": str(journal_id) if journal_id else None,
-                    "unit_cost": str(unit_cost),
-                    "cost_source": cost_source,
-                    "journal_note": journal_note,
-                })
-                await conn.execute("""
+                reference_number = body.get(
+                    "reference_number", body.get("reference", "")
+                )
+                audit_metadata = json.dumps(
+                    {
+                        "item_id": str(product_uuid),
+                        "item_name": item_name,
+                        "adjustment_type": adjustment_type,
+                        "old_stock": str(old_stock),
+                        "new_stock": str(new_stock),
+                        "reason": reason,
+                        "reference_number": reference_number,
+                        "journal_id": str(journal_id) if journal_id else None,
+                        "unit_cost": str(unit_cost),
+                        "cost_source": cost_source,
+                        "journal_note": journal_note,
+                    }
+                )
+                await conn.execute(
+                    """
                     INSERT INTO audit_logs (id, "userId", "eventType", "ipAddress", "userAgent", metadata, success, "createdAt")
                     VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
-                """, str(uuid_module.uuid4()), str(ctx.get("user_id") or "system"), "STOCK_ADJUSTMENT",
-                     "", "", audit_metadata)
+                """,
+                    str(uuid_module.uuid4()),
+                    str(ctx.get("user_id") or "system"),
+                    "STOCK_ADJUSTMENT",
+                    "",
+                    "",
+                    audit_metadata,
+                )
 
             # Response (outside transaction — already committed)
-            logger.info(f"Stock adjusted for {item_id}: {old_stock} -> {new_stock}, reason: {reason}")
+            logger.info(
+                f"Stock adjusted for {item_id}: {old_stock} -> {new_stock}, reason: {reason}"
+            )
 
             response = {
                 "success": True,
@@ -2944,7 +3113,7 @@ async def get_item_journal_entries(
                 item_id,
                 ctx["tenant_id"],
             )
-            
+
             if not item:
                 raise HTTPException(status_code=404, detail="Item not found")
 
@@ -3049,32 +3218,32 @@ async def get_item_journal_entries(
                     entry["id"],
                 )
 
-                result_entries.append({
-                    "id": str(entry["id"]),
-                    "date": entry["journal_date"].isoformat(),
-                    "reference": entry["journal_number"],
-                    "description": entry["description"],
-                    "lines": [
-                        {
-                            "accountName": f"{line['account_code']} - {line['account_name']}",
-                            "debit": int(line["debit"]),
-                            "credit": int(line["credit"]),
-                        }
-                        for line in lines
-                    ],
-                })
+                result_entries.append(
+                    {
+                        "id": str(entry["id"]),
+                        "date": entry["journal_date"].isoformat(),
+                        "reference": entry["journal_number"],
+                        "description": entry["description"],
+                        "lines": [
+                            {
+                                "accountName": f"{line['account_code']} - {line['account_name']}",
+                                "debit": int(line["debit"]),
+                                "credit": int(line["credit"]),
+                            }
+                            for line in lines
+                        ],
+                    }
+                )
 
-            return {
-                "success": True,
-                "entries": result_entries,
-                "total": total or 0
-            }
+            return {"success": True, "entries": result_entries, "total": total or 0}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting journal entries: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
 # =============================================================================
 # SINGLE ITEM STOCK TRANSFER
 # =============================================================================
@@ -3118,14 +3287,21 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
         if not to_warehouse_id:
             raise HTTPException(status_code=400, detail="to_warehouse_id is required")
         if not quantity or quantity <= 0:
-            raise HTTPException(status_code=400, detail="quantity must be greater than 0")
+            raise HTTPException(
+                status_code=400, detail="quantity must be greater than 0"
+            )
         if from_warehouse_id == to_warehouse_id:
-            raise HTTPException(status_code=400, detail="Source and destination warehouse must be different")
+            raise HTTPException(
+                status_code=400,
+                detail="Source and destination warehouse must be different",
+            )
 
         async with pool.acquire() as conn:
             # Use SERIALIZABLE isolation for concurrency safety (Law 13)
             async with conn.transaction(isolation="serializable"):
-                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+                )
 
                 # 1. Validate item exists and get details
                 item = await conn.fetchrow(
@@ -3137,7 +3313,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
                     """,
-                    item_id, ctx["tenant_id"]
+                    item_id,
+                    ctx["tenant_id"],
                 )
                 if not item:
                     raise HTTPException(status_code=404, detail="Item not found")
@@ -3145,23 +3322,29 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                 if not item["track_inventory"]:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot transfer stock for items that don't track inventory"
+                        detail="Cannot transfer stock for items that don't track inventory",
                     )
 
                 # 2. Validate warehouses exist
                 from_warehouse = await conn.fetchrow(
                     "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                    UUID(from_warehouse_id), ctx["tenant_id"]
+                    UUID(from_warehouse_id),
+                    ctx["tenant_id"],
                 )
                 if not from_warehouse:
-                    raise HTTPException(status_code=400, detail="Source warehouse not found")
+                    raise HTTPException(
+                        status_code=400, detail="Source warehouse not found"
+                    )
 
                 to_warehouse = await conn.fetchrow(
                     "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                    UUID(to_warehouse_id), ctx["tenant_id"]
+                    UUID(to_warehouse_id),
+                    ctx["tenant_id"],
                 )
                 if not to_warehouse:
-                    raise HTTPException(status_code=400, detail="Destination warehouse not found")
+                    raise HTTPException(
+                        status_code=400, detail="Destination warehouse not found"
+                    )
 
                 # 3. Check available stock in source warehouse (with lock for concurrency safety)
                 stock_row = await conn.fetchrow(
@@ -3173,20 +3356,25 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                       AND item_id = $3
                     FOR UPDATE
                     """,
-                    ctx["tenant_id"], UUID(from_warehouse_id), UUID(item_id)
+                    ctx["tenant_id"],
+                    UUID(from_warehouse_id),
+                    UUID(item_id),
                 )
 
-                available_stock = Decimal(str(stock_row["available_quantity"])) if stock_row else Decimal("0")
+                available_stock = (
+                    Decimal(str(stock_row["available_quantity"]))
+                    if stock_row
+                    else Decimal("0")
+                )
                 if available_stock < Decimal(str(quantity)):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Insufficient stock. Available: {available_stock}, Requested: {quantity}"
+                        detail=f"Insufficient stock. Available: {available_stock}, Requested: {quantity}",
                     )
 
                 # 4. Generate transfer number
                 transfer_number = await conn.fetchval(
-                    "SELECT generate_stock_transfer_number($1)",
-                    ctx["tenant_id"]
+                    "SELECT generate_stock_transfer_number($1)", ctx["tenant_id"]
                 )
 
                 # 5. Create stock_transfer record (immediate transfer = status 'received')
@@ -3215,7 +3403,7 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     notes,
                     ctx.get("user_id"),
                     Decimal(str(quantity)),
-                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"]))
+                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                 )
                 transfer_id = transfer_row["id"]
 
@@ -3236,7 +3424,7 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     item["base_unit"],
                     Decimal(str(item["unit_cost"])),
                     Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
-                    notes
+                    notes,
                 )
 
                 # 7. Create inventory_ledger entry for source warehouse (OUT)
@@ -3277,7 +3465,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     Decimal(str(item["unit_cost"])),
                     Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                     ctx.get("user_id"),
-                    f"Transfer to {to_warehouse['name']}" + (f": {notes}" if notes else "")
+                    f"Transfer to {to_warehouse['name']}"
+                    + (f": {notes}" if notes else ""),
                 )
 
                 # 8. Create inventory_ledger entry for destination warehouse (IN)
@@ -3317,7 +3506,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                     Decimal(str(item["unit_cost"])),
                     Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
                     ctx.get("user_id"),
-                    f"Transfer from {from_warehouse['name']}" + (f": {notes}" if notes else "")
+                    f"Transfer from {from_warehouse['name']}"
+                    + (f": {notes}" if notes else ""),
                 )
 
                 # Triggers on inventory_ledger automatically update warehouse_stock
@@ -3340,7 +3530,7 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                         "to_warehouse": to_warehouse["name"],
                         "quantity": quantity,
                         "unit": item["base_unit"],
-                    }
+                    },
                 }
 
     except HTTPException:
