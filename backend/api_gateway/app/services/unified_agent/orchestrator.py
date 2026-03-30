@@ -3823,8 +3823,76 @@ class UnifiedAgent:
                         extraction.needs_escalation = True
 
             # Query pipeline — before write pipeline
-            if extraction.intent.startswith("query_") and is_pipeline_enabled(
-                extraction.intent
+            # Follow-up guard: if escalation=True + session context + no code classifier match,
+            # check for domain mismatch → route to agent loop instead of pipeline
+            _skip_query_pipeline = False
+            if (
+                extraction.needs_escalation
+                and not _code_intent  # code classifier did not match
+                and tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                try:
+                    _fu_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    _fu_last = getattr(_fu_state, "last_action_type", None)
+                    if _fu_last:
+                        # Domain mismatch check
+                        _DOMAIN = {
+                            "query_ar_outstanding": "ar",
+                            "query_ar_invoices": "ar",
+                            "query_sales_invoices_list": "ar",
+                            "query_sales_invoice_detail": "ar",
+                            "query_ap_outstanding": "ap",
+                            "query_bills_list": "ap",
+                            "query_bill_detail": "ap",
+                            "query_bills_summary": "ap",
+                            "query_item_detail": "items",
+                            "query_items_list": "items",
+                            "query_items_summary": "items",
+                            "query_items_search": "items",
+                            "query_customer_detail": "customer",
+                            "query_customers_list": "customer",
+                            "query_vendor_detail": "vendor",
+                            "query_vendors_list": "vendor",
+                            "query_expenses_list": "expenses",
+                            "query_expense_detail": "expenses",
+                            "query_bank_accounts_list": "bank",
+                            "query_bank_account_detail": "bank",
+                        }
+                        _last_domain = _DOMAIN.get(_fu_last)
+                        _new_domain = _DOMAIN.get(extraction.intent)
+                        if _last_domain and _new_domain and _last_domain != _new_domain:
+                            # Follow-up pattern check (pronouns, implicit references)
+                            import re as _fu_re
+
+                            _fu_patterns = [
+                                r"\b(tersebut|itu|nya|mereka|dia)\b",
+                                r"\b(yang tadi|yang barusan|tadi|sebelumnya)\b",
+                                r"\b(dari siapa|yang mana|siapa\s+(yang|saja))\b",
+                                r"^(minta|kasih|berikan)\b(?!.*(faktur|tagihan|piutang|hutang|barang|biaya))",
+                                r"\b(data lengkap|detail|info|informasi)\b(?!.*\b[A-Z])",
+                            ]
+                            _is_followup = any(
+                                _fu_re.search(p, user_text.lower())
+                                for p in _fu_patterns
+                            )
+                            if _is_followup:
+                                _skip_query_pipeline = True
+                                logger.warning(
+                                    "[FOLLOW_UP_GUARD] Domain mismatch: session=%s, extraction=%s → agent loop",
+                                    _fu_last,
+                                    extraction.intent,
+                                )
+                except Exception:
+                    pass
+
+            if (
+                not _skip_query_pipeline
+                and extraction.intent.startswith("query_")
+                and is_pipeline_enabled(extraction.intent)
             ):
                 from .direct_action_registry import get_query_action
 
