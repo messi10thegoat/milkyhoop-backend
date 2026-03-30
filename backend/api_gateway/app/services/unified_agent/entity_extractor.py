@@ -669,6 +669,18 @@ def classify_query_intent(user_text: str) -> tuple:
     if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
         return "query_categories_list", None, None
 
+    # Customer/Vendor detail — "data pelanggan X", "detail vendor Y", "info customer Z"
+    if _qre.search(
+        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:pelanggan|customer)",
+        t,
+    ):
+        return "query_customer_detail", None, None
+    if _qre.search(
+        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:vendor|pemasok|supplier)",
+        t,
+    ):
+        return "query_vendor_detail", None, None
+
     # Contextual drill-down — "per faktur", "breakdown", "detailnya" after a summary query
     # Returns drilldown_table — orchestrator resolves to correct pipeline query using session state
     if _qre.search(
@@ -817,6 +829,20 @@ def classify_crud_intent(user_text: str) -> tuple:
     ):
         remaining_after_entity = ""
     remaining_after_entity = remaining_after_entity.strip("\"'\u201c\u201d\u2018\u2019")
+
+    # Truncate at comma or field-indicator words for update commands
+    # "PT Bahagia Sejahtera, ubah telepon jadi 081234567890" → "PT Bahagia Sejahtera"
+    if action == "update" and remaining_after_entity:
+        if "," in remaining_after_entity:
+            remaining_after_entity = remaining_after_entity.split(",")[0].strip()
+        _fi = _re.split(
+            r"\s+(?:ubah|ganti|update|set|jadikan|jadi|menjadi|ke|telepon|telp|hp|email|alamat|harga|stok)\s+",
+            remaining_after_entity,
+            maxsplit=1,
+            flags=_re.IGNORECASE,
+        )
+        if len(_fi) > 1:
+            remaining_after_entity = _fi[0].strip()
 
     entity_name = remaining_after_entity if remaining_after_entity else None
     name_field = entity_config["name_field"]

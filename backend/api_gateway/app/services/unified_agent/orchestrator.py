@@ -2620,6 +2620,51 @@ class UnifiedAgent:
                     total_latency_ms=int((_time.time() - start_time) * 1000),
                 )
 
+        # Resolve customer by name -> get ID for {id} endpoints
+        if "{id}" in endpoint and (
+            extraction.entities.get("customer_name") or extraction.entities.get("name")
+        ):
+            _cname = extraction.entities.get(
+                "customer_name"
+            ) or extraction.entities.get("name")
+            from .entity_resolver import EntityResolver
+            from .db_utils import get_session_db_pool
+
+            pool = await get_session_db_pool()
+            resolver = EntityResolver(pool, context.tenant_id)
+            resolved_c = await resolver._resolve_customer(_cname)
+            if resolved_c and resolved_c.entity_id and resolved_c.confidence >= 0.5:
+                endpoint = endpoint.replace("{id}", resolved_c.entity_id)
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content=f"Pelanggan '{_cname}' tidak ditemukan.",
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
+        # Resolve vendor by name -> get ID for {id} endpoints
+        if "{id}" in endpoint and extraction.entities.get("vendor_name"):
+            from .entity_resolver import EntityResolver
+            from .db_utils import get_session_db_pool
+
+            pool = await get_session_db_pool()
+            resolver = EntityResolver(pool, context.tenant_id)
+            resolved_v = await resolver._resolve_vendor(
+                extraction.entities["vendor_name"]
+            )
+            if resolved_v and resolved_v.entity_id and resolved_v.confidence >= 0.5:
+                endpoint = endpoint.replace("{id}", resolved_v.entity_id)
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content=f"Vendor '{extraction.entities['vendor_name']}' tidak ditemukan.",
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
         # Resolve item_id query param (for endpoints like /api/item-batches?item_id=UUID)
         if any(
             qp.name == "item_id" for qp in (query_config.query_params or [])
@@ -2669,9 +2714,14 @@ class UnifiedAgent:
 
         # Bail if still unresolved {id}
         if "{id}" in endpoint:
+            _entity_hint = "barang"
+            if "customer" in query_config.action_key:
+                _entity_hint = "pelanggan"
+            elif "vendor" in query_config.action_key:
+                _entity_hint = "vendor"
             return AgentResponse(
                 message_type="TEXT",
-                content="Mohon sebutkan nama barang yang ingin dicek.",
+                content=f"Mohon sebutkan nama {_entity_hint} yang ingin dicek.",
                 iterations=1,
                 model_used="gpt-4o-mini",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
