@@ -20,6 +20,8 @@ class CalculationTemplate:
     limit: int = 200  # fetch enough for accurate aggregation
     label: str = ""
     format_as_currency: bool = False
+    list_field: str = ""      # key containing the list in response (e.g. "top_accounts")
+    name_field: str = ""      # name field within each list item (e.g. "account_name")
 
 
 # ── Template Registry ──────────────────────────────────────────────────────
@@ -226,6 +228,34 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         label="Total Saldo Semua Rekening",
         format_as_currency=True,
     ),
+    # -- Batch 2 Calculation Intents --
+    "calc_rank_expense_accounts": CalculationTemplate(
+        calc_type="SUMMARY_LIST",
+        source_endpoint="/api/expenses/summary",
+        source_field="total_amount",
+        list_field="top_accounts",
+        name_field="account_name",
+        label="Pengeluaran per Akun (Terbesar)",
+        format_as_currency=True,
+    ),
+    "calc_count_customers_inactive": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/customers",
+        filter_params={"is_active": "false"},
+        label="Pelanggan Tidak Aktif",
+    ),
+    "calc_count_vendors_inactive": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/vendors",
+        filter_params={"is_active": "false"},
+        label="Vendor Tidak Aktif",
+    ),
+    "calc_count_expenses_this_month": CalculationTemplate(
+        calc_type="SUMMARY_FIELD",
+        source_endpoint="/api/expenses/summary",
+        source_field="total_count",
+        label="Jumlah Pengeluaran Bulan Ini",
+    ),
 }
 
 
@@ -339,6 +369,35 @@ async def execute_calculation(
             "formatted": _format_number(result_val, template.format_as_currency),
             "count": int(result_val) if not template.format_as_currency else 1,
             "source_total": None,
+        }
+
+    # SUMMARY_LIST: extract a list from summary endpoint, rank by value
+    if template.calc_type == "SUMMARY_LIST":
+        source = data
+        if isinstance(source, dict) and "data" in source and isinstance(source["data"], dict):
+            source = source["data"]
+        _list_data = source.get(template.list_field, []) if isinstance(source, dict) else []
+        if not _list_data:
+            return {"type": "error", "message": "Data tidak tersedia"}
+        items = []
+        for entry in _list_data:
+            val = entry.get(template.source_field, 0)
+            if isinstance(val, str):
+                val = float(val)
+            name = entry.get(template.name_field, "Unknown")
+            items.append({"name": name, "value": float(val)})
+        items.sort(key=lambda x: x["value"], reverse=True)
+        items = items[:10]
+        for item in items:
+            if template.format_as_currency:
+                item["formatted_value"] = f"Rp {int(item['value']):,}".replace(",", ".")
+            else:
+                item["formatted_value"] = f"{item['value']:,.0f}".replace(",", ".")
+        return {
+            "type": "rank",
+            "label": template.label,
+            "items": items,
+            "total_count": len(_list_data),
         }
 
     items = _extract_items_list(data)
