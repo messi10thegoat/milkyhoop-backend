@@ -13,6 +13,7 @@ from test_query import run_query_tests
 from test_workflow import run_workflow_tests
 from test_regression import run_regression_tests
 from test_pipeline_expansion import run_pipeline_expansion_tests
+from test_followup_guard import run_followup_guard_tests
 
 
 async def main():
@@ -30,6 +31,7 @@ async def main():
     await run_workflow_tests(suite)
     await run_regression_tests(suite)
     await run_pipeline_expansion_tests(suite)
+    await run_followup_guard_tests(suite)
 
     elapsed = time.time() - start
     suite.print_summary()
