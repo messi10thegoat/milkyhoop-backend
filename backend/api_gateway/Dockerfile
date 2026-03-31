@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-xlib-2.0-0 \
     libffi-dev \
     shared-mime-info \
     fonts-dejavu-core \
@@ -76,10 +76,14 @@ COPY grpc_health_probe /usr/local/bin/grpc_health_probe
 # Validate generated Python code syntax
 RUN find /app/backend/api_gateway -name "*.py" -exec python3 -m py_compile {} \; || { echo "Python syntax validation failed"; exit 1; }
 
+# Clean pyc from image layer — volume-mounted source must not compete with stale bytecode
+RUN find /app -name "*.pyc" -delete && find /app -name "__pycache__" -type d -empty -delete
+
 RUN chmod +x /usr/local/bin/grpc_health_probe
 
 # Set Python path (includes accounting_kernel for reports)
 ENV PYTHONPATH=/app:/app/backend/api_gateway/app:/app/backend/api_gateway/libs:/app/backend/services
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -90,7 +94,7 @@ EXPOSE 8000
 
 # Use tini as PID 1 and start application EXACTLY like working container
 ENTRYPOINT ["tini", "--"]
-CMD ["uvicorn", "backend.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-B", "-m", "uvicorn", "backend.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # Enhanced Cross-Service Validation
 RUN echo "=== ENHANCED BUILD VALIDATION ===" && \
