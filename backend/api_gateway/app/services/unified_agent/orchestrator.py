@@ -4097,9 +4097,10 @@ class UnifiedAgent:
         from .entity_extractor import EntityExtractor, is_pipeline_enabled
 
         if _intent in ("ACTION", "SIMPLE_READ"):
-            _extract_client, _extract_model = self.router.route("extraction")
-            extractor = EntityExtractor(_extract_client, _extract_model)
+            # ═══ LLM-FIRST CLASSIFICATION (v3) ═══
 
+            # 1. Build context
+            _context_hint = ""
             _ctx_summary = ""
             _state = None
             if (
@@ -4111,61 +4112,112 @@ class UnifiedAgent:
                     _state = await tool_executor.session_manager.get_state(
                         tool_executor.session_id
                     )
-                    _ctx_summary = (
-                        _state.to_context_string()
-                        if hasattr(_state, "to_context_string")
-                        else ""
-                    )
+                    if hasattr(_state, "to_context_string"):
+                        _ctx_summary = _state.to_context_string() or ""
                 except Exception:
                     pass
 
-            # ── Code-driven CRUD intent classifier (pre-LLM, deterministic) ──
-            from .entity_extractor import classify_crud_intent, classify_query_intent
-
-            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
-                user_text
-            )
-            # Query code classifier first
-            _qci, _, _ = classify_query_intent(user_text)
-            if _qci:
-                _code_intent = _qci
-            if _code_intent:
-                logger.warning(
-                    "[PIPELINE] Code classifier: intent=%s name='%s' field=%s",
-                    _code_intent,
-                    _code_entity_name or "",
-                    _code_name_field or "",
-                )
-
-            # ── Context hint for follow-up queries ──
-            _context_hint = ""
-            if _state and not _code_intent:
+            if _state:
                 _last_action = getattr(_state, "last_action_type", None)
                 if _last_action:
                     from .entity_extractor import SESSION_CONTEXT_HINTS
-
                     _context_hint = SESSION_CONTEXT_HINTS.get(_last_action, "")
-                    if _context_hint:
-                        logger.warning(
-                            "[PIPELINE] Context hint injected: last=%s hint='%s'",
-                            _last_action,
-                            _context_hint,
-                        )
+                    _last_result = getattr(_state, "last_action_result", None)
+                    if _context_hint and isinstance(_last_result, dict):
+                        _entity_mem = _last_result.get("entity_memory")
+                        if _entity_mem:
+                            _context_hint = f"{_context_hint}\n{_entity_mem}"
+
+            # 2. LLM extraction (PRIMARY classifier)
+            _extract_client, _extract_model = self.router.route("extraction")
+            extractor = EntityExtractor(_extract_client, _extract_model)
 
             extraction = await extractor.extract(
                 user_text,
                 context_summary=_ctx_summary,
                 context_hint=_context_hint,
             )
-            if _code_intent:
-                extraction.intent = _code_intent
-                extraction.confidence = 1.0
-                extraction.needs_escalation = False
-                if _code_entity_name and _code_name_field:
-                    extraction.entities[_code_name_field] = _code_entity_name
-                logger.warning(
-                    "[PIPELINE] Intent overridden by code classifier: %s", _code_intent
+
+            if not isinstance(extraction.entities, dict):
+                extraction.entities = {}
+
+            # 3. ARAP GUARD (financial-critical only)
+            from .entity_extractor import classify_query_intent
+            _qci_guard, _, _ = classify_query_intent(user_text)
+
+            _ARAP_CRITICAL = {
+                "query_ar_outstanding",
+                "query_ar_invoices",
+                "query_ap_outstanding",
+                "query_customer_ar",
+                "query_vendor_ap",
+            }
+
+            _ARAP_DOMAIN = {
+                "query_ar_outstanding": {"query_ar_outstanding", "query_ar_invoices", "query_customer_ar"},
+                "query_ar_invoices": {"query_ar_outstanding", "query_ar_invoices"},
+                "query_ap_outstanding": {"query_ap_outstanding", "query_vendor_ap"},
+                "query_customer_ar": {"query_customer_ar", "query_ar_outstanding"},
+                "query_vendor_ap": {"query_vendor_ap", "query_ap_outstanding"},
+            }
+
+            if _qci_guard in _ARAP_CRITICAL:
+                allowed = _ARAP_DOMAIN.get(_qci_guard, set())
+                _same_prefix = (
+                    extraction.intent.startswith("query_ar_") and _qci_guard.startswith("query_ar_")
+                ) or (
+                    extraction.intent.startswith("query_ap_") and _qci_guard.startswith("query_ap_")
                 )
+                if extraction.intent not in allowed and not _same_prefix:
+                    logger.warning("[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard)
+                    extraction.intent = _qci_guard
+                    extraction.confidence = 1.0
+                    extraction.needs_escalation = False
+
+            # 4. CRUD GUARD (explicit action verbs only)
+            from .entity_extractor import classify_crud_intent
+            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(user_text)
+
+            if _code_intent:
+                is_crud = extraction.intent.startswith(("create_", "update_", "delete_", "void_", "reverse_"))
+                if not is_crud or extraction.intent != _code_intent:
+                    logger.warning("[CRUD_GUARD] %s → %s", extraction.intent, _code_intent)
+                    extraction.intent = _code_intent
+                    extraction.confidence = 1.0
+                    extraction.needs_escalation = False
+                if _code_entity_name and _code_name_field:
+                    if not isinstance(extraction.entities, dict):
+                        extraction.entities = {}
+                    if not extraction.entities.get(_code_name_field):
+                        extraction.entities[_code_name_field] = _code_entity_name
+
+            # 5. QUERY BOOST (weak fallback — lowest priority)
+            if _qci_guard and _qci_guard not in _ARAP_CRITICAL:
+                if (
+                    extraction.intent in ("ambiguous", "query", "chitchat")
+                    or extraction.confidence < 0.5
+                    or extraction.needs_escalation
+                ):
+                    if not _context_hint:
+                        logger.warning("[QUERY_BOOST] %s (%.2f) → %s", extraction.intent, extraction.confidence, _qci_guard)
+                        extraction.intent = _qci_guard
+                        extraction.confidence = 0.8
+                        extraction.needs_escalation = False
+
+            # 6. DE-ESCALATION: if Gemini returned a pipeline-enabled query intent
+            # with needs_escalation=True, clear it so pipeline handles it
+            if (
+                extraction.needs_escalation
+                and extraction.intent.startswith("query_")
+                and is_pipeline_enabled(extraction.intent)
+                and not _context_hint  # don't de-escalate follow-ups
+            ):
+                logger.warning("[DE_ESCALATE] %s escalation cleared", extraction.intent)
+                extraction.needs_escalation = False
+
+            logger.warning("[CLASSIFY_FINAL] intent=%s confidence=%.2f", extraction.intent, extraction.confidence)
+
+            # ═══ END LLM-FIRST CLASSIFICATION ═══
 
             # Calculation pipeline — code-driven numerics (zero LLM compute)
             if extraction.intent.startswith("calc_") and is_pipeline_enabled(

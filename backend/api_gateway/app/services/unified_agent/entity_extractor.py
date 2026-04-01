@@ -544,6 +544,23 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 - "berapa pengeluaran bulan ini" / "jumlah biaya bulan ini" -> calc_count_expenses_this_month
 PENTING: Kalkulasi numerik (rata-rata, total, jumlah, ranking) -> WAJIB pakai calc_* intent.
 
+== CONTEXT AWARENESS ==
+Jika ada konteks "[Topik sebelumnya: ...]" di akhir pesan, gunakan itu sebagai referensi.
+- "piutang" + "dari siapa?" -> query_ar_invoices
+- "hutang" + "yang paling besar?" -> query_ap_outstanding
+- "saldo bank" + "yang paling banyak?" -> query_bank_accounts_list
+- "pelanggan" + "data lengkapnya?" -> query_customer_detail
+Jika user mengganti topik secara eksplisit, IKUTI user.
+
+== PREFIX NOISE ==
+Abaikan kata pembuka yang tidak relevan:
+"ok", "oke", "kalau", "terus", "nah", "eh", "btw", "oh iya", dll.
+Fokus ke inti maksud:
+- "ok, kalau piutang berapa total?" -> query_ar_outstanding
+- "terus hutang gw gimana?" -> query_ap_outstanding
+- "nah saldo BCA berapa?" -> query_bank_account_balance
+- "eh ada stok habis ga?" -> query_items_no_stock
+
 == FALLBACK ==
 - Pesan ambigu/tidak jelas -> intent: "ambiguous"
 """
