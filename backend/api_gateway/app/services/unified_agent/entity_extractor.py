@@ -84,6 +84,84 @@ SESSION_CONTEXT_HINTS = {
     "query_customer_deposits_list": "Topik sebelumnya: daftar deposit pelanggan",
     # Batch 3: Vendor Deposits
     "query_vendor_deposits_list": "Topik sebelumnya: daftar deposit vendor",
+    "calc_avg_harga_beli": "Topik sebelumnya: rata-rata harga beli",
+    "calc_avg_harga_jual": "Topik sebelumnya: rata-rata harga jual",
+    "calc_count_bank_accounts": "Topik sebelumnya: jumlah rekening bank",
+    "calc_count_bills_active": "Topik sebelumnya: jumlah tagihan aktif",
+    "calc_count_bills_outstanding": "Topik sebelumnya: jumlah tagihan belum lunas",
+    "calc_count_customers_active": "Topik sebelumnya: jumlah pelanggan aktif",
+    "calc_count_expenses_month": "Topik sebelumnya: jumlah pengeluaran bulan ini",
+    "calc_count_invoices_outstanding": "Topik sebelumnya: jumlah faktur belum lunas",
+    "calc_count_items_active": "Topik sebelumnya: jumlah barang aktif",
+    "calc_count_items_inactive": "Topik sebelumnya: jumlah barang tidak aktif",
+    "calc_count_sales_invoices_active": "Topik sebelumnya: jumlah faktur penjualan aktif",
+    "calc_count_vendors_active": "Topik sebelumnya: jumlah vendor aktif",
+    "calc_profit_margin_per_item": "Topik sebelumnya: margin keuntungan per barang",
+    "calc_rank_items_by_price": "Topik sebelumnya: ranking barang berdasarkan harga",
+    "calc_rank_items_by_stock": "Topik sebelumnya: ranking barang berdasarkan stok",
+    "calc_sum_all_bank_balances": "Topik sebelumnya: total saldo semua bank",
+    "calc_sum_bank_balance": "Topik sebelumnya: saldo bank tertentu",
+    "calc_sum_bills_outstanding": "Topik sebelumnya: total tagihan belum lunas",
+    "calc_sum_harga_beli": "Topik sebelumnya: total harga beli",
+    "calc_sum_harga_jual": "Topik sebelumnya: total harga jual",
+    "calc_sum_invoices_outstanding": "Topik sebelumnya: total faktur belum lunas",
+    "calc_sum_paid_this_month": "Topik sebelumnya: total pembayaran bulan ini",
+    "calc_sum_received_this_month": "Topik sebelumnya: total penerimaan bulan ini",
+    "calc_sum_stok": "Topik sebelumnya: total stok",
+    "calc_top_selling_items": "Topik sebelumnya: barang terlaris",
+    "query_account_detail": "Topik sebelumnya: detail akun",
+    "query_account_ledger": "Topik sebelumnya: buku besar akun",
+    "query_ap_aging": "Topik sebelumnya: aging hutang",
+    "query_ar_aging": "Topik sebelumnya: aging piutang",
+    "query_balance_sheet": "Topik sebelumnya: neraca / balance sheet",
+    "query_bank_account_detail": "Topik sebelumnya: detail rekening bank",
+    "query_bank_transactions_by_date": "Topik sebelumnya: transaksi bank per tanggal",
+    "query_bill_payment_detail": "Topik sebelumnya: detail pembayaran tagihan",
+    "query_bills_by_vendor": "Topik sebelumnya: tagihan per vendor",
+    "query_bills_unpaid": "Topik sebelumnya: tagihan belum lunas",
+    "query_cash_flow": "Topik sebelumnya: arus kas",
+    "query_categories_list": "Topik sebelumnya: daftar kategori",
+    "query_customers_with_overdue": "Topik sebelumnya: pelanggan dengan overdue",
+    "query_dashboard_summary": "Topik sebelumnya: ringkasan dashboard",
+    "query_expense_detail": "Topik sebelumnya: detail pengeluaran",
+    "query_expenses_by_date_range": "Topik sebelumnya: pengeluaran per periode",
+    "query_inventory_health": "Topik sebelumnya: kesehatan inventori",
+    "query_inventory_summary": "Topik sebelumnya: ringkasan inventori",
+    "query_item_activity": "Topik sebelumnya: aktivitas barang",
+    "query_item_batches": "Topik sebelumnya: batch barang",
+    "query_item_journal": "Topik sebelumnya: jurnal barang",
+    "query_item_related": "Topik sebelumnya: barang terkait",
+    "query_item_stock_card": "Topik sebelumnya: kartu stok barang",
+    "query_item_transactions": "Topik sebelumnya: transaksi barang",
+    "query_items_by_price": "Topik sebelumnya: barang berdasarkan harga",
+    "query_items_by_stock": "Topik sebelumnya: barang berdasarkan stok",
+    "query_items_expired": "Topik sebelumnya: barang kadaluarsa",
+    "query_items_expiring_soon": "Topik sebelumnya: barang segera kadaluarsa",
+    "query_items_inactive": "Topik sebelumnya: barang tidak aktif",
+    "query_items_margins": "Topik sebelumnya: margin barang",
+    "query_items_no_stock": "Topik sebelumnya: barang tanpa stok",
+    "query_items_quarantine": "Topik sebelumnya: barang karantina",
+    "query_items_search": "Topik sebelumnya: pencarian barang",
+    "query_items_slow_moving": "Topik sebelumnya: barang slow moving",
+    "query_items_stats": "Topik sebelumnya: statistik barang",
+    "query_items_top_products": "Topik sebelumnya: produk teratas",
+    "query_items_units": "Topik sebelumnya: satuan barang",
+    "query_journal_detail": "Topik sebelumnya: detail jurnal",
+    "query_overdue_all": "Topik sebelumnya: semua yang jatuh tempo",
+    "query_profit_loss": "Topik sebelumnya: laba rugi",
+    "query_receive_payment_detail": "Topik sebelumnya: detail penerimaan pembayaran",
+    "query_recurring_bills_list": "Topik sebelumnya: daftar tagihan berulang",
+    "query_sales_invoices_unpaid": "Topik sebelumnya: faktur penjualan belum lunas",
+    "query_stock_adjustment_detail": "Topik sebelumnya: detail penyesuaian stok",
+    "query_stock_adjustments": "Topik sebelumnya: daftar penyesuaian stok",
+    "query_stock_adjustments_summary": "Topik sebelumnya: ringkasan penyesuaian stok",
+    "query_stock_in_transit": "Topik sebelumnya: stok dalam perjalanan",
+    "query_stock_transfers": "Topik sebelumnya: daftar transfer stok",
+    "query_trial_balance": "Topik sebelumnya: neraca saldo",
+    "query_vendors_with_overdue": "Topik sebelumnya: vendor dengan overdue",
+    "query_warehouse_stock": "Topik sebelumnya: stok gudang",
+    "query_warehouse_stock_value": "Topik sebelumnya: nilai stok gudang",
+    "query_warehouses": "Topik sebelumnya: daftar gudang",
 }
 
 
@@ -198,11 +276,11 @@ EXTRACTION_SCHEMAS = {
                             "calc_count_sales_invoices_active",
                             "calc_count_bills_active",
                             "contextual_drill_down",
-    # Batch 2 calc intents
-    "calc_rank_expense_accounts",
-    "calc_count_customers_inactive",
-    "calc_count_vendors_inactive",
-    "calc_count_expenses_this_month",
+                            # Batch 2 calc intents
+                            "calc_rank_expense_accounts",
+                            "calc_count_customers_inactive",
+                            "calc_count_vendors_inactive",
+                            "calc_count_expenses_this_month",
                             "query_customer_ar",
                             "query_vendor_ap",
                             "query_sales_invoices_overdue",
@@ -232,13 +310,13 @@ EXTRACTION_SCHEMAS = {
                             "query_overdue_all",
                             "query_recurring_bills_list",
                             "query_bank_transactions_by_date",
-    # Batch 3 report + cross-module calc intents
-    "query_profit_loss",
-    "query_balance_sheet",
-    "query_cash_flow",
-    "query_trial_balance",
-    "calc_profit_margin_per_item",
-    "calc_top_selling_items",
+                            # Batch 3 report + cross-module calc intents
+                            "query_profit_loss",
+                            "query_balance_sheet",
+                            "query_cash_flow",
+                            "query_trial_balance",
+                            "calc_profit_margin_per_item",
+                            "calc_top_selling_items",
                             # Batch 3
                             "create_credit_note",
                             "void_credit_note",
@@ -677,7 +755,7 @@ def is_pipeline_enabled(intent: str) -> bool:
 # Deterministic, 0ms, runs BEFORE LLM extraction.
 # Returns (intent, entity_name_raw, name_field) or (None, None, None) if no CRUD match.
 
-import re as _re
+import re as _re  # noqa: E402
 
 _ACTION_KEYWORDS = {
     "create": [
@@ -836,13 +914,15 @@ def classify_query_intent(user_text: str) -> tuple:
     # ── Batch 2 calc intents ──
     if _qre.search(
         r"(?:ranking|peringkat).*(?:pengeluaran|biaya).*(?:akun|account)", t
-    ) or _qre.search(
-        r"(?:pengeluaran|biaya).*(?:per|tiap).*(?:akun|account)", t
-    ):
+    ) or _qre.search(r"(?:pengeluaran|biaya).*(?:per|tiap).*(?:akun|account)", t):
         return "calc_rank_expense_accounts", None, None
-    if _qre.search(r"(?:berapa|jumlah).*(?:pelanggan|customer).*(?:tidak\s*aktif|inactive)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah).*(?:pelanggan|customer).*(?:tidak\s*aktif|inactive)", t
+    ):
         return "calc_count_customers_inactive", None, None
-    if _qre.search(r"(?:berapa|jumlah).*(?:vendor|pemasok).*(?:tidak\s*aktif|inactive)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah).*(?:vendor|pemasok).*(?:tidak\s*aktif|inactive)", t
+    ):
         return "calc_count_vendors_inactive", None, None
     if _qre.search(r"(?:berapa|jumlah).*(?:pengeluaran|biaya).*(?:bulan\s*ini)", t):
         return "calc_count_expenses_this_month", None, None
@@ -851,7 +931,9 @@ def classify_query_intent(user_text: str) -> tuple:
     # IMPORTANT: trial_balance ("neraca saldo") MUST be checked BEFORE balance_sheet ("neraca")
     if _qre.search(r"(?:neraca\s*saldo|trial\s*balance)", t):
         return "query_trial_balance", None, None
-    if _qre.search(r"(?:laba\s*rugi|profit\s*loss|untung\s*rugi|pendapatan\s+dan\s+beban)", t):
+    if _qre.search(
+        r"(?:laba\s*rugi|profit\s*loss|untung\s*rugi|pendapatan\s+dan\s+beban)", t
+    ):
         return "query_profit_loss", None, None
     if _qre.search(r"\bneraca\b(?!\s*saldo)", t):
         return "query_balance_sheet", None, None
@@ -859,9 +941,14 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_cash_flow", None, None
 
     # ── Batch 3: Cross-module calc intents ──
-    if _qre.search(r"(?:margin|keuntungan|profit)\s*(?:per|tiap)?\s*(?:barang|item|produk)", t):
+    if _qre.search(
+        r"(?:margin|keuntungan|profit)\s*(?:per|tiap)?\s*(?:barang|item|produk)", t
+    ):
         return "calc_profit_margin_per_item", None, None
-    if _qre.search(r"(?:barang|produk|item).*(?:terlaris|paling\s*laku|top\s*selling|paling\s*banyak\s*terjual)", t):
+    if _qre.search(
+        r"(?:barang|produk|item).*(?:terlaris|paling\s*laku|top\s*selling|paling\s*banyak\s*terjual)",
+        t,
+    ):
         return "calc_top_selling_items", None, None
 
     # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
@@ -956,7 +1043,10 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_sales_invoices_unpaid", None, None
 
     # Bills unpaid (careful not to conflict with query_ap_outstanding)
-    if _qre.search(r"(?:tagihan|faktur pembelian).*(?:belum\s*(?:di)?bayar|unpaid|belum\s*lunas)", t):
+    if _qre.search(
+        r"(?:tagihan|faktur pembelian).*(?:belum\s*(?:di)?bayar|unpaid|belum\s*lunas)",
+        t,
+    ):
         return "query_bills_unpaid", None, None
 
     # Account ledger
@@ -976,7 +1066,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_ap_aging", None, None
 
     # Dashboard summary
-    if _qre.search(r"(?:ringkasan|summary|rangkuman).*(?:bisnis|usaha|keuangan|dashboard)", t):
+    if _qre.search(
+        r"(?:ringkasan|summary|rangkuman).*(?:bisnis|usaha|keuangan|dashboard)", t
+    ):
         return "query_dashboard_summary", None, None
 
     # Overdue all
@@ -986,7 +1078,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_overdue_all", None, None
 
     # Recurring bills
-    if _qre.search(r"(?:daftar|list).*(?:recurring|berulang|rutin).*(?:tagihan|faktur|bill)", t):
+    if _qre.search(
+        r"(?:daftar|list).*(?:recurring|berulang|rutin).*(?:tagihan|faktur|bill)", t
+    ):
         return "query_recurring_bills_list", None, None
     if _qre.search(r"(?:tagihan|faktur|bill).*(?:recurring|berulang|rutin)", t):
         return "query_recurring_bills_list", None, None
@@ -1038,7 +1132,6 @@ def classify_query_intent(user_text: str) -> tuple:
     if _qre.search(r"(?:daftar|list).*(?:akun|coa|chart\s*of\s*accounts)", t):
         return "query_accounts_list", None, None
 
-
     # ── Batch 3: Credit Notes ──
     if _qre.search(r"(?:daftar|list|semua).*(?:nota\s*kredit|credit\s*note)", t):
         return "query_credit_notes_list", None, None
@@ -1052,7 +1145,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_vendor_credits_list", None, None
     if _qre.search(r"(?:detail|info|cek).*(?:vendor\s*credit|kredit\s*vendor)", t):
         return "query_vendor_credit_detail", None, None
-    if _qre.search(r"(?:ringkasan|summary|total).*(?:vendor\s*credit|kredit\s*vendor)", t):
+    if _qre.search(
+        r"(?:ringkasan|summary|total).*(?:vendor\s*credit|kredit\s*vendor)", t
+    ):
         return "query_vendor_credits_summary", None, None
 
     # ── Batch 3: Quotes ──
@@ -1064,11 +1159,15 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_quotes_summary", None, None
 
     # ── Batch 3: Bank Transfers ──
-    if _qre.search(r"(?:daftar|list|semua|riwayat).*(?:transfer\s*bank|transfer\s*antar)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua|riwayat).*(?:transfer\s*bank|transfer\s*antar)", t
+    ):
         return "query_bank_transfers_list", None, None
 
     # ── Batch 3: Customer Deposits ──
-    if _qre.search(r"(?:daftar|list|semua).*(?:deposit\s*pelanggan|customer\s*deposit)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua).*(?:deposit\s*pelanggan|customer\s*deposit)", t
+    ):
         return "query_customer_deposits_list", None, None
 
     # ── Batch 3: Vendor Deposits ──
@@ -1183,10 +1282,10 @@ def classify_query_intent(user_text: str) -> tuple:
     ):
         return "contextual_drill_down", None, None
     # Batch 2 calc intents
-    "calc_rank_expense_accounts",
-    "calc_count_customers_inactive",
-    "calc_count_vendors_inactive",
-    "calc_count_expenses_this_month",
+    ("calc_rank_expense_accounts",)
+    ("calc_count_customers_inactive",)
+    ("calc_count_vendors_inactive",)
+    ("calc_count_expenses_this_month",)
 
     # Secondary trigger: "detail*" — match ONLY when NO entity identifier, NO temporal keyword, AND NO entity type word
     if _qre.search(r"\bdetail(?:nya|kan|in)?\b", t):
@@ -1234,10 +1333,10 @@ def classify_query_intent(user_text: str) -> tuple:
         if not _has_entity_id and not _has_temporal and not _has_entity_type:
             return "contextual_drill_down", None, None
     # Batch 2 calc intents
-    "calc_rank_expense_accounts",
-    "calc_count_customers_inactive",
-    "calc_count_vendors_inactive",
-    "calc_count_expenses_this_month",
+    ("calc_rank_expense_accounts",)
+    ("calc_count_customers_inactive",)
+    ("calc_count_vendors_inactive",)
+    ("calc_count_expenses_this_month",)
 
     # Re-format requests — user wants last response as table
     if _qre.search(

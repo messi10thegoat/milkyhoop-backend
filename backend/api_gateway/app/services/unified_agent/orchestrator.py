@@ -645,7 +645,7 @@ RECENT_WINDOW = 4  # Keep last 4 messages verbatim
 SUMMARIZE_THRESHOLD = 8000  # Estimate: trigger summarization above this
 _CHARS_PER_TOKEN = 4  # Rough estimate for token counting
 
-import hashlib as _hashlib
+import hashlib as _hashlib  # noqa: E402
 
 
 def _estimate_tokens(messages: list) -> int:
@@ -2793,10 +2793,118 @@ class UnifiedAgent:
             elif qp.default:
                 query_params[qp.name] = qp.default
 
-        # Bail if still unresolved {id} or {account_id} or other path params
         import re as _bail_re
 
-        if _bail_re.search(r"\\{\w+\\}", endpoint):
+        # ── Generic {id} resolver: try session entity graph + text-based search ──
+
+        if _bail_re.search(r"\{\w+\}", endpoint):
+            _resolved_id = None
+            _placeholder_match = _bail_re.search(r"\{(\w+)\}", endpoint)
+            _placeholder = _placeholder_match.group(1) if _placeholder_match else "id"
+
+            # 1. Try extraction entities for direct ID
+            _resolved_id = (
+                extraction.entities.get("id")
+                or extraction.entities.get("entity_id")
+                or extraction.entities.get(_placeholder)
+            )
+
+            # 2. Try entity resolver for specific types
+            if not _resolved_id:
+                _intent_entity_map = {
+                    "query_sales_invoice_detail": (
+                        "invoice_number",
+                        "_resolve_invoice",
+                    ),
+                    "query_bill_detail": ("bill_number", "_resolve_bill"),
+                    "query_bill_payment_detail": ("bill_payment_number", None),
+                    "query_receive_payment_detail": ("payment_number", None),
+                    "query_expense_detail": ("expense_number", None),
+                    "query_journal_detail": ("journal_number", None),
+                    "query_stock_adjustment_detail": ("adjustment_number", None),
+                    "query_credit_note_detail": ("credit_note_number", None),
+                    "query_vendor_credit_detail": ("vendor_credit_number", None),
+                    "query_quote_detail": ("quote_number", None),
+                }
+                _ie_cfg = _intent_entity_map.get(extraction.intent)
+                if _ie_cfg:
+                    _name_key, _resolver_method = _ie_cfg
+                    _search_val = (
+                        extraction.entities.get(_name_key)
+                        or extraction.entities.get("name")
+                        or extraction.entities.get("number")
+                        or extraction.entities.get("entity_name")
+                    )
+                    if _search_val and _resolver_method:
+                        try:
+                            from .entity_resolver import EntityResolver
+                            from .db_utils import get_session_db_pool
+
+                            _pool = await get_session_db_pool()
+                            _resolver = EntityResolver(_pool, context.tenant_id)
+                            _resolved = await getattr(_resolver, _resolver_method)(
+                                _search_val
+                            )
+                            if (
+                                _resolved
+                                and _resolved.entity_id
+                                and _resolved.confidence >= 0.5
+                            ):
+                                _resolved_id = _resolved.entity_id
+                        except Exception as _re_err:
+                            logger.warning(
+                                "[QUERY_PIPELINE] Entity resolver failed: %s", _re_err
+                            )
+
+            # 3. Try session entity graph (last focused entity)
+            if (
+                not _resolved_id
+                and tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                try:
+                    _eg_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    if _eg_state and getattr(_eg_state, "entity_graph", None):
+                        from .entity_graph import get_last_node
+
+                        _graph_type_map = {
+                            "query_sales_invoice_detail": "sales_invoice",
+                            "query_bill_detail": "bill",
+                            "query_expense_detail": "expense",
+                            "query_journal_detail": "journal",
+                            "query_credit_note_detail": "credit_note",
+                            "query_vendor_credit_detail": "vendor_credit",
+                            "query_quote_detail": "quote",
+                            "query_receive_payment_detail": "receive_payment",
+                            "query_bill_payment_detail": "bill_payment",
+                            "query_stock_adjustment_detail": "stock_adjustment",
+                        }
+                        _graph_type = _graph_type_map.get(extraction.intent)
+                        if _graph_type:
+                            _last = get_last_node(_eg_state.entity_graph, _graph_type)
+                            if _last:
+                                _resolved_id = _last["id"]
+                except Exception:
+                    pass
+
+            # 4. Try periode resolution for report endpoints
+            if not _resolved_id and _placeholder == "periode":
+                import datetime
+
+                _now = datetime.date.today()
+                _resolved_id = f"{_now.year}-{_now.month:02d}"
+
+            if _resolved_id:
+                endpoint = _bail_re.sub(
+                    r"\{\w+\}", str(_resolved_id), endpoint, count=1
+                )
+
+        # Bail if still unresolved {id} or {account_id} or other path params
+
+        if _bail_re.search(r"\{\w+\}", endpoint):
             _entity_hint_map = {
                 "customer": "pelanggan",
                 "vendor": "vendor",
@@ -4083,6 +4191,22 @@ class UnifiedAgent:
                     )
                     if _calc_result.get("type") != "error":
                         _calc_text = format_calculation_result(_calc_result)
+                        # Save state for follow-up context
+                        if (
+                            tool_executor
+                            and hasattr(tool_executor, "session_manager")
+                            and getattr(tool_executor, "session_id", None)
+                        ):
+                            try:
+                                await tool_executor.session_manager.update_state(
+                                    tool_executor.session_id,
+                                    last_action_type=extraction.intent,
+                                    last_action_result={
+                                        "response_text": _calc_text[:2000]
+                                    },
+                                )
+                            except Exception:
+                                pass
                         return AgentResponse(
                             message_type="TEXT",
                             content=_calc_text,
