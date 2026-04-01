@@ -4163,6 +4163,22 @@ class UnifiedAgent:
 
             if _qci_guard in _ARAP_CRITICAL:
                 allowed = _ARAP_DOMAIN.get(_qci_guard, set())
+                # Summary vs entity-specific guard:
+                # "hutang berapa?" regex=query_ap_outstanding, Gemini=query_vendor_ap
+                # If no entity name extracted, regex (summary) is correct
+                _SUMMARY_INTENTS = {"query_ap_outstanding", "query_ar_outstanding"}
+                _ENTITY_INTENTS = {"query_vendor_ap", "query_customer_ar"}
+                if (
+                    _qci_guard in _SUMMARY_INTENTS
+                    and extraction.intent in _ENTITY_INTENTS
+                    and not extraction.entities.get("vendor_name")
+                    and not extraction.entities.get("customer_name")
+                    and not extraction.entities.get("name")
+                ):
+                    logger.warning("[ARAP_GUARD] summary override: %s -> %s (no entity)", extraction.intent, _qci_guard)
+                    extraction.intent = _qci_guard
+                    extraction.confidence = 1.0
+                    extraction.needs_escalation = False
                 _same_prefix = (
                     extraction.intent.startswith("query_ar_") and _qci_guard.startswith("query_ar_")
                 ) or (
