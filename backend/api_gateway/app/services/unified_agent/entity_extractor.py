@@ -66,6 +66,24 @@ SESSION_CONTEXT_HINTS = {
     "calc_count_customers_inactive": "Topik sebelumnya: jumlah pelanggan tidak aktif",
     "calc_count_vendors_inactive": "Topik sebelumnya: jumlah vendor tidak aktif",
     "calc_count_expenses_this_month": "Topik sebelumnya: jumlah pengeluaran bulan ini",
+    # Batch 3: Credit Notes
+    "query_credit_notes_list": "Topik sebelumnya: daftar nota kredit",
+    "query_credit_note_detail": "Topik sebelumnya: detail nota kredit",
+    "query_credit_notes_summary": "Topik sebelumnya: ringkasan nota kredit",
+    # Batch 3: Vendor Credits
+    "query_vendor_credits_list": "Topik sebelumnya: daftar vendor credit",
+    "query_vendor_credit_detail": "Topik sebelumnya: detail vendor credit",
+    "query_vendor_credits_summary": "Topik sebelumnya: ringkasan vendor credit",
+    # Batch 3: Quotes
+    "query_quotes_list": "Topik sebelumnya: daftar penawaran",
+    "query_quote_detail": "Topik sebelumnya: detail penawaran",
+    "query_quotes_summary": "Topik sebelumnya: ringkasan penawaran",
+    # Batch 3: Bank Transfers
+    "query_bank_transfers_list": "Topik sebelumnya: daftar transfer bank",
+    # Batch 3: Customer Deposits
+    "query_customer_deposits_list": "Topik sebelumnya: daftar deposit pelanggan",
+    # Batch 3: Vendor Deposits
+    "query_vendor_deposits_list": "Topik sebelumnya: daftar deposit vendor",
 }
 
 
@@ -214,6 +232,37 @@ EXTRACTION_SCHEMAS = {
                             "query_overdue_all",
                             "query_recurring_bills_list",
                             "query_bank_transactions_by_date",
+    # Batch 3 report + cross-module calc intents
+    "query_profit_loss",
+    "query_balance_sheet",
+    "query_cash_flow",
+    "query_trial_balance",
+    "calc_profit_margin_per_item",
+    "calc_top_selling_items",
+                            # Batch 3
+                            "create_credit_note",
+                            "void_credit_note",
+                            "create_vendor_credit",
+                            "void_vendor_credit",
+                            "create_quote",
+                            "create_bank_transfer",
+                            "void_bank_transfer",
+                            "create_customer_deposit",
+                            "void_customer_deposit",
+                            "create_vendor_deposit",
+                            "void_vendor_deposit",
+                            "query_credit_notes_list",
+                            "query_credit_note_detail",
+                            "query_credit_notes_summary",
+                            "query_vendor_credits_list",
+                            "query_vendor_credit_detail",
+                            "query_vendor_credits_summary",
+                            "query_quotes_list",
+                            "query_quote_detail",
+                            "query_quotes_summary",
+                            "query_bank_transfers_list",
+                            "query_customer_deposits_list",
+                            "query_vendor_deposits_list",
                             "chitchat",
                             "query",
                             "ambiguous",
@@ -566,6 +615,13 @@ PIPELINE_ENABLED_INTENTS = {
     "query_overdue_all",
     "query_recurring_bills_list",
     "query_bank_transactions_by_date",
+    # Batch 3 report + cross-module calc intents
+    "query_profit_loss",
+    "query_balance_sheet",
+    "query_cash_flow",
+    "query_trial_balance",
+    "calc_profit_margin_per_item",
+    "calc_top_selling_items",
     # Voids
     "void_sales_invoice",
     "void_bill",
@@ -585,6 +641,30 @@ PIPELINE_ENABLED_INTENTS = {
     "delete_vendor",
     "delete_warehouse",
     "delete_bank_account",
+    # Batch 3: Credit Notes, Vendor Credits, Quotes, Bank Transfers, Deposits
+    "create_credit_note",
+    "void_credit_note",
+    "create_vendor_credit",
+    "void_vendor_credit",
+    "create_quote",
+    "create_bank_transfer",
+    "void_bank_transfer",
+    "create_customer_deposit",
+    "void_customer_deposit",
+    "create_vendor_deposit",
+    "void_vendor_deposit",
+    "query_credit_notes_list",
+    "query_credit_note_detail",
+    "query_credit_notes_summary",
+    "query_vendor_credits_list",
+    "query_vendor_credit_detail",
+    "query_vendor_credits_summary",
+    "query_quotes_list",
+    "query_quote_detail",
+    "query_quotes_summary",
+    "query_bank_transfers_list",
+    "query_customer_deposits_list",
+    "query_vendor_deposits_list",
 }
 
 
@@ -694,6 +774,30 @@ _ENTITY_KEYWORDS = {
         ],
         "name_field": "description",
     },
+    "_credit_note": {
+        "keywords": ["nota kredit", "credit note"],
+        "name_field": "credit_note_number",
+    },
+    "_vendor_credit": {
+        "keywords": ["vendor credit", "kredit vendor"],
+        "name_field": "vendor_credit_number",
+    },
+    "_quote": {
+        "keywords": ["penawaran", "quote", "quotation"],
+        "name_field": "quote_number",
+    },
+    "_bank_transfer": {
+        "keywords": ["transfer bank", "transfer antar rekening", "bank transfer"],
+        "name_field": "transfer_number",
+    },
+    "_customer_deposit": {
+        "keywords": ["deposit pelanggan", "customer deposit", "uang muka pelanggan"],
+        "name_field": "deposit_number",
+    },
+    "_vendor_deposit": {
+        "keywords": ["deposit vendor", "vendor deposit", "uang muka vendor"],
+        "name_field": "deposit_number",
+    },
 }
 
 
@@ -742,6 +846,23 @@ def classify_query_intent(user_text: str) -> tuple:
         return "calc_count_vendors_inactive", None, None
     if _qre.search(r"(?:berapa|jumlah).*(?:pengeluaran|biaya).*(?:bulan\s*ini)", t):
         return "calc_count_expenses_this_month", None, None
+
+    # ── Batch 3: Report intents ──
+    # IMPORTANT: trial_balance ("neraca saldo") MUST be checked BEFORE balance_sheet ("neraca")
+    if _qre.search(r"(?:neraca\s*saldo|trial\s*balance)", t):
+        return "query_trial_balance", None, None
+    if _qre.search(r"(?:laba\s*rugi|profit\s*loss|untung\s*rugi|pendapatan\s+dan\s+beban)", t):
+        return "query_profit_loss", None, None
+    if _qre.search(r"\bneraca\b(?!\s*saldo)", t):
+        return "query_balance_sheet", None, None
+    if _qre.search(r"(?:arus\s*kas|cash\s*flow|aliran\s*kas)", t):
+        return "query_cash_flow", None, None
+
+    # ── Batch 3: Cross-module calc intents ──
+    if _qre.search(r"(?:margin|keuntungan|profit)\s*(?:per|tiap)?\s*(?:barang|item|produk)", t):
+        return "calc_profit_margin_per_item", None, None
+    if _qre.search(r"(?:barang|produk|item).*(?:terlaris|paling\s*laku|top\s*selling|paling\s*banyak\s*terjual)", t):
+        return "calc_top_selling_items", None, None
 
     # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
     # These override AP/AR summary when user wants list/table/detail, not total
@@ -916,6 +1037,43 @@ def classify_query_intent(user_text: str) -> tuple:
     # Accounts list
     if _qre.search(r"(?:daftar|list).*(?:akun|coa|chart\s*of\s*accounts)", t):
         return "query_accounts_list", None, None
+
+
+    # ── Batch 3: Credit Notes ──
+    if _qre.search(r"(?:daftar|list|semua).*(?:nota\s*kredit|credit\s*note)", t):
+        return "query_credit_notes_list", None, None
+    if _qre.search(r"(?:detail|info|cek).*(?:nota\s*kredit|credit\s*note)", t):
+        return "query_credit_note_detail", None, None
+    if _qre.search(r"(?:ringkasan|summary|total).*(?:nota\s*kredit|credit\s*note)", t):
+        return "query_credit_notes_summary", None, None
+
+    # ── Batch 3: Vendor Credits ──
+    if _qre.search(r"(?:daftar|list|semua).*(?:vendor\s*credit|kredit\s*vendor)", t):
+        return "query_vendor_credits_list", None, None
+    if _qre.search(r"(?:detail|info|cek).*(?:vendor\s*credit|kredit\s*vendor)", t):
+        return "query_vendor_credit_detail", None, None
+    if _qre.search(r"(?:ringkasan|summary|total).*(?:vendor\s*credit|kredit\s*vendor)", t):
+        return "query_vendor_credits_summary", None, None
+
+    # ── Batch 3: Quotes ──
+    if _qre.search(r"(?:daftar|list|semua).*(?:penawaran|quote|quotation)", t):
+        return "query_quotes_list", None, None
+    if _qre.search(r"(?:detail|info|cek).*(?:penawaran|quote)", t):
+        return "query_quote_detail", None, None
+    if _qre.search(r"(?:ringkasan|summary|total).*(?:penawaran|quote)", t):
+        return "query_quotes_summary", None, None
+
+    # ── Batch 3: Bank Transfers ──
+    if _qre.search(r"(?:daftar|list|semua|riwayat).*(?:transfer\s*bank|transfer\s*antar)", t):
+        return "query_bank_transfers_list", None, None
+
+    # ── Batch 3: Customer Deposits ──
+    if _qre.search(r"(?:daftar|list|semua).*(?:deposit\s*pelanggan|customer\s*deposit)", t):
+        return "query_customer_deposits_list", None, None
+
+    # ── Batch 3: Vendor Deposits ──
+    if _qre.search(r"(?:daftar|list|semua).*(?:deposit\s*vendor|vendor\s*deposit)", t):
+        return "query_vendor_deposits_list", None, None
 
     # AR
     if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(
@@ -1174,6 +1332,11 @@ def classify_crud_intent(user_text: str) -> tuple:
         "_expense",
         "_receive_payment",
         "_bill_payment",
+        "_credit_note",
+        "_vendor_credit",
+        "_bank_transfer",
+        "_customer_deposit",
+        "_vendor_deposit",
     ):
         action = "delete"
 

@@ -256,6 +256,25 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         source_field="total_count",
         label="Jumlah Pengeluaran Bulan Ini",
     ),
+    # -- Batch 3 Cross-module Calc Intents --
+    "calc_profit_margin_per_item": CalculationTemplate(
+        calc_type="SUMMARY_LIST",
+        source_endpoint="/api/inventory/product-margins",
+        source_field="unit_margin",
+        list_field="products",
+        name_field="product_name",
+        label="Margin Keuntungan per Produk",
+        format_as_currency=True,
+    ),
+    "calc_top_selling_items": CalculationTemplate(
+        calc_type="SUMMARY_LIST",
+        source_endpoint="/api/inventory/top-products",
+        source_field="total_qty_sold",
+        list_field="products",
+        name_field="product_name",
+        label="Produk Terlaris",
+        format_as_currency=False,
+    ),
 }
 
 
