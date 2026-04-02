@@ -2787,3 +2787,25 @@ async def _get_history_old(
     except Exception as e:
         logger.warning(f"[History] Fetch failed: {e}")
         return {"messages": [], "error": str(e)}
+
+
+@router.post("/feedback")
+async def record_feedback(request: Request):
+    """Record user thumbs up/down on bot response."""
+    ctx = _extract_user_context(request)
+    body = await request.json()
+    session_id = body.get("session_id")
+    feedback = body.get("feedback", 0)
+
+    if not session_id or feedback not in (1, -1):
+        return {"success": False, "error": "session_id and feedback (+1/-1) required"}
+
+    try:
+        from ..services.unified_agent.telemetry import IntentTelemetry
+        pool = await get_session_db_pool()
+        telemetry = IntentTelemetry(pool, ctx["tenant_id"])
+        await telemetry.record_feedback(session_id, feedback)
+        return {"success": True}
+    except Exception as e:
+        logger.warning("[FEEDBACK] Record failed: %s", e)
+        return {"success": False, "error": str(e)[:100]}

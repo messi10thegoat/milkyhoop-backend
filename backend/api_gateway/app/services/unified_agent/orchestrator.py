@@ -4132,11 +4132,27 @@ class UnifiedAgent:
             _extract_client, _extract_model = self.router.route("extraction")
             extractor = EntityExtractor(_extract_client, _extract_model)
 
+            # ── Telemetry: start timing ──
+            import time as _time_mod
+            _tel_extraction_start = _time_mod.monotonic()
+
             extraction = await extractor.extract(
                 user_text,
                 context_summary=_ctx_summary,
                 context_hint=_context_hint,
             )
+
+            # ── Telemetry: capture raw Gemini result before guards ──
+            _tel_extraction_end = _time_mod.monotonic()
+            _tel_raw_intent = extraction.intent
+            _tel_raw_conf = extraction.confidence
+            _tel_raw_entities = dict(extraction.entities) if isinstance(extraction.entities, dict) else {}
+            _tel_gemini_ms = int((_tel_extraction_end - _tel_extraction_start) * 1000)
+            _tel_guard = "none"
+            _tel_guard_from = None
+            _tel_guard_to = None
+            _tel_decision_source = "gemini"
+            _tel_guard_matches = {}
 
             if not isinstance(extraction.entities, dict):
                 extraction.entities = {}
@@ -4175,6 +4191,11 @@ class UnifiedAgent:
                     and not extraction.entities.get("customer_name")
                     and not extraction.entities.get("name")
                 ):
+                    _tel_guard = "arap_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = _qci_guard
+                    _tel_decision_source = "arap_guard"
+                    _tel_guard_matches["arap_guard_summary"] = _qci_guard
                     logger.warning("[ARAP_GUARD] summary override: %s -> %s (no entity)", extraction.intent, _qci_guard)
                     extraction.intent = _qci_guard
                     extraction.confidence = 1.0
@@ -4185,6 +4206,11 @@ class UnifiedAgent:
                     extraction.intent.startswith("query_ap_") and _qci_guard.startswith("query_ap_")
                 )
                 if extraction.intent not in allowed and not _same_prefix:
+                    _tel_guard = "arap_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = _qci_guard
+                    _tel_decision_source = "arap_guard"
+                    _tel_guard_matches["arap_guard"] = _qci_guard
                     logger.warning("[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard)
                     extraction.intent = _qci_guard
                     extraction.confidence = 1.0
@@ -4197,6 +4223,11 @@ class UnifiedAgent:
             }
             for list_intent, overdue_intent in _LIST_VS_OVERDUE.items():
                 if _qci_guard == list_intent and extraction.intent == overdue_intent:
+                    _tel_guard = "list_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = list_intent
+                    _tel_decision_source = "list_guard"
+                    _tel_guard_matches["list_guard"] = list_intent
                     logger.warning("[LIST_GUARD] %s -> %s", extraction.intent, list_intent)
                     extraction.intent = list_intent
                     extraction.confidence = 1.0
@@ -4205,6 +4236,11 @@ class UnifiedAgent:
             # 3c. DRILL-DOWN GUARD
             if _qci_guard in ("contextual_drill_down", "drilldown_table"):
                 if extraction.intent not in ("contextual_drill_down", "drilldown_table", "reformat_as_table"):
+                    _tel_guard = "drill_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = _qci_guard
+                    _tel_decision_source = "drill_guard"
+                    _tel_guard_matches["drill_guard"] = _qci_guard
                     logger.warning("[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard)
                     extraction.intent = _qci_guard
                     extraction.confidence = 1.0
@@ -4217,6 +4253,11 @@ class UnifiedAgent:
             if _code_intent:
                 is_crud = extraction.intent.startswith(("create_", "update_", "delete_", "void_", "reverse_"))
                 if not is_crud or extraction.intent != _code_intent:
+                    _tel_guard = "crud_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = _code_intent
+                    _tel_decision_source = "crud_guard"
+                    _tel_guard_matches["crud_guard"] = _code_intent
                     logger.warning("[CRUD_GUARD] %s → %s", extraction.intent, _code_intent)
                     extraction.intent = _code_intent
                     extraction.confidence = 1.0
@@ -4235,6 +4276,11 @@ class UnifiedAgent:
                     or extraction.needs_escalation
                 ):
                     if not _context_hint:
+                        _tel_guard = "query_boost"
+                        _tel_guard_from = extraction.intent
+                        _tel_guard_to = _qci_guard
+                        _tel_decision_source = "query_boost"
+                        _tel_guard_matches["query_boost"] = _qci_guard
                         logger.warning("[QUERY_BOOST] %s (%.2f) → %s", extraction.intent, extraction.confidence, _qci_guard)
                         extraction.intent = _qci_guard
                         extraction.confidence = 0.8
@@ -4248,10 +4294,58 @@ class UnifiedAgent:
                 and is_pipeline_enabled(extraction.intent)
                 and not _context_hint  # don't de-escalate follow-ups
             ):
+                _tel_guard = "de_escalate"
+                _tel_guard_from = extraction.intent
+                _tel_decision_source = "de_escalate"
                 logger.warning("[DE_ESCALATE] %s escalation cleared", extraction.intent)
                 extraction.needs_escalation = False
 
             logger.warning("[CLASSIFY_FINAL] intent=%s confidence=%.2f", extraction.intent, extraction.confidence)
+
+            # ── Telemetry: fire-and-forget log ──
+            _tel_guard_conflict = len(_tel_guard_matches) > 1
+            try:
+                from .telemetry import IntentTelemetry, estimate_cost
+                from .db_utils import get_session_db_pool as _tel_get_pool
+
+                _tel_pool = await _tel_get_pool()
+                _tel = IntentTelemetry(_tel_pool, context.tenant_id)
+
+                _tel_session_id = getattr(tool_executor, "session_id", None) if tool_executor else None
+                _tel_conv_id = getattr(tool_executor, "conversation_id", None) if tool_executor else None
+
+                if _tel_session_id:
+                    asyncio.create_task(_tel.detect_correction(_tel_session_id))
+
+                asyncio.create_task(_tel.log_decision(
+                    user_text=user_text,
+                    conversation_id=_tel_conv_id,
+                    session_id=_tel_session_id,
+                    gemini_intent=_tel_raw_intent,
+                    gemini_confidence=_tel_raw_conf,
+                    gemini_entities=_tel_raw_entities,
+                    gemini_latency_ms=_tel_gemini_ms,
+                    guard_triggered=_tel_guard,
+                    guard_from=_tel_guard_from,
+                    guard_to=_tel_guard_to,
+                    guard_conflict=_tel_guard_conflict,
+                    guard_conflict_detail=_tel_guard_matches if _tel_guard_conflict else None,
+                    final_intent=extraction.intent,
+                    final_confidence=extraction.confidence,
+                    decision_source=_tel_decision_source,
+                    context_hint_used=bool(_context_hint),
+                    last_action_type=getattr(_state, "last_action_type", None) if _state else None,
+                    pipeline_or_agent="pending",
+                    model_used=_extract_model or "gemini-2.5-flash-lite",
+                    total_latency_ms=_tel_gemini_ms,
+                    estimated_cost_usd=estimate_cost(_extract_model or "gemini-2.5-flash-lite", 2000, 200),
+                    input_tokens=2000,
+                    output_tokens=200,
+                    response_type="pending",
+                    response_length=0,
+                ))
+            except Exception:
+                pass  # NEVER block on telemetry
 
             # ═══ END LLM-FIRST CLASSIFICATION ═══
 
