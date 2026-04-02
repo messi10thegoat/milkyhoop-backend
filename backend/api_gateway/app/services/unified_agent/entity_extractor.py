@@ -561,6 +561,31 @@ Fokus ke inti maksud:
 - "nah saldo BCA berapa?" -> query_bank_account_balance
 - "eh ada stok habis ga?" -> query_items_no_stock
 
+== DISAMBIGUATION ==
+- "daftar pelanggan" / "list pelanggan" / "siapa aja pelanggan" -> query_customers_list (BUKAN query_customers_with_overdue)
+- "pelanggan yang terlambat/overdue/jatuh tempo" -> query_customers_with_overdue (HARUS ada kata terlambat/overdue/jatuh tempo)
+- "daftar vendor" / "list vendor" -> query_vendors_list (BUKAN query_vendors_with_overdue)
+- "vendor yang terlambat/overdue" -> query_vendors_with_overdue
+
+== FOLLOW-UP CONTEXT ==
+Jika ada konteks sebelumnya, follow-up singkat harus dipahami:
+- Setelah piutang: "yang paling besar?" -> query_ar_invoices
+- Setelah hutang: "yang paling besar?" -> query_ap_outstanding
+- Setelah daftar apapun: "urutkan dari terbesar" -> reformat_as_table
+- Setelah piutang/hutang: "per faktur" / "tampilkan per faktur" -> contextual_drill_down
+
+== DISAMBIGUATION ==
+- "daftar pelanggan" / "list pelanggan" / "siapa aja pelanggan" -> query_customers_list
+- "pelanggan yang terlambat/overdue/jatuh tempo" -> query_customers_with_overdue (HARUS ada kata terlambat/overdue/jatuh tempo)
+- "daftar vendor" / "list vendor" -> query_vendors_list
+- "vendor yang terlambat/overdue" -> query_vendors_with_overdue
+
+== CONTEXT FOLLOW-UP ==
+- Setelah piutang: "yang paling besar?" -> query_ar_invoices (faktur piutang terbesar)
+- Setelah hutang: "yang paling besar?" -> query_ap_outstanding (drill-down hutang terbesar)
+- Setelah daftar apapun: "urutkan dari terbesar" -> reformat_as_table (re-format last response sorted)
+- Setelah piutang/hutang: "per faktur" / "tampilkan per faktur" -> contextual_drill_down
+
 == FALLBACK ==
 - Pesan ambigu/tidak jelas -> intent: "ambiguous"
 """
@@ -1046,6 +1071,16 @@ def classify_query_intent(user_text: str) -> tuple:
     # Items no stock
     if _qre.search(r"(?:barang|item|stok).*(?:habis|kosong|out of stock|nol)", t):
         return "query_items_no_stock", None, None
+
+    # Customers list (MUST be before overdue check)
+    if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:pelanggan|customer)", t) or _qre.search(r"(?:pelanggan|customer).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
+        if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
+            return "query_customers_list", None, None
+
+    # Vendors list (MUST be before overdue check)
+    if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:vendor|pemasok)", t) or _qre.search(r"(?:vendor|pemasok).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
+        if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
+            return "query_vendors_list", None, None
 
     # Customers with overdue
     if _qre.search(r"(?:pelanggan|customer).*(?:terlambat|overdue|jatuh\s*tempo)", t):

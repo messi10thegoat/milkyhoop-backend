@@ -2537,7 +2537,7 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_profit_loss": QueryActionConfig(
         action_key="query_profit_loss",
         display_name="Laporan Laba Rugi",
-        rest_endpoint="/api/reports/profit-loss",
+        rest_endpoint="/api/reports/laba-rugi/{periode}",
         response_format="summary",
         description="Laba rugi: pendapatan, HPP, laba kotor, beban operasional, laba bersih.",
         signal_words=[
@@ -2553,10 +2553,7 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             "berapa rugi",
             "keuntungan",
         ],
-        query_params=[
-            QueryParam(name="start_date", label="Dari Tanggal", param_type="date"),
-            QueryParam(name="end_date", label="Sampai Tanggal", param_type="date"),
-        ],
+        query_params=[],
     ),
     "query_balance_sheet": QueryActionConfig(
         action_key="query_balance_sheet",
@@ -2673,10 +2670,7 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             "balance semua akun",
             "daftar saldo",
         ],
-        query_params=[
-            QueryParam(name="start_date", label="Dari Tanggal", param_type="date"),
-            QueryParam(name="end_date", label="Sampai Tanggal", param_type="date"),
-        ],
+        query_params=[],
     ),
     "query_top_expenses": QueryActionConfig(
         action_key="query_top_expenses",
@@ -4063,10 +4057,32 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             QueryParam(name="stock_status", label="Status Stok", param_type="string", default="out_of_stock"),
         ],
     ),
+    "query_customers_list": QueryActionConfig(
+        action_key="query_customers_list",
+        display_name="Daftar Pelanggan",
+        rest_endpoint="/api/customers",
+        response_format="list",
+        description="Daftar semua pelanggan.",
+        signal_words=["daftar pelanggan", "list pelanggan", "siapa pelanggan", "customer list"],
+        query_params=[
+            QueryParam(name="is_active", label="Aktif", param_type="string", default="true"),
+        ],
+    ),
+    "query_vendors_list": QueryActionConfig(
+        action_key="query_vendors_list",
+        display_name="Daftar Vendor",
+        rest_endpoint="/api/vendors",
+        response_format="list",
+        description="Daftar semua vendor/pemasok.",
+        signal_words=["daftar vendor", "list vendor", "daftar pemasok", "vendor list"],
+        query_params=[
+            QueryParam(name="is_active", label="Aktif", param_type="string", default="true"),
+        ],
+    ),
     "query_customers_with_overdue": QueryActionConfig(
         action_key="query_customers_with_overdue",
         display_name="Pelanggan Jatuh Tempo",
-        rest_endpoint="/api/sales-invoices/outstanding-summary",
+        rest_endpoint="/api/sales-invoices/summary",
         response_format="summary",
         description="Pelanggan dengan faktur jatuh tempo.",
         signal_words=["pelanggan jatuh tempo", "customer overdue", "pelanggan terlambat"],

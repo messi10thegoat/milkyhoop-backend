@@ -4190,6 +4190,26 @@ class UnifiedAgent:
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
 
+            # 3b. LIST vs OVERDUE GUARD
+            _LIST_VS_OVERDUE = {
+                "query_customers_list": "query_customers_with_overdue",
+                "query_vendors_list": "query_vendors_with_overdue",
+            }
+            for list_intent, overdue_intent in _LIST_VS_OVERDUE.items():
+                if _qci_guard == list_intent and extraction.intent == overdue_intent:
+                    logger.warning("[LIST_GUARD] %s -> %s", extraction.intent, list_intent)
+                    extraction.intent = list_intent
+                    extraction.confidence = 1.0
+                    break
+
+            # 3c. DRILL-DOWN GUARD
+            if _qci_guard in ("contextual_drill_down", "drilldown_table"):
+                if extraction.intent not in ("contextual_drill_down", "drilldown_table", "reformat_as_table"):
+                    logger.warning("[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard)
+                    extraction.intent = _qci_guard
+                    extraction.confidence = 1.0
+                    extraction.needs_escalation = False
+
             # 4. CRUD GUARD (explicit action verbs only)
             from .entity_extractor import classify_crud_intent
             _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(user_text)
