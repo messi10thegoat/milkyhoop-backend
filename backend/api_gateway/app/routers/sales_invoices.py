@@ -20,13 +20,12 @@ from ..schemas.sales_invoices import (
     InvoicePaymentCreate,
     InvoiceResponse,
     InvoiceListResponse,
-    InvoiceDetailResponse,
     InvoiceSummaryResponse,
     InvoiceCalculationResponse,
 )
 from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
-from ..utils.idempotency import execute_idempotent, get_idempotency_key
+from ..services.resolve_account import resolve_account_id
+from ..utils.idempotency import get_idempotency_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -697,7 +696,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     }
 
     # Compute subtotal (revenue without tax)
-    tax_amount = invoice["tax_amount"] or 0
+    tax_amount = float(invoice["tax_amount"] or 0)
     subtotal_amount = total_amount - tax_amount
     line_number = 1
 
@@ -755,6 +754,58 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     await conn.execute(
         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
+
+    # T3: Write document_tax_lines per taxable item
+    tax_items_dtl = await conn.fetch(
+        """
+        SELECT id, tax_code_id, tax_rate, tax_amount, subtotal, discount_amount, dpp
+        FROM sales_invoice_items
+        WHERE invoice_id = $1 AND COALESCE(tax_amount, 0) > 0
+        """,
+        invoice_id,
+    )
+    # Get the PPN Keluaran journal_line_id
+    vat_jl_id = None
+    if tax_amount > 0 and vat_output_account.get("id"):
+        vat_jl_id = await conn.fetchval(
+            """
+            SELECT id FROM journal_lines
+            WHERE journal_id = $1 AND account_id = $2
+            LIMIT 1
+            """,
+            journal_id,
+            vat_output_account["id"],
+        )
+    for ti in tax_items_dtl:
+        if not ti["tax_code_id"]:
+            continue
+        tc_coa = await conn.fetchval(
+            "SELECT coa_id FROM tax_codes WHERE id = $1",
+            ti["tax_code_id"],
+        )
+        dpp_val = float(ti["dpp"] or 0) or (
+            float(ti["subtotal"] or 0) - float(ti["discount_amount"] or 0)
+        )
+        await conn.execute(
+            """
+            INSERT INTO document_tax_lines (
+                id, tenant_id, document_type, document_id, line_item_id,
+                tax_code_id, direction, base_amount, tax_amount,
+                coa_id, journal_line_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+            uuid.uuid4(),
+            ctx["tenant_id"],
+            "SALES_INVOICE",
+            invoice_id,
+            ti["id"],
+            ti["tax_code_id"],
+            "output",
+            dpp_val,
+            float(ti["tax_amount"]),
+            tc_coa,
+            vat_jl_id,
+        )
 
     # COGS CALCULATION AND INVENTORY LEDGER (matching post_invoice logic)
     # =============================================================
@@ -1231,8 +1282,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             discount_percent, discount_amount,
                             tax_code, tax_rate, tax_amount,
                             subtotal, total, line_number,
-                            batch_id, batch_no, exp_date
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                            batch_id, batch_no, exp_date,
+                            tax_code_id, dpp
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                     """,
                         invoice_id,
                         item_uuid,
@@ -1252,6 +1304,11 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         UUID(item_batch_id) if item_batch_id else None,
                         item_batch_no,
                         item_exp_date,
+                        UUID(item.get("tax_code_id"))
+                        if item.get("tax_code_id")
+                        else None,
+                        item.get("dpp")
+                        or (item["subtotal"] - item.get("discount_amount", 0)),
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -1419,8 +1476,9 @@ async def update_invoice(
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
-                                batch_id, batch_no, exp_date
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                batch_id, batch_no, exp_date,
+                                tax_code_id, dpp
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                         """,
                             invoice_id,
                             item_uuid,
@@ -1440,6 +1498,11 @@ async def update_invoice(
                             UUID(item_batch_id) if item_batch_id else None,
                             item_batch_no,
                             item_exp_date,
+                            UUID(str(item.tax_code_id))
+                            if getattr(item, "tax_code_id", None)
+                            else None,
+                            calc.get("dpp")
+                            or (calc["subtotal"] - calc["discount_amount"]),
                         )
 
                     # Update invoice totals
@@ -1667,24 +1730,77 @@ async def post_invoice(
                     "id": await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
                 }
 
+                # Fetch per-item tax data for proper journal split + DTL
+                tax_items = await conn.fetch(
+                    """
+                    SELECT id, tax_code_id, tax_rate, tax_amount, subtotal, discount_amount, dpp
+                    FROM sales_invoice_items
+                    WHERE invoice_id = $1 AND COALESCE(tax_amount, 0) > 0
+                    """,
+                    invoice_id,
+                )
+                total_tax = sum(float(ti["tax_amount"] or 0) for ti in tax_items)
+                subtotal_amount = float(invoice["total_amount"]) - total_tax
+
+                # Resolve PPN Keluaran account
+                vat_output_account = {
+                    "id": await resolve_account_id(conn, ctx["tenant_id"], "2-10600")
+                }
+
                 if ar_account and sales_account:
-                    # Insert journal lines: Dr. AR, Cr. Sales
+                    import uuid as _uuid
+
+                    line_number = 1
+
+                    # Line 1: Debit AR = total_amount (inclusive of tax)
                     await conn.execute(
                         """
-                        INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number)
-                        VALUES
-                        ($1, $2, $3, 0, $4, 1),
-                        ($1, $5, 0, $3, $4, 2)
-                    """,
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, $5, 0, $6)
+                        """,
+                        _uuid.uuid4(),
                         journal_id,
+                        line_number,
                         ar_account["id"],
                         invoice["total_amount"],
-                        f"Faktur {invoice['invoice_number']}",
-                        sales_account["id"],
+                        f"Piutang - {invoice['invoice_number']}",
                     )
+                    line_number += 1
 
-                    # Journal totals already set in INSERT statement
+                    # Line 2: Credit Sales = subtotal (WITHOUT tax)
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        _uuid.uuid4(),
+                        journal_id,
+                        line_number,
+                        sales_account["id"],
+                        subtotal_amount,
+                        f"Penjualan - {invoice['invoice_number']}",
+                    )
+                    line_number += 1
+
+                    # Line 3: Credit PPN Keluaran = total_tax
+                    vat_journal_line_id = None
+                    if total_tax > 0 and vat_output_account.get("id"):
+                        vat_journal_line_id = _uuid.uuid4()
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            """,
+                            vat_journal_line_id,
+                            journal_id,
+                            line_number,
+                            vat_output_account["id"],
+                            total_tax,
+                            f"PPN Keluaran - {invoice['invoice_number']}",
+                        )
+                        line_number += 1
                 else:
+                    vat_journal_line_id = None
                     warnings.append(
                         "AR account (1-10400) or Sales account (4-10100) not found. Journal lines not created."
                     )
@@ -1694,6 +1810,40 @@ async def post_invoice(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # T3: Write document_tax_lines per taxable item
+                for ti in tax_items:
+                    if not ti["tax_code_id"]:
+                        continue
+                    import uuid as _uuid_dtl
+
+                    tc_coa = await conn.fetchval(
+                        "SELECT coa_id FROM tax_codes WHERE id = $1",
+                        ti["tax_code_id"],
+                    )
+                    dpp_val = float(ti["dpp"] or 0) or (
+                        float(ti["subtotal"] or 0) - float(ti["discount_amount"] or 0)
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO document_tax_lines (
+                            id, tenant_id, document_type, document_id, line_item_id,
+                            tax_code_id, direction, base_amount, tax_amount,
+                            coa_id, journal_line_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        """,
+                        _uuid_dtl.uuid4(),
+                        ctx["tenant_id"],
+                        "SALES_INVOICE",
+                        invoice_id,
+                        ti["id"],
+                        ti["tax_code_id"],
+                        "output",
+                        dpp_val,
+                        float(ti["tax_amount"]),
+                        tc_coa,
+                        vat_journal_line_id,
+                    )
 
                 # =============================================================
                 # COGS CALCULATION AND POSTING

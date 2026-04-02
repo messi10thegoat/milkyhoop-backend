@@ -41,9 +41,6 @@ from ..schemas.credit_notes import (
     CreditNoteDetailResponse,
     CreditNoteListResponse,
     CreditNoteSummaryResponse,
-    CreditNoteItemResponse,
-    CreditNoteApplicationResponse,
-    CreditNoteRefundResponse,
 )
 from ..config import settings
 from ..services.resolve_account import resolve_account_id
@@ -1053,19 +1050,21 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 line_number += 1
 
                 # Dr. VAT Payable (if tax)
+                tax_jl_id = None
                 if tax_amount > 0:
                     tax_account_id = await resolve_account_id(
                         conn, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT_CODE
                     )
 
                     if tax_account_id:
+                        tax_jl_id = uuid_module.uuid4()
                         await conn.execute(
                             """
                             INSERT INTO journal_lines (
                                 id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                         """,
-                            uuid_module.uuid4(),
+                            tax_jl_id,
                             journal_id,
                             line_number,
                             tax_account_id,
@@ -1094,6 +1093,43 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # Wave 3: Write document_tax_lines (PPN reversal on CN)
+                if tax_amount > 0 and tax_jl_id:
+                    # Resolve PPN tax_code from tax_codes
+                    ppn_tc_id = await conn.fetchval(
+                        """
+                        SELECT id FROM tax_codes
+                        WHERE tenant_id = $1 AND tax_type = 'ppn' AND rate > 0 AND is_active = true
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                    )
+                    if ppn_tc_id:
+                        tc_coa = await conn.fetchval(
+                            "SELECT coa_id FROM tax_codes WHERE id = $1",
+                            ppn_tc_id,
+                        )
+                        dpp_val = float(subtotal)
+                        await conn.execute(
+                            """
+                            INSERT INTO document_tax_lines (
+                                id, tenant_id, document_type, document_id,
+                                tax_code_id, direction, base_amount, tax_amount,
+                                coa_id, journal_line_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            """,
+                            uuid_module.uuid4(),
+                            ctx["tenant_id"],
+                            "CREDIT_NOTE",
+                            credit_note_id,
+                            ppn_tc_id,
+                            "output",
+                            dpp_val,
+                            float(tax_amount),
+                            tc_coa,
+                            tax_jl_id,
+                        )
 
                 # Update credit note status
                 await conn.execute(
@@ -1231,7 +1267,7 @@ async def apply_credit_note(
                     if app.amount > invoice_remaining:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Application amount exceeds invoice remaining balance",
+                            detail="Application amount exceeds invoice remaining balance",
                         )
 
                     # Check for existing application

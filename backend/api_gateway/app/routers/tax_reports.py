@@ -22,24 +22,30 @@ import csv
 import io
 
 from ..schemas.tax_reports import (
-    PPNReportResponse, PPNSection, PPNTransaction, PPNCrossCheck,
-    PPhReportResponse, PPhByType, PPhTransaction, PPhCrossCheck,
+    PPNReportResponse,
+    PPNSection,
+    PPNTransaction,
+    PPNCrossCheck,
+    PPhReportResponse,
+    PPhByType,
+    PPhTransaction,
+    PPhCrossCheck,
 )
 from ..config import settings
-from uuid import UUID
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
+
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -68,6 +74,7 @@ def _parse_period(period: str) -> tuple[date, date]:
 
 # ─── PPN Report ────────────────────────────────────────────────
 
+
 @router.get("/ppn", response_model=PPNReportResponse)
 async def get_ppn_report(
     request: Request,
@@ -86,14 +93,17 @@ async def get_ppn_report(
         await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
 
         # Step 1: Collect PPN coa_ids from tax_codes (Law 27)
-        ppn_coas = await conn.fetch("""
+        ppn_coas = await conn.fetch(
+            """
             SELECT DISTINCT coa_id, direction
             FROM tax_codes
             WHERE tenant_id = $1
               AND tax_type = 'ppn'
               AND coa_id IS NOT NULL
               AND is_active = true
-        """, tenant_id)
+        """,
+            tenant_id,
+        )
 
         keluaran_coa_ids = [r["coa_id"] for r in ppn_coas if r["direction"] == "output"]
         masukan_coa_ids = [r["coa_id"] for r in ppn_coas if r["direction"] == "input"]
@@ -114,13 +124,15 @@ async def get_ppn_report(
 
         # Step 2: Query journal_lines for PPN transactions
         all_coa_ids = keluaran_coa_ids + masukan_coa_ids
-        rows = await conn.fetch("""
+        rows = await conn.fetch(
+            """
             SELECT
                 je.journal_number,
                 je.journal_date::text AS journal_date,
                 je.description,
                 je.source_type,
                 je.source_id::text AS source_id,
+                jl.id AS jl_id,
                 jl.account_id,
                 jl.debit,
                 jl.credit
@@ -133,13 +145,20 @@ async def get_ppn_report(
               AND je.reversed_by_id IS NULL
               AND jl.account_id = ANY($4)
             ORDER BY je.journal_date, je.journal_number
-        """, tenant_id, period_start, period_end, all_coa_ids)
+        """,
+            tenant_id,
+            period_start,
+            period_end,
+            all_coa_ids,
+        )
 
         # Separate keluaran vs masukan
         keluaran_txns = []
         masukan_txns = []
         keluaran_total = Decimal("0")
         masukan_total = Decimal("0")
+        _jl_id_map = {}  # index → jl_id for keluaran
+        _jl_id_map_m = {}  # index → jl_id for masukan
 
         for r in rows:
             acct_id = r["account_id"]
@@ -147,33 +166,40 @@ async def get_ppn_report(
             if acct_id in keluaran_coa_ids and r["credit"] > 0:
                 amt = Decimal(str(r["credit"]))
                 keluaran_total += amt
-                keluaran_txns.append(PPNTransaction(
-                    journal_number=r["journal_number"],
-                    journal_date=r["journal_date"],
-                    description=r["description"] or "",
-                    source_type=r["source_type"] or "",
-                    source_id=r["source_id"],
-                    amount=amt,
-                    dpp=Decimal("0"),  # enriched below from document_tax_lines
-                    tax_rate=Decimal("0"),
-                ))
+                keluaran_txns.append(
+                    PPNTransaction(
+                        journal_number=r["journal_number"],
+                        journal_date=r["journal_date"],
+                        description=r["description"] or "",
+                        source_type=r["source_type"] or "",
+                        source_id=r["source_id"],
+                        amount=amt,
+                        dpp=Decimal("0"),
+                        tax_rate=Decimal("0"),
+                    )
+                )
+                _jl_id_map[len(keluaran_txns) - 1] = r["jl_id"]
             # PPN Masukan = debit side (asset increases)
             elif acct_id in masukan_coa_ids and r["debit"] > 0:
                 amt = Decimal(str(r["debit"]))
                 masukan_total += amt
-                masukan_txns.append(PPNTransaction(
-                    journal_number=r["journal_number"],
-                    journal_date=r["journal_date"],
-                    description=r["description"] or "",
-                    source_type=r["source_type"] or "",
-                    source_id=r["source_id"],
-                    amount=amt,
-                    dpp=Decimal("0"),
-                    tax_rate=Decimal("0"),
-                ))
+                masukan_txns.append(
+                    PPNTransaction(
+                        journal_number=r["journal_number"],
+                        journal_date=r["journal_date"],
+                        description=r["description"] or "",
+                        source_type=r["source_type"] or "",
+                        source_id=r["source_id"],
+                        amount=amt,
+                        dpp=Decimal("0"),
+                        tax_rate=Decimal("0"),
+                    )
+                )
+                _jl_id_map_m[len(masukan_txns) - 1] = r["jl_id"]
 
         # Enrich with document_tax_lines for DPP and rate
-        dtl_rows = await conn.fetch("""
+        dtl_rows = await conn.fetch(
+            """
             SELECT
                 dtl.journal_line_id,
                 dtl.base_amount,
@@ -186,14 +212,38 @@ async def get_ppn_report(
               AND dtl.coa_id = ANY($2)
               AND dtl.created_at >= $3::timestamp
               AND dtl.created_at < $4::timestamp
-        """, tenant_id, all_coa_ids, period_start, period_end)
+        """,
+            tenant_id,
+            all_coa_ids,
+            period_start,
+            period_end,
+        )
 
-        # Build lookup by journal_line_id — but we don't have it easily mapped.
-        # Alternative: enrich by matching amounts (best-effort) or use aggregate cross-check.
-        # For now, cross-check uses aggregate totals.
+        # Wave 4: Build lookup by journal_line_id for per-transaction DPP enrichment
+        dtl_by_jl = {}
+        for d in dtl_rows:
+            if d["journal_line_id"]:
+                dtl_by_jl[d["journal_line_id"]] = d
+
+        # Enrich keluaran transactions with DPP from DTL
+        for idx, txn in enumerate(keluaran_txns):
+            jl_id = _jl_id_map.get(idx)
+            if jl_id and jl_id in dtl_by_jl:
+                d = dtl_by_jl[jl_id]
+                txn.dpp = Decimal(str(d["base_amount"]))
+                txn.tax_rate = Decimal(str(d["rate"] or 0))
+
+        # Enrich masukan transactions with DPP from DTL
+        for idx, txn in enumerate(masukan_txns):
+            jl_id = _jl_id_map_m.get(idx)
+            if jl_id and jl_id in dtl_by_jl:
+                d = dtl_by_jl[jl_id]
+                txn.dpp = Decimal(str(d["base_amount"]))
+                txn.tax_rate = Decimal(str(d["rate"] or 0))
 
         # Cross-check: document_tax_lines totals
-        dtl_agg = await conn.fetch("""
+        dtl_agg = await conn.fetch(
+            """
             SELECT
                 direction,
                 COALESCE(SUM(tax_amount), 0) AS total
@@ -203,7 +253,12 @@ async def get_ppn_report(
               AND created_at >= $3::timestamp
               AND created_at < $4::timestamp
             GROUP BY direction
-        """, tenant_id, all_coa_ids, period_start, period_end)
+        """,
+            tenant_id,
+            all_coa_ids,
+            period_start,
+            period_end,
+        )
 
         dtl_keluaran = Decimal("0")
         dtl_masukan = Decimal("0")
@@ -237,6 +292,7 @@ async def get_ppn_report(
 
 # ─── PPh Report ────────────────────────────────────────────────
 
+
 @router.get("/pph", response_model=PPhReportResponse)
 async def get_pph_report(
     request: Request,
@@ -255,14 +311,17 @@ async def get_pph_report(
         await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
 
         # Step 1: Collect PPh coa_ids from tax_codes (Law 27)
-        pph_coas = await conn.fetch("""
+        pph_coas = await conn.fetch(
+            """
             SELECT DISTINCT coa_id
             FROM tax_codes
             WHERE tenant_id = $1
               AND is_withholding = true
               AND coa_id IS NOT NULL
               AND is_active = true
-        """, tenant_id)
+        """,
+            tenant_id,
+        )
 
         pph_coa_ids = [r["coa_id"] for r in pph_coas]
 
@@ -279,7 +338,8 @@ async def get_pph_report(
             )
 
         # Step 2: Journal-derived PPh amounts
-        pph_rows = await conn.fetch("""
+        pph_rows = await conn.fetch(
+            """
             SELECT
                 je.id AS journal_id,
                 je.journal_number,
@@ -298,7 +358,12 @@ async def get_pph_report(
               AND jl.account_id = ANY($4)
               AND jl.credit > 0
             ORDER BY je.journal_date, je.journal_number
-        """, tenant_id, period_start, period_end, pph_coa_ids)
+        """,
+            tenant_id,
+            period_start,
+            period_end,
+            pph_coa_ids,
+        )
 
         journal_total = sum(Decimal(str(r["amount"])) for r in pph_rows)
         journal_ids = [r["journal_id"] for r in pph_rows]
@@ -306,7 +371,8 @@ async def get_pph_report(
         # Step 3: Enrich with withholding_tax_records (metadata only)
         wtr_rows = []
         if journal_ids:
-            wtr_rows = await conn.fetch("""
+            wtr_rows = await conn.fetch(
+                """
                 SELECT
                     wtr.journal_id,
                     wtr.tax_code_id,
@@ -324,7 +390,10 @@ async def get_pph_report(
                 WHERE wtr.tenant_id = $1
                   AND wtr.journal_id = ANY($2)
                   AND wtr.status = 'recorded'
-            """, tenant_id, journal_ids)
+            """,
+                tenant_id,
+                journal_ids,
+            )
 
         # Build journal_id → wtr lookup
         wtr_by_journal = {}
@@ -358,18 +427,20 @@ async def get_pph_report(
             grp["total_pph"] += pph_amt
             grp["total_dpp"] += dpp
             grand_dpp += dpp
-            grp["transactions"].append(PPhTransaction(
-                journal_number=r["journal_number"],
-                journal_date=r["journal_date"],
-                vendor_name=wtr["vendor_name"] if wtr else None,
-                vendor_npwp=wtr["vendor_npwp"] if wtr else None,
-                document_number=wtr.get("document_type", "") if wtr else None,
-                dpp=dpp,
-                rate=rate,
-                pph_amount=pph_amt,
-                source_type=r["source_type"] or "",
-                source_id=r["source_id"],
-            ))
+            grp["transactions"].append(
+                PPhTransaction(
+                    journal_number=r["journal_number"],
+                    journal_date=r["journal_date"],
+                    vendor_name=wtr["vendor_name"] if wtr else None,
+                    vendor_npwp=wtr["vendor_npwp"] if wtr else None,
+                    document_number=wtr.get("document_type", "") if wtr else None,
+                    dpp=dpp,
+                    rate=rate,
+                    pph_amount=pph_amt,
+                    source_type=r["source_type"] or "",
+                    source_id=r["source_id"],
+                )
+            )
 
         by_type_list = [
             PPhByType(
@@ -385,14 +456,18 @@ async def get_pph_report(
         ]
 
         # Cross-check: withholding_tax_records total
-        wtr_total_row = await conn.fetchval("""
+        wtr_total_row = await conn.fetchval(
+            """
             SELECT COALESCE(SUM(tax_amount), 0)
             FROM withholding_tax_records
             WHERE tenant_id = $1
               AND tax_period = $2
               AND status = 'recorded'
               AND direction = 'cut'
-        """, tenant_id, period.replace("-", ""))
+        """,
+            tenant_id,
+            period.replace("-", ""),
+        )
 
         wtr_total = Decimal(str(wtr_total_row or 0))
 
@@ -409,6 +484,7 @@ async def get_pph_report(
 
 
 # ─── Export CSV ────────────────────────────────────────────────
+
 
 @router.get("/ppn/export")
 async def export_ppn_csv(
@@ -427,7 +503,9 @@ async def export_ppn_csv(
     writer.writerow(["=== PPN KELUARAN ==="])
     writer.writerow(["No", "Tanggal", "No Jurnal", "Keterangan", "DPP", "PPN"])
     for i, t in enumerate(report.ppn_keluaran.transactions, 1):
-        writer.writerow([i, t.journal_date, t.journal_number, t.description, t.dpp, t.amount])
+        writer.writerow(
+            [i, t.journal_date, t.journal_number, t.description, t.dpp, t.amount]
+        )
     writer.writerow(["", "", "", "TOTAL KELUARAN", "", report.ppn_keluaran.total])
     writer.writerow([])
 
@@ -435,7 +513,9 @@ async def export_ppn_csv(
     writer.writerow(["=== PPN MASUKAN ==="])
     writer.writerow(["No", "Tanggal", "No Jurnal", "Keterangan", "DPP", "PPN"])
     for i, t in enumerate(report.ppn_masukan.transactions, 1):
-        writer.writerow([i, t.journal_date, t.journal_number, t.description, t.dpp, t.amount])
+        writer.writerow(
+            [i, t.journal_date, t.journal_number, t.description, t.dpp, t.amount]
+        )
     writer.writerow(["", "", "", "TOTAL MASUKAN", "", report.ppn_masukan.total])
     writer.writerow([])
 
@@ -445,7 +525,9 @@ async def export_ppn_csv(
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8-sig")),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=ppn-report-{period}.csv"},
+        headers={
+            "Content-Disposition": f"attachment; filename=ppn-report-{period}.csv"
+        },
     )
 
 
@@ -462,22 +544,56 @@ async def export_pph_csv(
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["No", "Tanggal", "Jenis PPh", "Vendor", "NPWP", "DPP", "Tarif(%)", "PPh", "No Dokumen"])
+    writer.writerow(
+        [
+            "No",
+            "Tanggal",
+            "Jenis PPh",
+            "Vendor",
+            "NPWP",
+            "DPP",
+            "Tarif(%)",
+            "PPh",
+            "No Dokumen",
+        ]
+    )
     row_num = 1
     for group in report.by_type:
         for t in group.transactions:
-            writer.writerow([
-                row_num, t.journal_date, group.tax_code,
-                t.vendor_name or "", t.vendor_npwp or "",
-                t.dpp, t.rate, t.pph_amount, t.document_number or "",
-            ])
+            writer.writerow(
+                [
+                    row_num,
+                    t.journal_date,
+                    group.tax_code,
+                    t.vendor_name or "",
+                    t.vendor_npwp or "",
+                    t.dpp,
+                    t.rate,
+                    t.pph_amount,
+                    t.document_number or "",
+                ]
+            )
             row_num += 1
     writer.writerow([])
-    writer.writerow(["", "", "", "", "TOTAL", report.grand_total_dpp, "", report.grand_total_pph, ""])
+    writer.writerow(
+        [
+            "",
+            "",
+            "",
+            "",
+            "TOTAL",
+            report.grand_total_dpp,
+            "",
+            report.grand_total_pph,
+            "",
+        ]
+    )
 
     content = output.getvalue()
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8-sig")),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=pph-report-{period}.csv"},
+        headers={
+            "Content-Disposition": f"attachment; filename=pph-report-{period}.csv"
+        },
     )

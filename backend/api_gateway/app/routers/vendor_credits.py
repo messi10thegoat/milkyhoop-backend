@@ -1047,19 +1047,21 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                 line_number += 1
 
                 # Cr. VAT Receivable (if tax) - Law 27
+                tax_jl_id = None
                 if tax_amount > 0:
                     tax_account_id = await resolve_account_id(
                         conn, ctx["tenant_id"], TAX_RECEIVABLE_ACCOUNT
                     )
 
                     if tax_account_id:
+                        tax_jl_id = uuid_module.uuid4()
                         await conn.execute(
                             """
                             INSERT INTO journal_lines (
                                 id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                         """,
-                            uuid_module.uuid4(),
+                            tax_jl_id,
                             journal_id,
                             line_number,
                             tax_account_id,
@@ -1072,6 +1074,42 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # Wave 3: Write document_tax_lines (PPN reversal on VC)
+                if tax_amount > 0 and tax_jl_id:
+                    ppn_tc_id = await conn.fetchval(
+                        """
+                        SELECT id FROM tax_codes
+                        WHERE tenant_id = $1 AND tax_type = 'ppn' AND rate > 0 AND is_active = true
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                    )
+                    if ppn_tc_id:
+                        tc_coa = await conn.fetchval(
+                            "SELECT coa_id FROM tax_codes WHERE id = $1",
+                            ppn_tc_id,
+                        )
+                        dpp_val = float(subtotal)
+                        await conn.execute(
+                            """
+                            INSERT INTO document_tax_lines (
+                                id, tenant_id, document_type, document_id,
+                                tax_code_id, direction, base_amount, tax_amount,
+                                coa_id, journal_line_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            """,
+                            uuid_module.uuid4(),
+                            ctx["tenant_id"],
+                            "VENDOR_CREDIT",
+                            vendor_credit_id,
+                            ppn_tc_id,
+                            "input",
+                            dpp_val,
+                            float(tax_amount),
+                            tc_coa,
+                            tax_jl_id,
+                        )
 
                 # Update vendor credit status
                 await conn.execute(
@@ -1210,7 +1248,7 @@ async def apply_vendor_credit(
                     if app.amount > bill_remaining:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Application amount exceeds bill remaining balance",
+                            detail="Application amount exceeds bill remaining balance",
                         )
 
                     # Check for existing application

@@ -29,7 +29,7 @@ from ..schemas.expenses import (
     ExpenseAutocompleteResponse,
 )
 from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,6 +92,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
 
 # === Journal Preview (read-only, for DirectAction confirmation card) ===
 
+
 @router.post("/preview-journal")
 async def preview_journal(request: Request, body: dict = Body(...)):
     """
@@ -120,16 +121,25 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         if account_id:
             try:
                 from uuid import UUID
+
                 row = await conn.fetchrow(
                     "SELECT name, account_code FROM chart_of_accounts WHERE id = $1::uuid AND tenant_id = $2",
-                    UUID(account_id), ctx["tenant_id"]
+                    UUID(account_id),
+                    ctx["tenant_id"],
                 )
                 if row:
                     expense_name = row["name"]
                     expense_code = row["account_code"]
             except Exception:
                 pass
-        lines.append({"account_name": expense_name, "account_code": expense_code, "debit": subtotal, "credit": 0})
+        lines.append(
+            {
+                "account_name": expense_name,
+                "account_code": expense_code,
+                "debit": subtotal,
+                "credit": 0,
+            }
+        )
 
         # Dr. PPN Masukan (if tax)
         if tax_amount > 0:
@@ -138,13 +148,20 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             try:
                 row = await conn.fetchrow(
                     "SELECT name FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800' AND is_active = true",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
                 if row:
                     ppn_name = row["name"]
             except Exception:
                 pass
-            lines.append({"account_name": ppn_name, "account_code": ppn_code, "debit": tax_amount, "credit": 0})
+            lines.append(
+                {
+                    "account_name": ppn_name,
+                    "account_code": ppn_code,
+                    "debit": tax_amount,
+                    "credit": 0,
+                }
+            )
 
         # Cr. Bank/Kas
         bank_name = "Bank/Kas"
@@ -152,12 +169,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         if paid_through_id:
             try:
                 from uuid import UUID
+
                 ba_row = await conn.fetchrow(
                     """SELECT ba.coa_id, ca.name, ca.account_code
                        FROM bank_accounts ba
                        JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
                        WHERE ba.id = $1::uuid AND ba.tenant_id = $2""",
-                    UUID(paid_through_id), ctx["tenant_id"]
+                    UUID(paid_through_id),
+                    ctx["tenant_id"],
                 )
                 if ba_row:
                     bank_name = ba_row["name"]
@@ -165,7 +184,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             except Exception:
                 pass
         total_credit = subtotal + tax_amount
-        lines.append({"account_name": bank_name, "account_code": bank_code, "debit": 0, "credit": total_credit})
+        lines.append(
+            {
+                "account_name": bank_name,
+                "account_code": bank_code,
+                "debit": 0,
+                "credit": total_credit,
+            }
+        )
 
         return {"journal_lines": lines}
 
@@ -241,8 +267,9 @@ async def get_expenses_summary(
             )
 
             # Tax total from journal_lines (PPN Masukan = account 1-10800, ASSET type)
-            total_tax = await conn.fetchval(
-                f"""
+            total_tax = (
+                await conn.fetchval(
+                    f"""
                 WITH expense_journals AS (
                     SELECT je.id
                     FROM journal_entries je
@@ -260,8 +287,10 @@ async def get_expenses_summary(
                 WHERE coa.account_code = '1-10800'
                   AND jl.debit > 0
             """,
-                ctx["tenant_id"],
-            ) or 0
+                    ctx["tenant_id"],
+                )
+                or 0
+            )
 
             # Metadata from expenses table (non-financial: counts only)
             metadata = await conn.fetchrow(
@@ -276,8 +305,9 @@ async def get_expenses_summary(
             )
 
             # Billable amount from journal_lines (only EXPENSE source_type, billable)
-            billable_amount = await conn.fetchval(
-                f"""
+            billable_amount = (
+                await conn.fetchval(
+                    f"""
                 WITH billable_journals AS (
                     SELECT je.id
                     FROM journal_entries je
@@ -297,8 +327,10 @@ async def get_expenses_summary(
                 WHERE coa.account_type IN ('EXPENSE', 'OTHER_EXPENSE', 'COGS')
                   AND jl.debit > 0
             """,
-                ctx["tenant_id"],
-            ) or 0
+                    ctx["tenant_id"],
+                )
+                or 0
+            )
 
             # Top expense accounts from journal_lines
             top_accounts = await conn.fetch(
@@ -379,8 +411,12 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
             subtotal = body.amount or 0
 
         # Calculate tax and PPh
-        tax_amount = (Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
-        pph_amount = (Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+        tax_amount = (
+            Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")
+        ).quantize(Decimal("1"))
+        pph_amount = (
+            Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")
+        ).quantize(Decimal("1"))
         total_amount = subtotal + tax_amount - pph_amount
 
         return {
@@ -418,9 +454,9 @@ async def list_expenses(
     search: Optional[str] = Query(
         None, description="Search expense number, vendor, or notes"
     ),
-    sort_by: Literal["expense_date", "created_at", "total_amount", "vendor_name"] = Query(
-        "expense_date", description="Sort field"
-    ),
+    sort_by: Literal[
+        "expense_date", "created_at", "total_amount", "vendor_name"
+    ] = Query("expense_date", description="Sort field"),
     sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
     is_billable: Optional[bool] = Query(None, description="Filter by billable status"),
     billing_status: Optional[Literal["billable", "non_billable", "invoiced"]] = Query(
@@ -474,7 +510,9 @@ async def list_expenses(
 
             if billing_status:
                 if billing_status == "billable":
-                    conditions.append("is_billable = true AND billed_invoice_id IS NULL")
+                    conditions.append(
+                        "is_billable = true AND billed_invoice_id IS NULL"
+                    )
                 elif billing_status == "non_billable":
                     conditions.append("is_billable = false")
                 elif billing_status == "invoiced":
@@ -554,8 +592,12 @@ async def list_expenses(
                         "status": row["status"],
                         "is_billable": row["is_billable"] or False,
                         "has_receipt": row["has_receipt"] or False,
-                        "billed_invoice_id": str(row["billed_invoice_id"]) if row["billed_invoice_id"] else None,
-                        "billed_to_customer_id": str(row["billed_to_customer_id"]) if row["billed_to_customer_id"] else None,
+                        "billed_invoice_id": str(row["billed_invoice_id"])
+                        if row["billed_invoice_id"]
+                        else None,
+                        "billed_to_customer_id": str(row["billed_to_customer_id"])
+                        if row["billed_to_customer_id"]
+                        else None,
                         "accounting_status": row["accounting_status"],
                         "reference": row["reference"],
                         "notes": row["notes"],
@@ -637,7 +679,9 @@ async def list_expense_ledger(
     ),
     date_from: Optional[date] = Query(None, description="Filter date from"),
     date_to: Optional[date] = Query(None, description="Filter date to"),
-    search: Optional[str] = Query(None, description="Search description or expense number"),
+    search: Optional[str] = Query(
+        None, description="Search description or expense number"
+    ),
     sort_by: Literal["journal_date", "created_at", "amount"] = Query(
         "journal_date", description="Sort field"
     ),
@@ -691,7 +735,9 @@ async def list_expense_ledger(
             # Billing status (only applies to expenses-table entries)
             if billing_status:
                 if billing_status == "billable":
-                    conditions.append("e.is_billable = true AND e.billed_invoice_id IS NULL")
+                    conditions.append(
+                        "e.is_billable = true AND e.billed_invoice_id IS NULL"
+                    )
                 elif billing_status == "non_billable":
                     conditions.append("e.is_billable = false")
                 elif billing_status == "invoiced":
@@ -702,7 +748,9 @@ async def list_expense_ledger(
                 if has_receipt:
                     conditions.append("e.has_receipt = true")
                 else:
-                    conditions.append("(e.has_receipt = false OR e.has_receipt IS NULL)")
+                    conditions.append(
+                        "(e.has_receipt = false OR e.has_receipt IS NULL)"
+                    )
 
             # Search across expense number, vendor name, and journal description
             if search:
@@ -845,7 +893,9 @@ async def list_expense_ledger(
                 has_expense_record = row["expense_id"] is not None
 
                 # Determine effective status
-                if row["is_reversed"] or (has_expense_record and row["expense_status"] == "void"):
+                if row["is_reversed"] or (
+                    has_expense_record and row["expense_status"] == "void"
+                ):
                     effective_status = "void"
                 else:
                     effective_status = "posted"
@@ -873,37 +923,63 @@ async def list_expense_ledger(
                 # Amount: from journal (Law 16)
                 amount = float(row["total_debit_amount"])
 
-                items.append({
-                    "id": str(row["expense_id"]) if has_expense_record else str(row["journal_id"]),
-                    "expense_number": row["expense_number"] if has_expense_record else None,
-                    "journal_number": row["journal_number"],
-                    "expense_date": row["journal_date"],
-                    "source_type": row["source_type"],
-                    "paid_through_name": paid_through,
-                    "vendor": {
-                        "id": str(row["vendor_id"]),
-                        "name": row["vendor_name"],
-                    } if has_expense_record and row["vendor_id"] else None,
-                    "vendor_name": row["vendor_name"] if has_expense_record else None,
-                    "account_name": account_name,
-                    "account_code": row["first_account_code"],
-                    "account_count": row["account_count"],
-                    "subtotal": float(row["subtotal"]) if has_expense_record and row["subtotal"] else amount,
-                    "tax_amount": float(row["tax_amount"]) if has_expense_record and row["tax_amount"] else 0,
-                    "total_amount": amount,
-                    "is_itemized": False,
-                    "status": effective_status,
-                    "is_billable": row["is_billable"] if has_expense_record else False,
-                    "has_receipt": row["has_receipt"] if has_expense_record else False,
-                    "billed_invoice_id": str(row["billed_invoice_id"]) if has_expense_record and row["billed_invoice_id"] else None,
-                    "billed_to_customer_id": str(row["billed_to_customer_id"]) if has_expense_record and row["billed_to_customer_id"] else None,
-                    "accounting_status": row["expense_accounting_status"] if has_expense_record else effective_status,
-                    "reference": None,
-                    "notes": row["notes"] if has_expense_record else row["journal_description"],
-                    "description": row["journal_description"],
-                    "has_expense_record": has_expense_record,
-                    "created_at": row["created_at"],
-                })
+                items.append(
+                    {
+                        "id": str(row["expense_id"])
+                        if has_expense_record
+                        else str(row["journal_id"]),
+                        "expense_number": row["expense_number"]
+                        if has_expense_record
+                        else None,
+                        "journal_number": row["journal_number"],
+                        "expense_date": row["journal_date"],
+                        "source_type": row["source_type"],
+                        "paid_through_name": paid_through,
+                        "vendor": {
+                            "id": str(row["vendor_id"]),
+                            "name": row["vendor_name"],
+                        }
+                        if has_expense_record and row["vendor_id"]
+                        else None,
+                        "vendor_name": row["vendor_name"]
+                        if has_expense_record
+                        else None,
+                        "account_name": account_name,
+                        "account_code": row["first_account_code"],
+                        "account_count": row["account_count"],
+                        "subtotal": float(row["subtotal"])
+                        if has_expense_record and row["subtotal"]
+                        else amount,
+                        "tax_amount": float(row["tax_amount"])
+                        if has_expense_record and row["tax_amount"]
+                        else 0,
+                        "total_amount": amount,
+                        "is_itemized": False,
+                        "status": effective_status,
+                        "is_billable": row["is_billable"]
+                        if has_expense_record
+                        else False,
+                        "has_receipt": row["has_receipt"]
+                        if has_expense_record
+                        else False,
+                        "billed_invoice_id": str(row["billed_invoice_id"])
+                        if has_expense_record and row["billed_invoice_id"]
+                        else None,
+                        "billed_to_customer_id": str(row["billed_to_customer_id"])
+                        if has_expense_record and row["billed_to_customer_id"]
+                        else None,
+                        "accounting_status": row["expense_accounting_status"]
+                        if has_expense_record
+                        else effective_status,
+                        "reference": None,
+                        "notes": row["notes"]
+                        if has_expense_record
+                        else row["journal_description"],
+                        "description": row["journal_description"],
+                        "has_expense_record": has_expense_record,
+                        "created_at": row["created_at"],
+                    }
+                )
 
             return {
                 "items": items,
@@ -916,8 +992,6 @@ async def list_expense_ledger(
     except Exception as e:
         logger.error(f"Error listing expense ledger: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list expense ledger")
-
-
 
 
 # =============================================================================
@@ -1015,7 +1089,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                 # Law 13: Advisory lock to prevent concurrent expense creation
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"EXPENSE_CREATE:{ctx['tenant_id']}:{body.expense_date}"
+                    f"EXPENSE_CREATE:{ctx['tenant_id']}:{body.expense_date}",
                 )
 
                 # Law 5: Check accounting period is open
@@ -1038,8 +1112,16 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                         status_code=400, detail="Expense amount must be greater than 0"
                     )
 
-                tax_amount = (Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
-                pph_amount = (Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+                tax_amount = (
+                    Decimal(str(subtotal))
+                    * Decimal(str(body.tax_rate or 0))
+                    / Decimal("100")
+                ).quantize(Decimal("1"))
+                pph_amount = (
+                    Decimal(str(subtotal))
+                    * Decimal(str(body.pph_rate or 0))
+                    / Decimal("100")
+                ).quantize(Decimal("1"))
                 total_amount = subtotal + tax_amount - pph_amount
 
                 # Get paid_through account info
@@ -1150,6 +1232,9 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     pph_amount,
                     paid_through["coa_id"],
                     body.tax_id,
+                    pph_type=body.pph_type,
+                    pph_rate=body.pph_rate,
+                    vendor_id=body.vendor_id,
                 )
 
                 # Update expense with journal_id
@@ -1163,6 +1248,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
 
                 # Create bank transaction to update bank balance
                 import uuid as uuid_module
+
                 bank_tx_id = uuid_module.uuid4()
                 await conn.execute(
                     """
@@ -1182,7 +1268,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     f"Expense: {expense_number}",
                     body.vendor_name or "Expense",
                     ctx["user_id"],
-                    str(journal_id)
+                    str(journal_id),
                 )
 
                 # Link attachments via document_attachments
@@ -1269,6 +1355,9 @@ async def create_expense_journal(
     pph_amount,
     paid_through_coa_id,
     tax_id,
+    pph_type=None,
+    pph_rate=None,
+    vendor_id=None,
 ):
     """Create journal entry for expense."""
 
@@ -1335,7 +1424,7 @@ async def create_expense_journal(
 
     # DEBIT: PPN Masukan (if tax)
     if tax_amount > 0:
-        ppn_masukan_id = await resolve_account_id(conn, tenant_id, '1-10800')
+        ppn_masukan_id = await resolve_account_id(conn, tenant_id, "1-10800")
 
         if ppn_masukan_id:
             await conn.execute(
@@ -1370,7 +1459,7 @@ async def create_expense_journal(
 
     # CREDIT: Hutang PPh (if pph withheld)
     if pph_amount > 0:
-        hutang_pph_id = await resolve_account_id(conn, tenant_id, '2-10500')
+        hutang_pph_id = await resolve_account_id(conn, tenant_id, "2-10500")
 
         if hutang_pph_id:
             await conn.execute(
@@ -1391,6 +1480,90 @@ async def create_expense_journal(
         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
         journal_id,
     )
+
+    # Wave 2: Write document_tax_lines (PPN on expense)
+    if tax_amount > 0 and tax_id:
+        import uuid as _uuid
+
+        # Get the PPN Masukan journal_line_id
+        ppn_jl_id = await conn.fetchval(
+            """
+            SELECT id FROM journal_lines
+            WHERE journal_id = $1 AND account_id = (
+                SELECT id FROM chart_of_accounts WHERE tenant_id = $2 AND account_code = '1-10800' LIMIT 1
+            ) LIMIT 1
+            """,
+            journal_id,
+            tenant_id,
+        )
+        # Resolve coa_id from tax_codes
+        tc_coa = await conn.fetchval(
+            "SELECT coa_id FROM tax_codes WHERE id = $1::uuid",
+            str(tax_id),
+        )
+        dpp_val = float(subtotal)
+        await conn.execute(
+            """
+            INSERT INTO document_tax_lines (
+                id, tenant_id, document_type, document_id,
+                tax_code_id, direction, base_amount, tax_amount,
+                coa_id, journal_line_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """,
+            _uuid.uuid4(),
+            tenant_id,
+            "EXPENSE",
+            expense_id,
+            _uuid.UUID(str(tax_id)),
+            "input",
+            dpp_val,
+            float(tax_amount),
+            tc_coa,
+            ppn_jl_id,
+        )
+
+    # Wave 2: Write withholding_tax_records (PPh on expense)
+    if pph_amount > 0 and pph_type:
+        import uuid as _uuid2
+
+        # Resolve PPh tax_code_id from tax_codes by type
+        pph_tax_code_id = await conn.fetchval(
+            """
+            SELECT id FROM tax_codes
+            WHERE tenant_id = $1 AND tax_type = $2 AND is_active = true
+            LIMIT 1
+            """,
+            tenant_id,
+            pph_type.lower().replace("_", ""),
+        )
+        if pph_tax_code_id:
+            tax_period = (
+                expense_date.strftime("%Y-%m")
+                if hasattr(expense_date, "strftime")
+                else str(expense_date)[:7]
+            )
+            await conn.execute(
+                """
+                INSERT INTO withholding_tax_records (
+                    id, tenant_id, direction, tax_code_id,
+                    document_type, document_id, journal_id,
+                    vendor_id, tax_period,
+                    base_amount, tax_amount, status
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                """,
+                _uuid2.uuid4(),
+                tenant_id,
+                "cut",
+                pph_tax_code_id,
+                "EXPENSE",
+                expense_id,
+                journal_id,
+                _uuid2.UUID(str(vendor_id)) if vendor_id else None,
+                tax_period,
+                float(subtotal),
+                float(pph_amount),
+                "recorded",
+            )
 
     return journal_id
 
@@ -1566,7 +1739,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                 # Law 13: Advisory lock to prevent concurrent void
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"EXPENSE_VOID:{expense_id}"
+                    f"EXPENSE_VOID:{expense_id}",
                 )
 
                 # Get expense
@@ -1588,12 +1761,13 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                     )
 
                 # Law 5: Check accounting period is open
-                await check_period_is_open(conn, ctx["tenant_id"], expense["expense_date"])
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], expense["expense_date"]
+                )
 
                 # Void original journal + create reversal (Law 2)
                 if expense["journal_id"]:
                     # Create reversal journal entry
-                    import uuid as uuid_mod
                     original_lines = await conn.fetch(
                         """
                         SELECT account_id, debit, credit, memo
@@ -1616,7 +1790,10 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                             """,
                             ctx["tenant_id"],
                             "REV-" + expense["expense_number"],
-                            "Reversal: " + expense["expense_number"] + " - " + body.reason,
+                            "Reversal: "
+                            + expense["expense_number"]
+                            + " - "
+                            + body.reason,
                             str(expense_id),
                             reversal_total,
                             reversal_total,
@@ -1633,8 +1810,8 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 str(reversal_journal_id),
                                 line_idx,
                                 line["account_id"],
-                                line["credit"] or 0,   # swap: original credit -> debit
-                                line["debit"] or 0,     # swap: original debit -> credit
+                                line["credit"] or 0,  # swap: original credit -> debit
+                                line["debit"] or 0,  # swap: original debit -> credit
                                 ("Reversal: " + (line["memo"] or "")),
                             )
 
@@ -1669,7 +1846,9 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                         )
                         if original_btxn:
                             mirror_type = (
-                                "deposit" if original_btxn["transaction_type"] == "withdrawal" else "withdrawal"
+                                "deposit"
+                                if original_btxn["transaction_type"] == "withdrawal"
+                                else "withdrawal"
                             )
                             await conn.execute(
                                 """
@@ -1964,7 +2143,6 @@ async def remove_expense_attachment(
         raise HTTPException(status_code=500, detail="Failed to remove attachment")
 
 
-
 @router.get("/{expense_id}/journal-entries")
 async def get_expense_journal_entries(request: Request, expense_id: UUID):
     """
@@ -1981,7 +2159,8 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                 FROM expenses
                 WHERE id = $1 AND tenant_id = $2
                 """,
-                expense_id, ctx["tenant_id"]
+                expense_id,
+                ctx["tenant_id"],
             )
 
             if not expense:
@@ -1996,7 +2175,8 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                 SELECT id FROM journal_entries
                 WHERE tenant_id = $1 AND source_id = $2
                 """,
-                ctx["tenant_id"], expense_id
+                ctx["tenant_id"],
+                expense_id,
             )
             for row in source_journals:
                 journal_ids.add(row["id"])
@@ -2006,7 +2186,11 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                     "success": True,
                     "data": [],
                     "total": 0,
-                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True,
+                    },
                 }
 
             journals = await conn.fetch(
@@ -2017,7 +2201,7 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                list(journal_ids)
+                list(journal_ids),
             )
 
             journal_data = []
@@ -2034,7 +2218,7 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -2046,7 +2230,7 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                         "account_name": line["account_name"],
                         "debit": str(line["debit"] or 0),
                         "credit": str(line["credit"] or 0),
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -2056,18 +2240,22 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": journal_debit,
-                    "total_credit": journal_credit,
-                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": journal_debit,
+                        "total_credit": journal_credit,
+                        "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -2076,8 +2264,8 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
                 "summary": {
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "is_balanced": abs(total_debit - total_credit) < 0.01
-                }
+                    "is_balanced": abs(total_debit - total_credit) < 0.01,
+                },
             }
     except HTTPException:
         raise
