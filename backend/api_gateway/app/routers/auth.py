@@ -9,6 +9,10 @@ from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
 from backend.api_gateway.app.services.session_manager import session_manager
+import os
+import asyncpg
+from datetime import datetime, timedelta
+from backend.api_gateway.app.config import settings
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,26 @@ class AuthResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
+
+
+# =====================================================
+# DB POOL FOR TENANT QUERIES
+# =====================================================
+_pool: asyncpg.Pool | None = None
+
+
+async def get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        db_config = settings.get_db_config()
+        _pool = await asyncpg.create_pool(
+            **db_config, min_size=2, max_size=5, command_timeout=30
+        )
+    return _pool
+
+
+class SwitchTenantRequest(BaseModel):
+    tenant_id: str
 
 
 # =====================================================
@@ -195,6 +219,99 @@ async def login_user(request: LoginRequest, http_request: Request):
                 },
             )
 
+            # --- Resolve tenant: last_active > primary ---
+            raw_tenant_id = result["tenant_id"]
+            resolved_tenant_id = raw_tenant_id
+            business_role_code = "OWNER"
+
+            try:
+                _tpool = await get_pool()
+                async with _tpool.acquire() as conn:
+                    await conn.execute("SET LOCAL app.tenant_id = 'SYSTEM'")
+                    user_row = await conn.fetchrow(
+                        'SELECT last_active_tenant_id FROM "User" WHERE id = $1',
+                        result["user_id"],
+                    )
+                    last_active = (
+                        user_row["last_active_tenant_id"] if user_row else None
+                    )
+
+                    if last_active and last_active != raw_tenant_id:
+                        has_access = await conn.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM user_tenant_roles "
+                            "WHERE user_id = $1 AND tenant_id = $2 AND status = 'active')",
+                            result["user_id"],
+                            last_active,
+                        )
+                        if has_access:
+                            tenant_ok = await conn.fetchval(
+                                'SELECT EXISTS(SELECT 1 FROM "Tenant" WHERE id = $1 AND suspended_at IS NULL)',
+                                last_active,
+                            )
+                            if tenant_ok:
+                                resolved_tenant_id = last_active
+                            else:
+                                await conn.execute(
+                                    'UPDATE "User" SET last_active_tenant_id = NULL WHERE id = $1',
+                                    result["user_id"],
+                                )
+                        else:
+                            await conn.execute(
+                                'UPDATE "User" SET last_active_tenant_id = NULL WHERE id = $1',
+                                result["user_id"],
+                            )
+
+                    # Resolve business role for resolved tenant
+                    role_row = await conn.fetchrow(
+                        "SELECT r.code FROM user_tenant_roles utr "
+                        "JOIN roles r ON r.id = utr.role_id "
+                        "WHERE utr.user_id = $1 AND utr.tenant_id = $2 AND utr.status = 'active'",
+                        result["user_id"],
+                        resolved_tenant_id,
+                    )
+                    if role_row:
+                        business_role_code = role_row["code"]
+                    elif resolved_tenant_id == raw_tenant_id:
+                        business_role_code = "OWNER"
+                    else:
+                        business_role_code = "VIEWER"
+            except Exception as e:
+                logger.warning(f"[login] Failed to resolve last_active_tenant: {e}")
+
+            # Re-generate tokens if tenant changed
+            if resolved_tenant_id != raw_tenant_id:
+                _js = os.getenv(
+                    "JWT_SECRET",
+                    "bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40",
+                )
+                now = datetime.utcnow()
+                ap = {
+                    "user_id": result["user_id"],
+                    "tenant_id": resolved_tenant_id,
+                    "role": result["role"],
+                    "email": result["email"],
+                    "username": result["name"] or result["email"],
+                    "token_type": "access",
+                    "device_id": device_id,
+                    "device_type": device_type,
+                    "iat": now,
+                    "exp": now + timedelta(days=7),
+                    "nbf": now,
+                }
+                rp = {
+                    "user_id": result["user_id"],
+                    "session_id": result["user_id"],
+                    "tenant_id": resolved_tenant_id,
+                    "token_type": "refresh",
+                    "device_id": device_id,
+                    "device_type": device_type,
+                    "iat": now,
+                    "exp": now + timedelta(days=30),
+                    "nbf": now,
+                }
+                result["access_token"] = jwt.encode(ap, _js, algorithm="HS256")
+                result["refresh_token"] = jwt.encode(rp, _js, algorithm="HS256")
+
             return AuthResponse(
                 success=True,
                 message="Login successful",
@@ -203,11 +320,12 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "email": result["email"],
                     "name": result["name"],
                     "role": result["role"],
-                    "tenant_id": result["tenant_id"],
+                    "tenant_id": resolved_tenant_id,
                     "access_token": result["access_token"],
                     "refresh_token": result["refresh_token"],
                     "device_id": device_id,
                     "device_type": device_type,
+                    "business_role_code": business_role_code,
                 },
             )
         else:
@@ -356,6 +474,145 @@ async def verify_session(request: Request):
         f"Session verify ping from user: {getattr(request.state, 'user', {}).get('user_id', 'unknown')[:8]}..."
     )
     return Response(status_code=204)
+
+
+# =====================================================
+# MULTI-TENANT ENDPOINTS
+# =====================================================
+
+_JWT_SECRET = os.getenv(
+    "JWT_SECRET", "bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40"
+)
+
+
+@router.get("/tenants")
+async def list_user_tenants(request: Request):
+    user_data = getattr(request.state, "user", {})
+    user_id = user_data.get("user_id")
+    tenant_id = user_data.get("tenant_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET LOCAL app.tenant_id = 'SYSTEM'")
+        user_row = await conn.fetchrow(
+            'SELECT "tenantId" FROM "User" WHERE id = $1', user_id
+        )
+        primary_tenant_id = user_row["tenantId"] if user_row else None
+        utr_rows = await conn.fetch(
+            "SELECT utr.tenant_id, r.code as role_code "
+            "FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id "
+            "WHERE utr.user_id = $1 AND utr.status = 'active'",
+            user_id,
+        )
+        tenant_roles = {row["tenant_id"]: row["role_code"] for row in utr_rows}
+        if primary_tenant_id and primary_tenant_id not in tenant_roles:
+            tenant_roles[primary_tenant_id] = "OWNER"
+        tenant_ids = list(tenant_roles.keys())
+        if not tenant_ids:
+            return {"tenants": [], "current_tenant_id": tenant_id}
+        tenant_rows = await conn.fetch(
+            'SELECT id, display_name, logo_url FROM "Tenant" '
+            "WHERE id = ANY($1) AND suspended_at IS NULL",
+            tenant_ids,
+        )
+        tenants = []
+        for t in tenant_rows:
+            tenants.append(
+                {
+                    "tenant_id": t["id"],
+                    "display_name": t["display_name"],
+                    "logo_url": t["logo_url"],
+                    "role_code": tenant_roles.get(t["id"], "VIEWER"),
+                    "is_active": t["id"] == tenant_id,
+                }
+            )
+        tenants.sort(key=lambda x: (not x["is_active"], x["display_name"]))
+        return {"tenants": tenants, "current_tenant_id": tenant_id}
+
+
+@router.post("/switch-tenant")
+async def switch_tenant(request: Request, body: SwitchTenantRequest):
+    user_data = getattr(request.state, "user", {})
+    user_id = user_data.get("user_id")
+    user_email = user_data.get("email")
+    target_tenant_id = body.tenant_id
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET LOCAL app.tenant_id = 'SYSTEM'")
+        user_row = await conn.fetchrow(
+            'SELECT "tenantId", name, role FROM "User" WHERE id = $1', user_id
+        )
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+        primary_tenant_id = user_row["tenantId"]
+        user_name = user_row["name"] or user_email or ""
+        subscription_role = user_row["role"] or "FREE"
+
+        tenant_row = await conn.fetchrow(
+            'SELECT id FROM "Tenant" WHERE id = $1 AND suspended_at IS NULL',
+            target_tenant_id,
+        )
+        if not tenant_row:
+            raise HTTPException(status_code=404, detail="Tenant not found or suspended")
+
+        role_code = None
+        if target_tenant_id == primary_tenant_id:
+            role_code = "OWNER"
+        else:
+            utr_row = await conn.fetchrow(
+                "SELECT r.code as role_code FROM user_tenant_roles utr "
+                "JOIN roles r ON r.id = utr.role_id "
+                "WHERE utr.user_id = $1 AND utr.tenant_id = $2 AND utr.status = 'active'",
+                user_id,
+                target_tenant_id,
+            )
+            if utr_row:
+                role_code = utr_row["role_code"]
+
+        if not role_code:
+            raise HTTPException(status_code=403, detail="No access to this tenant")
+
+        await conn.execute(
+            'UPDATE "User" SET last_active_tenant_id = $1 WHERE id = $2',
+            target_tenant_id,
+            user_id,
+        )
+
+    now = datetime.utcnow()
+    access_payload = {
+        "user_id": user_id,
+        "tenant_id": target_tenant_id,
+        "role": subscription_role,
+        "email": user_email,
+        "username": user_name,
+        "token_type": "access",
+        "iat": now,
+        "exp": now + timedelta(days=7),
+        "nbf": now,
+    }
+    refresh_payload = {
+        "user_id": user_id,
+        "session_id": user_id,
+        "tenant_id": target_tenant_id,
+        "token_type": "refresh",
+        "iat": now,
+        "exp": now + timedelta(days=30),
+        "nbf": now,
+    }
+    access_token = jwt.encode(access_payload, _JWT_SECRET, algorithm="HS256")
+    refresh_token = jwt.encode(refresh_payload, _JWT_SECRET, algorithm="HS256")
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "tenant_id": target_tenant_id,
+        "role_code": role_code,
+    }
 
 
 # =====================================================

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; color: #1a1a1a; }
+  .container { max-width: 600px; margin: 20px auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+  .header { background: #1a1a1a; color: #fff; padding: 20px 24px; }
+  .header h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .header p { font-size: 13px; opacity: 0.8; }
+  .employee-info { padding: 16px 24px; background: #f8f7f4; border-bottom: 1px solid #e8e6e1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .employee-info .label { font-size: 11px; color: #8e8e89; text-transform: uppercase; letter-spacing: 0.05em; }
+  .employee-info .value { font-size: 13px; font-weight: 500; }
+  .section { padding: 16px 24px; border-bottom: 1px solid #e8e6e1; }
+  .section-title { font-size: 12px; font-weight: 700; color: #8e8e89; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .line { display: flex; justify-content: space-between; padding: 4px 0; }
+  .line .name { color: #3a3a3a; }
+  .line .amount { font-family: 'Courier New', monospace; font-weight: 500; }
+  .line.total { border-top: 1px solid #ddd; margin-top: 8px; padding-top: 8px; font-weight: 700; }
+  .net { padding: 20px 24px; background: #1a1a1a; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+  .net .label { font-size: 14px; font-weight: 600; }
+  .net .amount { font-size: 22px; font-weight: 700; font-family: 'Courier New', monospace; }
+  .employer-info { padding: 16px 24px; background: #f8f7f4; }
+  .employer-info .section-title { color: #aaa; }
+  .employer-info .line .amount { color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>SLIP GAJI</h1>
+    <p>{{ company_name }} &mdash; Periode {{ period }}</p>
+  </div>
+
+  <div class="employee-info">
+    <div><div class="label">Nama</div><div class="value">{{ employee_name }}</div></div>
+    <div><div class="label">NIK</div><div class="value">{{ nik or '-' }}</div></div>
+    <div><div class="label">Jabatan</div><div class="value">{{ position or '-' }}</div></div>
+    <div><div class="label">NPWP</div><div class="value">{{ npwp or '-' }}</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Penghasilan</div>
+    {% for e in earnings %}
+    <div class="line">
+      <span class="name">{{ e.component_name }}</span>
+      <span class="amount">Rp {{ "{:,.0f}".format(e.amount).replace(",", ".") }}</span>
+    </div>
+    {% endfor %}
+    <div class="line total">
+      <span class="name">Total Penghasilan</span>
+      <span class="amount">Rp {{ "{:,.0f}".format(gross).replace(",", ".") }}</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Potongan</div>
+    {% for d in deductions %}
+    <div class="line">
+      <span class="name">{{ d.component_name }}</span>
+      <span class="amount">Rp {{ "{:,.0f}".format(d.amount).replace(",", ".") }}</span>
+    </div>
+    {% endfor %}
+    <div class="line total">
+      <span class="name">Total Potongan</span>
+      <span class="amount">Rp {{ "{:,.0f}".format(total_deductions).replace(",", ".") }}</span>
+    </div>
+  </div>
+
+  <div class="net">
+    <span class="label">GAJI BERSIH</span>
+    <span class="amount">Rp {{ "{:,.0f}".format(net).replace(",", ".") }}</span>
+  </div>
+
+  <div class="employer-info">
+    <div class="section-title">Info BPJS Perusahaan</div>
+    {% for ec in employer_costs %}
+    <div class="line">
+      <span class="name">{{ ec.component_name }}</span>
+      <span class="amount">Rp {{ "{:,.0f}".format(ec.amount).replace(",", ".") }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+</body>
+</html>

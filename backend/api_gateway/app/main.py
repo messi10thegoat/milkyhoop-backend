@@ -22,11 +22,21 @@ from .routers import suppliers
 from .routers import inventory
 from .routers import items
 from .routers import members
+from .routers import team_members
 from .routers import invoices
 from .routers import bills
 from .routers import vendors
 from .routers import customers
-from .routers import tax_codes, tax_groups, tax_reports, pkp_settings, djp_master, nsfp, product_djp_mapping, tax_invoices
+from .routers import (
+    tax_codes,
+    tax_groups,
+    tax_reports,
+    pkp_settings,
+    djp_master,
+    nsfp,
+    product_djp_mapping,
+    tax_invoices,
+)
 from .routers import accounts
 from .routers import sales_invoices
 from .routers import credit_notes
@@ -132,6 +142,8 @@ from .middleware.request_id_middleware import RequestIDMiddleware
 from .middleware.waf_middleware import WAFMiddleware
 from .middleware.tenant_validation_middleware import TenantValidationMiddleware
 from .middleware.rls_context import patch_asyncpg_pool
+from .middleware.permission_middleware import PermissionMiddleware
+from .services.policy_engine_client import init_policy_engine
 
 # Import FLE middleware (optional - for PII encryption)
 try:
@@ -185,6 +197,25 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await asyncio.sleep(3)
     else:
         print("All Prisma connection attempts failed. Continuing without DB.")
+    # Init PolicyEngine with db pool for RBAC
+    try:
+        import asyncpg as _apg
+
+        _pe_pool = await _apg.create_pool(
+            host="postgres",
+            port=5432,
+            user="postgres",
+            password="Proyek771977",
+            database="milkydb",
+            min_size=2,
+            max_size=5,
+            command_timeout=30,
+        )
+        init_policy_engine(_pe_pool)
+        print("PolicyEngine initialized")
+    except Exception as pe_err:
+        print(f"Failed to init PolicyEngine: {pe_err}")
+
     yield
     try:
         await prisma.disconnect()
@@ -246,6 +277,9 @@ app.add_middleware(AccountLockoutMiddleware)
 
 # 6. Tenant Validation (prevents IDOR attacks - runs after Auth sets user)
 app.add_middleware(TenantValidationMiddleware)
+
+# 6b. Permission-based RBAC (business role + user overrides)
+app.add_middleware(PermissionMiddleware)
 
 # 7. RBAC (role-based access control)
 app.add_middleware(RBACMiddleware)
@@ -324,6 +358,8 @@ app.include_router(items.router, prefix="/api", tags=["items"])
 
 # Members/Customer management router (for POS)
 app.include_router(members.router, prefix="/api/members", tags=["members"])
+app.include_router(team_members.router, tags=["team-members"])
+app.include_router(team_members.permissions_router, tags=["permissions"])
 
 # Invoices router (Faktur Pembelian list)
 app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
@@ -345,11 +381,19 @@ app.include_router(customers.router, prefix="/api/customers", tags=["customers"]
 app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"])
 app.include_router(tax_groups.router, prefix="/api/tax-groups", tags=["tax-groups"])
 app.include_router(tax_reports.router, prefix="/api/tax-reports", tags=["tax-reports"])
-app.include_router(pkp_settings.router, prefix="/api/settings/pkp", tags=["PKP Settings"])
+app.include_router(
+    pkp_settings.router, prefix="/api/settings/pkp", tags=["PKP Settings"]
+)
 app.include_router(djp_master.router, prefix="/api/djp", tags=["DJP Master Data"])
 app.include_router(nsfp.router, prefix="/api/nsfp-ranges", tags=["NSFP Management"])
-app.include_router(product_djp_mapping.router, prefix="/api/product-djp-mapping", tags=["Product DJP Mapping"])
-app.include_router(tax_invoices.router, prefix="/api/tax-invoices", tags=["Tax Invoices"])
+app.include_router(
+    product_djp_mapping.router,
+    prefix="/api/product-djp-mapping",
+    tags=["Product DJP Mapping"],
+)
+app.include_router(
+    tax_invoices.router, prefix="/api/tax-invoices", tags=["Tax Invoices"]
+)
 
 # Chart of Accounts router (CoA CRUD)
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
