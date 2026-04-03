@@ -2792,7 +2792,7 @@ async def _get_history_old(
 @router.post("/feedback")
 async def record_feedback(request: Request):
     """Record user thumbs up/down on bot response."""
-    ctx = _extract_user_context(request)
+    ctx = _get_user_context(request)
     body = await request.json()
     session_id = body.get("session_id")
     feedback = body.get("feedback", 0)

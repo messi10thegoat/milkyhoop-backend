@@ -146,7 +146,7 @@ class IntentTelemetry:
                     estimated_cost_usd, input_tokens, output_tokens,
                     response_type, response_length
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $1, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19,
                     $20, $21, $22, $23, $24, $25, $26, $27
                 )
@@ -190,7 +190,7 @@ class IntentTelemetry:
                 SET user_feedback = $1, feedback_ts = NOW()
                 WHERE id = (
                     SELECT id FROM intent_decision_log
-                    WHERE session_id = $2 AND tenant_id = $3
+                    WHERE session_id = $2::uuid AND tenant_id = $3
                     ORDER BY ts DESC LIMIT 1
                 )
                 """,
@@ -207,7 +207,7 @@ class IntentTelemetry:
                 SET is_correction = TRUE
                 WHERE id = (
                     SELECT id FROM intent_decision_log
-                    WHERE session_id = $1 AND tenant_id = $2
+                    WHERE session_id = $1::uuid AND tenant_id = $2
                       AND ts > NOW() - INTERVAL '30 seconds'
                     ORDER BY ts DESC LIMIT 1
                 )
