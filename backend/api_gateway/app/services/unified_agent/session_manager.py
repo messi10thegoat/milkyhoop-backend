@@ -206,10 +206,12 @@ class SessionManager:
              json.dumps(tool_calls) if tool_calls else None,
              tool_call_id, message_type, token_count)
         
-        # Update session timestamp
+        # Update session timestamp + auto-summary from first user message
         await self.db.execute(
-            "UPDATE chat_sessions SET updated_at = now() WHERE id = $1::uuid",
-            session_id
+            """UPDATE chat_sessions SET updated_at = now(),
+               summary = COALESCE(NULLIF(summary, ''), LEFT($3, 60))
+               WHERE id = $1::uuid AND tenant_id = $2""",
+            session_id, self.tenant_id, content if role == "user" else None
         )
     
     async def get_working_window(self, session_id: str, max_turns: int = 8) -> List[Dict]:
@@ -493,7 +495,7 @@ class SessionManager:
     async def get_summary(self, session_id: str) -> str:
         """Get stored summary."""
         row = await self.db.fetchrow(
-            "SELECT summary FROM chat_sessions WHERE id = $1::uuid",
+            "SELECT summary FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
             session_id
         )
         return row["summary"] if row and row["summary"] else ""
