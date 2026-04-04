@@ -207,6 +207,8 @@ async def list_bills(
     due_date_from: Optional[date] = Query(None, description="Filter due date from"),
     due_date_to: Optional[date] = Query(None, description="Filter due date to"),
     vendor_id: Optional[UUID] = Query(None, description="Filter by vendor"),
+    amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
+    amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
 ):
     """
     List bills with filtering, sorting, and pagination.
@@ -242,6 +244,8 @@ async def list_bills(
             due_date_from=due_date_from,
             due_date_to=due_date_to,
             vendor_id=vendor_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
         )
 
         return result

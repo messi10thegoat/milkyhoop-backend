@@ -243,6 +243,8 @@ class BillsService:
         due_date_from: Optional[date] = None,
         due_date_to: Optional[date] = None,
         vendor_id: Optional[UUID] = None,
+        amount_min: Optional[float] = None,
+        amount_max: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         List bills with filtering, sorting, and pagination.
@@ -323,6 +325,16 @@ class BillsService:
             if vendor_id:
                 conditions.append(f"b.vendor_id = ${param_idx}")
                 params.append(vendor_id)
+                param_idx += 1
+
+            # Amount range filter
+            if amount_min is not None:
+                conditions.append(f"COALESCE(b.grand_total, b.amount) >= ${param_idx}")
+                params.append(amount_min)
+                param_idx += 1
+            if amount_max is not None:
+                conditions.append(f"COALESCE(b.grand_total, b.amount) <= ${param_idx}")
+                params.append(amount_max)
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
