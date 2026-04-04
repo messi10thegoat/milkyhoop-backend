@@ -263,6 +263,8 @@ async def list_invoices(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
+    amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
 ):
     """List invoices with search, filtering, and pagination."""
     try:
@@ -321,6 +323,16 @@ async def list_invoices(
             if end_date:
                 conditions.append(f"si.invoice_date <= ${param_idx}::date")
                 params.append(end_date)
+                param_idx += 1
+
+            # Amount range filter
+            if amount_min is not None:
+                conditions.append(f"si.total_amount >= ${param_idx}")
+                params.append(amount_min)
+                param_idx += 1
+            if amount_max is not None:
+                conditions.append(f"si.total_amount <= ${param_idx}")
+                params.append(amount_max)
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
