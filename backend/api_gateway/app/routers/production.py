@@ -32,6 +32,7 @@ from ..schemas.production import (
     ProductionResponse,
 )
 from ..config import settings
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -565,24 +566,141 @@ async def delete_production_order(request: Request, order_id: UUID):
 # =============================================================================
 @router.post("/{order_id}/release", response_model=ProductionResponse)
 async def release_order(request: Request, order_id: UUID):
-    """Release order to production."""
+    """Release order to production. Creates draft bills for subcontract operations."""
     try:
         ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx.get("user_id")
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE production_orders
-                SET status = 'released', updated_at = NOW()
-                WHERE tenant_id = $1 AND id = $2 AND status IN ('draft', 'planned')
-                """,
-                ctx["tenant_id"], order_id
-            )
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="Order not found or cannot be released")
+            async with conn.transaction():
+                # Advisory lock for subcontract release
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"SUBCONTRACT_RELEASE:{order_id}"
+                )
 
-            return {"success": True, "message": "Production order released"}
+                # Fetch order + validate
+                order = await conn.fetchrow(
+                    """
+                    SELECT id, bom_id, planned_quantity, status
+                    FROM production_orders
+                    WHERE tenant_id = $1 AND id = $2
+                    """,
+                    tenant_id, order_id
+                )
+                if not order:
+                    raise HTTPException(status_code=404, detail="Order not found")
+                if order["status"] not in ("draft", "planned"):
+                    raise HTTPException(status_code=400, detail="Order cannot be released from current status")
+
+                # Update status
+                await conn.execute(
+                    """
+                    UPDATE production_orders
+                    SET status = 'released', updated_at = NOW()
+                    WHERE tenant_id = $1 AND id = $2
+                    """,
+                    tenant_id, order_id
+                )
+
+                # Query BOM for subcontract operations
+                bom_id = order["bom_id"]
+                wo_qty = order["planned_quantity"] or Decimal("0")
+                subcontract_ops = []
+                if bom_id:
+                    subcontract_ops = await conn.fetch(
+                        """
+                        SELECT bo.id, bo.operation_name, bo.subcontract_description,
+                               bo.vendor_id, bo.subcontract_cost_per_unit,
+                               v.name AS vendor_name
+                        FROM bom_operations bo
+                        LEFT JOIN vendors v ON v.id = bo.vendor_id AND v.tenant_id = $1
+                        WHERE bo.bom_id = $2 AND bo.is_subcontract = true AND bo.vendor_id IS NOT NULL
+                        """,
+                        tenant_id, bom_id
+                    )
+
+                total_subcontract_cost = Decimal("0")
+
+                for op in subcontract_ops:
+                    unit_cost = op["subcontract_cost_per_unit"] or Decimal("0")
+                    line_total = unit_cost * wo_qty
+
+                    # Generate bill number
+                    bill_number = await conn.fetchval(
+                        "SELECT generate_bill_number($1, 'BILL')", tenant_id
+                    )
+
+                    # Create draft bill
+                    bill_id = await conn.fetchval(
+                        """
+                        INSERT INTO bills (
+                            tenant_id, invoice_number, vendor_id, vendor_name,
+                            amount, amount_paid, issue_date, due_date, notes,
+                            status, status_v2, subtotal, grand_total,
+                            tax_rate, tax_inclusive, created_by
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            $5, 0, CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', $6,
+                            'draft', 'draft', $5, $5,
+                            0, false, $7
+                        ) RETURNING id
+                        """,
+                        tenant_id, bill_number, op["vendor_id"], op["vendor_name"] or "Vendor",
+                        line_total,
+                        f"Subcontract: {op['operation_name']} for WO {order_id}",
+                        user_id
+                    )
+
+                    # Create bill item — purchase_account = WIP (1-10650) per Law 27
+                    desc = op["subcontract_description"] or op["operation_name"] or "Subcontract service"
+                    await conn.execute(
+                        """
+                        INSERT INTO bill_items (
+                            bill_id, product_name, description, quantity, unit,
+                            unit_price, discount_percent, discount_amount,
+                            subtotal, total, line_number
+                        ) VALUES (
+                            $1, $2, $3, $4, 'unit',
+                            $5, 0, 0,
+                            $6, $6, 1
+                        )
+                        """,
+                        bill_id, op["operation_name"] or "Subcontract",
+                        desc, wo_qty, unit_cost, line_total
+                    )
+
+                    # Create production_subcontracts record
+                    await conn.execute(
+                        """
+                        INSERT INTO production_subcontracts (
+                            tenant_id, production_order_id, bom_operation_id,
+                            vendor_id, quantity, unit_cost, total_cost,
+                            bill_id, bill_status, status
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', 'pending')
+                        """,
+                        tenant_id, order_id, op["id"],
+                        op["vendor_id"], wo_qty, unit_cost, line_total,
+                        bill_id
+                    )
+
+                    total_subcontract_cost += line_total
+
+                # Update subcontract_cost on production order
+                if total_subcontract_cost > 0:
+                    await conn.execute(
+                        """
+                        UPDATE production_orders
+                        SET subcontract_cost = $1, total_cost = COALESCE(total_cost, 0) + $1,
+                            updated_at = NOW()
+                        WHERE tenant_id = $2 AND id = $3
+                        """,
+                        total_subcontract_cost, tenant_id, order_id
+                    )
+
+                return {"success": True, "message": f"Production order released. {len(subcontract_ops)} subcontract bill(s) created."}
 
     except HTTPException:
         raise
@@ -676,18 +794,38 @@ async def cancel_order(request: Request, order_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE production_orders
-                SET status = 'cancelled', updated_at = NOW()
-                WHERE tenant_id = $1 AND id = $2 AND status IN ('draft', 'planned', 'released')
-                """,
-                ctx["tenant_id"], order_id
-            )
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="Order not found or cannot be cancelled")
+            async with conn.transaction():
+                result = await conn.execute(
+                    """
+                    UPDATE production_orders
+                    SET status = 'cancelled', updated_at = NOW()
+                    WHERE tenant_id = $1 AND id = $2 AND status IN ('draft', 'planned', 'released')
+                    """,
+                    ctx["tenant_id"], order_id
+                )
+                if result == "UPDATE 0":
+                    raise HTTPException(status_code=400, detail="Order not found or cannot be cancelled")
 
-            return {"success": True, "message": "Production order cancelled"}
+                # Cascade: clean up subcontract bills
+                subcontracts = await conn.fetch(
+                    "SELECT * FROM production_subcontracts WHERE production_order_id = $1 AND tenant_id = $2 AND status != 'voided'",
+                    order_id, ctx["tenant_id"],
+                )
+                for sc in subcontracts:
+                    if sc["bill_id"]:
+                        bill = await conn.fetchrow(
+                            "SELECT status_v2 FROM bills WHERE id = $1 AND tenant_id = $2",
+                            sc["bill_id"], ctx["tenant_id"],
+                        )
+                        if bill and bill["status_v2"] == "draft":
+                            await conn.execute("DELETE FROM bill_items WHERE bill_id = $1", sc["bill_id"])
+                            await conn.execute("DELETE FROM bills WHERE id = $1", sc["bill_id"])
+                    await conn.execute(
+                        "UPDATE production_subcontracts SET status = 'voided', updated_at = NOW() WHERE id = $1",
+                        sc["id"],
+                    )
+
+                return {"success": True, "message": "Production order cancelled"}
 
     except HTTPException:
         raise
@@ -874,8 +1012,9 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                 if order["status"] not in ("released", "in_progress"):
                     raise HTTPException(status_code=400, detail="Order must be released or in progress")
 
-                # Calculate unit cost
-                total_actual = order["actual_material_cost"] + order["actual_labor_cost"] + order["actual_overhead_cost"]
+                # Calculate unit cost (include subcontract cost)
+                subcontract_cost = Decimal(str(order["subcontract_cost"] or 0))
+                total_actual = order["actual_material_cost"] + order["actual_labor_cost"] + order["actual_overhead_cost"] + subcontract_cost
                 total_qty = Decimal(str(order["completed_quantity"])) + Decimal(str(body.good_quantity))
                 unit_cost = int(total_actual / total_qty) if total_qty > 0 else 0
                 total_cost = int(unit_cost * Decimal(str(body.good_quantity)))
@@ -905,6 +1044,14 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                     WHERE id = $1
                     """,
                     order_id, body.good_quantity, body.scrap_quantity
+                )
+
+                # Update total_cost to reflect all cost components
+                await conn.execute(
+                    """UPDATE production_orders
+                       SET total_cost = actual_material_cost + actual_labor_cost + actual_overhead_cost + COALESCE(subcontract_cost, 0)
+                       WHERE id = $1""",
+                    order_id,
                 )
 
                 # TODO: Create journal entry Dr. Finished Goods / Cr. WIP
@@ -987,8 +1134,20 @@ async def get_cost_analysis(request: Request, order_id: UUID):
                 "variance_percent": round(Decimal(oh_var / oh_planned * 100) if oh_planned else 0, 2)
             })
 
+            # Fetch subcontract records
+            subcontracts = await conn.fetch("""
+                SELECT ps.*, op.operation_name, v.name AS vendor_name,
+                       b.invoice_number AS bill_number
+                FROM production_subcontracts ps
+                JOIN bom_operations op ON op.id = ps.bom_operation_id
+                JOIN vendors v ON v.id = ps.vendor_id
+                LEFT JOIN bills b ON b.id = ps.bill_id
+                WHERE ps.production_order_id = $1 AND ps.tenant_id = $2
+            """, order_id, ctx["tenant_id"])
+
+            sc_cost = Decimal(str(order["subcontract_cost"] or 0))
             total_planned = mat_planned + lab_planned + oh_planned
-            total_actual = mat_actual + lab_actual + oh_actual
+            total_actual = mat_actual + lab_actual + oh_actual + sc_cost
             unit_cost = int(total_actual / Decimal(str(order["completed_quantity"]))) if order["completed_quantity"] else 0
 
             return {
@@ -1001,7 +1160,20 @@ async def get_cost_analysis(request: Request, order_id: UUID):
                 "total_planned": total_planned,
                 "total_actual": total_actual,
                 "total_variance": total_actual - total_planned,
-                "unit_cost": unit_cost
+                "unit_cost": unit_cost,
+                "subcontract_cost": float(order["subcontract_cost"] or 0),
+                "total_cost": float(order["total_cost"] or 0),
+                "subcontracts": [{
+                    "id": str(s["id"]),
+                    "operation": s["operation_name"],
+                    "vendor": s["vendor_name"],
+                    "quantity": float(s["quantity"]),
+                    "unit_cost": float(s["unit_cost"]),
+                    "total_cost": float(s["total_cost"]),
+                    "bill_number": s["bill_number"],
+                    "bill_status": s["bill_status"],
+                    "status": s["status"],
+                } for s in subcontracts],
             }
 
     except HTTPException:
