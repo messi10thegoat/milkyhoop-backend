@@ -592,3 +592,54 @@ async def delete_conversion(request: Request, conversion_id: UUID):
     except Exception as e:
         logger.error(f"Error deleting conversion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal menghapus konversi")
+
+
+# =============================================================================
+# SEED DEFAULT UNITS
+# =============================================================================
+DEFAULT_UNITS = [
+    ("Pieces", "pcs"),
+    ("Unit", "unit"),
+    ("Kilogram", "kg"),
+    ("Gram", "g"),
+    ("Liter", "ltr"),
+    ("Mililiter", "ml"),
+    ("Meter", "m"),
+    ("Sentimeter", "cm"),
+    ("Box", "box"),
+    ("Pak", "pak"),
+    ("Lusin", "lsn"),
+    ("Kodi", "kodi"),
+    ("Roll", "roll"),
+    ("Lembar", "lbr"),
+    ("Pasang", "psg"),
+    ("Set", "set"),
+    ("Karung", "krg"),
+    ("Botol", "btl"),
+    ("Kaleng", "klg"),
+    ("Dus", "dus"),
+]
+
+@router.post("/seed")
+async def seed_default_units(request: Request):
+    """Seed default Indonesian units for tenant."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            created = 0
+            for name, abbr in DEFAULT_UNITS:
+                exists = await conn.fetchval(
+                    "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = $2",
+                    ctx["tenant_id"], abbr,
+                )
+                if not exists:
+                    await conn.execute(
+                        "INSERT INTO product_units (tenant_id, name, abbreviation, is_system) VALUES ($1, $2, $3, true)",
+                        ctx["tenant_id"], name, abbr,
+                    )
+                    created += 1
+            return {"success": True, "message": f"{created} satuan default dibuat", "data": {"created": created, "total": len(DEFAULT_UNITS)}}
+    except Exception as e:
+        logger.error(f"Error seeding units: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal membuat satuan default")

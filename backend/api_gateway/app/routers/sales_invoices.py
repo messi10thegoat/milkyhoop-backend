@@ -474,7 +474,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
             return {
                 "success": True,
                 "data": {
-                    "status": "draft",
+                    "status": invoice["status"],
                     "id": str(invoice["id"]),
                     "invoice_number": invoice["invoice_number"],
                     "customer_id": str(invoice["customer_id"])
@@ -2985,6 +2985,12 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 """,
                     invoice_id,
                     body.reason,
+                )
+
+                # Clean up document_tax_lines on void
+                await conn.execute(
+                    "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
+                    invoice_id, ctx["tenant_id"],
                 )
 
                 logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")

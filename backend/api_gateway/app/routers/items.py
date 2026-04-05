@@ -375,7 +375,8 @@ async def create_item(request: Request, body: CreateItemRequest):
     For goods with track_inventory=true, an initial stock entry will be created.
     Unit conversions are only allowed for goods.
     """
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
 
     try:
@@ -423,7 +424,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                 WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
                 ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
                 """,
-                tenant_id,
+                ctx["tenant_id"],
                 prefix,
             )
 
@@ -507,7 +508,7 @@ async def create_item(request: Request, body: CreateItemRequest):
             """
             item_id = await conn.fetchval(
                 insert_query,
-                tenant_id,
+                ctx["tenant_id"],
                 body.name,
                 body.base_unit,  # satuan = base_unit
                 body.base_unit,
@@ -617,7 +618,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                             'Saldo awal inventaris', NOW()
                         )
                         """,
-                        tenant_id,
+                        ctx["tenant_id"],
                         item_id,
                         item_code_to_use,
                         body.name,
@@ -675,7 +676,8 @@ async def create_item(request: Request, body: CreateItemRequest):
 @router.put("/items/{item_id}", response_model=UpdateItemResponse)
 async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     """Update an existing item."""
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
 
     try:
@@ -694,7 +696,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
         if body.name:
             duplicate = await conn.fetchrow(
                 "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3",
-                tenant_id,
+                ctx["tenant_id"],
                 body.name,
                 str(item_id),
             )
@@ -805,7 +807,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 await conn.execute(
                     "UPDATE unit_conversions SET is_active = false WHERE product_id = $1 AND tenant_id = $2",
                     str(item_id),
-                    tenant_id,
+                    ctx["tenant_id"],
                 )
 
                 # Insert/update new conversions
@@ -1051,7 +1053,8 @@ async def delete_item(request: Request, item_id: UUID):
 @router.get("/items/conversions")
 async def list_all_conversions(request: Request):
     """List all unit conversions for the tenant — for Satuan desktop page."""
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
@@ -1067,7 +1070,7 @@ async def list_all_conversions(request: Request):
                 WHERE uc.tenant_id = $1 AND uc.is_active = true
                 ORDER BY product_name ASC, uc.conversion_factor ASC
             """,
-                tenant_id,
+                ctx["tenant_id"],
             )
 
             conversions = [
@@ -1583,12 +1586,16 @@ async def autocomplete_items(
 
             rows = await conn.fetch(
                 f"""
-                SELECT id, item_code as code, nama_produk as name, item_type, base_unit as unit, sales_price as selling_price, purchase_price, track_batches, track_expiry
-                FROM products
-                WHERE tenant_id = $1
-                  AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
-                  AND status = 'active'
-                  AND deleted_at IS NULL
+                SELECT p.id, p.item_code as code, p.nama_produk as name, p.item_type, p.base_unit as unit, p.sales_price as selling_price, p.purchase_price, p.track_batches, p.track_expiry,
+                       p.sales_tax, p.sales_tax_id, st.name AS sales_tax_name, st.rate AS sales_tax_rate,
+                       p.purchase_tax, p.purchase_tax_id, pt.name AS purchase_tax_name, pt.rate AS purchase_tax_rate
+                FROM products p
+                LEFT JOIN tax_codes st ON st.id = p.sales_tax_id
+                LEFT JOIN tax_codes pt ON pt.id = p.purchase_tax_id
+                WHERE p.tenant_id = $1
+                  AND (p.nama_produk ILIKE $2 OR p.item_code ILIKE $2 OR p.sku ILIKE $2)
+                  AND p.status = 'active'
+                  AND p.deleted_at IS NULL
                   {type_filter}
                 ORDER BY name ASC
                 LIMIT $3
@@ -1596,8 +1603,34 @@ async def autocomplete_items(
                 *params,
             )
 
-            items = [
-                {
+            # Pre-fetch tax_codes for legacy string resolution
+            all_tax_codes = await conn.fetch(
+                "SELECT id, code, name, rate FROM tax_codes WHERE tenant_id = $1 AND is_active = true",
+                ctx["tenant_id"],
+            )
+            tax_code_map = {}
+            for tc in all_tax_codes:
+                # Map by code (e.g. "PPN-12-OUT"), and legacy patterns (e.g. "PPN_12", "PPN 12%")
+                tax_code_map[tc["code"].lower()] = tc
+                tax_code_map[tc["name"].lower()] = tc
+
+            def resolve_legacy_tax(legacy_str):
+                """Resolve legacy string like 'PPN_12' or 'PPN 12%' to tax_code."""
+                if not legacy_str:
+                    return None
+                key = legacy_str.lower().strip()
+                if key in tax_code_map:
+                    return tax_code_map[key]
+                # Try common patterns: PPN_12 → ppn 12%, PPN_11 → ppn 11%
+                normalized = key.replace("_", " ").replace("ppn ", "ppn ").replace("%", "")
+                for tc_key, tc in tax_code_map.items():
+                    if normalized in tc_key or tc_key in normalized:
+                        return tc
+                return None
+
+            items = []
+            for row in rows:
+                item = {
                     "id": str(row["id"]),
                     "code": row["code"],
                     "name": row["name"],
@@ -1608,9 +1641,29 @@ async def autocomplete_items(
                     "purchase_price": row["purchase_price"],
                     "track_batches": row.get("track_batches", False),
                     "track_expiry": row.get("track_expiry", False),
+                    "sales_tax": row.get("sales_tax"),
+                    "sales_tax_id": str(row["sales_tax_id"]) if row.get("sales_tax_id") else None,
+                    "sales_tax_name": row.get("sales_tax_name"),
+                    "sales_tax_rate": float(row["sales_tax_rate"]) if row.get("sales_tax_rate") else None,
+                    "purchase_tax": row.get("purchase_tax"),
+                    "purchase_tax_id": str(row["purchase_tax_id"]) if row.get("purchase_tax_id") else None,
+                    "purchase_tax_name": row.get("purchase_tax_name"),
+                    "purchase_tax_rate": float(row["purchase_tax_rate"]) if row.get("purchase_tax_rate") else None,
                 }
-                for row in rows
-            ]
+                # Resolve legacy strings when UUID is missing
+                if not item["sales_tax_id"] and item["sales_tax"]:
+                    tc = resolve_legacy_tax(item["sales_tax"])
+                    if tc:
+                        item["sales_tax_id"] = str(tc["id"])
+                        item["sales_tax_name"] = tc["name"]
+                        item["sales_tax_rate"] = float(tc["rate"])
+                if not item["purchase_tax_id"] and item["purchase_tax"]:
+                    tc = resolve_legacy_tax(item["purchase_tax"])
+                    if tc:
+                        item["purchase_tax_id"] = str(tc["id"])
+                        item["purchase_tax_name"] = tc["name"]
+                        item["purchase_tax_rate"] = float(tc["rate"])
+                items.append(item)
             return {"success": True, "items": items}
     except Exception as e:
         logger.error(f"Error in autocomplete: {e}", exc_info=True)
@@ -1909,6 +1962,78 @@ async def update_item_status(request: Request, item_id: str):
 
 
 # =============================================================================
+# DEFAULT ACCOUNTS (pre-resolved for form auto-fill)
+# =============================================================================
+
+
+@router.get("/items/default-accounts")
+async def get_default_accounts(request: Request):
+    """
+    Returns pre-resolved default account IDs for form auto-fill.
+    One API call replaces heuristic matching in frontend useEffect.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+
+        async def resolve(account_type, code_prefix, name_hint):
+            row = await conn.fetchrow(
+                """SELECT id, account_code, name FROM chart_of_accounts
+                   WHERE tenant_id = $1 AND is_active = true AND NOT is_header
+                     AND account_code LIKE $2
+                   ORDER BY account_code ASC LIMIT 1""",
+                tenant_id, f"{code_prefix}%",
+            )
+            if row:
+                return {"id": str(row["id"]), "code": row["account_code"], "name": row["name"]}
+            row = await conn.fetchrow(
+                """SELECT id, account_code, name FROM chart_of_accounts
+                   WHERE tenant_id = $1 AND is_active = true AND NOT is_header
+                     AND account_type = $2 AND name ILIKE $3
+                   ORDER BY account_code ASC LIMIT 1""",
+                tenant_id, account_type, f"%{name_hint}%",
+            )
+            if row:
+                return {"id": str(row["id"]), "code": row["account_code"], "name": row["name"]}
+            return None
+
+        sales = await resolve("REVENUE", "4-10100", "penjualan")
+        service_sales = await resolve("REVENUE", "4-10100", "jasa")
+        if not service_sales:
+            service_sales = sales  # fallback to main sales
+        purchase = await resolve("EXPENSE", "5-20900", "lain")
+        if not purchase:
+            purchase = await resolve("EXPENSE", "5-20", "operasional")
+        inventory = await resolve("ASSET", "1-10600", "persediaan")
+        cogs = await resolve("COGS", "5-10100", "hpp")
+        if not cogs:
+            cogs = await resolve("EXPENSE", "5-10100", "harga pokok")
+
+        return {
+            "success": True,
+            "data": {
+                "default_sales_account_id": sales["id"] if sales else None,
+                "default_sales_account": sales,
+                "default_service_sales_account_id": (service_sales or sales or {}).get("id"),
+                "default_service_sales_account": service_sales or sales,
+                "default_purchase_account_id": purchase["id"] if purchase else None,
+                "default_purchase_account": purchase,
+                "default_inventory_account_id": inventory["id"] if inventory else None,
+                "default_inventory_account": inventory,
+                "default_cogs_account_id": cogs["id"] if cogs else None,
+                "default_cogs_account": cogs,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error resolving default accounts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to resolve default accounts")
+    finally:
+        if conn:
+            await conn.close()
+
+
+# =============================================================================
 # ITEMS STOCK ADJUSTMENT
 # =============================================================================
 
@@ -2133,8 +2258,16 @@ async def get_item(request: Request, item_id: UUID):
 
         # Get item - stock data derived from inventory_ledger (Law 16 compliance)
         item_query = """
-            SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count
+            SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count,
+                   sa.account_code AS sales_acct_code, sa.name AS sales_acct_name,
+                   pa.account_code AS purchase_acct_code, pa.name AS purchase_acct_name,
+                   ia.account_code AS inventory_acct_code, ia.name AS inventory_acct_name,
+                   ca.account_code AS cogs_acct_code, ca.name AS cogs_acct_name
             FROM products p
+            LEFT JOIN chart_of_accounts sa ON sa.id = p.sales_account_id
+            LEFT JOIN chart_of_accounts pa ON pa.id = p.purchase_account_id
+            LEFT JOIN chart_of_accounts ia ON ia.id = p.inventory_account_id
+            LEFT JOIN chart_of_accounts ca ON ca.id = p.cogs_account_id
             LEFT JOIN LATERAL (
                             SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
                             COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai,
@@ -2212,8 +2345,12 @@ async def get_item(request: Request, item_id: UUID):
                 "preferred_vendor_id": str(row["preferred_vendor_id"])
                 if row.get("preferred_vendor_id")
                 else None,
-                "sales_account": row.get("sales_account", "Sales"),
-                "purchase_account": row.get("purchase_account", "Cost of Goods Sold"),
+                "sales_account": f"{row['sales_acct_code']} - {row['sales_acct_name']}" if row.get("sales_acct_code") else None,
+                "sales_account_name": f"{row['sales_acct_code']} - {row['sales_acct_name']}" if row.get("sales_acct_code") else None,
+                "purchase_account": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}" if row.get("purchase_acct_code") else None,
+                "purchase_account_name": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}" if row.get("purchase_acct_code") else None,
+                "inventory_account_name": f"{row['inventory_acct_code']} - {row['inventory_acct_name']}" if row.get("inventory_acct_code") else None,
+                "cogs_account_name": f"{row['cogs_acct_code']} - {row['cogs_acct_name']}" if row.get("cogs_acct_code") else None,
                 "sales_account_id": str(row["sales_account_id"])
                 if row.get("sales_account_id")
                 else None,
@@ -2491,7 +2628,8 @@ async def get_item_related(request: Request, item_id: UUID):
 @router.post("/items/{item_id}/duplicate", response_model=CreateItemResponse)
 async def duplicate_item(request: Request, item_id: UUID):
     """Duplicate an existing item with '(Copy)' suffix. Does not copy stock or images."""
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
 
     try:
@@ -2543,7 +2681,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                 )
                 RETURNING id
                 """,
-                tenant_id,
+                ctx["tenant_id"],
                 copy_name,
                 item_row.get("satuan"),
                 item_row.get("base_unit") or item_row.get("satuan"),
@@ -2575,7 +2713,7 @@ async def duplicate_item(request: Request, item_id: UUID):
             conversions = await conn.fetch(
                 "SELECT * FROM unit_conversions WHERE product_id = $1 AND tenant_id = $2 AND is_active = true",
                 str(item_id),
-                tenant_id,
+                ctx["tenant_id"],
             )
             for conv in conversions:
                 await conn.execute(
@@ -2675,6 +2813,7 @@ async def list_cogs_accounts(request: Request):
     finally:
         if conn:
             await conn.close()
+
 
 
 @router.post("/items/{item_id}/stock-adjustment")

@@ -72,6 +72,14 @@ class KulakanProductItem(BaseModel):
     purchase_price: Optional[int] = None  # Purchase price from product master data
     track_batches: Optional[bool] = None  # Item requires batch tracking
     track_expiry: Optional[bool] = None  # Item requires expiry tracking
+    sales_tax: Optional[str] = None
+    sales_tax_id: Optional[str] = None
+    sales_tax_name: Optional[str] = None
+    sales_tax_rate: Optional[float] = None
+    purchase_tax: Optional[str] = None
+    purchase_tax_id: Optional[str] = None
+    purchase_tax_name: Optional[str] = None
+    purchase_tax_rate: Optional[float] = None
 
 
 class KulakanSearchResponse(BaseModel):
@@ -750,6 +758,10 @@ async def search_products_for_kulakan(
                         p.content_unit,
                         p.track_batches,
                         p.track_expiry,
+                        p.sales_tax,
+                        p.sales_tax_id,
+                        p.purchase_tax,
+                        p.purchase_tax_id,
                         'products' as source,
                         CASE
                             WHEN LOWER(p.nama_produk) = LOWER($2) THEN 100
@@ -777,6 +789,10 @@ async def search_products_for_kulakan(
                         NULL as content_unit,
                         NULL::boolean as track_batches,
                         NULL::boolean as track_expiry,
+                        NULL::text as sales_tax,
+                        NULL::uuid as sales_tax_id,
+                        NULL::text as purchase_tax,
+                        NULL::uuid as purchase_tax_id,
                         'transaction' as source,
                         CASE
                             WHEN LOWER(bi.product_name) = LOWER($2) THEN 100
@@ -798,17 +814,43 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, purchase_price, content_unit, track_batches, track_expiry, source, score
+                        id, name, barcode, category, harga_jual, purchase_price, content_unit, track_batches, track_expiry, sales_tax, sales_tax_id, purchase_tax, purchase_tax_id, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
-                SELECT * FROM deduped
-                WHERE score > 0
-                ORDER BY score DESC, name ASC
+                SELECT d.*, st.name AS sales_tax_name, st.rate AS sales_tax_rate,
+                       pt.name AS purchase_tax_name, pt.rate AS purchase_tax_rate
+                FROM deduped d
+                LEFT JOIN tax_codes st ON st.id = d.sales_tax_id
+                LEFT JOIN tax_codes pt ON pt.id = d.purchase_tax_id
+                WHERE d.score > 0
+                ORDER BY d.score DESC, d.name ASC
                 LIMIT $3
             """
 
             rows = await conn.fetch(query, tenant_id, q, limit)
+
+            # Pre-fetch tax_codes for legacy string resolution
+            all_tax_codes = await conn.fetch(
+                "SELECT id, code, name, rate FROM tax_codes WHERE tenant_id = $1 AND is_active = true",
+                tenant_id,
+            )
+            tc_map = {}
+            for tc in all_tax_codes:
+                tc_map[tc["code"].lower()] = tc
+                tc_map[tc["name"].lower()] = tc
+
+            def resolve_legacy(legacy_str):
+                if not legacy_str:
+                    return None
+                key = legacy_str.lower().strip()
+                if key in tc_map:
+                    return tc_map[key]
+                norm = key.replace("_", " ").replace("%", "")
+                for k, v in tc_map.items():
+                    if norm in k or k in norm:
+                        return v
+                return None
 
             # For each result, fetch last pembelian transaction for autofill
             products = []
@@ -848,7 +890,29 @@ async def search_products_for_kulakan(
                     purchase_price=row["purchase_price"] if row["purchase_price"] else None,
                     track_batches=row.get("track_batches"),
                     track_expiry=row.get("track_expiry"),
+                    sales_tax=row.get("sales_tax"),
+                    sales_tax_id=str(row["sales_tax_id"]) if row.get("sales_tax_id") else None,
+                    sales_tax_name=row.get("sales_tax_name"),
+                    sales_tax_rate=float(row["sales_tax_rate"]) if row.get("sales_tax_rate") else None,
+                    purchase_tax=row.get("purchase_tax"),
+                    purchase_tax_id=str(row["purchase_tax_id"]) if row.get("purchase_tax_id") else None,
+                    purchase_tax_name=row.get("purchase_tax_name"),
+                    purchase_tax_rate=float(row["purchase_tax_rate"]) if row.get("purchase_tax_rate") else None,
                 )
+
+                # Resolve legacy tax strings when UUID is missing
+                if not product.sales_tax_id and product.sales_tax:
+                    tc = resolve_legacy(product.sales_tax)
+                    if tc:
+                        product.sales_tax_id = str(tc["id"])
+                        product.sales_tax_name = tc["name"]
+                        product.sales_tax_rate = float(tc["rate"])
+                if not product.purchase_tax_id and product.purchase_tax:
+                    tc = resolve_legacy(product.purchase_tax)
+                    if tc:
+                        product.purchase_tax_id = str(tc["id"])
+                        product.purchase_tax_name = tc["name"]
+                        product.purchase_tax_rate = float(tc["rate"])
 
                 if last_tx:
                     product.last_unit = last_tx["last_unit"]

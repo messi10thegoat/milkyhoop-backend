@@ -14,7 +14,7 @@ V2 Extensions:
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
-from datetime import date
+from datetime import date, datetime
 from .status_helpers import derive_doc_status
 from decimal import Decimal
 
@@ -505,9 +505,11 @@ class BillsService:
             items_query = """
                 SELECT
                     bi.*,
-                    p.nama_produk as product_name
+                    p.nama_produk as product_name,
+                    tc.name as tax_code_name
                 FROM bill_items bi
                 LEFT JOIN products p ON bi.product_id = p.id
+                LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
                 WHERE bi.bill_id = $1
                 ORDER BY bi.line_number
             """
@@ -682,6 +684,11 @@ class BillsService:
                         "bonus_qty": int(item["bonus_qty"])
                         if item.get("bonus_qty")
                         else 0,
+                        "tax_code_id": str(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                        "tax_code_name": item.get("tax_code_name") or "",
+                        "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
+                        "tax_amount": float(item["tax_amount"]) if item.get("tax_amount") else 0,
+                        "dpp": float(item["dpp"]) if item.get("dpp") else 0,
                     }
                     for item in items
                 ],
@@ -2055,6 +2062,12 @@ class BillsService:
                     bill_id,
                 )
 
+                # Clean up document_tax_lines on void
+                await conn.execute(
+                    "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
+                    bill_id, tenant_id,
+                )
+
                 logger.info(f"Bill voided: {bill_id}, reason: {reason}")
 
                 return {
@@ -2418,6 +2431,9 @@ class BillsService:
                         "data": None,
                     }
 
+                # If any item has per-item tax, use 0 for header tax (avoid double-counting)
+                has_per_item_tax = any(item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0 for item in items)
+                header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", bill["tax_rate"] or 0)
                 calc = BillCalculator.calculate(
                     items=items,
                     invoice_discount_percent=Decimal(
@@ -2428,7 +2444,7 @@ class BillsService:
                         str(request.get("cash_discount_percent", 0))
                     ),
                     cash_discount_amount=request.get("cash_discount_amount", 0),
-                    tax_rate=request.get("tax_rate", 11),
+                    tax_rate=header_tax_rate,
                     dpp_manual=request.get("dpp_manual"),
                 )
 
@@ -2525,6 +2541,12 @@ class BillsService:
                         qty, price, discount_pct
                     )
 
+                    # Per-item tax calculation
+                    item_tax_code_id = item.get("tax_code_id")
+                    item_tax_rate = float(item.get("tax_rate") or 0)
+                    item_dpp = float(item_calc["subtotal"])  # DPP = subtotal after discount
+                    item_tax_amount = round(item_dpp * item_tax_rate / 100) if item_tax_rate > 0 else 0
+
                     # Convert exp_date string to date if provided
                     # Accepts both YYYY-MM and YYYY-MM-DD formats
                     exp_date = None
@@ -2548,8 +2570,9 @@ class BillsService:
                             bill_id, product_id, product_code, product_name,
                             description, quantity, unit, unit_price,
                             discount_percent, discount_amount, total, subtotal,
-                            batch_no, exp_date, bonus_qty, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                            batch_no, exp_date, bonus_qty, line_number,
+                            tax_code_id, tax_rate, tax_amount, dpp
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                     """,
                         bill_id,
                         item.get("product_id"),
@@ -2567,7 +2590,25 @@ class BillsService:
                         exp_date,
                         item.get("bonus_qty", 0),
                         idx,
+                        UUID(str(item_tax_code_id)) if item_tax_code_id else None,
+                        item_tax_rate,
+                        item_tax_amount,
+                        item_dpp,
                     )
+
+                # 6b. Recalculate header tax from per-item sums (if any item has tax)
+                item_tax_total = await conn.fetchval(
+                    "SELECT COALESCE(SUM(tax_amount), 0) FROM bill_items WHERE bill_id = $1",
+                    bill_id,
+                )
+                if float(item_tax_total) > 0:
+                    new_grand = float(calc["grand_total"]) + float(item_tax_total)
+                    await conn.execute(
+                        "UPDATE bills SET tax_amount = $1, grand_total = $2, amount = $2 WHERE id = $3",
+                        float(item_tax_total), new_grand, bill_id,
+                    )
+                    calc["tax_amount"] = float(item_tax_total)
+                    calc["grand_total"] = new_grand
 
                 # 7. If posted status, create AP and journal entry
                 ap_id = None
@@ -3039,35 +3080,55 @@ class BillsService:
                 )
 
                 # 9.5 Populate document_tax_lines (Fase 2.2)
-                # Only for new bills with tax_code_id (skip legacy bills per design)
-                if bill_tax > 0 and bill.get("tax_code_id"):
-                    # Get the journal_line_id for the PPN line
+                if bill_tax > 0:
                     ppn_journal_line_id = await conn.fetchval(
                         "SELECT id FROM journal_lines WHERE journal_id = $1 AND account_id = $2 LIMIT 1",
                         journal_id,
                         vat_input_account_id,
                     )
-                    # DPP from bill or calculate
-                    dpp_amount = Decimal(str(bill["dpp"] or 0))
-                    if dpp_amount == 0:
-                        dpp_amount = subtotal  # fallback: subtotal as DPP
 
-                    await conn.execute(
-                        """
-                        INSERT INTO document_tax_lines
-                        (id, tenant_id, document_type, document_id, tax_code_id,
-                         direction, base_amount, tax_amount, coa_id, journal_line_id)
-                        VALUES ($1, $2, 'BILL', $3, $4, 'input', $5, $6, $7, $8)
-                        """,
-                        uuid_module.uuid4(),
-                        tenant_id,
+                    # Per-item DTL: write one row per taxable item
+                    taxable_items = await conn.fetch(
+                        "SELECT id, tax_code_id, tax_rate, tax_amount, dpp FROM bill_items WHERE bill_id = $1 AND COALESCE(tax_amount, 0) > 0",
                         bill_id,
-                        bill["tax_code_id"],
-                        dpp_amount,
-                        bill_tax,
-                        vat_input_account_id,
-                        ppn_journal_line_id,
                     )
+                    if taxable_items:
+                        for ti in taxable_items:
+                            if ti["tax_code_id"]:
+                                tc_coa = await conn.fetchval(
+                                    "SELECT coa_id FROM tax_codes WHERE id = $1", ti["tax_code_id"],
+                                )
+                                await conn.execute(
+                                    """
+                                    INSERT INTO document_tax_lines
+                                    (id, tenant_id, document_type, document_id, line_item_id, tax_code_id,
+                                     direction, base_amount, tax_amount, coa_id, journal_line_id)
+                                    VALUES ($1, $2, 'BILL', $3, $4, $5, 'input', $6, $7, $8, $9)
+                                    """,
+                                    uuid_module.uuid4(), tenant_id, bill_id,
+                                    ti["id"], ti["tax_code_id"],
+                                    float(ti["dpp"] or ti["tax_amount"]),
+                                    float(ti["tax_amount"]),
+                                    tc_coa or vat_input_account_id,
+                                    ppn_journal_line_id,
+                                )
+                    elif bill.get("tax_code_id"):
+                        # Header-level tax fallback (legacy)
+                        dpp_amount = Decimal(str(bill["dpp"] or 0))
+                        if dpp_amount == 0:
+                            dpp_amount = subtotal
+                        await conn.execute(
+                            """
+                            INSERT INTO document_tax_lines
+                            (id, tenant_id, document_type, document_id, tax_code_id,
+                             direction, base_amount, tax_amount, coa_id, journal_line_id)
+                            VALUES ($1, $2, 'BILL', $3, $4, 'input', $5, $6, $7, $8)
+                            """,
+                            uuid_module.uuid4(), tenant_id, bill_id,
+                            bill["tax_code_id"],
+                            dpp_amount, bill_tax,
+                            vat_input_account_id, ppn_journal_line_id,
+                        )
                     logger.info(f"document_tax_lines created for bill {bill_id}")
 
                 # 10. Inventory ledger updates (for tracked goods)
@@ -3286,7 +3347,7 @@ class BillsService:
             # Check bill exists and is draft
             bill = await conn.fetchrow(
                 """
-                SELECT id, status_v2, vendor_id FROM bills
+                SELECT id, status_v2, vendor_id, tax_rate FROM bills
                 WHERE id = $1 AND tenant_id = $2
             """,
                 bill_id,
@@ -3322,6 +3383,10 @@ class BillsService:
                 calc = None
 
                 if items:
+                    # If any item has per-item tax, use 0 for header tax (avoid double-counting)
+                    has_per_item_tax = any(item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0 for item in items)
+                    header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", bill["tax_rate"] or 0)
+
                     calc = BillCalculator.calculate(
                         items=items,
                         invoice_discount_percent=Decimal(
@@ -3334,7 +3399,7 @@ class BillsService:
                             str(request.get("cash_discount_percent", 0))
                         ),
                         cash_discount_amount=request.get("cash_discount_amount", 0),
-                        tax_rate=request.get("tax_rate", 11),
+                        tax_rate=header_tax_rate,
                         dpp_manual=request.get("dpp_manual"),
                     )
 
@@ -3361,14 +3426,21 @@ class BillsService:
                             else:  # YYYY-MM-DD
                                 exp_date = date.fromisoformat(exp_val)
 
+                        # Per-item tax calculation
+                        item_tax_code_id = item.get("tax_code_id")
+                        item_tax_rate = float(item.get("tax_rate") or 0)
+                        item_dpp = float(item_calc["subtotal"])  # DPP = subtotal after discount
+                        item_tax_amount = round(item_dpp * item_tax_rate / 100) if item_tax_rate > 0 else 0
+
                         await conn.execute(
                             """
                             INSERT INTO bill_items (
                                 bill_id, product_id, product_code, product_name,
                                 description, quantity, unit, unit_price,
                                 discount_percent, discount_amount, total, subtotal,
-                                batch_no, exp_date, bonus_qty, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                                batch_no, exp_date, bonus_qty, line_number,
+                                tax_code_id, tax_rate, tax_amount, dpp
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                         """,
                             bill_id,
                             item.get("product_id"),
@@ -3386,7 +3458,21 @@ class BillsService:
                             exp_date,
                             item.get("bonus_qty", 0),
                             idx,
+                            UUID(str(item_tax_code_id)) if item_tax_code_id else None,
+                            item_tax_rate,
+                            item_tax_amount,
+                            item_dpp,
                         )
+
+                # Recalculate header tax from per-item sums
+                if items:
+                    item_tax_total = await conn.fetchval(
+                        "SELECT COALESCE(SUM(tax_amount), 0) FROM bill_items WHERE bill_id = $1",
+                        bill_id,
+                    )
+                    if float(item_tax_total) > 0:
+                        calc["tax_amount"] = float(item_tax_total)
+                        calc["grand_total"] = float(calc["grand_total"]) + float(item_tax_total)
 
                 # Build update query
                 updates = ["updated_at = NOW()"]
@@ -3573,9 +3659,11 @@ class BillsService:
             items_query = """
                 SELECT
                     bi.*,
-                    p.nama_produk as linked_product_name
+                    p.nama_produk as linked_product_name,
+                    tc.name as tax_code_name
                 FROM bill_items bi
                 LEFT JOIN products p ON bi.product_id = p.id
+                LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
                 WHERE bi.bill_id = $1
                 ORDER BY bi.line_number
             """
@@ -3654,6 +3742,11 @@ class BillsService:
                     if item["exp_date"]
                     else None,
                     "bonus_qty": int(item["bonus_qty"] or 0),
+                    "tax_code_id": str(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                    "tax_code_name": item.get("tax_code_name") or "",
+                    "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
+                    "tax_amount": float(item["tax_amount"]) if item.get("tax_amount") else 0,
+                    "dpp": float(item["dpp"]) if item.get("dpp") else 0,
                 }
                 for item in items
             ]

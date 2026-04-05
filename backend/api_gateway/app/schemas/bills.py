@@ -344,6 +344,8 @@ class BillItemRequestV2(BaseModel):
     bonus_qty: int = Field(
         0, ge=0, description="Free/bonus quantity (not in calculation)"
     )
+    tax_code_id: Optional[UUID] = Field(None, description="Per-item tax code UUID")
+    tax_rate: Optional[float] = Field(None, ge=0, le=100, description="Per-item tax rate %")
 
     @field_validator("exp_date")
     @classmethod
