@@ -130,6 +130,11 @@ class BOMOperationInput(BaseModel):
     labor_rate_per_hour: int = Field(0, ge=0)
     overhead_rate_per_hour: int = Field(0, ge=0)
     instructions: Optional[str] = None
+    # Subcontracting (Maklun)
+    is_subcontract: bool = False
+    vendor_id: Optional[UUID] = None
+    subcontract_cost_per_unit: float = 0
+    subcontract_description: Optional[str] = None
 
 
 class BOMOperationDetail(BaseModel):
@@ -145,6 +150,11 @@ class BOMOperationDetail(BaseModel):
     labor_rate_per_hour: int
     overhead_rate_per_hour: int
     instructions: Optional[str]
+    is_subcontract: bool = False
+    vendor_id: Optional[str] = None
+    vendor_name: Optional[str] = None
+    subcontract_cost_per_unit: float = 0
+    subcontract_description: Optional[str] = None
 
 
 # ============================================================================
@@ -243,7 +253,7 @@ class BOMDetailResponse(BaseModel):
 
 class CostBreakdownItem(BaseModel):
     """Cost breakdown item"""
-    category: str  # material, labor, overhead
+    category: str  # material, labor, overhead, subcontract
     description: str
     quantity: Optional[Decimal]
     unit_cost: int
@@ -259,6 +269,10 @@ class CostBreakdownResponse(BaseModel):
     output_quantity: Decimal
     unit_cost: int
     total_cost: int
+    material_cost: Optional[float] = None
+    labor_cost: Optional[float] = None
+    overhead_cost: Optional[float] = None
+    subcontract_cost: Optional[float] = None
     breakdown: List[CostBreakdownItem]
 
 

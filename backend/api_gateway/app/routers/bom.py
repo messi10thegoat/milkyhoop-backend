@@ -448,13 +448,15 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                         INSERT INTO bom_operations (
                             bom_id, operation_number, operation_name, description,
                             work_center_id, setup_time_minutes, run_time_minutes,
-                            labor_rate_per_hour, overhead_rate_per_hour, instructions
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            labor_rate_per_hour, overhead_rate_per_hour, instructions,
+                            is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                         RETURNING id
                         """,
                         bom_id, op.operation_number, op.operation_name, op.description,
                         op.work_center_id, op.setup_time_minutes, op.run_time_minutes,
-                        op.labor_rate_per_hour, op.overhead_rate_per_hour, op.instructions
+                        op.labor_rate_per_hour, op.overhead_rate_per_hour, op.instructions,
+                        op.is_subcontract, op.vendor_id, op.subcontract_cost_per_unit, op.subcontract_description
                     )
                     operation_ids[op.operation_number] = op_id
 
@@ -515,9 +517,10 @@ async def get_bom(request: Request, bom_id: UUID):
             # Get operations
             operations = await conn.fetch(
                 """
-                SELECT bo.*, wc.name as work_center_name
+                SELECT bo.*, wc.name as work_center_name, v.name as vendor_name
                 FROM bom_operations bo
                 LEFT JOIN work_centers wc ON wc.id = bo.work_center_id
+                LEFT JOIN vendors v ON v.id = bo.vendor_id
                 WHERE bo.bom_id = $1
                 ORDER BY bo.operation_number
                 """,
@@ -595,6 +598,11 @@ async def get_bom(request: Request, bom_id: UUID):
                             "labor_rate_per_hour": o["labor_rate_per_hour"],
                             "overhead_rate_per_hour": o["overhead_rate_per_hour"],
                             "instructions": o["instructions"],
+                            "is_subcontract": o.get("is_subcontract", False),
+                            "vendor_id": str(o["vendor_id"]) if o.get("vendor_id") else None,
+                            "vendor_name": o.get("vendor_name"),
+                            "subcontract_cost_per_unit": float(o.get("subcontract_cost_per_unit", 0)),
+                            "subcontract_description": o.get("subcontract_description"),
                         }
                         for o in operations
                     ],
@@ -805,10 +813,12 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                     """
                     INSERT INTO bom_operations (bom_id, operation_number, operation_name,
                         description, work_center_id, setup_time_minutes, run_time_minutes,
-                        labor_rate_per_hour, overhead_rate_per_hour, instructions)
+                        labor_rate_per_hour, overhead_rate_per_hour, instructions,
+                        is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description)
                     SELECT $1, operation_number, operation_name, description, work_center_id,
                            setup_time_minutes, run_time_minutes, labor_rate_per_hour,
-                           overhead_rate_per_hour, instructions
+                           overhead_rate_per_hour, instructions,
+                           is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
                     FROM bom_operations WHERE bom_id = $2
                     """,
                     new_bom_id, bom_id
@@ -880,7 +890,8 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                 SELECT operation_name,
                        (setup_time_minutes + COALESCE(run_time_minutes, 0)) as total_minutes,
                        labor_rate_per_hour,
-                       ((setup_time_minutes + COALESCE(run_time_minutes, 0)) * labor_rate_per_hour / 60) as cost
+                       ((setup_time_minutes + COALESCE(run_time_minutes, 0)) * labor_rate_per_hour / 60) as cost,
+                       is_subcontract, subcontract_cost_per_unit
                 FROM bom_operations
                 WHERE bom_id = $1
                 """,
@@ -923,7 +934,25 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                     "percent_of_total": round(Decimal(bom["overhead_cost"]) / total * 100, 2)
                 })
 
-            unit_cost = int(bom["total_cost"] / float(bom["output_quantity"])) if bom["output_quantity"] else 0
+            # Subcontract items
+            for l in labor:
+                if l.get("is_subcontract") and l.get("subcontract_cost_per_unit"):
+                    sc_cost = Decimal(str(l["subcontract_cost_per_unit"]))
+                    breakdown.append({
+                        "category": "subcontract",
+                        "description": "Subcontract: " + l["operation_name"],
+                        "quantity": None,
+                        "unit_cost": float(sc_cost),
+                        "total_cost": float(sc_cost),
+                        "percent_of_total": round(sc_cost / total * 100, 2)
+                    })
+
+            subcontract_cost = sum(
+                float(l.get("subcontract_cost_per_unit", 0))
+                for l in labor if l.get("is_subcontract")
+            )
+
+            unit_cost = int(float(bom["total_cost"]) / float(bom["output_quantity"])) if bom["output_quantity"] else 0
 
             return {
                 "success": True,
@@ -932,6 +961,10 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                 "output_quantity": bom["output_quantity"],
                 "unit_cost": unit_cost,
                 "total_cost": bom["total_cost"],
+                "material_cost": float(bom.get("standard_cost") or 0),
+                "labor_cost": float(bom.get("labor_cost") or 0),
+                "overhead_cost": float(bom.get("overhead_cost") or 0),
+                "subcontract_cost": subcontract_cost,
                 "breakdown": breakdown
             }
 
@@ -1084,13 +1117,15 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
                 INSERT INTO bom_operations (
                     bom_id, operation_number, operation_name, description,
                     work_center_id, setup_time_minutes, run_time_minutes,
-                    labor_rate_per_hour, overhead_rate_per_hour, instructions
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    labor_rate_per_hour, overhead_rate_per_hour, instructions,
+                    is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id
                 """,
                 bom_id, body.operation_number, body.operation_name, body.description,
                 body.work_center_id, body.setup_time_minutes, body.run_time_minutes,
-                body.labor_rate_per_hour, body.overhead_rate_per_hour, body.instructions
+                body.labor_rate_per_hour, body.overhead_rate_per_hour, body.instructions,
+                body.is_subcontract, body.vendor_id, body.subcontract_cost_per_unit, body.subcontract_description
             )
 
             await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
