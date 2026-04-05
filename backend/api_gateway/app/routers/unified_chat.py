@@ -1490,7 +1490,19 @@ PENTING:
 - Jika user bilang "faktur pembelian" → doc_type = "purchase_invoice"
 - Jika user sebut nama vendor, pakai nama itu
 - Semua angka dalam Rupiah tanpa desimal
-- confidence 0-1 berdasarkan kejelasan dokumen"""
+- confidence 0-1 berdasarkan kejelasan dokumen
+- Jika bukti transfer: cari clue "Transfer Keluar"/"Dana Masuk"/"Debit"/"Kredit" -> isi transfer_direction
+- Jika ada berita transfer/catatan, masukkan ke reference_note
+
+Tambahan fields (isi jika tersedia, null jika tidak):
+  "transfer_direction": "masuk|keluar|unknown",
+  "bank_source": "nama bank pengirim",
+  "bank_destination": "nama bank penerima",
+  "reference_note": "berita/catatan transfer",
+  "meter_id": "nomor meter listrik jika ada",
+  "tax_type": "PPh 21|PPh 23|PPN|null",
+  "tax_period": "bulan dan tahun jika ada",
+  "counterparty_name": "nama pihak lawan transaksi"""
 
                     _ocr_response = await _ocr_client.chat.completions.create(
                         model="gpt-4o",
@@ -1521,6 +1533,30 @@ PENTING:
                     logger.info(
                         f"[DocSimple] gpt-4o extracted: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
                     )
+
+                    # -- Smart Document Matching (bridge to Financial Intelligence) --
+                    _match_result = None
+                    try:
+                        from ..services.unified_agent.document_matcher import (
+                            DocumentMatcher,
+                        )
+
+                        _matcher = DocumentMatcher(_ocr_pool, ctx["tenant_id"])
+                        _match_result = await _matcher.match(_ocr_data)
+                        logger.info(
+                            "[DocMatch] category=%s direction=%s confidence=%s match=%s",
+                            _match_result.doc_category,
+                            _match_result.direction,
+                            _match_result.confidence_level,
+                            _match_result.best_match.label
+                            if _match_result.best_match
+                            else "none",
+                        )
+                    except Exception as _match_err:
+                        logger.warning(
+                            "[DocMatch] Smart match failed (non-blocking): %s",
+                            _match_err,
+                        )
 
                     # Build DIRECT_ACTION_PREVIEW
                     _pending_id = str(_ocr_uuid.uuid4())
@@ -1585,6 +1621,52 @@ PENTING:
                         "entity_type": "document",
                     }
 
+                    # Inject smart match info into preview
+                    if _match_result:
+                        _sm_info = {
+                            "doc_category": _match_result.doc_category,
+                            "direction": _match_result.direction,
+                            "direction_label": "Uang Masuk"
+                            if _match_result.direction == "inbound"
+                            else "Uang Keluar",
+                            "direction_confidence": _match_result.direction_confidence,
+                            "confidence_level": _match_result.confidence_level,
+                            "needs_user_input": _match_result.needs_user_input or [],
+                        }
+                        if _match_result.best_match:
+                            bm = _match_result.best_match
+                            _sm_info["best_match"] = {
+                                "source_type": bm.source_type,
+                                "source_id": bm.source_id,
+                                "label": bm.label,
+                                "counterparty": bm.counterparty,
+                                "amount": bm.amount,
+                                "outstanding": bm.outstanding,
+                                "due_date": bm.due_date,
+                                "confidence": bm.confidence,
+                                "reasons": bm.reasons,
+                            }
+                        if _match_result.alternatives:
+                            _sm_info["alternatives"] = [
+                                {
+                                    "label": a.label,
+                                    "counterparty": a.counterparty,
+                                    "amount": a.amount,
+                                    "outstanding": a.outstanding,
+                                    "confidence": a.confidence,
+                                }
+                                for a in _match_result.alternatives
+                            ]
+                        if _match_result.account_recommendation:
+                            ar = _match_result.account_recommendation
+                            _sm_info["account_recommendation"] = {
+                                "account_id": ar.account_id,
+                                "account_name": ar.account_name,
+                                "account_code": ar.account_code,
+                                "confidence": ar.confidence,
+                            }
+                        _preview["payload"]["smart_match"] = _sm_info
+
                     # Store pending action
                     _expires = _ocr_dt.now(_ocr_tz.utc) + _ocr_td(seconds=300)
                     try:
@@ -1639,6 +1721,12 @@ PENTING:
                     _narration = f"Saya baca {_type_display.lower()} dari **{_vendor}**. Total Rp {_total:,.0f}.".replace(
                         ",", "."
                     )
+                    # Add match context to narration
+                    if _match_result and _match_result.best_match:
+                        _bm = _match_result.best_match
+                        _narration += f"\n\nMatch: **{_bm.label}** dari {_bm.counterparty} (sisa Rp {_bm.outstanding:,.0f}, {_bm.confidence*100:.0f}% yakin).".replace(
+                            ",", "."
+                        )
 
                     _doc_pipeline_result = ChatMessageResponse(
                         message_type="DIRECT_ACTION_PREVIEW",
@@ -2802,6 +2890,7 @@ async def record_feedback(request: Request):
 
     try:
         from ..services.unified_agent.telemetry import IntentTelemetry
+
         pool = await get_session_db_pool()
         telemetry = IntentTelemetry(pool, ctx["tenant_id"])
         await telemetry.record_feedback(session_id, feedback)
