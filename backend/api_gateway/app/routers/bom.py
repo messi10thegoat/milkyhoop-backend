@@ -905,7 +905,7 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
             for m in materials:
                 breakdown.append({
                     "category": "material",
-                    "description": m["name"],
+                    "description": m["nama_produk"],
                     "quantity": m["quantity"],
                     "unit_cost": m["unit_cost"],
                     "total_cost": m["extended_cost"],

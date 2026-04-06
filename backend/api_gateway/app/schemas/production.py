@@ -231,6 +231,19 @@ class CostAnalysisItem(BaseModel):
     variance_percent: Decimal
 
 
+class SubcontractItem(BaseModel):
+    """Subcontract item in cost analysis"""
+    id: str
+    operation: str
+    vendor: str
+    quantity: float
+    unit_cost: float
+    total_cost: float
+    bill_number: Optional[str] = None
+    bill_status: Optional[str] = None
+    status: str
+
+
 class CostAnalysisResponse(BaseModel):
     """Response for cost analysis"""
     success: bool = True
@@ -243,6 +256,9 @@ class CostAnalysisResponse(BaseModel):
     total_actual: int
     total_variance: int
     unit_cost: int
+    subcontract_cost: float = 0.0
+    total_cost: float = 0.0
+    subcontracts: List[SubcontractItem] = []
 
 
 # ============================================================================

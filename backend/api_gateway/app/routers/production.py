@@ -818,8 +818,13 @@ async def cancel_order(request: Request, order_id: UUID):
                             sc["bill_id"], ctx["tenant_id"],
                         )
                         if bill and bill["status_v2"] == "draft":
+                            await conn.execute(
+                                "UPDATE production_subcontracts SET bill_id = NULL, status = 'voided', updated_at = NOW() WHERE id = $1",
+                                sc["id"],
+                            )
                             await conn.execute("DELETE FROM bill_items WHERE bill_id = $1", sc["bill_id"])
                             await conn.execute("DELETE FROM bills WHERE id = $1", sc["bill_id"])
+                            continue
                     await conn.execute(
                         "UPDATE production_subcontracts SET status = 'voided', updated_at = NOW() WHERE id = $1",
                         sc["id"],
