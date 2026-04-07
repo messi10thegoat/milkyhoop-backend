@@ -631,6 +631,108 @@ async def send_message(request: Request, body: ChatMessageRequest):
         except Exception:
             pass  # Non-fatal, proceed normally
 
+    # ── Bank selection re-trigger (from document clarification) ──
+    # When user taps a bank option from CLARIFICATION, text = bank_account_id (UUID).
+    # Check Layer 2 document_context.pending_bank_selection and re-resolve.
+    if body.session_id and body.text:
+        try:
+            _retrigger_pool = await get_session_db_pool()
+            _retrigger_sm = SessionManager(
+                db_pool=_retrigger_pool,
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+            )
+            _retrigger_state = await _retrigger_sm.get_state(body.session_id)
+            _doc_ctx = (
+                _retrigger_state.document_context if _retrigger_state else None
+            ) or {}
+            logger.info(
+                "[DocRetrigger] doc_ctx keys: %s",
+                list(_doc_ctx.keys()) if _doc_ctx else "empty",
+            )
+            if _doc_ctx.get("pending_bank_selection"):
+                _selected_bank_id = body.text.strip()
+                _resolved_payload = _doc_ctx.get("resolved_payload", {})
+                _action_key = _doc_ctx.get("resolved_action_key", "")
+
+                if _action_key and _resolved_payload:
+                    # Inject selected bank into payload
+                    _resolved_payload["bank_account_id"] = _selected_bank_id
+                    if "paid_through_id" in _resolved_payload:
+                        _resolved_payload["paid_through_id"] = _selected_bank_id
+
+                    # Resolve bank display name
+                    _bank_row = await _retrigger_pool.fetchrow(
+                        "SELECT account_name, bank_name, account_number FROM bank_accounts "
+                        "WHERE id = $1 AND tenant_id = $2",
+                        __import__("uuid").UUID(_selected_bank_id),
+                        ctx["tenant_id"],
+                    )
+                    if _bank_row:
+                        _bank_display = _bank_row["bank_name"] or ""
+                        if _bank_row["account_name"]:
+                            _bank_display += (
+                                f" - {_bank_row['account_name']}"
+                                if _bank_display
+                                else _bank_row["account_name"]
+                            )
+                        _resolved_payload["bank_account_name"] = _bank_display
+                        if "paid_through_name" in _resolved_payload:
+                            _resolved_payload["paid_through_name"] = _bank_display
+
+                    # Propose the action via ToolExecutor
+                    _te_retrigger = ToolExecutor(
+                        context=TenantContext(
+                            tenant_id=ctx["tenant_id"],
+                            user_id=ctx["user_id"],
+                            auth_token=ctx["auth_token"],
+                            tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                        ),
+                        session_id=body.session_id,
+                    )
+                    _propose_result = await _te_retrigger._execute_propose_direct(
+                        {
+                            "action_key": _action_key,
+                            "payload": _resolved_payload,
+                        }
+                    )
+                    if _propose_result.get("success"):
+                        _vendor_rt = _doc_ctx.get("vendor_name", "Unknown")
+                        _total_rt = _doc_ctx.get("total_amount", 0)
+                        _match_label = _doc_ctx.get("match_label", "")
+                        _narration_rt = f"Rekening dipilih: **{_bank_display}**."
+                        if _match_label:
+                            _narration_rt += f" Membayar **{_match_label}**."
+
+                        # Clear pending_bank_selection
+                        try:
+                            await _retrigger_sm.update_state(
+                                body.session_id,
+                                document_context={
+                                    "pending_bank_selection": False,
+                                    "resolved_action_key": _action_key,
+                                    "vendor_name": _vendor_rt,
+                                    "total_amount": _total_rt,
+                                    "pending_action_id": _propose_result["data"].get(
+                                        "pending_action_id"
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
+
+                        return ChatMessageResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            text=_narration_rt,
+                            data=_propose_result["data"],
+                            pending_action_id=_propose_result["data"].get(
+                                "pending_action_id"
+                            ),
+                            session_id=body.session_id,
+                        )
+        except Exception as _retrigger_err:
+            logger.debug("[DocRetrigger] Not a bank selection: %s", _retrigger_err)
+
     # ── Workflow continuation shortcut ──
     # If user sends "lanjut" etc. and there's an active workflow in REVIEWING state,
     # bypass LLM and directly resume workflow for reliability + speed.
@@ -1098,7 +1200,9 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
 async def send_message_with_files(
     request: Request,
     conversation_id: str = Form(..., description="Conversation session ID"),
-    text: str = Form(..., min_length=1, max_length=2000, description="User message"),
+    text: str = Form(
+        "", max_length=2000, description="User message (optional for file-only uploads)"
+    ),
     session_id: Optional[str] = Form(None, description="Session ID for 4-layer memory"),
     files: List[UploadFile] = File(
         default=[], description="Attached files (max 5, max 10MB each)"
@@ -1406,7 +1510,6 @@ async def send_message_with_files(
         )
         if _has_image:
             try:
-                from ..services.ocr_providers.openai_provider import OpenAIOCRProvider
                 from ..services.unified_agent.db_utils import (
                     get_session_db_pool as _get_ocr_pool,
                 )
@@ -1492,6 +1595,9 @@ PENTING:
 - Semua angka dalam Rupiah tanpa desimal
 - confidence 0-1 berdasarkan kejelasan dokumen
 - Jika bukti transfer: cari clue "Transfer Keluar"/"Dana Masuk"/"Debit"/"Kredit" -> isi transfer_direction
+- Jika bukti transfer KELUAR: isi vendor_name = nama penerima (field "Ke"/"To"/"Penerima")
+- Jika bukti transfer MASUK: isi customer_name = nama pengirim (field "Dari"/"From"/"Pengirim")
+- counterparty_name = pihak lawan (penerima jika keluar, pengirim jika masuk)
 - Jika ada berita transfer/catatan, masukkan ke reference_note
 
 Tambahan fields (isi jika tersedia, null jika tidak):
@@ -1541,6 +1647,26 @@ Tambahan fields (isi jika tersedia, null jika tidak):
                             DocumentMatcher,
                         )
 
+                        # Extract bank hint from caption text (e.g. "transfer dari BCA utama")
+                        _caption_lower = text.strip().lower() if text else ""
+                        _bank_hint = ""
+                        import re as _re_bank
+
+                        _bank_patterns = [
+                            r"(?:dari|via|lewat|pakai|pake|rekening|rek)\s+(.+?)(?:\s*$|[,.])",
+                            r"(?:transfer|bayar|tf)\s+(?:dari|via|lewat|pakai)\s+(.+?)(?:\s*$|[,.])",
+                        ]
+                        for _bp in _bank_patterns:
+                            _bm_cap = _re_bank.search(_bp, _caption_lower)
+                            if _bm_cap:
+                                _bank_hint = _bm_cap.group(1).strip()
+                                break
+                        if _bank_hint:
+                            _ocr_data["bank_hint"] = _bank_hint
+                            logger.info(
+                                "[DocSimple] Bank hint from caption: %s", _bank_hint
+                            )
+
                         _matcher = DocumentMatcher(_ocr_pool, ctx["tenant_id"])
                         _match_result = await _matcher.match(_ocr_data)
                         logger.info(
@@ -1558,183 +1684,513 @@ Tambahan fields (isi jika tersedia, null jika tidak):
                             _match_err,
                         )
 
-                    # Build DIRECT_ACTION_PREVIEW
-                    _pending_id = str(_ocr_uuid.uuid4())
-                    _doc_type = _ocr_data.get("doc_type", "unknown")
-                    _vendor = (
-                        _ocr_data.get("vendor_name")
-                        or _ocr_data.get("customer_name")
-                        or "Unknown"
-                    )
-                    _total = float(_ocr_data.get("total_amount", 0))
-                    _tax = float(_ocr_data.get("tax_amount", 0))
-                    _items = _ocr_data.get("items", [])
-                    _doc_number = _ocr_data.get("document_number", "-")
-                    _doc_date = _ocr_data.get("document_date", "-")
-                    _confidence = float(_ocr_data.get("confidence", 0))
+                    # ── Resolve to DirectAction if match is actionable ──
+                    _resolved_action = None
+                    if _match_result and _match_result.confidence_level != "low":
+                        try:
+                            from ..services.unified_agent.document_action_resolver import (
+                                DocumentActionResolver,
+                            )
 
-                    _type_labels = {
-                        "purchase_invoice": "Faktur Pembelian",
-                        "sales_invoice": "Faktur Penjualan",
-                        "receipt": "Kwitansi",
-                        "bank_transfer": "Transfer Bank",
-                        "expense": "Biaya/Pengeluaran",
-                    }
-                    _type_display = _type_labels.get(_doc_type, _doc_type)
+                            _resolver = DocumentActionResolver(
+                                _ocr_pool, ctx["tenant_id"]
+                            )
+                            _resolved_action = await _resolver.resolve(
+                                _match_result, _ocr_data
+                            )
+                            if _resolved_action:
+                                logger.info(
+                                    "[DocResolver] Resolved to %s (clarification=%s)",
+                                    _resolved_action.action_key,
+                                    _resolved_action.needs_clarification,
+                                )
+                        except Exception as _resolve_err:
+                            logger.warning(
+                                "[DocResolver] Failed (non-blocking): %s", _resolve_err
+                            )
 
-                    # Build confirmation table
-                    _table_lines = ["| Field | Value |", "|---|---|"]
-                    _table_lines.append(f"| Tipe | {_type_display} |")
-                    _table_lines.append(f"| Vendor | {_vendor} |")
-                    if _doc_number != "-":
-                        _table_lines.append(f"| No. Dokumen | {_doc_number} |")
-                    if _doc_date != "-":
-                        _table_lines.append(f"| Tanggal | {_doc_date} |")
-                    if _items:
-                        _table_lines.append(f"| Items | {len(_items)} item |")
-                    _table_lines.append(
-                        f"| Total | Rp {_total:,.0f} |".replace(",", ".")
-                    )
-                    if _tax > 0:
-                        _table_lines.append(
-                            f"| Pajak | Rp {_tax:,.0f} |".replace(",", ".")
-                        )
-                    _table_lines.append(f"| Confidence | {_confidence*100:.0f}% |")
-
-                    _preview = {
-                        "pending_action_id": _pending_id,
-                        "action_type": "CONFIRM_DOCUMENT_DRAFT",
-                        "action_key": "confirm_document_draft",
-                        "display_name": f"Konfirmasi {_type_display}",
-                        "confirmation_table": "\n".join(_table_lines),
-                        "payload": {
-                            "document_id": _fm.get("file_hash", str(_ocr_uuid.uuid4())),
-                            "doc_type": _doc_type,
-                            "vendor_name": _vendor,
-                            "document_number": _doc_number,
-                            "document_date": _doc_date,
-                            "total_amount": _total,
-                            "tax_amount": _tax,
-                            "items": _items,
-                        },
-                        "loading_message": f"Memproses {_type_display.lower()} dari {_vendor}...",
-                        "entity_type": "document",
-                    }
-
-                    # Inject smart match info into preview
-                    if _match_result:
-                        _sm_info = {
-                            "doc_category": _match_result.doc_category,
-                            "direction": _match_result.direction,
-                            "direction_label": "Uang Masuk"
-                            if _match_result.direction == "inbound"
-                            else "Uang Keluar",
-                            "direction_confidence": _match_result.direction_confidence,
-                            "confidence_level": _match_result.confidence_level,
-                            "needs_user_input": _match_result.needs_user_input or [],
-                        }
-                        if _match_result.best_match:
-                            bm = _match_result.best_match
-                            _sm_info["best_match"] = {
-                                "source_type": bm.source_type,
-                                "source_id": bm.source_id,
-                                "label": bm.label,
-                                "counterparty": bm.counterparty,
-                                "amount": bm.amount,
-                                "outstanding": bm.outstanding,
-                                "due_date": bm.due_date,
-                                "confidence": bm.confidence,
-                                "reasons": bm.reasons,
-                            }
-                        if _match_result.alternatives:
-                            _sm_info["alternatives"] = [
+                    # If resolved and no clarification needed → delegate to propose_direct
+                    if _resolved_action and not _resolved_action.needs_clarification:
+                        try:
+                            _te = ToolExecutor(
+                                context=TenantContext(
+                                    tenant_id=ctx["tenant_id"],
+                                    user_id=ctx["user_id"],
+                                    auth_token=ctx["auth_token"],
+                                    tenant_name=ctx.get(
+                                        "tenant_name", ctx["tenant_id"]
+                                    ),
+                                ),
+                                session_id=session_id,
+                            )
+                            _propose_result = await _te._execute_propose_direct(
                                 {
-                                    "label": a.label,
-                                    "counterparty": a.counterparty,
-                                    "amount": a.amount,
-                                    "outstanding": a.outstanding,
-                                    "confidence": a.confidence,
+                                    "action_key": _resolved_action.action_key,
+                                    "payload": _resolved_action.payload,
                                 }
-                                for a in _match_result.alternatives
-                            ]
-                        if _match_result.account_recommendation:
-                            ar = _match_result.account_recommendation
-                            _sm_info["account_recommendation"] = {
-                                "account_id": ar.account_id,
-                                "account_name": ar.account_name,
-                                "account_code": ar.account_code,
-                                "confidence": ar.confidence,
-                            }
-                        _preview["payload"]["smart_match"] = _sm_info
+                            )
+                            if _propose_result.get("success"):
+                                _doc_type = _ocr_data.get("doc_type", "unknown")
+                                _type_labels = {
+                                    "purchase_invoice": "Faktur Pembelian",
+                                    "sales_invoice": "Faktur Penjualan",
+                                    "receipt": "Kwitansi",
+                                    "bank_transfer": "Transfer Bank",
+                                    "expense": "Biaya/Pengeluaran",
+                                }
+                                _type_display = _type_labels.get(_doc_type, _doc_type)
+                                _vendor = (
+                                    _ocr_data.get("vendor_name")
+                                    or _ocr_data.get("customer_name")
+                                    or "Unknown"
+                                )
+                                _total = float(_ocr_data.get("total_amount", 0))
+                                _dir_word = (
+                                    "ke"
+                                    if _match_result
+                                    and _match_result.direction == "out"
+                                    else "dari"
+                                )
+                                _narration = f"Saya baca {_type_display.lower()} {_dir_word} **{_vendor}**. Total Rp {_total:,.0f}.".replace(
+                                    ",", "."
+                                )
+                                if _match_result and _match_result.best_match:
+                                    _narration += f" Cocok dengan **{_match_result.best_match.label}**."
 
-                    # Store pending action
-                    _expires = _ocr_dt.now(_ocr_tz.utc) + _ocr_td(seconds=300)
-                    try:
-                        await _ocr_pool.execute(
-                            """INSERT INTO pending_actions (id, tenant_id, user_id, action_id, action_type, action_category, action_plan, status, expires_at)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)""",
-                            _ocr_uuid.UUID(_pending_id),
-                            ctx["tenant_id"],
-                            ctx["user_id"],
-                            "confirm_document_draft",
-                            "CONFIRM_DOCUMENT_DRAFT",
-                            "DOCUMENT",
-                            _ocr_json.dumps(_preview["payload"]),
-                            _expires,
-                        )
-                    except Exception as _pa_err:
-                        logger.warning(
-                            f"[DocSimple] Failed to store pending: {_pa_err}"
-                        )
+                                _doc_pipeline_result = ChatMessageResponse(
+                                    message_type="DIRECT_ACTION_PREVIEW",
+                                    text=_narration,
+                                    data=_propose_result["data"],
+                                    pending_action_id=_propose_result["data"].get(
+                                        "pending_action_id"
+                                    ),
+                                    session_id=session_id,
+                                )
 
-                    # Persist to Layer 2 document_context
-                    try:
-                        _sm_persist = SessionManager(
-                            db_pool=_ocr_pool,
-                            tenant_id=ctx["tenant_id"],
-                            user_id=ctx["user_id"],
-                        )
-                        _doc_ctx = {
-                            "document_id": _preview["payload"]["document_id"],
-                            "doc_type": _doc_type,
-                            "confidence": _confidence,
-                            "document_number": _doc_number,
-                            "document_date": _doc_date,
-                            "vendor_name": _vendor,
-                            "total_amount": _total,
-                            "tax_amount": _tax,
-                            "items": _items,
-                            "pending_action_id": _pending_id,
-                            "edits": {},
+                                # Persist document_context to Layer 2
+                                try:
+                                    _sm_persist = SessionManager(
+                                        db_pool=_ocr_pool,
+                                        tenant_id=ctx["tenant_id"],
+                                        user_id=ctx["user_id"],
+                                    )
+                                    _doc_ctx = {
+                                        "document_id": str(_ocr_uuid.uuid4()),
+                                        "doc_type": _doc_type,
+                                        "vendor_name": _vendor,
+                                        "total_amount": _total,
+                                        "resolved_action": _resolved_action.action_key,
+                                        "pending_action_id": _propose_result[
+                                            "data"
+                                        ].get("pending_action_id"),
+                                    }
+                                    await _sm_persist.update_state(
+                                        session_id, document_context=_doc_ctx
+                                    )
+                                    logger.info(
+                                        "[DocResolver] Persisted document_context to Layer 2"
+                                    )
+                                except Exception:
+                                    pass  # Non-blocking
+                        except Exception as _propose_err:
+                            logger.warning(
+                                "[DocResolver] Propose failed, falling back: %s",
+                                _propose_err,
+                            )
+                            _resolved_action = None  # Fall through to old preview path
+
+                    # If clarification needed → return CLARIFICATION message with tappable options
+                    if _resolved_action and _resolved_action.needs_clarification:
+                        _doc_type = _ocr_data.get("doc_type", "unknown")
+                        _type_labels_cl = {
+                            "purchase_invoice": "Faktur Pembelian",
+                            "sales_invoice": "Faktur Penjualan",
+                            "receipt": "Kwitansi",
+                            "bank_transfer": "Transfer Bank",
+                            "expense": "Biaya/Pengeluaran",
                         }
-                        await _sm_persist.update_state(
-                            session_id, document_context=_doc_ctx
+                        _type_display_cl = _type_labels_cl.get(_doc_type, _doc_type)
+                        _vendor_cl = (
+                            _ocr_data.get("vendor_name")
+                            or _ocr_data.get("customer_name")
+                            or "Unknown"
                         )
-                        logger.info(
-                            f"[DocSimple] Persisted document_context to Layer 2"
-                        )
-                    except Exception as _l2_err:
-                        logger.warning(
-                            f"[DocSimple] Failed to persist Layer 2: {_l2_err}"
-                        )
+                        _total_cl = float(_ocr_data.get("total_amount", 0))
 
-                    _narration = f"Saya baca {_type_display.lower()} dari **{_vendor}**. Total Rp {_total:,.0f}.".replace(
-                        ",", "."
-                    )
-                    # Add match context to narration
-                    if _match_result and _match_result.best_match:
-                        _bm = _match_result.best_match
-                        _narration += f"\n\nMatch: **{_bm.label}** dari {_bm.counterparty} (sisa Rp {_bm.outstanding:,.0f}, {_bm.confidence*100:.0f}% yakin).".replace(
+                        if _resolved_action.clarification_options:
+                            # Build CLARIFICATION response with tappable bank options
+                            _cl_options = [
+                                {
+                                    "label": opt.label,
+                                    "value": opt.value,
+                                    "description": "",
+                                }
+                                for opt in _resolved_action.clarification_options
+                            ]
+
+                            # Store match data in Layer 2 for re-trigger after selection
+                            try:
+                                _sm_cl = SessionManager(
+                                    db_pool=_ocr_pool,
+                                    tenant_id=ctx["tenant_id"],
+                                    user_id=ctx["user_id"],
+                                )
+                                _doc_ctx_cl = {
+                                    "pending_bank_selection": True,
+                                    "resolved_action_key": _resolved_action.action_key,
+                                    "resolved_payload": _resolved_action.payload,
+                                    "doc_type": _doc_type,
+                                    "vendor_name": _vendor_cl,
+                                    "total_amount": _total_cl,
+                                    "match_label": _match_result.best_match.label
+                                    if _match_result and _match_result.best_match
+                                    else None,
+                                }
+                                await _sm_cl.update_state(
+                                    session_id, document_context=_doc_ctx_cl
+                                )
+                                logger.info(
+                                    "[DocResolver] Stored pending_bank_selection in Layer 2"
+                                )
+                            except Exception:
+                                pass
+
+                            _dir_word_cl = (
+                                "ke"
+                                if _match_result and _match_result.direction == "out"
+                                else "dari"
+                            )
+                            _cl_narration = f"Saya baca {_type_display_cl.lower()} {_dir_word_cl} **{_vendor_cl}**. Total Rp {_total_cl:,.0f}.".replace(
+                                ",", "."
+                            )
+                            if _match_result and _match_result.best_match:
+                                _cl_narration += f" Cocok dengan **{_match_result.best_match.label}**."
+
+                            _doc_pipeline_result = ChatMessageResponse(
+                                message_type="CLARIFICATION",
+                                text=_cl_narration,
+                                data={
+                                    "question": _resolved_action.clarification_question,
+                                    "options": _cl_options,
+                                    "allow_freetext": False,
+                                },
+                                session_id=session_id,
+                            )
+
+                    # ── Old inline preview path (fallback) ──
+                    # Skip if resolver already produced a result
+                    if _doc_pipeline_result:
+                        pass  # resolver handled it, skip to return
+                    else:
+                        _pending_id = str(_ocr_uuid.uuid4())
+                        _doc_type = _ocr_data.get("doc_type", "unknown")
+                        _vendor = (
+                            _ocr_data.get("vendor_name")
+                            or _ocr_data.get("customer_name")
+                            or "Unknown"
+                        )
+                        _total = float(_ocr_data.get("total_amount", 0))
+                        _tax = float(_ocr_data.get("tax_amount", 0))
+                        _items = _ocr_data.get("items", [])
+                        _doc_number = _ocr_data.get("document_number", "-")
+                        _doc_date = _ocr_data.get("document_date", "-")
+                        _confidence = float(_ocr_data.get("confidence", 0))
+
+                        _type_labels = {
+                            "purchase_invoice": "Faktur Pembelian",
+                            "sales_invoice": "Faktur Penjualan",
+                            "receipt": "Kwitansi",
+                            "bank_transfer": "Transfer Bank",
+                            "expense": "Biaya/Pengeluaran",
+                        }
+                        _type_display = _type_labels.get(_doc_type, _doc_type)
+
+                        # Build confirmation table
+                        _table_lines = ["| Field | Value |", "|---|---|"]
+                        _table_lines.append(f"| Tipe | {_type_display} |")
+                        _table_lines.append(f"| Vendor | {_vendor} |")
+                        if _doc_number != "-":
+                            _table_lines.append(f"| No. Dokumen | {_doc_number} |")
+                        if _doc_date != "-":
+                            _table_lines.append(f"| Tanggal | {_doc_date} |")
+                        if _items:
+                            _table_lines.append(f"| Items | {len(_items)} item |")
+                        _table_lines.append(
+                            f"| Total | Rp {_total:,.0f} |".replace(",", ".")
+                        )
+                        if _tax > 0:
+                            _table_lines.append(
+                                f"| Pajak | Rp {_tax:,.0f} |".replace(",", ".")
+                            )
+                        _table_lines.append(f"| Confidence | {_confidence*100:.0f}% |")
+
+                        _preview = {
+                            "pending_action_id": _pending_id,
+                            "action_type": "CONFIRM_DOCUMENT_DRAFT",
+                            "action_key": "confirm_document_draft",
+                            "display_name": f"Konfirmasi {_type_display}",
+                            "confirmation_table": "\n".join(_table_lines),
+                            "payload": {
+                                "document_id": _fm.get(
+                                    "file_hash", str(_ocr_uuid.uuid4())
+                                ),
+                                "doc_type": _doc_type,
+                                "vendor_name": _vendor,
+                                "document_number": _doc_number,
+                                "document_date": _doc_date,
+                                "total_amount": _total,
+                                "tax_amount": _tax,
+                                "items": _items,
+                            },
+                            "loading_message": f"Memproses {_type_display.lower()} dari {_vendor}...",
+                            "entity_type": "document",
+                        }
+
+                        # Build review_card for InlineReviewCard rendering
+                        _rc_header = [
+                            {"label": "Tipe", "value": _type_display},
+                        ]
+                        if _vendor != "Unknown":
+                            _rc_header.append(
+                                {"label": "Vendor/Pihak", "value": _vendor}
+                            )
+                        if _doc_number != "-":
+                            _rc_header.append(
+                                {"label": "No. Dokumen", "value": _doc_number}
+                            )
+                        if _doc_date != "-":
+                            _rc_header.append({"label": "Tanggal", "value": _doc_date})
+                        _rc_header.append(
+                            {
+                                "label": "Total",
+                                "value": f"Rp {_total:,.0f}".replace(",", "."),
+                                "field_type": "number",
+                            }
+                        )
+                        if _tax > 0:
+                            _rc_header.append(
+                                {
+                                    "label": "Pajak",
+                                    "value": f"Rp {_tax:,.0f}".replace(",", "."),
+                                }
+                            )
+                        # OCR confidence only shown if low
+                        if _confidence < 0.8:
+                            _rc_header.append(
+                                {
+                                    "label": "Confidence OCR",
+                                    "value": f"{_confidence*100:.0f}%",
+                                }
+                            )
+
+                        _rc_warnings = []
+
+                        _rc = {
+                            "render_target": "inline",
+                            "title": f"Konfirmasi {_type_display}",
+                            "subtitle": _vendor if _vendor != "Unknown" else None,
+                            "header": _rc_header,
+                            "warnings": _rc_warnings,
+                            "version": 1,
+                        }
+
+                        # Add smart match info to review card
+                        if _match_result and _match_result.best_match:
+                            _bm = _match_result.best_match
+                            _conf_pct = f"{_bm.confidence*100:.0f}%"
+                            _match_label = (
+                                "high"
+                                if _bm.confidence >= 0.85
+                                else "medium"
+                                if _bm.confidence >= 0.60
+                                else "low"
+                            )
+                            _dir_label = (
+                                "Uang Masuk"
+                                if _match_result.direction == "in"
+                                else "Uang Keluar"
+                            )
+                            _rc["category_label"] = _dir_label
+                            _rc_header.append(
+                                {
+                                    "label": "Match",
+                                    "value": f"{_bm.label} ({_conf_pct} yakin)",
+                                }
+                            )
+                            # Skip counterparty if same as vendor
+                            if (
+                                _bm.counterparty
+                                and _bm.counterparty.lower() != _vendor.lower()
+                            ):
+                                _rc_header.append(
+                                    {"label": "Counterparty", "value": _bm.counterparty}
+                                )
+                            _rc_header.append(
+                                {
+                                    "label": "Sisa Tagihan",
+                                    "value": f"Rp {float(_bm.outstanding):,.0f}".replace(
+                                        ",", "."
+                                    ),
+                                    "field_type": "number",
+                                }
+                            )
+                            if _bm.due_date:
+                                _rc_header.append(
+                                    {"label": "Jatuh Tempo", "value": str(_bm.due_date)}
+                                )
+                            if _bm.reasons:
+                                _rc_warnings.append(
+                                    {"type": "info", "message": " · ".join(_bm.reasons)}
+                                )
+                        elif _match_result:
+                            _dir_label = (
+                                "Uang Masuk"
+                                if _match_result.direction == "in"
+                                else "Uang Keluar"
+                            )
+                            _rc["category_label"] = _dir_label
+                            _rc_warnings.append(
+                                {
+                                    "type": "warning",
+                                    "message": "Tidak ditemukan match di database. Transaksi ini mungkin belum tercatat.",
+                                }
+                            )
+
+                        if _match_result and _match_result.account_recommendation:
+                            _ar = _match_result.account_recommendation
+                            _rc_header.append(
+                                {
+                                    "label": "Akun (CoA)",
+                                    "value": f"{_ar.account_name} ({_ar.account_code})",
+                                }
+                            )
+
+                        _preview["review_card"] = _rc
+
+                        # Inject smart match info into preview
+                        if _match_result:
+                            _sm_info = {
+                                "doc_category": _match_result.doc_category,
+                                "direction": _match_result.direction,
+                                "direction_label": "Uang Masuk"
+                                if _match_result.direction == "inbound"
+                                else "Uang Keluar",
+                                "direction_confidence": _match_result.direction_confidence,
+                                "confidence_level": _match_result.confidence_level,
+                                "needs_user_input": _match_result.needs_user_input
+                                or [],
+                            }
+                            if _match_result.best_match:
+                                bm = _match_result.best_match
+                                _sm_info["best_match"] = {
+                                    "source_type": bm.source_type,
+                                    "source_id": bm.source_id,
+                                    "label": bm.label,
+                                    "counterparty": bm.counterparty,
+                                    "amount": bm.amount,
+                                    "outstanding": bm.outstanding,
+                                    "due_date": bm.due_date,
+                                    "confidence": bm.confidence,
+                                    "reasons": bm.reasons,
+                                }
+                            if _match_result.alternatives:
+                                _sm_info["alternatives"] = [
+                                    {
+                                        "label": a.label,
+                                        "counterparty": a.counterparty,
+                                        "amount": a.amount,
+                                        "outstanding": a.outstanding,
+                                        "confidence": a.confidence,
+                                    }
+                                    for a in _match_result.alternatives
+                                ]
+                            if _match_result.account_recommendation:
+                                ar = _match_result.account_recommendation
+                                _sm_info["account_recommendation"] = {
+                                    "account_id": ar.account_id,
+                                    "account_name": ar.account_name,
+                                    "account_code": ar.account_code,
+                                    "confidence": ar.confidence,
+                                }
+                            _preview["payload"]["smart_match"] = _sm_info
+
+                        # Store pending action
+                        _expires = _ocr_dt.now(_ocr_tz.utc) + _ocr_td(seconds=300)
+                        try:
+                            await _ocr_pool.execute(
+                                """INSERT INTO pending_actions (id, tenant_id, user_id, action_id, action_type, action_category, action_plan, status, expires_at)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)""",
+                                _ocr_uuid.UUID(_pending_id),
+                                ctx["tenant_id"],
+                                ctx["user_id"],
+                                "confirm_document_draft",
+                                "CONFIRM_DOCUMENT_DRAFT",
+                                "DOCUMENT",
+                                _ocr_json.dumps(_preview["payload"], default=str),
+                                _expires,
+                            )
+                        except Exception as _pa_err:
+                            logger.warning(
+                                f"[DocSimple] Failed to store pending: {_pa_err}"
+                            )
+
+                        # Persist to Layer 2 document_context
+                        try:
+                            _sm_persist = SessionManager(
+                                db_pool=_ocr_pool,
+                                tenant_id=ctx["tenant_id"],
+                                user_id=ctx["user_id"],
+                            )
+                            _doc_ctx = {
+                                "document_id": _preview["payload"]["document_id"],
+                                "doc_type": _doc_type,
+                                "confidence": _confidence,
+                                "document_number": _doc_number,
+                                "document_date": _doc_date,
+                                "vendor_name": _vendor,
+                                "total_amount": _total,
+                                "tax_amount": _tax,
+                                "items": _items,
+                                "pending_action_id": _pending_id,
+                                "edits": {},
+                            }
+                            await _sm_persist.update_state(
+                                session_id, document_context=_doc_ctx
+                            )
+                            logger.info(
+                                "[DocSimple] Persisted document_context to Layer 2"
+                            )
+                        except Exception as _l2_err:
+                            logger.warning(
+                                f"[DocSimple] Failed to persist Layer 2: {_l2_err}"
+                            )
+
+                        _dir_word = (
+                            "ke"
+                            if _match_result and _match_result.direction == "out"
+                            else "dari"
+                        )
+                        _narration = f"Saya baca {_type_display.lower()} {_dir_word} **{_vendor}**. Total Rp {_total:,.0f}.".replace(
                             ",", "."
                         )
+                        # Simplified narration — details are in the card
+                        if _match_result and _match_result.best_match:
+                            _bm = _match_result.best_match
+                            _narration += f" Cocok dengan **{_bm.label}**."
 
-                    _doc_pipeline_result = ChatMessageResponse(
-                        message_type="DIRECT_ACTION_PREVIEW",
-                        text=_narration,
-                        data=_preview,
-                        pending_action_id=_pending_id,
-                        session_id=session_id,
-                    )
+                        # Append clarification question if resolver needs user input
+                        if _resolved_action and _resolved_action.needs_clarification:
+                            _narration += (
+                                f"\n\n{_resolved_action.clarification_question}"
+                            )
+
+                        _doc_pipeline_result = ChatMessageResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            text=_narration,
+                            data=_preview,
+                            pending_action_id=_pending_id,
+                            session_id=session_id,
+                        )
 
             except Exception as _doc_err:
                 logger.error(f"[DocSimple] Failed: {_doc_err}", exc_info=True)

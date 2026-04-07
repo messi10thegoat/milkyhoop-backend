@@ -154,6 +154,22 @@ class DocumentMatcher:
             doc_type, amount, counterparty, date, reference,
             items, tax_amount, raw_text
         """
+        # Normalize OCR field names to matcher expected names
+        ocr_result = dict(ocr_result)  # shallow copy
+        if "total_amount" in ocr_result and "amount" not in ocr_result:
+            ocr_result["amount"] = ocr_result["total_amount"]
+        if "counterparty" not in ocr_result:
+            ocr_result["counterparty"] = (
+                ocr_result.get("counterparty_name")
+                or ocr_result.get("vendor_name")
+                or ocr_result.get("customer_name")
+                or ""
+            )
+        if "document_date" in ocr_result and "date" not in ocr_result:
+            ocr_result["date"] = ocr_result["document_date"]
+        if "document_number" in ocr_result and "reference" not in ocr_result:
+            ocr_result["reference"] = ocr_result["document_number"]
+
         doc_category = self._classify_category(ocr_result)
         direction, dir_confidence = self._detect_direction(ocr_result, doc_category)
 
@@ -217,8 +233,17 @@ class DocumentMatcher:
         elif doc_type in ("faktur_pajak", "bukti_potong"):
             return ("out", 0.7)
 
+        # Layer 1.5: transfer_direction from OCR (if present)
+        transfer_dir = (ocr.get("transfer_direction") or "").lower()
+        if transfer_dir == "keluar":
+            return ("out", 0.85)
+        elif transfer_dir == "masuk":
+            return ("in", 0.85)
+
         # Layer 2: keyword scan
-        raw_text = (ocr.get("raw_text") or "").lower()
+        raw_text = (
+            ocr.get("raw_text") or ocr.get("berita") or ocr.get("reference_note") or ""
+        ).lower()
         out_score = sum(1 for kw in DIRECTION_OUT_KEYWORDS if kw in raw_text)
         in_score = sum(1 for kw in DIRECTION_IN_KEYWORDS if kw in raw_text)
 
@@ -298,39 +323,40 @@ class DocumentMatcher:
     ) -> List[MatchCandidate]:
         """Query compute_ar_outstanding for matching open invoices."""
         async with self.pool.acquire() as conn:
-            await conn.execute("SET LOCAL app.tenant_id = $1", self.tenant_id)
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
 
-            if amount_min is not None and amount_max is not None:
-                rows = await conn.fetch(
-                    """
-                    SELECT invoice_id, invoice_number, customer_name,
-                           invoice_total, outstanding, due_date
-                    FROM compute_ar_outstanding($1)
-                    WHERE outstanding > 0
-                      AND outstanding >= $2 AND outstanding <= $3
-                    ORDER BY outstanding DESC
-                    LIMIT 10
-                    """,
-                    self.tenant_id,
-                    float(amount_min),
-                    float(amount_max),
-                )
-            elif counterparty:
-                rows = await conn.fetch(
-                    """
-                    SELECT invoice_id, invoice_number, customer_name,
-                           invoice_total, outstanding, due_date
-                    FROM compute_ar_outstanding($1)
-                    WHERE outstanding > 0
-                      AND customer_name ILIKE $2
-                    ORDER BY outstanding DESC
-                    LIMIT 5
-                    """,
-                    self.tenant_id,
-                    f"%{counterparty}%",
-                )
-            else:
-                return []
+                if amount_min is not None and amount_max is not None:
+                    rows = await conn.fetch(
+                        """
+                        SELECT invoice_id, invoice_number, customer_name,
+                               invoice_total, outstanding, due_date
+                        FROM compute_ar_outstanding($1)
+                        WHERE outstanding > 0
+                          AND outstanding >= $2 AND outstanding <= $3
+                        ORDER BY outstanding DESC
+                        LIMIT 10
+                        """,
+                        self.tenant_id,
+                        float(amount_min),
+                        float(amount_max),
+                    )
+                elif counterparty:
+                    rows = await conn.fetch(
+                        """
+                        SELECT invoice_id, invoice_number, customer_name,
+                               invoice_total, outstanding, due_date
+                        FROM compute_ar_outstanding($1)
+                        WHERE outstanding > 0
+                          AND customer_name ILIKE $2
+                        ORDER BY outstanding DESC
+                        LIMIT 5
+                        """,
+                        self.tenant_id,
+                        f"%{counterparty}%",
+                    )
+                else:
+                    return []
 
         return [
             MatchCandidate(
@@ -353,39 +379,40 @@ class DocumentMatcher:
     ) -> List[MatchCandidate]:
         """Query compute_ap_outstanding for matching open bills."""
         async with self.pool.acquire() as conn:
-            await conn.execute("SET LOCAL app.tenant_id = $1", self.tenant_id)
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
 
-            if amount_min is not None and amount_max is not None:
-                rows = await conn.fetch(
-                    """
-                    SELECT bill_id, bill_number, vendor_name,
-                           bill_total, outstanding, due_date
-                    FROM compute_ap_outstanding($1)
-                    WHERE outstanding > 0
-                      AND outstanding >= $2 AND outstanding <= $3
-                    ORDER BY outstanding DESC
-                    LIMIT 10
-                    """,
-                    self.tenant_id,
-                    float(amount_min),
-                    float(amount_max),
-                )
-            elif counterparty:
-                rows = await conn.fetch(
-                    """
-                    SELECT bill_id, bill_number, vendor_name,
-                           bill_total, outstanding, due_date
-                    FROM compute_ap_outstanding($1)
-                    WHERE outstanding > 0
-                      AND vendor_name ILIKE $2
-                    ORDER BY outstanding DESC
-                    LIMIT 5
-                    """,
-                    self.tenant_id,
-                    f"%{counterparty}%",
-                )
-            else:
-                return []
+                if amount_min is not None and amount_max is not None:
+                    rows = await conn.fetch(
+                        """
+                        SELECT bill_id, bill_number, vendor_name,
+                               bill_total, outstanding, due_date
+                        FROM compute_ap_outstanding($1)
+                        WHERE outstanding > 0
+                          AND outstanding >= $2 AND outstanding <= $3
+                        ORDER BY outstanding DESC
+                        LIMIT 10
+                        """,
+                        self.tenant_id,
+                        float(amount_min),
+                        float(amount_max),
+                    )
+                elif counterparty:
+                    rows = await conn.fetch(
+                        """
+                        SELECT bill_id, bill_number, vendor_name,
+                               bill_total, outstanding, due_date
+                        FROM compute_ap_outstanding($1)
+                        WHERE outstanding > 0
+                          AND vendor_name ILIKE $2
+                        ORDER BY outstanding DESC
+                        LIMIT 5
+                        """,
+                        self.tenant_id,
+                        f"%{counterparty}%",
+                    )
+                else:
+                    return []
 
         return [
             MatchCandidate(

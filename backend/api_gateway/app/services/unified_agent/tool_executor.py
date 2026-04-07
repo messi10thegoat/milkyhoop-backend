@@ -927,7 +927,7 @@ class ToolExecutor:
                 action_key,
                 action_key.upper(),
                 "MASTER_DATA",
-                json.dumps(payload),
+                json.dumps(payload, default=str),
                 "PENDING",
                 True,
                 expires_at,
@@ -1214,7 +1214,7 @@ class ToolExecutor:
         if status == "outstanding":
             url = f"http://localhost:8000/api/customers/{customer_id}/open-invoices"
         else:
-            url = f"http://localhost:8000/api/sales-invoices"
+            url = "http://localhost:8000/api/sales-invoices"
 
         try:
             async with httpx.AsyncClient(timeout=READ_TOOL_TIMEOUT) as client:
