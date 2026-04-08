@@ -248,6 +248,36 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
         # Release lock immediately — BEFORE any parsing begins
         await pool.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
 
+    # Insert into documents table for entity linking (Phase A — audit trail)
+    try:
+        relative_path = store_path[len(UPLOAD_BASE_DIR):].lstrip("/") if store_path.startswith(UPLOAD_BASE_DIR) else store_path
+        async with pool.acquire() as _doc_conn:
+            async with _doc_conn.transaction():
+                await _doc_conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+                # Check if document already exists by SHA-256 (dedup)
+                existing = await _doc_conn.fetchrow(
+                    "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2 AND deleted_at IS NULL LIMIT 1",
+                    tenant_id, file_hash,
+                )
+                if existing:
+                    file_meta["document_id"] = str(existing["id"])
+                    logger.info(f"[FileUpload] Document dedup: {file_hash[:12]} -> {existing['id']}")
+                else:
+                    doc_id = await _doc_conn.fetchval(
+                        """INSERT INTO documents (
+                            tenant_id, file_name, original_name, file_type, file_extension,
+                            file_size, storage_type, file_path, category, checksum_sha256, source
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, 'receipt', $8, 'chat')
+                        RETURNING id""",
+                        tenant_id, file.filename or f"upload{ext}", file.filename,
+                        file.content_type, ext, len(content), relative_path,
+                        file_hash,
+                    )
+                    file_meta["document_id"] = str(doc_id)
+                    logger.info(f"[FileUpload] Document created: {doc_id}")
+    except Exception as _doc_err:
+        logger.warning(f"[FileUpload] documents table insert failed (non-blocking): {_doc_err}")
+
     return file_meta
 
 
@@ -1801,6 +1831,9 @@ Aturan:
                                 ),
                                 session_id=session_id,
                             )
+                            # Inject document_id for audit trail (Phase A.2)
+                            if _fm and _fm.get("document_id"):
+                                _resolved_action.payload["_uploaded_document_id"] = _fm["document_id"]
                             _propose_result = await _te._execute_propose_direct(
                                 {
                                     "action_key": _resolved_action.action_key,
@@ -1916,7 +1949,11 @@ Aturan:
                                 _doc_ctx_cl = {
                                     "pending_bank_selection": True,
                                     "resolved_action_key": _resolved_action.action_key,
-                                    "resolved_payload": _resolved_action.payload,
+                                    "resolved_payload": (
+                                        {**_resolved_action.payload, "_uploaded_document_id": _fm["document_id"]}
+                                        if _fm and _fm.get("document_id")
+                                        else _resolved_action.payload
+                                    ),
                                     "doc_type": _doc_type,
                                     "vendor_name": _vendor_cl,
                                     "total_amount": _total_cl,
@@ -2800,6 +2837,9 @@ async def _confirm_direct_action(
 
         # For DELETE/path-param requests, strip ID fields from body to avoid endpoint rejections
         request_body = clean_payload
+        # Phase A: extract uploaded_document_id (audit trail) before stripping
+        _uploaded_document_id = clean_payload.pop("_uploaded_document_id", None) if isinstance(clean_payload, dict) else None
+
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}
             request_body = {k: v for k, v in clean_payload.items() if k not in id_keys}
@@ -2821,6 +2861,34 @@ async def _confirm_direct_action(
         if response.status_code in (200, 201):
             result_data = response.json()
             entity_id = result_data.get("id", result_data.get("data", {}).get("id", ""))
+
+            # Phase A.3: Link uploaded document to created entity (audit trail)
+            if _uploaded_document_id and entity_id:
+                _entity_type_map = {
+                    "create_bill_payment": "payment",
+                    "create_receive_payment": "payment",
+                    "create_expense": "expense",
+                    "create_bill": "bill",
+                    "create_sales_invoice": "sales_invoice",
+                }
+                _link_entity_type = _entity_type_map.get(action_key)
+                if _link_entity_type:
+                    try:
+                        async with pool.acquire() as _link_conn:
+                            async with _link_conn.transaction():
+                                await _link_conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+                                await _link_conn.execute(
+                                    """INSERT INTO document_attachments
+                                       (tenant_id, document_id, entity_type, entity_id, attachment_type, attached_by)
+                                       VALUES ($1, $2, $3, $4, 'receipt', $5)
+                                       ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING""",
+                                    tenant_id, uuid_mod.UUID(_uploaded_document_id),
+                                    _link_entity_type, uuid_mod.UUID(entity_id),
+                                    uuid_mod.UUID(user_id) if user_id else None,
+                                )
+                                logger.info(f"[DocLink] Attached document {_uploaded_document_id[:8]} to {_link_entity_type}/{entity_id[:8]}")
+                    except Exception as _link_err:
+                        logger.warning(f"[DocLink] Failed to attach document: {_link_err}")
 
             await pool.execute(
                 """UPDATE pending_actions
