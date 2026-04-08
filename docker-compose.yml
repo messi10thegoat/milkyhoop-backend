@@ -160,6 +160,7 @@ services:
       context: .
       dockerfile: backend/api_gateway/Dockerfile
     container_name: milkyhoop-dev-api_gateway
+    command: ["python", "-B", "-m", "uvicorn", "backend.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     ports:
     - 8001:8000
     networks:
