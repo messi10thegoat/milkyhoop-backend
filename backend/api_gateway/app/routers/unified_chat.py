@@ -1716,13 +1716,13 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                                             "type": "image_url",
                                             "image_url": {
                                                 "url": f"data:{_mime};base64,{_img_b64}",
-                                                "detail": "auto",
+                                                "detail": "low",
                                             },
                                         },
                                     ],
                                 }
                             ],
-                            max_tokens=2000,
+                            max_tokens=1000,
                             temperature=0.1,
                         )
                         _ocr_text = _ocr_response.choices[0].message.content or "{}"
