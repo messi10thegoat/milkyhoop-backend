@@ -1574,8 +1574,25 @@ async def send_message_with_files(
 
                     with open(_stored_path, "rb") as _img_f:
                         _img_bytes = _img_f.read()
-                    _img_b64 = _b64.b64encode(_img_bytes).decode()
                     _mime = _fm.get("content_type", "image/jpeg")
+                    # Resize + JPEG compress to slash OCR latency (vision tokens scale w/ size)
+                    try:
+                        from PIL import Image as _PILImage
+                        import io as _io_resize
+                        _img_pil = _PILImage.open(_io_resize.BytesIO(_img_bytes))
+                        if _img_pil.mode in ("RGBA", "LA", "P"):
+                            _img_pil = _img_pil.convert("RGB")
+                        _max_dim = 1024
+                        if max(_img_pil.size) > _max_dim:
+                            _img_pil.thumbnail((_max_dim, _max_dim), _PILImage.LANCZOS)
+                        _buf = _io_resize.BytesIO()
+                        _img_pil.save(_buf, format="JPEG", quality=85, optimize=True)
+                        _img_bytes = _buf.getvalue()
+                        _mime = "image/jpeg"
+                        logger.info(f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes")
+                    except Exception as _resize_err:
+                        logger.warning(f"[DocSimple] Image resize failed: {_resize_err}")
+                    _img_b64 = _b64.b64encode(_img_bytes).decode()
 
                     # Single gpt-4o call: OCR + extract + understand user intent
                     _ocr_client = _OCR_OpenAI(
