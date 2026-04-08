@@ -237,8 +237,13 @@ class DocumentActionResolver:
             or ""
         )
 
-        # Bank/cash account (paid through)
-        bank_name = ocr_data.get("bank_hint") or ocr_data.get("bank_source") or ""
+        # Bank/cash account (paid through) — multi-source hint
+        bank_name = (
+            ocr_data.get("bank_hint")
+            or ocr_data.get("source_account_number")
+            or ocr_data.get("bank_source")
+            or ""
+        )
         bank_id, bank_display, bank_candidates = await self._resolve_bank_account(
             bank_name
         )
@@ -248,13 +253,28 @@ class DocumentActionResolver:
         account_id = acct.account_id if acct else ""
         account_name = f"{acct.account_name} ({acct.account_code})" if acct else ""
 
+        # Default expense_date to today if OCR didn't extract
+        if not expense_date or expense_date == "-":
+            from datetime import date as _date_today
+
+            expense_date = _date_today.today().isoformat()
+
         needs_clarification = not bank_id or not account_id
-        parts = []
-        if not bank_id:
-            parts.append("rekening pembayaran")
-        if not account_id:
-            parts.append("akun biaya")
-        clarification = f"Mohon tentukan: {', '.join(parts)}" if parts else ""
+        clarification_options = []
+        clarification = ""
+        if needs_clarification:
+            if not bank_id and bank_candidates:
+                clarification = "Pembayaran ini dari rekening yang mana?"
+                clarification_options = [
+                    BankOption(id=c["id"], label=c["label"], value=c["id"])
+                    for c in bank_candidates
+                ]
+            elif not bank_id and not account_id:
+                clarification = "Mohon tentukan: rekening pembayaran dan akun biaya"
+            elif not bank_id:
+                clarification = "Pembayaran ini dari rekening bank mana?"
+            else:
+                clarification = "Mohon tentukan akun biaya yang sesuai"
 
         payload = {
             "paid_through_id": bank_id or "",
@@ -283,6 +303,7 @@ class DocumentActionResolver:
             warnings=[],
             needs_clarification=needs_clarification,
             clarification_question=clarification,
+            clarification_options=clarification_options,
         )
 
     # ─── Helper Methods ─────────────────────────────────────────────────

@@ -690,12 +690,28 @@ async def send_message(request: Request, body: ChatMessageRequest):
                         ),
                         session_id=body.session_id,
                     )
-                    _propose_result = await _te_retrigger._execute_propose_direct(
-                        {
-                            "action_key": _action_key,
-                            "payload": _resolved_payload,
-                        }
+                    logger.info(
+                        "[DocRetrigger] Calling propose now, key=%s payload_keys=%s",
+                        _action_key,
+                        list(_resolved_payload.keys()),
                     )
+                    try:
+                        _propose_result = await _te_retrigger._execute_propose_direct(
+                            {
+                                "action_key": _action_key,
+                                "payload": _resolved_payload,
+                            }
+                        )
+                        logger.info(
+                            "[DocRetrigger] propose result: success=%s error=%s",
+                            _propose_result.get("success"),
+                            _propose_result.get("error", "")[:200],
+                        )
+                    except Exception as _pe:
+                        logger.error(
+                            "[DocRetrigger] propose EXCEPTION: %s", _pe, exc_info=True
+                        )
+                        _propose_result = {"success": False, "error": str(_pe)}
                     if _propose_result.get("success"):
                         _vendor_rt = _doc_ctx.get("vendor_name", "Unknown")
                         _total_rt = _doc_ctx.get("total_amount", 0)
@@ -1608,30 +1624,106 @@ Tambahan fields (isi jika tersedia, null jika tidak):
   "meter_id": "nomor meter listrik jika ada",
   "tax_type": "PPh 21|PPh 23|PPN|null",
   "tax_period": "bulan dan tahun jika ada",
-  "counterparty_name": "nama pihak lawan transaksi"""
+  "counterparty_name": "nama pihak lawan transaksi",
+  "source_account_number": "nomor rekening pengirim jika ada",
+  "destination_account_number": "nomor rekening penerima jika ada"
+}}
 
-                    _ocr_response = await _ocr_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": _ocr_prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:{_mime};base64,{_img_b64}",
-                                            "detail": "high",
-                                        },
-                                    },
-                                ],
-                            }
-                        ],
-                        max_tokens=2000,
-                        temperature=0.1,
+CRITICAL — Struk PLN Prabayar (token listrik):
+- doc_type = "expense"
+- vendor_name = "PLN"
+- total_amount = nilai field "RP BAYAR" (BUKAN "RP STROOM/TOKEN", BUKAN total dengan admin bank)
+- "RP BAYAR" = harga jual token = beban listrik (yang dipakai untuk total_amount)
+- "RP STROOM/TOKEN" = nilai listrik bersih (sudah dipotong pajak)
+- "ADMIN BANK" = biaya admin bank, JANGAN masuk total_amount
+- "PBJT-TL" = pajak penerangan jalan (sudah termasuk di RP BAYAR), masukkan ke tax_amount
+- bank_source = field "DARI REKENING" (nomor rekening pengirim)
+- source_account_number = nomor rekening dari "DARI REKENING"
+- reference_note = "Token listrik" + bulan tahun
+
+CRITICAL — Bukti transfer m-banking Indonesia:
+- total_amount = "Nominal Transfer" / "Total Transfer" / "Jumlah Transfer" (BUKAN "Total Transaksi")
+- "Total Transaksi" = nominal + biaya admin, JANGAN dipakai
+- destination_account_number = nomor rekening "Ke"/"Tujuan"/"Penerima"
+- Untuk transfer KELUAR: vendor_name = nama penerima
+- Untuk transfer MASUK: customer_name jarang ada (pengirim biasanya tidak tampil)"""
+
+                    # Use Gemini 2.5 Flash for vision OCR (~700ms vs gpt-4o ~2-3s)
+                    import httpx as _ocr_httpx
+
+                    _gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
+                        "GEMINI_API_KEY", ""
                     )
+                    _ocr_text = "{}"
+                    _ocr_used_gemini = False
+                    if _gemini_key:
+                        try:
+                            _gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={_gemini_key}"
+                            _gemini_payload = {
+                                "contents": [
+                                    {
+                                        "parts": [
+                                            {
+                                                "text": _ocr_prompt
+                                                + "\n\nReturn ONLY valid JSON, no markdown."
+                                            },
+                                            {
+                                                "inline_data": {
+                                                    "mime_type": _mime,
+                                                    "data": _img_b64,
+                                                }
+                                            },
+                                        ]
+                                    }
+                                ],
+                                "generationConfig": {
+                                    "temperature": 0.1,
+                                    "maxOutputTokens": 2000,
+                                    "responseMimeType": "application/json",
+                                },
+                            }
+                            async with _ocr_httpx.AsyncClient(timeout=15.0) as _gc:
+                                _gr = await _gc.post(_gemini_url, json=_gemini_payload)
+                                if _gr.status_code == 200:
+                                    _gj = _gr.json()
+                                    _ocr_text = _gj["candidates"][0]["content"][
+                                        "parts"
+                                    ][0]["text"]
+                                    _ocr_used_gemini = True
+                                    logger.info("[DocSimple] OCR via Gemini 2.5 Flash")
+                                else:
+                                    logger.warning(
+                                        "[DocSimple] Gemini OCR failed status=%s, falling back to gpt-4o",
+                                        _gr.status_code,
+                                    )
+                        except Exception as _ge:
+                            logger.warning(
+                                "[DocSimple] Gemini OCR exception: %s, falling back",
+                                _ge,
+                            )
 
-                    _ocr_text = _ocr_response.choices[0].message.content or "{}"
+                    if not _ocr_used_gemini:
+                        _ocr_response = await _ocr_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": _ocr_prompt},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:{_mime};base64,{_img_b64}",
+                                                "detail": "high",
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                            max_tokens=2000,
+                            temperature=0.1,
+                        )
+                        _ocr_text = _ocr_response.choices[0].message.content or "{}"
                     # Strip markdown code blocks if present
                     if _ocr_text.startswith("```"):
                         _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
@@ -1686,7 +1778,13 @@ Tambahan fields (isi jika tersedia, null jika tidak):
 
                     # ── Resolve to DirectAction if match is actionable ──
                     _resolved_action = None
-                    if _match_result and _match_result.confidence_level != "low":
+                    # For payment: only fire if confidence >= medium
+                    # For expense/tax: always fire (no match needed, CoA drives action)
+                    _can_resolve = _match_result and (
+                        _match_result.confidence_level != "low"
+                        or _match_result.doc_category in ("expense", "tax")
+                    )
+                    if _can_resolve:
                         try:
                             from ..services.unified_agent.document_action_resolver import (
                                 DocumentActionResolver,

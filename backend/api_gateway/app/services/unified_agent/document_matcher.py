@@ -128,11 +128,14 @@ TAX_KEYWORDS = {
 # Category classification map: doc_type → category
 DOC_TYPE_CATEGORY = {
     "bank_transfer": "payment",
-    "receipt": "payment",
+    "receipt": "expense",
     "invoice": "payment",
     "nota": "expense",
     "struk": "expense",
     "kwitansi": "expense",
+    "expense": "expense",
+    "utility": "expense",
+    "pln": "expense",
     "faktur_pajak": "tax",
     "spt": "tax",
     "bukti_potong": "tax",
@@ -525,14 +528,24 @@ class DocumentMatcher:
         self, ocr: dict
     ) -> Optional[AccountRecommendation]:
         """Match OCR text keywords to expense CoA accounts."""
-        raw_text = (ocr.get("raw_text") or "").lower()
         items_text = " ".join(
             (item.get("description") or "").lower() for item in (ocr.get("items") or [])
         )
-        search_text = f"{raw_text} {items_text}"
+        search_text = " ".join(
+            [
+                str(ocr.get("raw_text") or ""),
+                str(ocr.get("vendor_name") or ""),
+                str(ocr.get("customer_name") or ""),
+                str(ocr.get("notes") or ""),
+                str(ocr.get("reference_note") or ""),
+                str(ocr.get("doc_type") or ""),
+                items_text,
+            ]
+        ).lower()
 
-        for keyword, (code, name) in EXPENSE_KEYWORDS.items():
+        for keyword in sorted(EXPENSE_KEYWORDS.keys(), key=len, reverse=True):
             if keyword in search_text:
+                code, name = EXPENSE_KEYWORDS[keyword]
                 return await self._resolve_account(code, name)
 
         return None
@@ -559,16 +572,32 @@ class DocumentMatcher:
         """Resolve account_id from account_code via DB."""
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute("SET LOCAL app.tenant_id = $1", self.tenant_id)
-                row = await conn.fetchrow(
-                    """
-                    SELECT id, account_code, account_name
-                    FROM chart_of_accounts
-                    WHERE tenant_id = $1 AND account_code = $2
-                    """,
-                    self.tenant_id,
-                    code,
-                )
+                async with conn.transaction():
+                    await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
+                    # Strategy 1: Search by canonical name (tenant-agnostic)
+                    row = await conn.fetchrow(
+                        """
+                        SELECT id, account_code, name AS account_name
+                        FROM chart_of_accounts
+                        WHERE tenant_id = $1 AND is_active = true AND is_header = false
+                          AND name ILIKE $2
+                        ORDER BY length(name) ASC
+                        LIMIT 1
+                        """,
+                        self.tenant_id,
+                        f"%{fallback_name}%",
+                    )
+                    if not row:
+                        # Strategy 2: fallback to specific code
+                        row = await conn.fetchrow(
+                            """
+                            SELECT id, account_code, name AS account_name
+                            FROM chart_of_accounts
+                                WHERE tenant_id = $1 AND account_code = $2
+                            """,
+                            self.tenant_id,
+                            code,
+                        )
             if row:
                 return AccountRecommendation(
                     account_id=str(row["id"]),

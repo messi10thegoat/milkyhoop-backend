@@ -187,12 +187,51 @@ jobs:
         continue-on-error: true
 
   # ==================================================
+  # SAST: Bandit (Python Security)
+  # ==================================================
+  bandit:
+    name: Bandit Python SAST
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: |
+          bandit -r backend/ \
+            -x "*test*,*backup*,node_modules" \
+            -f json -o bandit-results.json \
+            --severity-level medium \
+            || true
+          # Print summary
+          bandit -r backend/ \
+            -x "*test*,*backup*,node_modules" \
+            --severity-level medium \
+            || true
+
+      - name: Upload Bandit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-results
+          path: bandit-results.json
+
+  # ==================================================
   # Security Summary
   # ==================================================
   security-summary:
     name: Security Summary
     runs-on: ubuntu-latest
-    needs: [semgrep, trivy, gitleaks, python-deps, node-deps]
+    needs: [semgrep, trivy, gitleaks, python-deps, node-deps, bandit]
     if: always()
 
     steps:

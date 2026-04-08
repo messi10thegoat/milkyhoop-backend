@@ -22,19 +22,22 @@ repos:
         name: Detect secrets with Gitleaks
         args: ['--config', '.gitleaks.toml']
 
-  # Python Security - Bandit
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.7
-    hooks:
-      - id: bandit
-        name: Python Security Check (Bandit)
-        args: ['-r', 'backend/']
-        exclude: |
-          (?x)^(
-            .*test.*|
-            .*backup.*|
-            node_modules/
-          )$
+  # Python Security - Bandit (DISABLED in pre-commit)
+  # Reason: Slow (30-60s), OOM risk on container, often hangs.
+  # SAST coverage moved to CI: Semgrep + Trivy in .github/workflows/security-scan.yml
+  # If you need ad-hoc local scan: `bandit -r backend/`
+  # - repo: https://github.com/PyCQA/bandit
+  #   rev: 1.7.7
+  #   hooks:
+  #     - id: bandit
+  #       name: Python Security Check (Bandit)
+  #       args: ['-r', 'backend/']
+  #       exclude: |
+  #         (?x)^(
+  #           .*test.*|
+  #           .*backup.*|
+  #           node_modules/
+  #         )$
 
   # Python Linting
   - repo: https://github.com/astral-sh/ruff-pre-commit
