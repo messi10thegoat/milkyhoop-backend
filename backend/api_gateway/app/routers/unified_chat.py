@@ -1517,6 +1517,8 @@ async def send_message_with_files(
         return _recon_shortcut_result
 
     # ── Document Pipeline: Single gpt-4o vision call for financial docs ──
+    import time as _t_mod
+    _t_pipeline_start = _t_mod.perf_counter()
     _doc_pipeline_result = None
     if file_metas and not _recon_shortcut_result:
         _has_image = any(
@@ -1589,7 +1591,7 @@ async def send_message_with_files(
                         _img_pil.save(_buf, format="JPEG", quality=85, optimize=True)
                         _img_bytes = _buf.getvalue()
                         _mime = "image/jpeg"
-                        logger.info(f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes")
+                        logger.info(f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start)*1000:.0f}ms since start")
                     except Exception as _resize_err:
                         logger.warning(f"[DocSimple] Image resize failed: {_resize_err}")
                     _img_b64 = _b64.b64encode(_img_bytes).decode()
@@ -1780,7 +1782,9 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                             )
 
                         _matcher = DocumentMatcher(_ocr_pool, ctx["tenant_id"])
+                        _t_match_start = _t_mod.perf_counter()
                         _match_result = await _matcher.match(_ocr_data)
+                        logger.info(f"[DocSimple] Match took {(_t_mod.perf_counter() - _t_match_start)*1000:.0f}ms")
                         logger.info(
                             "[DocMatch] category=%s direction=%s confidence=%s match=%s",
                             _match_result.doc_category,
@@ -2315,6 +2319,11 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                 # Fall through to normal LLM path
 
     if _doc_pipeline_result:
+        try:
+            _total_elapsed = (_t_mod.perf_counter() - _t_pipeline_start) * 1000
+            logger.info(f"[DocSimple] TOTAL pipeline: {_total_elapsed:.0f}ms")
+        except Exception:
+            pass
         return _doc_pipeline_result
 
     # ── Build context & run agent (same as /message) ──
