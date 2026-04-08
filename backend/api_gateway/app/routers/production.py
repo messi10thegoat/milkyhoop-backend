@@ -82,6 +82,140 @@ async def health_check():
 
 
 # =============================================================================
+# AGGREGATE VIEWS — Material Issues & FG Receipts across all WOs
+# Must be defined BEFORE /{order_id} routes
+# =============================================================================
+
+@router.get("/material-issues")
+async def list_material_issues_aggregate(
+    request: Request,
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Aggregate list of issued materials across all work orders (for Pengeluaran Bahan page)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    pom.id,
+                    po.id AS production_order_id,
+                    po.order_number AS wo_number,
+                    po.status AS order_status,
+                    fg.nama_produk AS fg_product_name,
+                    pom.product_id,
+                    p.nama_produk AS product_name,
+                    p.sku AS product_sku,
+                    pom.planned_quantity,
+                    pom.issued_quantity,
+                    pom.unit,
+                    pom.planned_cost,
+                    pom.actual_cost,
+                    pom.issued_date,
+                    pom.warehouse_id
+                FROM production_order_materials pom
+                JOIN production_orders po ON po.id = pom.production_order_id
+                JOIN products p ON p.id = pom.product_id
+                LEFT JOIN products fg ON fg.id = po.product_id
+                WHERE po.tenant_id = $1
+                ORDER BY pom.issued_date DESC NULLS LAST, po.order_number DESC
+                LIMIT $2
+                """,
+                ctx["tenant_id"], limit,
+            )
+            items = [
+                {
+                    "id": str(r["id"]),
+                    "production_order_id": str(r["production_order_id"]),
+                    "wo_number": r["wo_number"],
+                    "order_status": r["order_status"],
+                    "fg_product_name": r["fg_product_name"],
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"],
+                    "product_sku": r["product_sku"],
+                    "planned_quantity": float(r["planned_quantity"] or 0),
+                    "issued_quantity": float(r["issued_quantity"] or 0),
+                    "unit": r["unit"],
+                    "planned_cost": float(r["planned_cost"] or 0),
+                    "actual_cost": float(r["actual_cost"] or 0),
+                    "issued_date": r["issued_date"].isoformat() if r["issued_date"] else None,
+                }
+                for r in rows
+            ]
+            return {"items": items, "total": len(items)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing material issues: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list material issues")
+
+
+@router.get("/fg-receipts")
+async def list_fg_receipts_aggregate(
+    request: Request,
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Aggregate list of FG completions across all work orders (for Penerimaan Produksi page)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    pc.id,
+                    po.id AS production_order_id,
+                    po.order_number AS wo_number,
+                    po.status AS order_status,
+                    p.nama_produk AS product_name,
+                    p.sku AS product_sku,
+                    po.unit AS unit,
+                    pc.good_quantity,
+                    pc.scrap_quantity,
+                    pc.quality_status,
+                    pc.unit_cost,
+                    pc.total_cost,
+                    pc.completion_date,
+                    pc.warehouse_id,
+                    pc.inspection_notes
+                FROM production_completions pc
+                JOIN production_orders po ON po.id = pc.production_order_id
+                JOIN products p ON p.id = po.product_id
+                WHERE po.tenant_id = $1
+                ORDER BY pc.completion_date DESC NULLS LAST, pc.created_at DESC
+                LIMIT $2
+                """,
+                ctx["tenant_id"], limit,
+            )
+            items = [
+                {
+                    "id": str(r["id"]),
+                    "production_order_id": str(r["production_order_id"]),
+                    "wo_number": r["wo_number"],
+                    "order_status": r["order_status"],
+                    "product_name": r["product_name"],
+                    "product_sku": r["product_sku"],
+                    "unit": r["unit"] or "pcs",
+                    "good_quantity": float(r["good_quantity"] or 0),
+                    "scrap_quantity": float(r["scrap_quantity"] or 0),
+                    "quality_status": r["quality_status"] or "passed",
+                    "unit_cost": float(r["unit_cost"] or 0),
+                    "total_cost": float(r["total_cost"] or 0),
+                    "completion_date": r["completion_date"].isoformat() if r["completion_date"] else None,
+                    "inspection_notes": r["inspection_notes"],
+                }
+                for r in rows
+            ]
+            return {"items": items, "total": len(items)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing FG receipts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list FG receipts")
+
+
+# =============================================================================
 # PRODUCTION ORDERS
 # =============================================================================
 
