@@ -269,7 +269,7 @@ def _resize_image_for_vision(image_bytes: bytes, content_type: str) -> tuple:
             new_size = (int(w * ratio), int(h * ratio))
             img = img.resize(new_size, Image.LANCZOS)
         buf = BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img.save(buf, format="JPEG", quality=75)
         return buf.getvalue(), "image/jpeg"
     except Exception as e:
         logger.warning(f"[chat] Image resize failed, using original: {e}")
@@ -1584,11 +1584,11 @@ async def send_message_with_files(
                         _img_pil = _PILImage.open(_io_resize.BytesIO(_img_bytes))
                         if _img_pil.mode in ("RGBA", "LA", "P"):
                             _img_pil = _img_pil.convert("RGB")
-                        _max_dim = 1024
+                        _max_dim = 768
                         if max(_img_pil.size) > _max_dim:
                             _img_pil.thumbnail((_max_dim, _max_dim), _PILImage.LANCZOS)
                         _buf = _io_resize.BytesIO()
-                        _img_pil.save(_buf, format="JPEG", quality=85, optimize=True)
+                        _img_pil.save(_buf, format="JPEG", quality=75, optimize=True)
                         _img_bytes = _buf.getvalue()
                         _mime = "image/jpeg"
                         logger.info(f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start)*1000:.0f}ms since start")
@@ -1673,6 +1673,7 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                     _gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
                         "GEMINI_API_KEY", ""
                     )
+                    _gemini_key = ""  # Disabled — Gemini Flash too slow + 503 in container
                     _ocr_text = "{}"
                     _ocr_used_gemini = False
                     if _gemini_key:
