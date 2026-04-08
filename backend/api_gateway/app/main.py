@@ -79,6 +79,7 @@ from .routers import recurring_invoices
 from .routers import item_batches
 from .routers import item_serials
 from .routers import documents
+from .routers import uploads
 
 # P5 Tier 1 Professional - 6 New Modules
 from .routers import fixed_assets
@@ -535,6 +536,7 @@ app.include_router(
 
 # Documents router (Lampiran / Attachments - S3/MinIO)
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
+app.include_router(uploads.router)
 
 # ===========================================
 # P5 TIER 1 PROFESSIONAL - 6 NEW MODULES
