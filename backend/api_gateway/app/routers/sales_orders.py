@@ -939,13 +939,13 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
                     raise HTTPException(status_code=400, detail="No items to invoice")
 
                 invoice_number = await conn.fetchval(
-                    "SELECT generate_invoice_number($1, 'INV')",
+                    "SELECT generate_sales_invoice_number($1::text, 'INV')",
                     ctx['tenant_id']
                 )
 
                 invoice_id = uuid_module.uuid4()
                 invoice_date = body.invoice_date if body and body.invoice_date else date.today()
-                due_date = body.due_date if body and body.due_date else None
+                due_date = body.due_date if body and body.due_date else invoice_date
 
                 # Calculate totals
                 subtotal = 0
@@ -968,12 +968,12 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', $11, $12)
                 """,
                     invoice_id, ctx['tenant_id'], invoice_number, invoice_date, due_date,
-                    order['customer_id'], order['customer_name'],
+                    str(order['customer_id']), order['customer_name'],
                     subtotal, tax_total, total,
                     uuid_module.UUID(order_id), ctx['user_id']
                 )
 
-                for item in items_to_invoice:
+                for line_idx, item in enumerate(items_to_invoice, start=1):
                     ratio = Decimal(str(item['invoice_qty'])) / Decimal(str(item['quantity']))
                     item_subtotal = int(Decimal(str(item['line_total'] - item['tax_amount'])) * ratio)
                     item_tax = int(Decimal(str(item['tax_amount'])) * ratio)
@@ -983,13 +983,13 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
                         INSERT INTO sales_invoice_items (
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
-                            tax_id, tax_rate, tax_amount, line_total
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                            tax_code_id, tax_rate, tax_amount, subtotal, total, line_number
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     """,
                         uuid_module.uuid4(), invoice_id,
                         item['item_id'], item['description'],
                         item['invoice_qty'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item['tax_id'], item['tax_rate'], item_tax, item_total
+                        item['tax_id'], item['tax_rate'], item_tax, item_subtotal, item_total, line_idx
                     )
 
                     await conn.execute("""
