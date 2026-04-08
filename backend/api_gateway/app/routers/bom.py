@@ -27,7 +27,6 @@ from ..schemas.bom import (
     BOMOperationInput,
     CostBreakdownResponse,
     MaterialsRequiredResponse,
-    BOMExplosionResponse,
     WhereUsedResponse,
     BOMResponse,
 )
@@ -45,17 +44,14 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         db_config = settings.get_db_config()
         _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
+            **db_config, min_size=2, max_size=10, command_timeout=60
         )
     return _pool
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -65,10 +61,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -104,7 +97,9 @@ async def list_work_centers(
             param_idx = 2
 
             if search:
-                conditions.append(f"(wc.name ILIKE ${param_idx} OR wc.code ILIKE ${param_idx})")
+                conditions.append(
+                    f"(wc.name ILIKE ${param_idx} OR wc.code ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -114,11 +109,14 @@ async def list_work_centers(
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
-            sort_column = {"name": "wc.name", "code": "wc.code", "created_at": "wc.created_at"}[sort_by]
+            sort_column = {
+                "name": "wc.name",
+                "code": "wc.code",
+                "created_at": "wc.created_at",
+            }[sort_by]
 
             total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM work_centers wc WHERE {where_clause}",
-                *params
+                f"SELECT COUNT(*) FROM work_centers wc WHERE {where_clause}", *params
             )
 
             query = f"""
@@ -164,10 +162,14 @@ async def create_work_center(request: Request, body: CreateWorkCenterRequest):
         async with pool.acquire() as conn:
             exists = await conn.fetchval(
                 "SELECT 1 FROM work_centers WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Work center code '{body.code}' already exists")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Work center code '{body.code}' already exists",
+                )
 
             wc_id = await conn.fetchval(
                 """
@@ -178,15 +180,22 @@ async def create_work_center(request: Request, body: CreateWorkCenterRequest):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING id
                 """,
-                ctx["tenant_id"], body.code, body.name, body.description,
-                body.warehouse_id, body.capacity_per_hour, body.hours_per_day,
-                body.labor_rate_per_hour, body.overhead_rate_per_hour, ctx["user_id"]
+                ctx["tenant_id"],
+                body.code,
+                body.name,
+                body.description,
+                body.warehouse_id,
+                body.capacity_per_hour,
+                body.hours_per_day,
+                body.labor_rate_per_hour,
+                body.overhead_rate_per_hour,
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Work center created",
-                "data": {"id": str(wc_id)}
+                "data": {"id": str(wc_id)},
             }
 
     except HTTPException:
@@ -211,7 +220,8 @@ async def get_work_center(request: Request, work_center_id: UUID):
                 LEFT JOIN warehouses w ON w.id = wc.warehouse_id
                 WHERE wc.tenant_id = $1 AND wc.id = $2
                 """,
-                ctx["tenant_id"], work_center_id
+                ctx["tenant_id"],
+                work_center_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Work center not found")
@@ -223,7 +233,9 @@ async def get_work_center(request: Request, work_center_id: UUID):
                     "code": row["code"],
                     "name": row["name"],
                     "description": row["description"],
-                    "warehouse_id": str(row["warehouse_id"]) if row["warehouse_id"] else None,
+                    "warehouse_id": str(row["warehouse_id"])
+                    if row["warehouse_id"]
+                    else None,
                     "warehouse_name": row["warehouse_name"],
                     "capacity_per_hour": row["capacity_per_hour"],
                     "hours_per_day": row["hours_per_day"],
@@ -232,7 +244,7 @@ async def get_work_center(request: Request, work_center_id: UUID):
                     "is_active": row["is_active"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -243,7 +255,9 @@ async def get_work_center(request: Request, work_center_id: UUID):
 
 
 @router.patch("/work-centers/{work_center_id}", response_model=BOMResponse)
-async def update_work_center(request: Request, work_center_id: UUID, body: UpdateWorkCenterRequest):
+async def update_work_center(
+    request: Request, work_center_id: UUID, body: UpdateWorkCenterRequest
+):
     """Update work center."""
     try:
         ctx = get_user_context(request)
@@ -252,7 +266,8 @@ async def update_work_center(request: Request, work_center_id: UUID, body: Updat
         async with pool.acquire() as conn:
             exists = await conn.fetchval(
                 "SELECT 1 FROM work_centers WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], work_center_id
+                ctx["tenant_id"],
+                work_center_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="Work center not found")
@@ -275,7 +290,7 @@ async def update_work_center(request: Request, work_center_id: UUID, body: Updat
 
             await conn.execute(
                 f"UPDATE work_centers SET {', '.join(updates)} WHERE tenant_id = ${param_idx} AND id = ${param_idx + 1}",
-                *params
+                *params,
             )
 
             return {"success": True, "message": "Work center updated"}
@@ -287,31 +302,115 @@ async def update_work_center(request: Request, work_center_id: UUID, body: Updat
         raise HTTPException(status_code=500, detail="Failed to update work center")
 
 
-@router.delete("/work-centers/{work_center_id}", response_model=BOMResponse)
-async def deactivate_work_center(request: Request, work_center_id: UUID):
-    """Deactivate work center."""
+@router.patch(
+    "/work-centers/{work_center_id}/toggle-status", response_model=BOMResponse
+)
+async def toggle_work_center_status(request: Request, work_center_id: UUID):
+    """Toggle work center active/inactive status."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE work_centers SET is_active = false, updated_at = NOW()
-                WHERE tenant_id = $1 AND id = $2
-                """,
-                ctx["tenant_id"], work_center_id
+            row = await conn.fetchrow(
+                "SELECT is_active FROM work_centers WHERE tenant_id = $1 AND id = $2",
+                ctx["tenant_id"],
+                work_center_id,
             )
-            if result == "UPDATE 0":
+            if not row:
                 raise HTTPException(status_code=404, detail="Work center not found")
 
-            return {"success": True, "message": "Work center deactivated"}
+            new_status = not row["is_active"]
+
+            if not new_status:
+                active_wo = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM production_orders
+                    WHERE tenant_id = $1 AND work_center_id = $2
+                      AND status IN ('released', 'in_progress')
+                    """,
+                    ctx["tenant_id"],
+                    work_center_id,
+                )
+                if active_wo > 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Work center digunakan oleh {active_wo} Work Order aktif. Selesaikan dulu sebelum menonaktifkan.",
+                    )
+
+            await conn.execute(
+                "UPDATE work_centers SET is_active = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = $3",
+                new_status,
+                ctx["tenant_id"],
+                work_center_id,
+            )
+
+            status_label = "diaktifkan" if new_status else "dinonaktifkan"
+            return {
+                "success": True,
+                "message": f"Work center berhasil {status_label}",
+                "data": {"is_active": new_status},
+            }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deactivating work center: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to deactivate work center")
+        logger.error(f"Error toggling work center status: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to toggle work center status"
+        )
+
+
+@router.delete("/work-centers/{work_center_id}", response_model=BOMResponse)
+async def delete_work_center(request: Request, work_center_id: UUID):
+    """Delete work center (only if not referenced by any production orders or BOM operations)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM work_centers WHERE tenant_id = $1 AND id = $2",
+                ctx["tenant_id"],
+                work_center_id,
+            )
+            if not exists:
+                raise HTTPException(status_code=404, detail="Work center not found")
+
+            po_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM production_orders WHERE tenant_id = $1 AND work_center_id = $2",
+                ctx["tenant_id"],
+                work_center_id,
+            )
+            if po_count > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Work center sudah digunakan, tidak bisa dihapus. Gunakan nonaktifkan.",
+                )
+
+            bo_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM bom_operations WHERE work_center_id = $1",
+                work_center_id,
+            )
+            if bo_count > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Work center sudah digunakan, tidak bisa dihapus. Gunakan nonaktifkan.",
+                )
+
+            await conn.execute(
+                "DELETE FROM work_centers WHERE tenant_id = $1 AND id = $2",
+                ctx["tenant_id"],
+                work_center_id,
+            )
+
+            return {"success": True, "message": "Work center berhasil dihapus"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting work center: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete work center")
 
 
 # =============================================================================
@@ -340,7 +439,9 @@ async def list_boms(
             param_idx = 2
 
             if search:
-                conditions.append(f"(bom.bom_code ILIKE ${param_idx} OR bom.bom_name ILIKE ${param_idx} OR p.nama_produk ILIKE ${param_idx})")
+                conditions.append(
+                    f"(bom.bom_code ILIKE ${param_idx} OR bom.bom_name ILIKE ${param_idx} OR p.nama_produk ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -360,11 +461,15 @@ async def list_boms(
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
-            sort_column = {"bom_code": "bom.bom_code", "bom_name": "bom.bom_name", "created_at": "bom.created_at"}[sort_by]
+            sort_column = {
+                "bom_code": "bom.bom_code",
+                "bom_name": "bom.bom_name",
+                "created_at": "bom.created_at",
+            }[sort_by]
 
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM bill_of_materials bom JOIN products p ON p.id = bom.product_id WHERE {where_clause}",
-                *params
+                *params,
             )
 
             query = f"""
@@ -419,10 +524,14 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                 # Check duplicate
                 exists = await conn.fetchval(
                     "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND bom_code = $2",
-                    ctx["tenant_id"], body.bom_code
+                    ctx["tenant_id"],
+                    body.bom_code,
                 )
                 if exists:
-                    raise HTTPException(status_code=400, detail=f"BOM code '{body.bom_code}' already exists")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"BOM code '{body.bom_code}' already exists",
+                    )
 
                 # Create BOM
                 bom_id = await conn.fetchval(
@@ -434,10 +543,17 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     RETURNING id
                     """,
-                    ctx["tenant_id"], body.product_id, body.bom_code, body.bom_name,
-                    body.description, body.output_quantity, body.output_unit,
-                    body.estimated_time_minutes, body.work_center_id,
-                    body.effective_date, ctx["user_id"]
+                    ctx["tenant_id"],
+                    body.product_id,
+                    body.bom_code,
+                    body.bom_name,
+                    body.description,
+                    body.output_quantity,
+                    body.output_unit,
+                    body.estimated_time_minutes,
+                    body.work_center_id,
+                    body.effective_date,
+                    ctx["user_id"],
                 )
 
                 # Create operations first (components may reference them)
@@ -449,14 +565,27 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                             bom_id, operation_number, operation_name, description,
                             work_center_id, setup_time_minutes, run_time_minutes,
                             labor_rate_per_hour, overhead_rate_per_hour, instructions,
-                            is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description,
+                            labor_mode, cost_per_piece
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                         RETURNING id
                         """,
-                        bom_id, op.operation_number, op.operation_name, op.description,
-                        op.work_center_id, op.setup_time_minutes, op.run_time_minutes,
-                        op.labor_rate_per_hour, op.overhead_rate_per_hour, op.instructions,
-                        op.is_subcontract, op.vendor_id, op.subcontract_cost_per_unit, op.subcontract_description
+                        bom_id,
+                        op.operation_number,
+                        op.operation_name,
+                        op.description,
+                        op.work_center_id,
+                        op.setup_time_minutes,
+                        op.run_time_minutes,
+                        op.labor_rate_per_hour,
+                        op.overhead_rate_per_hour,
+                        op.instructions,
+                        op.is_subcontract,
+                        op.vendor_id,
+                        op.subcontract_cost_per_unit,
+                        op.subcontract_description,
+                        op.labor_mode,
+                        op.cost_per_piece,
                     )
                     operation_ids[op.operation_number] = op_id
 
@@ -470,9 +599,15 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                             unit_cost, notes
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         """,
-                        bom_id, comp.component_product_id, comp.quantity, comp.unit,
-                        comp.wastage_percent, comp.sequence_order, comp.operation_id,
-                        comp.unit_cost, comp.notes
+                        bom_id,
+                        comp.component_product_id,
+                        comp.quantity,
+                        comp.unit,
+                        comp.wastage_percent,
+                        comp.sequence_order,
+                        comp.operation_id,
+                        comp.unit_cost,
+                        comp.notes,
                     )
 
                 # Calculate cost
@@ -481,7 +616,7 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                 return {
                     "success": True,
                     "message": "BOM created successfully",
-                    "data": {"id": str(bom_id)}
+                    "data": {"id": str(bom_id)},
                 }
 
     except HTTPException:
@@ -509,7 +644,8 @@ async def get_bom(request: Request, bom_id: UUID):
                 LEFT JOIN work_centers wc ON wc.id = bom.work_center_id
                 WHERE bom.tenant_id = $1 AND bom.id = $2
                 """,
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
@@ -524,13 +660,14 @@ async def get_bom(request: Request, bom_id: UUID):
                 WHERE bo.bom_id = $1
                 ORDER BY bo.operation_number
                 """,
-                bom_id
+                bom_id,
             )
 
             # Get components
             components = await conn.fetch(
                 """
                 SELECT bc.*, p.nama_produk as product_name, p.sku as product_sku,
+                       p.satuan as product_unit, p.purchase_price as product_purchase_price,
                        bo.operation_name
                 FROM bom_components bc
                 JOIN products p ON p.id = bc.component_product_id
@@ -538,7 +675,7 @@ async def get_bom(request: Request, bom_id: UUID):
                 WHERE bc.bom_id = $1
                 ORDER BY bc.sequence_order, p.nama_produk
                 """,
-                bom_id
+                bom_id,
             )
 
             return {
@@ -562,7 +699,9 @@ async def get_bom(request: Request, bom_id: UUID):
                     "overhead_cost": bom["overhead_cost"],
                     "total_cost": bom["total_cost"],
                     "estimated_time_minutes": bom["estimated_time_minutes"],
-                    "work_center_id": str(bom["work_center_id"]) if bom["work_center_id"] else None,
+                    "work_center_id": str(bom["work_center_id"])
+                    if bom["work_center_id"]
+                    else None,
                     "work_center_name": bom["work_center_name"],
                     "status": bom["status"],
                     "components": [
@@ -573,15 +712,23 @@ async def get_bom(request: Request, bom_id: UUID):
                             "component_product_sku": c["product_sku"],
                             "quantity": c["quantity"],
                             "unit": c["unit"],
+                            "product_unit": c["product_unit"],
+                            "product_purchase_price": float(c["product_purchase_price"])
+                            if c["product_purchase_price"] is not None
+                            else 0,
                             "wastage_percent": c["wastage_percent"],
-                            "operation_id": str(c["operation_id"]) if c["operation_id"] else None,
+                            "operation_id": str(c["operation_id"])
+                            if c["operation_id"]
+                            else None,
                             "operation_name": c["operation_name"],
                             "unit_cost": c["unit_cost"],
                             "extended_cost": c["extended_cost"],
                             "notes": c["notes"],
                             "sequence_order": c["sequence_order"],
                             "is_substitute": c["is_substitute"],
-                            "substitute_for_id": str(c["substitute_for_id"]) if c["substitute_for_id"] else None,
+                            "substitute_for_id": str(c["substitute_for_id"])
+                            if c["substitute_for_id"]
+                            else None,
                         }
                         for c in components
                     ],
@@ -591,7 +738,9 @@ async def get_bom(request: Request, bom_id: UUID):
                             "operation_number": o["operation_number"],
                             "operation_name": o["operation_name"],
                             "description": o["description"],
-                            "work_center_id": str(o["work_center_id"]) if o["work_center_id"] else None,
+                            "work_center_id": str(o["work_center_id"])
+                            if o["work_center_id"]
+                            else None,
                             "work_center_name": o["work_center_name"],
                             "setup_time_minutes": o["setup_time_minutes"],
                             "run_time_minutes": o["run_time_minutes"],
@@ -599,16 +748,24 @@ async def get_bom(request: Request, bom_id: UUID):
                             "overhead_rate_per_hour": o["overhead_rate_per_hour"],
                             "instructions": o["instructions"],
                             "is_subcontract": o.get("is_subcontract", False),
-                            "vendor_id": str(o["vendor_id"]) if o.get("vendor_id") else None,
+                            "vendor_id": str(o["vendor_id"])
+                            if o.get("vendor_id")
+                            else None,
                             "vendor_name": o.get("vendor_name"),
-                            "subcontract_cost_per_unit": float(o.get("subcontract_cost_per_unit", 0)),
+                            "subcontract_cost_per_unit": float(
+                                o.get("subcontract_cost_per_unit", 0)
+                            ),
                             "subcontract_description": o.get("subcontract_description"),
+                            "labor_mode": o.get("labor_mode", "time_based"),
+                            "cost_per_piece": float(o["cost_per_piece"])
+                            if o.get("cost_per_piece") is not None
+                            else None,
                         }
                         for o in operations
                     ],
                     "created_at": bom["created_at"],
                     "updated_at": bom["updated_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -628,34 +785,100 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
         async with pool.acquire() as conn:
             bom = await conn.fetchrow(
                 "SELECT status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
 
             if bom["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Can only update draft BOMs")
-
-            updates = []
-            params = []
-            param_idx = 1
+                raise HTTPException(
+                    status_code=400, detail="Can only update draft BOMs"
+                )
 
             update_data = body.model_dump(exclude_unset=True)
-            for field, value in update_data.items():
-                updates.append(f"{field} = ${param_idx}")
-                params.append(value)
-                param_idx += 1
+            # Components and operations are handled separately (full replace)
+            components_payload = update_data.pop("components", None)
+            operations_payload = update_data.pop("operations", None)
 
-            if not updates:
-                return {"success": True, "message": "No changes to update"}
+            async with conn.transaction():
+                # 1. Update header columns if any
+                if update_data:
+                    updates = []
+                    params = []
+                    param_idx = 1
+                    for field, value in update_data.items():
+                        updates.append(f"{field} = ${param_idx}")
+                        params.append(value)
+                        param_idx += 1
+                    updates.append("updated_at = NOW()")
+                    params.extend([ctx["tenant_id"], bom_id])
+                    await conn.execute(
+                        f"UPDATE bill_of_materials SET {', '.join(updates)} WHERE tenant_id = ${param_idx} AND id = ${param_idx + 1}",
+                        *params,
+                    )
 
-            updates.append("updated_at = NOW()")
-            params.extend([ctx["tenant_id"], bom_id])
+                # 2. Full replace components if provided (draft-only, safe to delete)
+                if components_payload is not None:
+                    await conn.execute(
+                        "DELETE FROM bom_components WHERE bom_id = $1", bom_id
+                    )
+                    for idx, c in enumerate(components_payload):
+                        await conn.execute(
+                            """
+                            INSERT INTO bom_components
+                                (bom_id, component_product_id, quantity, unit, wastage_percent, unit_cost, notes, sequence_order)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                            """,
+                            bom_id,
+                            c["component_product_id"],
+                            c["quantity"],
+                            c.get("unit"),
+                            c.get("wastage_percent") or 0,
+                            c.get("unit_cost") or 0,
+                            c.get("notes"),
+                            c.get("sequence_order") or (idx + 1),
+                        )
 
-            await conn.execute(
-                f"UPDATE bill_of_materials SET {', '.join(updates)} WHERE tenant_id = ${param_idx} AND id = ${param_idx + 1}",
-                *params
-            )
+                # 3. Full replace operations if provided
+                if operations_payload is not None:
+                    await conn.execute(
+                        "DELETE FROM bom_operations WHERE bom_id = $1", bom_id
+                    )
+                    for idx, o in enumerate(operations_payload):
+                        wc_id = o.get("work_center_id")
+                        # Snapshot labor + overhead rate from work_center at BOM creation time
+                        # (standard costing — lock cost when BOM is defined). User can override later.
+                        labor_rate = 0
+                        overhead_rate = 0
+                        if wc_id and not o.get("is_subcontract"):
+                            wc = await conn.fetchrow(
+                                "SELECT labor_rate_per_hour, overhead_rate_per_hour FROM work_centers WHERE id = $1",
+                                wc_id,
+                            )
+                            if wc:
+                                labor_rate = wc["labor_rate_per_hour"] or 0
+                                overhead_rate = wc["overhead_rate_per_hour"] or 0
+                        await conn.execute(
+                            """
+                            INSERT INTO bom_operations
+                                (bom_id, operation_number, operation_name, work_center_id, run_time_minutes, labor_rate_per_hour, overhead_rate_per_hour, is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description, labor_mode, cost_per_piece)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                            """,
+                            bom_id,
+                            o.get("operation_number") or (idx + 1),
+                            o.get("operation_name"),
+                            wc_id,
+                            o.get("run_time_minutes") or 0,
+                            labor_rate,
+                            overhead_rate,
+                            o.get("is_subcontract", False),
+                            o.get("vendor_id"),
+                            o.get("subcontract_cost_per_unit") or 0,
+                            o.get("subcontract_description"),
+                            o.get("labor_mode", "time_based"),
+                            o.get("cost_per_piece"),
+                        )
 
             return {"success": True, "message": "BOM updated"}
 
@@ -676,10 +899,13 @@ async def delete_bom(request: Request, bom_id: UUID):
         async with pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM bill_of_materials WHERE tenant_id = $1 AND id = $2 AND status = 'draft'",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if result == "DELETE 0":
-                raise HTTPException(status_code=400, detail="BOM not found or not in draft status")
+                raise HTTPException(
+                    status_code=400, detail="BOM not found or not in draft status"
+                )
 
             return {"success": True, "message": "BOM deleted"}
 
@@ -701,13 +927,16 @@ async def activate_bom(request: Request, bom_id: UUID):
             async with conn.transaction():
                 bom = await conn.fetchrow(
                     "SELECT product_id, status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                    ctx["tenant_id"], bom_id
+                    ctx["tenant_id"],
+                    bom_id,
                 )
                 if not bom:
                     raise HTTPException(status_code=404, detail="BOM not found")
 
                 if bom["status"] != "draft":
-                    raise HTTPException(status_code=400, detail="Can only activate draft BOMs")
+                    raise HTTPException(
+                        status_code=400, detail="Can only activate draft BOMs"
+                    )
 
                 # Set all other BOMs for this product to not current
                 await conn.execute(
@@ -715,7 +944,9 @@ async def activate_bom(request: Request, bom_id: UUID):
                     UPDATE bill_of_materials SET is_current = false
                     WHERE tenant_id = $1 AND product_id = $2 AND id != $3
                     """,
-                    ctx["tenant_id"], bom["product_id"], bom_id
+                    ctx["tenant_id"],
+                    bom["product_id"],
+                    bom_id,
                 )
 
                 # Activate this BOM
@@ -725,7 +956,7 @@ async def activate_bom(request: Request, bom_id: UUID):
                     SET status = 'active', is_current = true, effective_date = COALESCE(effective_date, CURRENT_DATE)
                     WHERE id = $1
                     """,
-                    bom_id
+                    bom_id,
                 )
 
                 return {"success": True, "message": "BOM activated"}
@@ -751,10 +982,13 @@ async def obsolete_bom(request: Request, bom_id: UUID):
                 SET status = 'obsolete', is_current = false, obsolete_date = CURRENT_DATE
                 WHERE tenant_id = $1 AND id = $2 AND status = 'active'
                 """,
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="BOM not found or not active")
+                raise HTTPException(
+                    status_code=400, detail="BOM not found or not active"
+                )
 
             return {"success": True, "message": "BOM marked as obsolete"}
 
@@ -777,7 +1011,8 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                 # Get original BOM
                 original = await conn.fetchrow(
                     "SELECT * FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                    ctx["tenant_id"], bom_id
+                    ctx["tenant_id"],
+                    bom_id,
                 )
                 if not original:
                     raise HTTPException(status_code=404, detail="BOM not found")
@@ -785,10 +1020,13 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                 # Check new code doesn't exist
                 exists = await conn.fetchval(
                     "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND bom_code = $2",
-                    ctx["tenant_id"], new_code
+                    ctx["tenant_id"],
+                    new_code,
                 )
                 if exists:
-                    raise HTTPException(status_code=400, detail=f"BOM code '{new_code}' already exists")
+                    raise HTTPException(
+                        status_code=400, detail=f"BOM code '{new_code}' already exists"
+                    )
 
                 # Create new BOM
                 new_version = original["version"] + 1
@@ -805,7 +1043,11 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                     FROM bill_of_materials WHERE id = $5
                     RETURNING id
                     """,
-                    ctx["tenant_id"], new_code, new_version, ctx["user_id"], bom_id
+                    ctx["tenant_id"],
+                    new_code,
+                    new_version,
+                    ctx["user_id"],
+                    bom_id,
                 )
 
                 # Copy operations
@@ -814,14 +1056,17 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                     INSERT INTO bom_operations (bom_id, operation_number, operation_name,
                         description, work_center_id, setup_time_minutes, run_time_minutes,
                         labor_rate_per_hour, overhead_rate_per_hour, instructions,
-                        is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description)
+                        is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description,
+                        labor_mode, cost_per_piece)
                     SELECT $1, operation_number, operation_name, description, work_center_id,
                            setup_time_minutes, run_time_minutes, labor_rate_per_hour,
                            overhead_rate_per_hour, instructions,
-                           is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
+                           is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description,
+                           labor_mode, cost_per_piece
                     FROM bom_operations WHERE bom_id = $2
                     """,
-                    new_bom_id, bom_id
+                    new_bom_id,
+                    bom_id,
                 )
 
                 # Copy components
@@ -833,7 +1078,8 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                            sequence_order, unit_cost, notes
                     FROM bom_components WHERE bom_id = $2
                     """,
-                    new_bom_id, bom_id
+                    new_bom_id,
+                    bom_id,
                 )
 
                 # Calculate cost
@@ -842,7 +1088,7 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                 return {
                     "success": True,
                     "message": f"BOM duplicated as version {new_version}",
-                    "data": {"id": str(new_bom_id)}
+                    "data": {"id": str(new_bom_id)},
                 }
 
     except HTTPException:
@@ -867,7 +1113,8 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                 JOIN products p ON p.id = bom.product_id
                 WHERE bom.tenant_id = $1 AND bom.id = $2
                 """,
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
@@ -881,7 +1128,7 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                 WHERE bc.bom_id = $1
                 ORDER BY bc.extended_cost DESC
                 """,
-                bom_id
+                bom_id,
             )
 
             # Get labor breakdown
@@ -891,11 +1138,12 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                        (setup_time_minutes + COALESCE(run_time_minutes, 0)) as total_minutes,
                        labor_rate_per_hour,
                        ((setup_time_minutes + COALESCE(run_time_minutes, 0)) * labor_rate_per_hour / 60) as cost,
-                       is_subcontract, subcontract_cost_per_unit
+                       is_subcontract, subcontract_cost_per_unit,
+                       labor_mode, cost_per_piece
                 FROM bom_operations
                 WHERE bom_id = $1
                 """,
-                bom_id
+                bom_id,
             )
 
             total = bom["total_cost"] or 1
@@ -903,56 +1151,89 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
 
             # Material items
             for m in materials:
-                breakdown.append({
-                    "category": "material",
-                    "description": m["nama_produk"],
-                    "quantity": m["quantity"],
-                    "unit_cost": m["unit_cost"],
-                    "total_cost": m["extended_cost"],
-                    "percent_of_total": round(Decimal(m["extended_cost"]) / total * 100, 2)
-                })
+                breakdown.append(
+                    {
+                        "category": "material",
+                        "description": m["nama_produk"],
+                        "quantity": m["quantity"],
+                        "unit_cost": m["unit_cost"],
+                        "total_cost": m["extended_cost"],
+                        "percent_of_total": round(
+                            Decimal(m["extended_cost"]) / total * 100, 2
+                        ),
+                    }
+                )
 
             # Labor items
-            for l in labor:
-                breakdown.append({
-                    "category": "labor",
-                    "description": l["operation_name"],
-                    "quantity": Decimal(l["total_minutes"]) / 60,
-                    "unit_cost": l["labor_rate_per_hour"],
-                    "total_cost": l["cost"] or 0,
-                    "percent_of_total": round(Decimal(l["cost"] or 0) / total * 100, 2)
-                })
+            for lab in labor:
+                mode = lab.get("labor_mode", "time_based")
+                if mode == "piece_rate":
+                    labor_total_cost = float(lab.get("cost_per_piece") or 0)
+                    labor_unit_cost = labor_total_cost
+                    labor_qty = Decimal("1")
+                elif mode == "none":
+                    labor_total_cost = 0
+                    labor_unit_cost = 0
+                    labor_qty = Decimal("0")
+                else:
+                    # time_based and subcontract both show time-based cost in labor section
+                    labor_total_cost = float(lab["cost"] or 0)
+                    labor_unit_cost = lab["labor_rate_per_hour"]
+                    labor_qty = Decimal(lab["total_minutes"]) / 60
+                breakdown.append(
+                    {
+                        "category": "labor",
+                        "description": lab["operation_name"],
+                        "quantity": labor_qty,
+                        "unit_cost": labor_unit_cost,
+                        "total_cost": labor_total_cost,
+                        "percent_of_total": round(
+                            Decimal(str(labor_total_cost)) / total * 100, 2
+                        ),
+                    }
+                )
 
             # Overhead
             if bom["overhead_cost"]:
-                breakdown.append({
-                    "category": "overhead",
-                    "description": "Manufacturing Overhead",
-                    "quantity": None,
-                    "unit_cost": 0,
-                    "total_cost": bom["overhead_cost"],
-                    "percent_of_total": round(Decimal(bom["overhead_cost"]) / total * 100, 2)
-                })
+                breakdown.append(
+                    {
+                        "category": "overhead",
+                        "description": "Manufacturing Overhead",
+                        "quantity": None,
+                        "unit_cost": 0,
+                        "total_cost": bom["overhead_cost"],
+                        "percent_of_total": round(
+                            Decimal(bom["overhead_cost"]) / total * 100, 2
+                        ),
+                    }
+                )
 
             # Subcontract items
-            for l in labor:
-                if l.get("is_subcontract") and l.get("subcontract_cost_per_unit"):
-                    sc_cost = Decimal(str(l["subcontract_cost_per_unit"]))
-                    breakdown.append({
-                        "category": "subcontract",
-                        "description": "Subcontract: " + l["operation_name"],
-                        "quantity": None,
-                        "unit_cost": float(sc_cost),
-                        "total_cost": float(sc_cost),
-                        "percent_of_total": round(sc_cost / total * 100, 2)
-                    })
+            for lab in labor:
+                if lab.get("is_subcontract") and lab.get("subcontract_cost_per_unit"):
+                    sc_cost = Decimal(str(lab["subcontract_cost_per_unit"]))
+                    breakdown.append(
+                        {
+                            "category": "subcontract",
+                            "description": "Subcontract: " + lab["operation_name"],
+                            "quantity": None,
+                            "unit_cost": float(sc_cost),
+                            "total_cost": float(sc_cost),
+                            "percent_of_total": round(sc_cost / total * 100, 2),
+                        }
+                    )
 
             subcontract_cost = sum(
-                float(l.get("subcontract_cost_per_unit", 0))
-                for l in labor if l.get("is_subcontract")
+                float(lab.get("subcontract_cost_per_unit", 0))
+                for lab in labor
+                if lab.get("is_subcontract")
             )
 
-            unit_cost = int(float(bom["total_cost"]) / float(bom["output_quantity"])) if bom["output_quantity"] else 0
+            unit_cost = (
+                int(float(bom["total_cost"]) / float(bom["output_quantity"]))
+                if bom["output_quantity"]
+                else 0
+            )
 
             return {
                 "success": True,
@@ -965,7 +1246,7 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
                 "labor_cost": float(bom.get("labor_cost") or 0),
                 "overhead_cost": float(bom.get("overhead_cost") or 0),
                 "subcontract_cost": subcontract_cost,
-                "breakdown": breakdown
+                "breakdown": breakdown,
             }
 
     except HTTPException:
@@ -985,7 +1266,8 @@ async def recalculate_cost(request: Request, bom_id: UUID):
         async with pool.acquire() as conn:
             exists = await conn.fetchval(
                 "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")
@@ -995,7 +1277,7 @@ async def recalculate_cost(request: Request, bom_id: UUID):
             return {
                 "success": True,
                 "message": "Cost recalculated",
-                "data": {"total_cost": new_cost}
+                "data": {"total_cost": new_cost},
             }
 
     except HTTPException:
@@ -1018,13 +1300,16 @@ async def add_component(request: Request, bom_id: UUID, body: BOMComponentInput)
         async with pool.acquire() as conn:
             bom = await conn.fetchrow(
                 "SELECT status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
 
             if bom["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Can only modify draft BOMs")
+                raise HTTPException(
+                    status_code=400, detail="Can only modify draft BOMs"
+                )
 
             comp_id = await conn.fetchval(
                 """
@@ -1034,9 +1319,15 @@ async def add_component(request: Request, bom_id: UUID, body: BOMComponentInput)
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id
                 """,
-                bom_id, body.component_product_id, body.quantity, body.unit,
-                body.wastage_percent, body.sequence_order, body.operation_id,
-                body.unit_cost, body.notes
+                bom_id,
+                body.component_product_id,
+                body.quantity,
+                body.unit,
+                body.wastage_percent,
+                body.sequence_order,
+                body.operation_id,
+                body.unit_cost,
+                body.notes,
             )
 
             # Recalculate cost
@@ -1045,7 +1336,7 @@ async def add_component(request: Request, bom_id: UUID, body: BOMComponentInput)
             return {
                 "success": True,
                 "message": "Component added",
-                "data": {"id": str(comp_id)}
+                "data": {"id": str(comp_id)},
             }
 
     except HTTPException:
@@ -1071,13 +1362,16 @@ async def remove_component(request: Request, component_id: UUID):
                 JOIN bill_of_materials bom ON bom.id = bc.bom_id
                 WHERE bc.id = $1 AND bom.tenant_id = $2
                 """,
-                component_id, ctx["tenant_id"]
+                component_id,
+                ctx["tenant_id"],
             )
             if not comp:
                 raise HTTPException(status_code=404, detail="Component not found")
 
             if comp["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Can only modify draft BOMs")
+                raise HTTPException(
+                    status_code=400, detail="Can only modify draft BOMs"
+                )
 
             await conn.execute("DELETE FROM bom_components WHERE id = $1", component_id)
             await conn.fetchval("SELECT calculate_bom_cost($1)", comp["bom_id"])
@@ -1104,13 +1398,16 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
         async with pool.acquire() as conn:
             bom = await conn.fetchrow(
                 "SELECT status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
 
             if bom["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Can only modify draft BOMs")
+                raise HTTPException(
+                    status_code=400, detail="Can only modify draft BOMs"
+                )
 
             op_id = await conn.fetchval(
                 """
@@ -1118,14 +1415,27 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
                     bom_id, operation_number, operation_name, description,
                     work_center_id, setup_time_minutes, run_time_minutes,
                     labor_rate_per_hour, overhead_rate_per_hour, instructions,
-                    is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    is_subcontract, vendor_id, subcontract_cost_per_unit, subcontract_description,
+                    labor_mode, cost_per_piece
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING id
                 """,
-                bom_id, body.operation_number, body.operation_name, body.description,
-                body.work_center_id, body.setup_time_minutes, body.run_time_minutes,
-                body.labor_rate_per_hour, body.overhead_rate_per_hour, body.instructions,
-                body.is_subcontract, body.vendor_id, body.subcontract_cost_per_unit, body.subcontract_description
+                bom_id,
+                body.operation_number,
+                body.operation_name,
+                body.description,
+                body.work_center_id,
+                body.setup_time_minutes,
+                body.run_time_minutes,
+                body.labor_rate_per_hour,
+                body.overhead_rate_per_hour,
+                body.instructions,
+                body.is_subcontract,
+                body.vendor_id,
+                body.subcontract_cost_per_unit,
+                body.subcontract_description,
+                body.labor_mode,
+                body.cost_per_piece,
             )
 
             await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
@@ -1133,7 +1443,7 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
             return {
                 "success": True,
                 "message": "Operation added",
-                "data": {"id": str(op_id)}
+                "data": {"id": str(op_id)},
             }
 
     except HTTPException:
@@ -1160,13 +1470,16 @@ async def remove_operation(request: Request, operation_id: UUID):
                 JOIN bill_of_materials bom ON bom.id = bo.bom_id
                 WHERE bo.id = $1 AND bom.tenant_id = $2
                 """,
-                operation_id, ctx["tenant_id"]
+                operation_id,
+                ctx["tenant_id"],
             )
             if not op:
                 raise HTTPException(status_code=404, detail="Operation not found")
 
             if op["status"] != "draft":
-                raise HTTPException(status_code=400, detail="Can only modify draft BOMs")
+                raise HTTPException(
+                    status_code=400, detail="Can only modify draft BOMs"
+                )
 
             await conn.execute("DELETE FROM bom_operations WHERE id = $1", operation_id)
             await conn.fetchval("SELECT calculate_bom_cost($1)", op["bom_id"])
@@ -1197,10 +1510,15 @@ async def get_product_bom(request: Request, product_id: UUID):
                 FROM bill_of_materials
                 WHERE tenant_id = $1 AND product_id = $2 AND is_current = true AND status = 'active'
                 """,
-                ctx["tenant_id"], product_id
+                ctx["tenant_id"],
+                product_id,
             )
             if not bom:
-                return {"success": True, "data": None, "message": "No active BOM for product"}
+                return {
+                    "success": True,
+                    "data": None,
+                    "message": "No active BOM for product",
+                }
 
             return {
                 "success": True,
@@ -1210,7 +1528,7 @@ async def get_product_bom(request: Request, product_id: UUID):
                     "bom_name": bom["bom_name"],
                     "version": bom["version"],
                     "total_cost": bom["total_cost"],
-                }
+                },
             }
 
     except HTTPException:
@@ -1230,7 +1548,8 @@ async def where_used(request: Request, product_id: UUID):
         async with pool.acquire() as conn:
             product = await conn.fetchrow(
                 "SELECT name FROM products WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], product_id
+                ctx["tenant_id"],
+                product_id,
             )
             if not product:
                 raise HTTPException(status_code=404, detail="Product not found")
@@ -1246,7 +1565,8 @@ async def where_used(request: Request, product_id: UUID):
                 WHERE bc.component_product_id = $1 AND bom.tenant_id = $2
                 ORDER BY bom.bom_code
                 """,
-                product_id, ctx["tenant_id"]
+                product_id,
+                ctx["tenant_id"],
             )
 
             used_in = [
@@ -1268,21 +1588,21 @@ async def where_used(request: Request, product_id: UUID):
                 "product_id": str(product_id),
                 "product_name": product["name"],
                 "used_in": used_in,
-                "total_boms": len(used_in)
+                "total_boms": len(used_in),
             }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in where-used query: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to find where product is used")
+        raise HTTPException(
+            status_code=500, detail="Failed to find where product is used"
+        )
 
 
 @router.get("/{bom_id}/materials-required", response_model=MaterialsRequiredResponse)
 async def get_materials_required(
-    request: Request,
-    bom_id: UUID,
-    quantity: Decimal = Query(Decimal("1"), gt=0)
+    request: Request, bom_id: UUID, quantity: Decimal = Query(Decimal("1"), gt=0)
 ):
     """Get materials required for specified quantity."""
     try:
@@ -1292,7 +1612,8 @@ async def get_materials_required(
         async with pool.acquire() as conn:
             bom = await conn.fetchrow(
                 "SELECT bom_code, output_quantity FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id
+                ctx["tenant_id"],
+                bom_id,
             )
             if not bom:
                 raise HTTPException(status_code=404, detail="BOM not found")
@@ -1312,7 +1633,7 @@ async def get_materials_required(
                 WHERE bc.bom_id = $1
                 ORDER BY p.nama_produk
                 """,
-                bom_id
+                bom_id,
             )
 
             materials = []
@@ -1320,24 +1641,30 @@ async def get_materials_required(
             has_shortage = False
 
             for row in rows:
-                required = float(row["quantity"]) * multiplier * (1 + float(row["wastage_percent"] or 0) / 100)
+                required = (
+                    float(row["quantity"])
+                    * multiplier
+                    * (1 + float(row["wastage_percent"] or 0) / 100)
+                )
                 line_cost = int(required * row["unit_cost"])
                 shortage = required - float(row["available"])
 
                 if shortage > 0:
                     has_shortage = True
 
-                materials.append({
-                    "product_id": str(row["component_product_id"]),
-                    "product_name": row["product_name"],
-                    "product_sku": row["product_sku"],
-                    "required_quantity": Decimal(str(round(required, 4))),
-                    "unit": row["unit"],
-                    "unit_cost": row["unit_cost"],
-                    "total_cost": line_cost,
-                    "available_quantity": row["available"],
-                    "shortage": Decimal(str(round(max(0, shortage), 4)))
-                })
+                materials.append(
+                    {
+                        "product_id": str(row["component_product_id"]),
+                        "product_name": row["product_name"],
+                        "product_sku": row["product_sku"],
+                        "required_quantity": Decimal(str(round(required, 4))),
+                        "unit": row["unit"],
+                        "unit_cost": row["unit_cost"],
+                        "total_cost": line_cost,
+                        "available_quantity": row["available"],
+                        "shortage": Decimal(str(round(max(0, shortage), 4))),
+                    }
+                )
                 total_cost += line_cost
 
             return {
@@ -1346,7 +1673,7 @@ async def get_materials_required(
                 "production_quantity": quantity,
                 "materials": materials,
                 "total_material_cost": total_cost,
-                "has_shortage": has_shortage
+                "has_shortage": has_shortage,
             }
 
     except HTTPException:

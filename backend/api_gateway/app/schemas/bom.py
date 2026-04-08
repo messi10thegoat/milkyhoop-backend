@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field
 # WORK CENTERS
 # ============================================================================
 
+
 class CreateWorkCenterRequest(BaseModel):
     """Request to create work center"""
+
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
@@ -29,6 +31,7 @@ class CreateWorkCenterRequest(BaseModel):
 
 class UpdateWorkCenterRequest(BaseModel):
     """Request to update work center"""
+
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
     warehouse_id: Optional[UUID] = None
@@ -41,6 +44,7 @@ class UpdateWorkCenterRequest(BaseModel):
 
 class WorkCenterListItem(BaseModel):
     """Work center in list view"""
+
     id: str
     code: str
     name: str
@@ -52,6 +56,7 @@ class WorkCenterListItem(BaseModel):
 
 class WorkCenterListResponse(BaseModel):
     """Response for listing work centers"""
+
     items: List[WorkCenterListItem]
     total: int
     has_more: bool
@@ -59,6 +64,7 @@ class WorkCenterListResponse(BaseModel):
 
 class WorkCenterDetail(BaseModel):
     """Work center detail"""
+
     id: str
     code: str
     name: str
@@ -76,6 +82,7 @@ class WorkCenterDetail(BaseModel):
 
 class WorkCenterDetailResponse(BaseModel):
     """Response for work center detail"""
+
     success: bool = True
     data: WorkCenterDetail
 
@@ -84,8 +91,10 @@ class WorkCenterDetailResponse(BaseModel):
 # BOM COMPONENTS
 # ============================================================================
 
+
 class BOMComponentInput(BaseModel):
     """Input for BOM component"""
+
     component_product_id: UUID
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = None
@@ -98,12 +107,16 @@ class BOMComponentInput(BaseModel):
 
 class BOMComponentDetail(BaseModel):
     """BOM component detail"""
+
     id: str
     component_product_id: str
     component_product_name: str
     component_product_sku: Optional[str]
     quantity: Decimal
     unit: Optional[str]
+    # Master-data fallback fields (from products JOIN) — used by frontend when stored unit/cost are empty
+    product_unit: Optional[str] = None
+    product_purchase_price: Optional[float] = 0
     wastage_percent: Decimal
     operation_id: Optional[str]
     operation_name: Optional[str]
@@ -119,8 +132,12 @@ class BOMComponentDetail(BaseModel):
 # BOM OPERATIONS
 # ============================================================================
 
+LaborMode = Literal["time_based", "piece_rate", "subcontract", "none"]
+
+
 class BOMOperationInput(BaseModel):
     """Input for BOM operation"""
+
     operation_number: int = Field(..., ge=1)
     operation_name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
@@ -130,15 +147,19 @@ class BOMOperationInput(BaseModel):
     labor_rate_per_hour: int = Field(0, ge=0)
     overhead_rate_per_hour: int = Field(0, ge=0)
     instructions: Optional[str] = None
-    # Subcontracting (Maklun)
+    # Subcontracting (Maklun) — V132 fields, keep for backward compat
     is_subcontract: bool = False
     vendor_id: Optional[UUID] = None
     subcontract_cost_per_unit: float = 0
     subcontract_description: Optional[str] = None
+    # V133 new
+    labor_mode: LaborMode = "time_based"
+    cost_per_piece: Optional[float] = None
 
 
 class BOMOperationDetail(BaseModel):
     """BOM operation detail"""
+
     id: str
     operation_number: int
     operation_name: str
@@ -155,14 +176,19 @@ class BOMOperationDetail(BaseModel):
     vendor_name: Optional[str] = None
     subcontract_cost_per_unit: float = 0
     subcontract_description: Optional[str] = None
+    # V133 new
+    labor_mode: LaborMode = "time_based"
+    cost_per_piece: Optional[float] = None
 
 
 # ============================================================================
 # BILL OF MATERIALS
 # ============================================================================
 
+
 class CreateBOMRequest(BaseModel):
     """Request to create BOM"""
+
     product_id: UUID
     bom_code: str = Field(..., min_length=1, max_length=50)
     bom_name: Optional[str] = Field(None, max_length=255)
@@ -178,6 +204,7 @@ class CreateBOMRequest(BaseModel):
 
 class UpdateBOMRequest(BaseModel):
     """Request to update BOM"""
+
     bom_name: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     output_quantity: Optional[Decimal] = Field(None, gt=0)
@@ -186,10 +213,14 @@ class UpdateBOMRequest(BaseModel):
     work_center_id: Optional[UUID] = None
     effective_date: Optional[date] = None
     obsolete_date: Optional[date] = None
+    # Full replace of components/operations on update (draft only)
+    components: Optional[List[BOMComponentInput]] = None
+    operations: Optional[List[BOMOperationInput]] = None
 
 
 class BOMListItem(BaseModel):
     """BOM in list view"""
+
     id: str
     bom_code: str
     bom_name: Optional[str]
@@ -207,6 +238,7 @@ class BOMListItem(BaseModel):
 
 class BOMListResponse(BaseModel):
     """Response for listing BOMs"""
+
     items: List[BOMListItem]
     total: int
     has_more: bool
@@ -214,6 +246,7 @@ class BOMListResponse(BaseModel):
 
 class BOMDetail(BaseModel):
     """Detailed BOM with components and operations"""
+
     id: str
     bom_code: str
     bom_name: Optional[str]
@@ -243,6 +276,7 @@ class BOMDetail(BaseModel):
 
 class BOMDetailResponse(BaseModel):
     """Response for BOM detail"""
+
     success: bool = True
     data: BOMDetail
 
@@ -251,8 +285,10 @@ class BOMDetailResponse(BaseModel):
 # COST BREAKDOWN
 # ============================================================================
 
+
 class CostBreakdownItem(BaseModel):
     """Cost breakdown item"""
+
     category: str  # material, labor, overhead, subcontract
     description: str
     quantity: Optional[Decimal]
@@ -263,6 +299,7 @@ class CostBreakdownItem(BaseModel):
 
 class CostBreakdownResponse(BaseModel):
     """Response for cost breakdown"""
+
     success: bool = True
     bom_code: str
     product_name: str
@@ -280,8 +317,10 @@ class CostBreakdownResponse(BaseModel):
 # MATERIALS REQUIRED
 # ============================================================================
 
+
 class MaterialRequiredItem(BaseModel):
     """Material required for production"""
+
     product_id: str
     product_name: str
     product_sku: Optional[str]
@@ -295,6 +334,7 @@ class MaterialRequiredItem(BaseModel):
 
 class MaterialsRequiredResponse(BaseModel):
     """Response for materials required"""
+
     success: bool = True
     bom_code: str
     production_quantity: Decimal
@@ -307,8 +347,10 @@ class MaterialsRequiredResponse(BaseModel):
 # BOM EXPLOSION
 # ============================================================================
 
+
 class BOMExplosionNode(BaseModel):
     """Node in BOM explosion tree"""
+
     level: int
     product_id: str
     product_name: str
@@ -324,6 +366,7 @@ class BOMExplosionNode(BaseModel):
 
 class BOMExplosionResponse(BaseModel):
     """Response for BOM explosion (multi-level)"""
+
     success: bool = True
     bom_code: str
     product_name: str
@@ -336,8 +379,10 @@ class BOMExplosionResponse(BaseModel):
 # WHERE USED
 # ============================================================================
 
+
 class WhereUsedItem(BaseModel):
     """Item showing where component is used"""
+
     bom_id: str
     bom_code: str
     bom_name: Optional[str]
@@ -350,6 +395,7 @@ class WhereUsedItem(BaseModel):
 
 class WhereUsedResponse(BaseModel):
     """Response for where-used query"""
+
     success: bool = True
     product_id: str
     product_name: str
@@ -361,8 +407,10 @@ class WhereUsedResponse(BaseModel):
 # GENERIC RESPONSES
 # ============================================================================
 
+
 class BOMResponse(BaseModel):
     """Generic response for BOM operations"""
+
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
