@@ -184,7 +184,12 @@ async def list_production_orders(
             )
 
             query = f"""
-                SELECT po.*, p.nama_produk as product_name, p.sku as product_sku
+                SELECT po.*, p.nama_produk as product_name, p.sku as product_sku,
+                       COALESCE((
+                           SELECT BOOL_AND(COALESCE(pom.issued_quantity,0) >= COALESCE(pom.planned_quantity, 0))
+                           FROM production_order_materials pom
+                           WHERE pom.production_order_id = po.id
+                       ), FALSE) AS all_materials_issued
                 FROM production_orders po
                 JOIN products p ON p.id = po.product_id
                 WHERE {where_clause}
@@ -215,6 +220,7 @@ async def list_production_orders(
                     "planned_end_date": row["planned_end_date"],
                     "completion_percent": Decimal(str(completion_pct)),
                     "created_at": row["created_at"],
+                    "all_materials_issued": bool(row.get("all_materials_issued") or False),
                 })
 
             return {"items": items, "total": total, "has_more": (skip + limit) < total}

@@ -159,6 +159,7 @@ class ProductionOrderListItem(BaseModel):
     planned_end_date: Optional[date]
     completion_percent: Decimal
     created_at: datetime
+    all_materials_issued: bool = False
 
 
 class ProductionOrderListResponse(BaseModel):
