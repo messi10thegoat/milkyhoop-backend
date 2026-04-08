@@ -1600,72 +1600,27 @@ async def send_message_with_files(
                     _ocr_client = _OCR_OpenAI(
                         api_key=os.environ.get("OPENAI_API_KEY", "")
                     )
-                    _ocr_prompt = f"""Kamu adalah asisten akuntansi. User upload foto dokumen keuangan dengan pesan: "{text}"
+                    _ocr_prompt = f"""Ekstrak data dari dokumen finansial Indonesia ini. User caption: "{text}"
 
-Tugas:
-1. Baca semua teks di gambar (OCR)
-2. Ekstrak data terstruktur
-3. Perhatikan instruksi user (misal: jenis dokumen, nama vendor/customer)
-
-Return JSON ONLY (tanpa markdown):
+Return JSON ONLY:
 {{
-  "doc_type": "purchase_invoice|sales_invoice|receipt|bank_transfer|expense|unknown",
-  "vendor_name": "nama vendor/supplier",
-  "customer_name": "nama customer (jika ada)",
-  "document_number": "nomor faktur/dokumen",
-  "document_date": "YYYY-MM-DD",
-  "items": [
-    {{"description": "deskripsi item", "qty": 1, "unit_price": 0, "total": 0}}
-  ],
-  "subtotal": 0,
-  "tax_amount": 0,
+  "doc_type": "expense|bank_transfer|purchase_invoice|sales_invoice|receipt|unknown",
+  "vendor_name": "nama vendor (untuk struk PLN: 'PLN', untuk transfer keluar: nama penerima)",
+  "customer_name": "nama customer atau null",
+  "document_number": "no faktur/no ref",
+  "document_date": "YYYY-MM-DD atau null",
   "total_amount": 0,
-  "notes": "catatan tambahan",
+  "tax_amount": 0,
+  "source_account_number": "nomor rek pengirim atau null",
+  "destination_account_number": "nomor rek penerima atau null",
+  "reference_note": "berita/keterangan",
   "confidence": 0.9
 }}
 
-PENTING:
-- Jika user bilang "faktur pembelian" → doc_type = "purchase_invoice"
-- Jika user sebut nama vendor, pakai nama itu
-- Semua angka dalam Rupiah tanpa desimal
-- confidence 0-1 berdasarkan kejelasan dokumen
-- Jika bukti transfer: cari clue "Transfer Keluar"/"Dana Masuk"/"Debit"/"Kredit" -> isi transfer_direction
-- Jika bukti transfer KELUAR: isi vendor_name = nama penerima (field "Ke"/"To"/"Penerima")
-- Jika bukti transfer MASUK: isi customer_name = nama pengirim (field "Dari"/"From"/"Pengirim")
-- counterparty_name = pihak lawan (penerima jika keluar, pengirim jika masuk)
-- Jika ada berita transfer/catatan, masukkan ke reference_note
-
-Tambahan fields (isi jika tersedia, null jika tidak):
-  "transfer_direction": "masuk|keluar|unknown",
-  "bank_source": "nama bank pengirim",
-  "bank_destination": "nama bank penerima",
-  "reference_note": "berita/catatan transfer",
-  "meter_id": "nomor meter listrik jika ada",
-  "tax_type": "PPh 21|PPh 23|PPN|null",
-  "tax_period": "bulan dan tahun jika ada",
-  "counterparty_name": "nama pihak lawan transaksi",
-  "source_account_number": "nomor rekening pengirim jika ada",
-  "destination_account_number": "nomor rekening penerima jika ada"
-}}
-
-CRITICAL — Struk PLN Prabayar (token listrik):
-- doc_type = "expense"
-- vendor_name = "PLN"
-- total_amount = nilai field "RP BAYAR" (BUKAN "RP STROOM/TOKEN", BUKAN total dengan admin bank)
-- "RP BAYAR" = harga jual token = beban listrik (yang dipakai untuk total_amount)
-- "RP STROOM/TOKEN" = nilai listrik bersih (sudah dipotong pajak)
-- "ADMIN BANK" = biaya admin bank, JANGAN masuk total_amount
-- "PBJT-TL" = pajak penerangan jalan (sudah termasuk di RP BAYAR), masukkan ke tax_amount
-- bank_source = field "DARI REKENING" (nomor rekening pengirim)
-- source_account_number = nomor rekening dari "DARI REKENING"
-- reference_note = "Token listrik" + bulan tahun
-
-CRITICAL — Bukti transfer m-banking Indonesia:
-- total_amount = "Nominal Transfer" / "Total Transfer" / "Jumlah Transfer" (BUKAN "Total Transaksi")
-- "Total Transaksi" = nominal + biaya admin, JANGAN dipakai
-- destination_account_number = nomor rekening "Ke"/"Tujuan"/"Penerima"
-- Untuk transfer KELUAR: vendor_name = nama penerima
-- Untuk transfer MASUK: customer_name jarang ada (pengirim biasanya tidak tampil)"""
+Aturan:
+- Struk PLN: doc_type="expense", total_amount=field "RP BAYAR" (BUKAN RP STROOM/TOKEN, BUKAN total dengan ADMIN BANK), tax_amount=PBJT-TL, vendor_name="PLN"
+- Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
+- Semua angka Rupiah tanpa desimal"""
 
                     # Use Gemini 2.5 Flash for vision OCR (~700ms vs gpt-4o ~2-3s)
                     import httpx as _ocr_httpx
