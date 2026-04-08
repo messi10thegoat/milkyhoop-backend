@@ -271,8 +271,8 @@ class CostBreakdownItem(BaseModel):
     category: str  # material, labor, overhead, subcontract
     description: str
     quantity: Optional[Decimal]
-    unit_cost: int
-    total_cost: int
+    unit_cost: float
+    total_cost: float
     percent_of_total: Decimal
 
 
@@ -282,8 +282,8 @@ class CostBreakdownResponse(BaseModel):
     bom_code: str
     product_name: str
     output_quantity: Decimal
-    unit_cost: int
-    total_cost: int
+    unit_cost: float
+    total_cost: float
     material_cost: Optional[float] = None
     labor_cost: Optional[float] = None
     overhead_cost: Optional[float] = None
