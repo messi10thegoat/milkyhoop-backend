@@ -634,6 +634,15 @@ async def get_bom(request: Request, bom_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Ensure total_cost is fresh (auto-heal stale state from pre-V134 BOMs)
+            exists = await conn.fetchval(
+                "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
+                ctx["tenant_id"], bom_id,
+            )
+            if not exists:
+                raise HTTPException(status_code=404, detail="BOM not found")
+            await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+
             # Get BOM
             bom = await conn.fetchrow(
                 """
