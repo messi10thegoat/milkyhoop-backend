@@ -1820,10 +1820,10 @@ async def get_payment_activities(
         validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
         pool = await get_pool()
-        
+
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-            
+
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
@@ -1831,9 +1831,9 @@ async def get_payment_activities(
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
-            
+
             offset = (page - 1) * limit
-            
+
             # Get activities from audit_logs table
             activities = await conn.fetch(
                 """
@@ -1846,24 +1846,24 @@ async def get_payment_activities(
                 """,
                 ctx["tenant_id"], payment_id, limit, offset
             )
-            
+
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid",
                 ctx["tenant_id"], payment_id
             )
-            
+
             # If no audit logs, return payment lifecycle events
             if not activities:
                 activities = await conn.fetch(
                     """
-                    SELECT 
+                    SELECT
                         gen_random_uuid() as id,
-                        CASE 
+                        CASE
                             WHEN status = 'voided' THEN 'voided'
                             WHEN status = 'posted' THEN 'posted'
                             ELSE 'created'
                         END as action,
-                        CASE 
+                        CASE
                             WHEN status = 'voided' THEN 'Pembayaran dibatalkan: ' || COALESCE(void_reason, '')
                             WHEN status = 'posted' THEN 'Pembayaran diposting'
                             ELSE 'Pembayaran dibuat'
@@ -1887,7 +1887,7 @@ async def get_payment_activities(
                     payment_id
                 )
                 total = len(activities)
-            
+
             return {
                 "success": True,
                 "data": [
@@ -1922,21 +1922,21 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
         validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
         pool = await get_pool()
-        
+
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-            
+
             # Get payment with journal IDs
             payment = await conn.fetchrow(
                 """
-                SELECT id, payment_number, journal_id, journal_number, 
+                SELECT id, payment_number, journal_id, journal_number,
                        void_journal_id, status
-                FROM bill_payments_v2 
+                FROM bill_payments_v2
                 WHERE id = $1::uuid AND tenant_id = $2
                 """,
                 payment_id, ctx["tenant_id"]
             )
-            
+
             if not payment:
                 # Law 29 fallback: check if payment_id IS a journal_entries.id
                 je_exists = await conn.fetchval(
@@ -1953,7 +1953,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     journal_ids.append(payment["journal_id"])
                 if payment["void_journal_id"]:
                     journal_ids.append(payment["void_journal_id"])
-            
+
             if not journal_ids:
                 return {
                     "success": True,
@@ -1965,7 +1965,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                         "is_balanced": True
                     }
                 }
-            
+
             # Get journal entries
             journals = await conn.fetch(
                 """
@@ -1977,11 +1977,11 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                 """,
                 journal_ids
             )
-            
+
             journal_data = []
             total_debit = 0
             total_credit = 0
-            
+
             for journal in journals:
                 # Get journal lines
                 lines = await conn.fetch(
@@ -1995,7 +1995,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     """,
                     journal["id"]
                 )
-                
+
                 line_data = [
                     {
                         "id": str(line["id"]),
@@ -2009,12 +2009,12 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     }
                     for line in lines
                 ]
-                
+
                 journal_debit = int(journal["total_debit"] or 0)
                 journal_credit = int(journal["total_credit"] or 0)
                 total_debit += journal_debit
                 total_credit += journal_credit
-                
+
                 journal_data.append({
                     "id": str(journal["id"]),
                     "journal_number": journal["journal_number"],
@@ -2027,7 +2027,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     "is_balanced": abs(journal_debit - journal_credit) < 0.01,
                     "lines": line_data
                 })
-            
+
             return {
                 "success": True,
                 "data": journal_data,
@@ -2059,10 +2059,10 @@ async def get_payment_transactions(
         validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
         pool = await get_pool()
-        
+
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-            
+
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
@@ -2070,13 +2070,13 @@ async def get_payment_transactions(
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
-            
+
             offset = (page - 1) * limit
-            
+
             # Get bill allocations
             allocations = await conn.fetch(
                 """
-                SELECT bpa.id, bpa.bill_id, bpa.remaining_before, bpa.amount_applied, 
+                SELECT bpa.id, bpa.bill_id, bpa.remaining_before, bpa.amount_applied,
                        bpa.remaining_after, bpa.created_at,
                        b.invoice_number as bill_number, b.issue_date as bill_date,
                        b.amount as bill_amount, b.status as bill_status
@@ -2088,12 +2088,12 @@ async def get_payment_transactions(
                 """,
                 payment_id, limit, offset
             )
-            
+
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM bill_payment_allocations WHERE payment_id = $1::uuid",
                 payment_id
             )
-            
+
             return {
                 "success": True,
                 "data": [
@@ -2132,10 +2132,10 @@ async def get_payment_documents(request: Request, payment_id: str):
         validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
         pool = await get_pool()
-        
+
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-            
+
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
@@ -2143,11 +2143,11 @@ async def get_payment_documents(request: Request, payment_id: str):
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
-            
+
             # Get documents from documents table
             documents = await conn.fetch(
                 """
-                SELECT id, file_name, file_type, file_size, file_url, 
+                SELECT id, file_name, file_type, file_size, file_url,
                        description, created_at, created_by
                 FROM documents
                 WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid
@@ -2155,7 +2155,7 @@ async def get_payment_documents(request: Request, payment_id: str):
                 """,
                 ctx["tenant_id"], payment_id
             )
-            
+
             return {
                 "success": True,
                 "data": [
@@ -2182,3 +2182,38 @@ async def get_payment_documents(request: Request, payment_id: str):
         logger.error(f"Error getting payment documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get documents")
 
+
+@router.get("/{payment_id}/attachments")
+async def list_payment_attachments(request: Request, payment_id: str):
+    """List attachments for a payment via document_attachments table."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        rows = await conn.fetch(
+            """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
+                      d.file_url as url, d.thumbnail_path as thumbnail_url,
+                      d.uploaded_at, da.attachment_type, da.display_order
+               FROM document_attachments da
+               JOIN documents d ON da.document_id = d.id
+               WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
+                 AND d.deleted_at IS NULL
+               ORDER BY da.display_order, d.uploaded_at DESC""",
+            ctx["tenant_id"], payment_id,
+        )
+        return {
+            "success": True,
+            "data": [
+                {
+                    "id": str(r["id"]),
+                    "file_name": r["file_name"],
+                    "file_size": r["file_size"],
+                    "mime_type": r["mime_type"],
+                    "url": r["url"],
+                    "thumbnail_url": r["thumbnail_url"],
+                    "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+                    "attachment_type": r["attachment_type"],
+                }
+                for r in rows
+            ],
+        }

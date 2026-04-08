@@ -2174,3 +2174,39 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
             f"Error getting receive payment journal entries: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
+@router.get("/{payment_id}/attachments")
+async def list_payment_attachments(request: Request, payment_id: str):
+    """List attachments for a payment via document_attachments table."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        rows = await conn.fetch(
+            """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
+                      d.file_url as url, d.thumbnail_path as thumbnail_url,
+                      d.uploaded_at, da.attachment_type, da.display_order
+               FROM document_attachments da
+               JOIN documents d ON da.document_id = d.id
+               WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
+                 AND d.deleted_at IS NULL
+               ORDER BY da.display_order, d.uploaded_at DESC""",
+            ctx["tenant_id"], payment_id,
+        )
+        return {
+            "success": True,
+            "data": [
+                {
+                    "id": str(r["id"]),
+                    "file_name": r["file_name"],
+                    "file_size": r["file_size"],
+                    "mime_type": r["mime_type"],
+                    "url": r["url"],
+                    "thumbnail_url": r["thumbnail_url"],
+                    "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+                    "attachment_type": r["attachment_type"],
+                }
+                for r in rows
+            ],
+        }
