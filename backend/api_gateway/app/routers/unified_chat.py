@@ -1682,7 +1682,7 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                                     "responseMimeType": "application/json",
                                 },
                             }
-                            async with _ocr_httpx.AsyncClient(timeout=15.0) as _gc:
+                            async with _ocr_httpx.AsyncClient(timeout=4.0) as _gc:
                                 _gr = await _gc.post(_gemini_url, json=_gemini_payload)
                                 if _gr.status_code == 200:
                                     _gj = _gr.json()
@@ -1704,7 +1704,7 @@ CRITICAL — Bukti transfer m-banking Indonesia:
 
                     if not _ocr_used_gemini:
                         _ocr_response = await _ocr_client.chat.completions.create(
-                            model="gpt-4o",
+                            model="gpt-4o-mini",
                             messages=[
                                 {
                                     "role": "user",
@@ -1714,7 +1714,7 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                                             "type": "image_url",
                                             "image_url": {
                                                 "url": f"data:{_mime};base64,{_img_b64}",
-                                                "detail": "high",
+                                                "detail": "auto",
                                             },
                                         },
                                     ],
