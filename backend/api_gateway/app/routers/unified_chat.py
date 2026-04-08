@@ -226,27 +226,28 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
     }
 
     # Fast path: file already exists (same content uploaded before)
-    if os.path.exists(store_path):
+    file_already_exists = os.path.exists(store_path)
+    if file_already_exists:
         logger.info(f"[FileUpload] Dedup hit: {file.filename} -> {file_hash[:12]}")
-        return file_meta
+    else:
 
-    # Session-level advisory lock (released explicitly, not tied to transaction)
-    lock_key = f"CHAT_FILE:{tenant_id}:{file_hash}"
-    try:
-        await pool.execute("SELECT pg_advisory_lock(hashtext($1))", lock_key)
+        # Session-level advisory lock (released explicitly, not tied to transaction)
+        lock_key = f"CHAT_FILE:{tenant_id}:{file_hash}"
+        try:
+            await pool.execute("SELECT pg_advisory_lock(hashtext($1))", lock_key)
 
-        # Double-check after acquiring lock
-        if not os.path.exists(store_path):
-            os.makedirs(store_dir, exist_ok=True)
-            with open(store_path, "wb") as fh:
-                fh.write(content)
-            logger.info(
-                f"[FileUpload] Stored: {file.filename} -> {store_path} "
-                f"({len(content)} bytes, hash={file_hash[:12]})"
-            )
-    finally:
-        # Release lock immediately — BEFORE any parsing begins
-        await pool.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
+            # Double-check after acquiring lock
+            if not os.path.exists(store_path):
+                os.makedirs(store_dir, exist_ok=True)
+                with open(store_path, "wb") as fh:
+                    fh.write(content)
+                logger.info(
+                    f"[FileUpload] Stored: {file.filename} -> {store_path} "
+                    f"({len(content)} bytes, hash={file_hash[:12]})"
+                )
+        finally:
+            # Release lock immediately — BEFORE any parsing begins
+            await pool.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
 
     # Insert into documents table for entity linking (Phase A — audit trail)
     try:
@@ -263,14 +264,16 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                     file_meta["document_id"] = str(existing["id"])
                     logger.info(f"[FileUpload] Document dedup: {file_hash[:12]} -> {existing['id']}")
                 else:
+                    # file_url points to chat file-serving endpoint (tenant-isolated)
+                    file_url_path = f"/api/v3/chat/files/{tenant_id}/chat/{file_hash}{ext}"
                     doc_id = await _doc_conn.fetchval(
                         """INSERT INTO documents (
                             tenant_id, file_name, original_name, file_type, file_extension,
-                            file_size, storage_type, file_path, category, checksum_sha256, source
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, 'receipt', $8, 'chat')
+                            file_size, storage_type, file_path, file_url, category, checksum_sha256, source
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, 'receipt', $9, 'chat')
                         RETURNING id""",
                         tenant_id, file.filename or f"upload{ext}", file.filename,
-                        file.content_type, ext, len(content), relative_path,
+                        file.content_type, ext, len(content), relative_path, file_url_path,
                         file_hash,
                     )
                     file_meta["document_id"] = str(doc_id)
