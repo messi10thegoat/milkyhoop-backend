@@ -1703,6 +1703,8 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                             )
 
                     if not _ocr_used_gemini:
+                        import time as _t_mod
+                        _t_start = _t_mod.perf_counter()
                         _ocr_response = await _ocr_client.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=[
@@ -1728,8 +1730,9 @@ CRITICAL — Bukti transfer m-banking Indonesia:
                     if _ocr_text.startswith("```"):
                         _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
                     _ocr_data = _ocr_json.loads(_ocr_text)
+                    _ocr_elapsed = _t_mod.perf_counter() - _t_start
                     logger.info(
-                        f"[DocSimple] gpt-4o extracted: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
+                        f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed*1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
                     )
 
                     # -- Smart Document Matching (bridge to Financial Intelligence) --

@@ -1106,6 +1106,15 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # Ensure costs are fresh (auto-heal stale state)
+            exists = await conn.fetchval(
+                "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
+                ctx["tenant_id"], bom_id,
+            )
+            if not exists:
+                raise HTTPException(status_code=404, detail="BOM not found")
+            await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+
             bom = await conn.fetchrow(
                 """
                 SELECT bom.*, p.nama_produk as product_name
