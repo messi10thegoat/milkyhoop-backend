@@ -959,17 +959,18 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
 
                 total = subtotal + tax_total
 
+                header_tax_rate = float(items_to_invoice[0].get('tax_rate') or 0) if items_to_invoice else 0
                 await conn.execute("""
                     INSERT INTO sales_invoices (
                         id, tenant_id, invoice_number, invoice_date, due_date,
                         customer_id, customer_name,
-                        subtotal, tax_amount, total_amount,
+                        subtotal, tax_rate, tax_amount, total_amount,
                         status, sales_order_id, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', $11, $12)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13)
                 """,
                     invoice_id, ctx['tenant_id'], invoice_number, invoice_date, due_date,
                     str(order['customer_id']), order['customer_name'],
-                    subtotal, tax_total, total,
+                    subtotal, header_tax_rate, tax_total, total,
                     uuid_module.UUID(order_id), ctx['user_id']
                 )
 
