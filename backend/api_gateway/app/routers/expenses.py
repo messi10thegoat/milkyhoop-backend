@@ -1237,11 +1237,13 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     vendor_id=body.vendor_id,
                 )
 
-                # Update expense with journal_id
+                # Update expense with journal_id + mark accounting_status POSTED
                 await conn.execute(
                     """
-                    UPDATE expenses SET journal_id = $1 WHERE id = $2
-                """,
+                    UPDATE expenses
+                    SET journal_id = $1, accounting_status = 'POSTED'
+                    WHERE id = $2
+                    """,
                     str(journal_id),
                     str(expense_id),
                 )
