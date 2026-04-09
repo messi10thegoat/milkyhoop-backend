@@ -343,21 +343,29 @@ class DocumentActionResolver:
                             "ORDER BY is_default DESC NULLS LAST, account_name",
                             self.tenant_id,
                         )
+                        from difflib import SequenceMatcher as _SM
                         ocr_digits = "".join(c for c in name_frag_clean if c.isdigit())
                         matched_rows = []
                         for r in all_active:
                             db_num = (r["account_number"] or "").strip()
-                            if not db_num:
+                            db_digits = "".join(c for c in db_num if c.isdigit())
+                            if not db_digits:
                                 continue
-                            # Match if either number contains the other (handles OCR off-by-one digit errors)
-                            if db_num in ocr_digits or ocr_digits in db_num:
+                            # Strategy a: substring match (perfect or contains)
+                            if db_digits in ocr_digits or ocr_digits in db_digits:
                                 matched_rows.append(r)
-                            else:
-                                # Last-4-digits match (banks often identify this way)
-                                if len(db_num) >= 4 and len(ocr_digits) >= 4:
-                                    if db_num[-4:] == ocr_digits[-4:]:
-                                        matched_rows.append(r)
+                                continue
+                            # Strategy b: similarity ratio >= 0.85 (handles OCR digit errors)
+                            ratio = _SM(None, db_digits, ocr_digits).ratio()
+                            if ratio >= 0.85:
+                                matched_rows.append(r)
+                                continue
+                            # Strategy c: last-4-digits match
+                            if len(db_digits) >= 4 and len(ocr_digits) >= 4:
+                                if db_digits[-4:] == ocr_digits[-4:]:
+                                    matched_rows.append(r)
                         rows = matched_rows
+                        print(f"\n[ResolveBank] Numeric match: ocr={ocr_digits!r}, candidates={len(rows)}\n", flush=True)
                     else:
                         # Text: ILIKE on name fields only
                         rows = await conn.fetch(
