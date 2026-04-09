@@ -789,11 +789,19 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             vat_output_account["id"],
         )
     for ti in tax_items_dtl:
-        if not ti["tax_code_id"]:
-            continue
+        _tcid = ti["tax_code_id"]
+        if not _tcid:
+            if float(ti["tax_rate"] or 0) <= 0 or float(ti["tax_amount"] or 0) <= 0:
+                continue
+            _tcid = await conn.fetchval(
+                "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
+                ctx["tenant_id"], ti["tax_rate"],
+            )
+            if not _tcid:
+                continue
         tc_coa = await conn.fetchval(
             "SELECT coa_id FROM tax_codes WHERE id = $1",
-            ti["tax_code_id"],
+            _tcid,
         )
         dpp_val = float(ti["dpp"] or 0) or (
             float(ti["subtotal"] or 0) - float(ti["discount_amount"] or 0)
@@ -811,7 +819,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             "SALES_INVOICE",
             invoice_id,
             ti["id"],
-            ti["tax_code_id"],
+            _tcid,
             "output",
             dpp_val,
             float(ti["tax_amount"]),
@@ -870,6 +878,16 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         if not avg_cost or avg_cost == 0:
             avg_cost = product.get("purchase_price_amount", 0) or 0
             cost_source = "PURCHASE_PRICE"
+
+        if (not avg_cost or avg_cost == 0) and product.get("track_inventory", True):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Tidak bisa post faktur: produk '{product['nama_produk']}' tidak punya "
+                    f"riwayat stok / biaya perolehan (WAC=0 dan harga beli=0). "
+                    f"Catat penerimaan barang (Bill / Penerimaan Produksi / Opening Stock) terlebih dahulu."
+                )
+            )
 
         if avg_cost > 0:
             quantity = float(item["quantity"])
@@ -1238,7 +1256,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     subtotal,
                     body.discount_percent,
                     invoice_discount,
-                    body.tax_rate,
+                    (body.tax_rate if body.tax_rate and float(body.tax_rate) > 0 else (max((float(it.tax_rate or 0) for it in body.items), default=0))),
                     total_tax,
                     total_amount,
                     ctx["user_id"],
@@ -1825,13 +1843,22 @@ async def post_invoice(
 
                 # T3: Write document_tax_lines per taxable item
                 for ti in tax_items:
-                    if not ti["tax_code_id"]:
-                        continue
                     import uuid as _uuid_dtl
+                    _tcid = ti["tax_code_id"]
+                    # Fallback: resolve tax_code_id by rate for legacy rows (e.g. from SO to-invoice)
+                    if not _tcid:
+                        if float(ti["tax_rate"] or 0) <= 0 or float(ti["tax_amount"] or 0) <= 0:
+                            continue
+                        _tcid = await conn.fetchval(
+                            "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true AND (name ILIKE '%%Keluaran%%' OR name NOT ILIKE '%%Masukan%%') ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
+                            ctx["tenant_id"], ti["tax_rate"],
+                        )
+                        if not _tcid:
+                            continue
 
                     tc_coa = await conn.fetchval(
                         "SELECT coa_id FROM tax_codes WHERE id = $1",
-                        ti["tax_code_id"],
+                        _tcid,
                     )
                     dpp_val = float(ti["dpp"] or 0) or (
                         float(ti["subtotal"] or 0) - float(ti["discount_amount"] or 0)
@@ -1849,7 +1876,7 @@ async def post_invoice(
                         "SALES_INVOICE",
                         invoice_id,
                         ti["id"],
-                        ti["tax_code_id"],
+                        _tcid,
                         "output",
                         dpp_val,
                         float(ti["tax_amount"]),
@@ -1902,6 +1929,16 @@ async def post_invoice(
                             warnings.append(
                                 f"Item {item['item_code'] or product['item_code']}: Using purchase_price as fallback (no cost history)"
                             )
+
+                    if (not avg_cost or avg_cost == 0) and product.get("track_inventory", True):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Tidak bisa post faktur: produk '{product['nama_produk']}' tidak punya "
+                                f"riwayat stok / biaya perolehan (WAC=0 dan harga beli=0). "
+                                f"Catat penerimaan barang (Bill / Penerimaan Produksi / Opening Stock) terlebih dahulu."
+                            )
+                        )
 
                     if avg_cost > 0:
                         quantity = float(item["quantity"])

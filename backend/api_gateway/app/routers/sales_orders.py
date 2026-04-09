@@ -979,6 +979,13 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
                     item_subtotal = int(Decimal(str(item['line_total'] - item['tax_amount'])) * ratio)
                     item_tax = int(Decimal(str(item['tax_amount'])) * ratio)
                     item_total = item_subtotal + item_tax
+                    # Resolve tax_code_id: prefer SO field, fallback to rate lookup
+                    _item_tcid = item.get('tax_id')
+                    if not _item_tcid and float(item.get('tax_rate') or 0) > 0:
+                        _item_tcid = await conn.fetchval(
+                            "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
+                            ctx['tenant_id'], item['tax_rate'],
+                        )
 
                     await conn.execute("""
                         INSERT INTO sales_invoice_items (
@@ -990,7 +997,7 @@ async def convert_to_invoice(request: Request, order_id: str, body: ConvertToInv
                         uuid_module.uuid4(), invoice_id,
                         item['item_id'], item['description'],
                         item['invoice_qty'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item['tax_id'], item['tax_rate'], item_tax, item_subtotal, item_total, line_idx
+                        _item_tcid, item['tax_rate'], item_tax, item_subtotal, item_total, line_idx
                     )
 
                     await conn.execute("""

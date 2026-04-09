@@ -311,6 +311,7 @@ class DocumentActionResolver:
     async def _resolve_bank_account(
         self, name_fragment: str
     ) -> tuple[Optional[str], Optional[str], List[dict]]:
+        print(f"\n[ResolveBank] CALLED with={name_fragment!r}\n", flush=True)
         """
         Fuzzy match bank account. Returns (id, display_name, candidates) or (None, None, candidates).
 
@@ -329,18 +330,49 @@ class DocumentActionResolver:
                 await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
 
                 if name_fragment:
-                    # Strategy 1: fuzzy match by name/number
-                    rows = await conn.fetch(
-                        "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
-                        "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
-                        "AND (account_name ILIKE $2 OR bank_name ILIKE $2 OR account_number ILIKE $2) "
-                        "ORDER BY is_default DESC NULLS LAST, account_name LIMIT 5",
-                        self.tenant_id,
-                        f"%{name_fragment}%",
-                    )
+                    # Strategy 1: fuzzy match — try name first, then numeric
+                    name_frag_clean = name_fragment.strip()
+                    is_numeric = name_frag_clean.replace(" ", "").isdigit()
+
+                    if is_numeric:
+                        # Numeric: bidirectional substring match (handles OCR digit errors)
+                        all_active = await conn.fetch(
+                            "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
+                            "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
+                            "AND account_number IS NOT NULL "
+                            "ORDER BY is_default DESC NULLS LAST, account_name",
+                            self.tenant_id,
+                        )
+                        ocr_digits = "".join(c for c in name_frag_clean if c.isdigit())
+                        matched_rows = []
+                        for r in all_active:
+                            db_num = (r["account_number"] or "").strip()
+                            if not db_num:
+                                continue
+                            # Match if either number contains the other (handles OCR off-by-one digit errors)
+                            if db_num in ocr_digits or ocr_digits in db_num:
+                                matched_rows.append(r)
+                            else:
+                                # Last-4-digits match (banks often identify this way)
+                                if len(db_num) >= 4 and len(ocr_digits) >= 4:
+                                    if db_num[-4:] == ocr_digits[-4:]:
+                                        matched_rows.append(r)
+                        rows = matched_rows
+                    else:
+                        # Text: ILIKE on name fields only
+                        rows = await conn.fetch(
+                            "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
+                            "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
+                            "AND (account_name ILIKE $2 OR bank_name ILIKE $2) "
+                            "ORDER BY is_default DESC NULLS LAST, account_name LIMIT 5",
+                            self.tenant_id,
+                            f"%{name_frag_clean}%",
+                        )
+
                     if len(rows) == 1:
                         r = rows[0]
                         display = self._format_bank_display(r)
+                        print(f"\n[ResolveBank] Matched: {display}\n", flush=True)
                         return str(r["id"]), display, []
                     elif len(rows) > 1:
                         # Multiple matches — return as candidates

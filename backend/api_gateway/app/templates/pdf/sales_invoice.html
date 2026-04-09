@@ -122,7 +122,7 @@
                 <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
                 {% if ns.has_disc %}<td class="col-disc">{{ item.discount_percent if item.discount_percent and item.discount_percent|float > 0 else '-' }}</td>{% endif %}
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
+                <td class="col-amount">Rp {{ (item.subtotal or item.total) | currency }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -151,7 +151,7 @@
                 </td>
                 <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
+                <td class="col-amount">Rp {{ (item.subtotal or item.total) | currency }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -189,13 +189,21 @@
                 <td class="value">-Rp {{ invoice.cash_discount_total | currency }}</td>
             </tr>
             {% endif %}
-            {% if invoice.tax_rate and invoice.tax_rate|float > 0 %}
+            {% set _tax_amt = (invoice.tax_amount or 0)|float %}
+            {% set _tax_rate = (invoice.tax_rate or 0)|float %}
+            {% set _sub = (invoice.subtotal or 0)|float %}
+            {% if _tax_rate <= 0 and _tax_amt > 0 and _sub > 0 %}
+                {% set _tax_rate = ((_tax_amt / _sub) * 10000)|round / 100 %}
+            {% endif %}
+            {% if _tax_amt > 0 %}
+            {% if invoice.dpp %}
             <tr>
                 <td class="label">DPP</td>
                 <td class="value">Rp {{ invoice.dpp | currency }}</td>
             </tr>
+            {% endif %}
             <tr>
-                <td class="label">PPN ({{ invoice.tax_rate }}%)</td>
+                <td class="label">PPN ({{ _tax_rate }}%)</td>
                 <td class="value">Rp {{ invoice.tax_amount | currency }}</td>
             </tr>
             {% endif %}
