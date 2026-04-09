@@ -343,7 +343,7 @@ def _build_image_content_blocks(text: str, file_metas: List[dict]):
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:{mime};base64,{b64}",
-                        "detail": "low",
+                        "detail": "high",
                     },
                 }
             )

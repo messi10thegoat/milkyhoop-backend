@@ -357,7 +357,7 @@ class DocumentActionResolver:
                                 continue
                             # Strategy b: similarity ratio >= 0.85 (handles OCR digit errors)
                             ratio = _SM(None, db_digits, ocr_digits).ratio()
-                            if ratio >= 0.85:
+                            if ratio >= 0.75:
                                 matched_rows.append(r)
                                 continue
                             # Strategy c: last-4-digits match
