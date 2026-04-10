@@ -89,7 +89,14 @@ RULES:
 9. Workflow aktif: jawaban apapun (bukan "batal/cancel") = slot_fill intent workflow, BUKAN intent baru.
 10. "overdue/jatuh tempo pelanggan" → query_customers_with_overdue. "overdue vendor" → query_vendors_with_overdue.
 11. Clarification max 3 field sekaligus. Prioritas: entity utama → item → qty+harga.
-12. Single word tanpa workflow: nama barang → query_item_detail. Nama orang → query_customer_detail."""
+12. Single word tanpa workflow: nama barang → query_item_detail. Nama orang → query_customer_detail.
+13. MULTI-TURN: Jika riwayat percakapan menunjukkan ACTIVE CREATE/UPDATE workflow, jawaban pendek
+    (nama, angka, 1-2 kata) hampir PASTI slot_fill untuk workflow tersebut, BUKAN intent baru.
+    Contoh: history="buat faktur" → "poloshirt 20 pcs" = slot_fill create_sales_invoice.
+    Contoh: history="catat biaya" → "listrik 450rb" = slot_fill create_expense.
+    Contoh: history="bayar tagihan" → "BCA" = slot_fill create_bill_payment (BUKAN query_bank).
+14. "ringkasan/total pengeluaran bulan ini" → calc_sum_expenses_this_month (BUKAN query_expenses_summary).
+    "ringkasan X" tanpa "bulan ini/total" → query_X_summary."""
 
 
 ROUTER_RESPONSE_SCHEMA = {
