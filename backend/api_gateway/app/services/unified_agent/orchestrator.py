@@ -4229,6 +4229,10 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
+            # Capture extraction state before async closure to avoid scope issues
+            _sh_regex_intent = extraction.intent if extraction else "unknown"
+            _sh_regex_conf = extraction.confidence if extraction else 0.0
+
             async def _run_shadow():
                 try:
                     _sh_result = await _shadow_router.route(
@@ -4236,11 +4240,11 @@ class UnifiedAgent:
                         conversation_history=conversation_history[-10:] if conversation_history else None,
                         workflow_state=_shadow_wf_state,
                     )
-                    _agrees = (_sh_result.intent == extraction.intent)
+                    _agrees = (_sh_result.intent == _sh_regex_intent)
                     logger.warning(
                         "[SHADOW] llm=%s(%.2f) regex=%s(%.2f) agree=%s ready=%s [%dms]",
                         _sh_result.intent, _sh_result.confidence,
-                        extraction.intent, extraction.confidence,
+                        _sh_regex_intent, _sh_regex_conf,
                         _agrees, _sh_result.ready, _sh_result.latency_ms,
                     )
 
