@@ -63,14 +63,19 @@ class EntityResolver:
         result = ResolutionResult()
 
         # Step A: Resolve extracted entities (parallel DB queries)
+        # Skip entity resolution for create intents where fields are TEXT, not references.
+        # e.g. create_vendor: vendor_name/bank_name are the new vendor info, not lookups.
+        _skip_vendor_resolve = intent in ("create_vendor",)
+        _skip_customer_resolve = intent in ("create_customer",)
+        _skip_bank_resolve = intent in ("create_vendor", "create_customer")
         resolve_tasks = []
-        if entities.get("customer_name"):
+        if entities.get("customer_name") and not _skip_customer_resolve:
             resolve_tasks.append(self._resolve_customer(entities["customer_name"]))
-        if entities.get("vendor_name"):
+        if entities.get("vendor_name") and not _skip_vendor_resolve:
             resolve_tasks.append(self._resolve_vendor(entities["vendor_name"]))
         if entities.get("item_name") and not intent.startswith("create_item"):
             resolve_tasks.append(self._resolve_item(entities["item_name"]))
-        if entities.get("bank_name"):
+        if entities.get("bank_name") and not _skip_bank_resolve:
             resolve_tasks.append(self._resolve_bank_account(entities["bank_name"]))
         if entities.get("warehouse_name"):
             resolve_tasks.append(self._resolve_warehouse(entities["warehouse_name"]))

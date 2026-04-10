@@ -15,7 +15,9 @@ Design decisions:
   - Tenant isolation via JWT context (Iron Law 24)
 """
 import hashlib
+import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -59,25 +61,117 @@ def _generate_title(preview: str) -> str:
     return title
 
 
-def _serialize_messages(rows, limit: int) -> dict:
+def _serialize_messages(rows, limit: int, att_map: dict = None) -> dict:
     """Convert DB rows to API response with has_more via limit+1 trick."""
     has_more = len(rows) > limit
     messages = rows[:limit]
+    att_map = att_map or {}
+    serialized = []
+    for m in messages:
+        msg_id = str(m["id"])
+        raw_meta = m["metadata"] if "metadata" in m.keys() else None
+        if raw_meta is not None:
+            if isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = None
+            else:
+                meta = dict(raw_meta)
+        else:
+            meta = None
+        serialized.append({
+            "id": msg_id,
+            "role": m["role"],
+            "content": m["content"],
+            "message_type": m["message_type"],
+            "created_at": m["created_at"].isoformat(),
+            "session_id": str(m["session_id"]) if "session_id" in m.keys() else None,
+            "metadata": meta,
+            "attachments": att_map.get(msg_id, []),
+        })
     return {
-        "messages": [
-            {
-                "id": str(m["id"]),
-                "role": m["role"],
-                "content": m["content"],
-                "message_type": m["message_type"],
-                "created_at": m["created_at"].isoformat(),
-                "session_id": str(m["session_id"]) if "session_id" in m.keys() else None,
-            }
-            for m in messages
-        ],
+        "messages": serialized,
         "has_more": has_more,
         "next_cursor": messages[-1]["created_at"].isoformat() if has_more and messages else None,
     }
+
+
+
+async def _enrich_messages(pool, rows, limit: int) -> dict:
+    """Fetch attachments + lazy-sync PENDING status, then serialize."""
+    import uuid as _uuid_mod
+    trimmed = rows[:limit]
+    msg_ids = [m["id"] for m in trimmed]
+
+    # Fetch attachments for all messages in one query
+    att_map = {}
+    if msg_ids:
+        att_rows = await pool.fetch(
+            """
+            SELECT message_id, file_name, content_type, file_size, storage_key, thumbnail_url
+            FROM chat_attachments
+            WHERE message_id = ANY($1::uuid[])
+            ORDER BY created_at ASC
+            """,
+            msg_ids,
+        )
+        for a in att_rows:
+            key = str(a["message_id"])
+            att_map.setdefault(key, []).append({
+                "file_name": a["file_name"],
+                "content_type": a["content_type"],
+                "file_size": a["file_size"],
+                "storage_key": a["storage_key"],
+                "url": f"/api/v3/chat/files/{a['storage_key']}",
+                "thumbnail_url": a["thumbnail_url"],
+            })
+
+    # Lazy expiry: sync stale PENDING status from pending_actions
+    stale_ids = []
+    for m in trimmed:
+        raw_meta = m["metadata"] if "metadata" in m.keys() else None
+        if raw_meta is not None:
+            if isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = None
+            else:
+                meta = dict(raw_meta)
+            if meta and meta.get("status") == "PENDING" and meta.get("pending_action_id"):
+                stale_ids.append((str(m["id"]), meta["pending_action_id"]))
+
+    if stale_ids:
+        pa_ids = [s[1] for s in stale_ids]
+        try:
+            pa_rows = await pool.fetch(
+                """
+                SELECT id::text, status FROM pending_actions
+                WHERE id = ANY($1::uuid[])
+                """,
+                [_uuid_mod.UUID(p) for p in pa_ids],
+            )
+            pa_status = {str(r["id"]): r["status"] for r in pa_rows}
+            for msg_id, pa_id in stale_ids:
+                actual = pa_status.get(pa_id)
+                if actual and actual != "PENDING":
+                    try:
+                        await pool.execute(
+                            """
+                            UPDATE chat_messages
+                            SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{status}', $1::jsonb)
+                            WHERE id = $2::uuid
+                            """,
+                            f'"{actual}"',
+                            _uuid_mod.UUID(msg_id),
+                        )
+                    except Exception:
+                        pass  # Non-fatal
+        except Exception as _e:
+            logger.warning("[History] Lazy expiry sync failed: %s", _e)
+
+    return _serialize_messages(rows, limit, att_map=att_map)
 
 
 # =============================================================================
@@ -237,7 +331,7 @@ async def get_session_messages(
             raise HTTPException(400, "Invalid 'before' cursor format")
         rows = await pool.fetch(
             """
-            SELECT id, role, content, message_type, created_at, session_id
+            SELECT id, role, content, message_type, created_at, session_id, metadata
             FROM chat_messages
             WHERE session_id = $1::uuid
               AND role IN ('user', 'assistant')
@@ -250,7 +344,7 @@ async def get_session_messages(
     else:
         rows = await pool.fetch(
             """
-            SELECT id, role, content, message_type, created_at, session_id
+            SELECT id, role, content, message_type, created_at, session_id, metadata
             FROM chat_messages
             WHERE session_id = $1::uuid
               AND role IN ('user', 'assistant')
@@ -260,7 +354,7 @@ async def get_session_messages(
             session_id, fetch_limit,
         )
 
-    return {"data": _serialize_messages(rows, limit)}
+    return {"data": await _enrich_messages(pool, rows, limit)}
 
 
 # =============================================================================
@@ -319,7 +413,7 @@ async def get_history_legacy(
         rows = await pool.fetch(
             """
             SELECT cm.id, cm.role, cm.content, cm.message_type,
-                   cm.created_at, cm.session_id
+                   cm.created_at, cm.session_id, cm.metadata
             FROM chat_messages cm
             JOIN chat_sessions cs ON cs.id = cm.session_id
             WHERE cs.tenant_id = $1
@@ -335,7 +429,7 @@ async def get_history_legacy(
         rows = await pool.fetch(
             """
             SELECT cm.id, cm.role, cm.content, cm.message_type,
-                   cm.created_at, cm.session_id
+                   cm.created_at, cm.session_id, cm.metadata
             FROM chat_messages cm
             JOIN chat_sessions cs ON cs.id = cm.session_id
             WHERE cs.tenant_id = $1
@@ -347,4 +441,4 @@ async def get_history_legacy(
             ctx["tenant_id"], ctx["user_id"], fetch_limit,
         )
 
-    return {"data": _serialize_messages(rows, limit)}
+    return {"data": await _enrich_messages(pool, rows, limit)}

@@ -130,6 +130,44 @@ class IntentTelemetry:
         self.pool = db_pool
         self.tenant_id = tenant_id
 
+    
+    async def log_shadow(self, **kw):
+        """Log LLM Router shadow comparison to intent_decision_log."""
+        try:
+            pool = self.pool
+            if not pool:
+                return
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE intent_decision_log
+                    SET llm_router_intent = $1,
+                        llm_router_confidence = $2,
+                        llm_router_ready = $3,
+                        llm_router_entities = $4::jsonb,
+                        llm_router_reasoning = $5,
+                        llm_router_latency_ms = $6,
+                        llm_router_agree = $7
+                    WHERE conversation_id = $8
+                      AND user_text = $9
+                      AND tenant_id = $10
+                    ORDER BY created_at DESC LIMIT 1
+                """,
+                    kw.get("llm_intent"),
+                    kw.get("llm_confidence"),
+                    kw.get("llm_ready"),
+                    __import__("json").dumps(kw.get("llm_entities") or {}),
+                    kw.get("llm_reasoning"),
+                    kw.get("llm_latency_ms"),
+                    kw.get("agree"),
+                    kw.get("conversation_id"),
+                    kw.get("user_text", "")[:500],
+                    self.tenant_id,
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger("telemetry").warning("[SHADOW_TEL] %s", e)
+
+
     async def log_decision(self, **kw):
         try:
             await self.pool.execute(

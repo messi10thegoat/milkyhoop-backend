@@ -193,18 +193,22 @@ class SessionManager:
         tool_calls: Optional[Dict] = None, 
         tool_call_id: Optional[str] = None,
         message_type: str = "TEXT", 
-        token_count: Optional[int] = None
+        token_count: Optional[int] = None,
+        metadata: Optional[Dict] = None,
     ):
         """Store a message in chat history."""
-        await self.db.execute("""
+        import json as _json
+        msg_id = await self.db.fetchval("""
             INSERT INTO chat_messages (
                 session_id, tenant_id, role, content, 
-                tool_calls, tool_call_id, message_type, token_count
+                tool_calls, tool_call_id, message_type, token_count, metadata
             )
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            RETURNING id
         """, session_id, self.tenant_id, role, content,
              json.dumps(tool_calls) if tool_calls else None,
-             tool_call_id, message_type, token_count)
+             tool_call_id, message_type, token_count,
+             _json.dumps(metadata) if metadata else None)
         
         # Update session timestamp + auto-summary from first user message
         await self.db.execute(
@@ -213,6 +217,7 @@ class SessionManager:
                WHERE id = $1::uuid AND tenant_id = $2""",
             session_id, self.tenant_id, content if role == "user" else None
         )
+        return msg_id
     
     async def get_working_window(self, session_id: str, max_turns: int = 8) -> List[Dict]:
         """Layer 1: Get last N messages (verbatim) for LLM context."""

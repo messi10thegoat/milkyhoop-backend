@@ -1559,7 +1559,53 @@ async def send_message_with_files(
             or fm.get("extension", "").lower() == ".pdf"
             for fm in file_metas
         )
-        if _has_image:
+        # Skip OCR pipeline if user text has explicit action intent
+            # (e.g. "daftarkan vendor", "buat vendor") — let LLM handle with vision
+        _text_lower = text.lower().strip() if text else ""
+        _has_explicit_intent = any(kw in _text_lower for kw in [
+                "daftarkan vendor", "daftarkan customer", "daftarkan pelanggan",
+                "buat vendor", "buat customer", "buat pelanggan",
+                "tambah vendor", "tambah customer", "tambah pelanggan",
+                "vendor baru", "customer baru", "pelanggan baru",
+                "register vendor", "create vendor", "create customer",
+            ])
+
+        # When user has explicit intent + image: extract text from image via
+        # quick OCR and inject into enriched_text so the pipeline can use it
+        if _has_image and _has_explicit_intent:
+            try:
+                _intent_img = next(
+                    (fm for fm in file_metas
+                     if fm.get("content_type", "").startswith("image/")),
+                    None,
+                )
+                if _intent_img and _intent_img.get("stored_path"):
+                    import base64 as _b64_intent
+                    from openai import AsyncOpenAI as _IntentOCR
+                    with open(_intent_img["stored_path"], "rb") as _f_intent:
+                        _raw = _f_intent.read()
+                    _b64_data = _b64_intent.b64encode(_raw).decode()
+                    _mime = _intent_img.get("content_type", "image/jpeg")
+                    _ocr_client = _IntentOCR()
+                    _ocr_resp = await _ocr_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Baca semua teks yang terlihat di gambar ini. Keluarkan sebagai plain text, termasuk nama, alamat, telepon, nomor rekening, nama bank, nominal, tanggal, dan informasi lainnya. Output raw text saja, tanpa penjelasan."},
+                                {"type": "image_url", "image_url": {"url": f"data:{_mime};base64,{_b64_data}", "detail": "low"}},
+                            ],
+                        }],
+                        max_tokens=500,
+                    )
+                    _extracted = _ocr_resp.choices[0].message.content.strip()
+                    if _extracted:
+                        enriched_text = f"{text}\n\n[Data dari gambar]:\n{_extracted}"
+                        logger.info(f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}")
+            except Exception as _iocr_err:
+                logger.warning(f"[IntentOCR] Failed: {_iocr_err}")
+
+        if _has_image and not _has_explicit_intent:
             try:
                 from ..services.unified_agent.db_utils import (
                     get_session_db_pool as _get_ocr_pool,
@@ -2322,6 +2368,25 @@ Aturan:
             pass
         return _doc_pipeline_result
 
+    # ── Cancel stale crud_form workflows when new file upload arrives ──
+    # File uploads represent a fresh user action, not continuation of prior multi-turn
+    if file_metas and session_id:
+        try:
+            from .unified_chat import logger as _uc_logger
+        except ImportError:
+            pass
+        try:
+            from ..services.unified_agent.workflow_engine import WorkflowEngine as _WFE_cancel
+            from ..services.unified_agent.db_utils import get_session_db_pool as _wf_cancel_pool
+            _wfc_db = await _wf_cancel_pool()
+            _wfc = _WFE_cancel(_wfc_db, ctx["tenant_id"], ctx.get("user_id", ""), ctx.get("auth_token", ""))
+            _wfc_state = await _wfc.get_state(session_id, "crud_form")
+            if _wfc_state and _wfc_state.status == "active":
+                await _wfc.cancel(session_id, "crud_form")
+                logger.info("[Upload] Cancelled stale crud_form workflow for fresh upload")
+        except Exception as _wfc_err:
+            logger.warning("[Upload] Failed to cancel stale workflow: %s", _wfc_err)
+
     # ── Build context & run agent (same as /message) ──
     tenant_context = TenantContext(
         tenant_id=ctx["tenant_id"],
@@ -2399,13 +2464,15 @@ Aturan:
         ]
 
     # -- Save attachment records to DB --
-    if file_metas and session_id:
+    # Use session_id if present, fall back to conversation_id (may also be a valid session UUID)
+    _att_session_id = session_id or conversation_id
+    if file_metas and _att_session_id:
         try:
             att_pool = await get_session_db_pool()
             saved_atts = await _save_chat_attachments(
                 pool=att_pool,
                 tenant_id=ctx["tenant_id"],
-                session_id=session_id,
+                session_id=_att_session_id,
                 file_metas=file_metas,
             )
             if saved_atts:
@@ -2734,6 +2801,19 @@ async def _confirm_direct_action(
             "UPDATE pending_actions SET status = 'EXPIRED' WHERE id = $1",
             uuid_mod.UUID(pending_action_id),
         )
+        # Phase D: Update chat message metadata status to EXPIRED
+        try:
+            await pool.execute("""
+                UPDATE chat_messages
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{status}', '"EXPIRED"'
+                )
+                WHERE metadata->>'pending_action_id' = $1
+                  AND tenant_id = $2
+            """, str(pending_action_id), tenant_id)
+        except Exception as _md_err:
+            logger.warning("[Phase-D] Failed to update message metadata on expire: %s", _md_err)
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text="Action sudah kedaluwarsa. Silakan buat ulang.",
@@ -2901,6 +2981,23 @@ async def _confirm_direct_action(
                 json.dumps(result_data),
                 uuid_mod.UUID(pending_action_id),
             )
+
+            # Phase D: Update chat message metadata status to COMPLETED
+            try:
+                await pool.execute("""
+                    UPDATE chat_messages
+                    SET metadata = jsonb_set(
+                        jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{status}', '"COMPLETED"'
+                        ),
+                        '{completed_at}', to_jsonb(NOW()::text)
+                    )
+                    WHERE metadata->>'pending_action_id' = $1
+                      AND tenant_id = $2
+                """, str(pending_action_id), tenant_id)
+            except Exception as _md_err:
+                logger.warning("[Phase-D] Failed to update message metadata on confirm: %s", _md_err)
 
             success_msg = config.get_success_message(payload)
 
@@ -3253,6 +3350,21 @@ async def cancel_action(request: Request, body: CancelActionRequest):
             tenant_id=ctx["tenant_id"],
             user_id=ctx["user_id"],
         )
+
+        # Phase D: Update chat message metadata status to CANCELLED
+        try:
+            _cancel_pool = await get_session_db_pool()
+            await _cancel_pool.execute("""
+                UPDATE chat_messages
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{status}', '"CANCELLED"'
+                )
+                WHERE metadata->>'pending_action_id' = $1
+                  AND tenant_id = $2
+            """, str(body.pending_action_id), ctx["tenant_id"])
+        except Exception as _md_err:
+            logger.warning("[Phase-D] Failed to update message metadata on cancel: %s", _md_err)
 
         # FSM: AWAITING_CONFIRMATION -> IDLE
         try:

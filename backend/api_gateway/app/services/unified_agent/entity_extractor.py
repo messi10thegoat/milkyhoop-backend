@@ -1451,27 +1451,31 @@ def classify_crud_intent(user_text: str) -> tuple:
     entity_config = None
     entity_end_pos = 0
 
+    # Find ALL matching entities, then pick earliest position in text.
+    # This ensures "daftarkan vendor baru dengan rekening" matches vendor
+    # (appears first) not bank_account (longer keyword "rekening").
     sorted_entities = []
     for suffix, config in _ENTITY_KEYWORDS.items():
         for kw in config["keywords"]:
             sorted_entities.append((len(kw), kw, suffix, config))
-    sorted_entities.sort(key=lambda x: -x[0])
 
+    _entity_candidates = []  # (position, keyword_len, suffix, config, end_pos, source)
     for _, kw, suffix, config in sorted_entities:
         idx = remaining.find(kw)
         if idx != -1:
-            entity_suffix = suffix
-            entity_config = config
-            entity_end_pos = idx + len(kw)
-            break
-        idx_full = search_text.find(kw)
-        if idx_full != -1 and idx_full >= action_end_pos - 2:
-            entity_suffix = suffix
-            entity_config = config
-            entity_end_pos = (idx_full + len(kw)) - action_end_pos
-            if entity_end_pos < 0:
-                entity_end_pos = len(remaining)
-            break
+            _entity_candidates.append((idx, len(kw), suffix, config, idx + len(kw), "remaining"))
+        else:
+            idx_full = search_text.find(kw)
+            if idx_full != -1 and idx_full >= action_end_pos - 2:
+                _adj_end = (idx_full + len(kw)) - action_end_pos
+                if _adj_end < 0:
+                    _adj_end = len(remaining)
+                _entity_candidates.append((idx_full, len(kw), suffix, config, _adj_end, "full"))
+
+    if _entity_candidates:
+        # Sort by position ASC (earliest first), then by keyword length DESC (longest wins at same position)
+        _entity_candidates.sort(key=lambda x: (x[0], -x[1]))
+        _, _, entity_suffix, entity_config, entity_end_pos, _src = _entity_candidates[0]
 
     if not entity_suffix:
         return None, None, None

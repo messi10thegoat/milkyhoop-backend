@@ -32,6 +32,7 @@ MODEL_ROUTING: Dict[TaskComplexity, Dict[str, str]] = {
 # Task-type routing: maps semantic task types to provider + model
 TASK_TYPE_ROUTING: Dict[str, Dict[str, str]] = {
     "extraction":     {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "shadow_router":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
     "field_extract":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
     "polish":         {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
     "clarification":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},

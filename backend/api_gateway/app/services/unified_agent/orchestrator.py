@@ -3941,6 +3941,7 @@ class UnifiedAgent:
         event_callback=None,
         db_pool=None,
         chat_session_id: str = None,
+        session_id: str = None,  # alias for chat_session_id (callers use this name)
     ) -> AgentResponse:
         """
         Main entry point. Processes a user message through the agent loop.
@@ -3953,6 +3954,13 @@ class UnifiedAgent:
         Returns:
             AgentResponse with message_type, content, and optional preview
         """
+        # Merge session_id alias
+        if session_id and not chat_session_id:
+            chat_session_id = session_id
+        logger.warning("[PROCESS_MSG] chat_session_id=%s session_id=%s tool_executor=%s te_session=%s",
+                       chat_session_id, session_id,
+                       bool(tool_executor), getattr(tool_executor, "session_id", None) if tool_executor else None)
+
         start_time = time.time()
         _process_start = _time.monotonic()
 
@@ -4092,6 +4100,59 @@ class UnifiedAgent:
                     logger.warning(f"[WORKFLOW] Trigger failed: {_wf_err}")
                 break
 
+        # ═══ PHASE 0: WORKFLOW PRIORITY CHECK (before classification) ═══
+        # If active crud_form workflow in COLLECTING phase, check if user is
+        # answering a workflow question (slot fill) vs starting a new intent.
+        # This prevents "sintia" after "pelanggan siapa?" from being classified
+        # as query_customer_detail instead of workflow slot fill.
+        _wf_priority_skip = False
+        if _intent in ("ACTION", "SIMPLE_READ") and tool_executor and tool_executor.session_id:
+            try:
+                from .workflow_engine import WorkflowEngine
+                from .db_utils import get_session_db_pool as _wf_pool_p0
+
+                _wf_db_p0 = await _wf_pool_p0()
+                _wf_engine_p0 = WorkflowEngine(
+                    _wf_db_p0,
+                    context.tenant_id,
+                    getattr(context, "user_id", ""),
+                    getattr(context, "auth_token", ""),
+                )
+                _active_wf_p0 = await _wf_engine_p0.get_state(
+                    tool_executor.session_id, "crud_form"
+                )
+                logger.warning("[WF_P0_DBG2] wf=%s status=%s phase=%s", bool(_active_wf_p0), getattr(_active_wf_p0, "status", None), (getattr(_active_wf_p0, "current_state", None) if _active_wf_p0 else None))
+                if _active_wf_p0 and _active_wf_p0.status == "active":
+                    _wf_phase_p0 = getattr(_active_wf_p0, "current_state", "")
+                    _cancel_patterns = ["batal", "cancel", "gajadi", "ga jadi", "stop", "sudah", "lupakan"]
+                    _is_cancel = any(p in user_text.lower().strip() for p in _cancel_patterns)
+
+                    if _wf_phase_p0 in ("COLLECTING", "picking_candidate") and not _is_cancel:
+                        logger.warning(
+                            "[WF_PRIORITY] Active workflow state=%s, skipping classification for: %s",
+                            _wf_phase_p0, user_text[:50],
+                        )
+                        _wf_priority_skip = True
+            except Exception as _wf_p0_err:
+                logger.warning("[WF_PRIORITY] Pre-check failed (non-fatal): %s", _wf_p0_err)
+
+        _wf_priority_intent = None
+        if _wf_priority_skip:
+            # Store the workflow intent so we can override after extraction
+            try:
+                _wf_p0_db = await _wf_pool_p0()
+                _wf_p0_eng = WorkflowEngine(
+                    _wf_p0_db, context.tenant_id,
+                    getattr(context, "user_id", ""),
+                    getattr(context, "auth_token", ""),
+                )
+                _wf_p0_state = await _wf_p0_eng.get_state(tool_executor.session_id, "crud_form")
+                _wf_priority_intent = _wf_p0_state.data.get("intent", "") if _wf_p0_state else None
+            except Exception:
+                _wf_priority_intent = None
+            # Fall through to normal extraction below — it will extract entities
+            # from user's slot fill answer. After extraction, we override the intent.
+
         # ── COMPILER PIPELINE: Side-by-side with agent loop ──
         # Feature-flagged: only enabled intents use pipeline.
         from .entity_extractor import EntityExtractor, is_pipeline_enabled
@@ -4147,6 +4208,50 @@ class UnifiedAgent:
             _tel_raw_intent = extraction.intent
             _tel_raw_conf = extraction.confidence
             _tel_raw_entities = dict(extraction.entities) if isinstance(extraction.entities, dict) else {}
+
+        # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
+        try:
+            from .llm_intent_router import LLMIntentRouter
+            _shadow_router = LLMIntentRouter(self.router)
+            _shadow_wf_state = None
+            if tool_executor and tool_executor.session_id:
+                try:
+                    from .workflow_engine import WorkflowEngine
+                    from .db_utils import get_session_db_pool as _sh_pool
+                    _sh_db = await _sh_pool()
+                    _sh_wf = WorkflowEngine(_sh_db, context.tenant_id, getattr(context, "user_id", ""), getattr(context, "auth_token", ""))
+                    _sh_wf_state_obj = await _sh_wf.get_state(tool_executor.session_id, "crud_form")
+                    if _sh_wf_state_obj and _sh_wf_state_obj.status == "active":
+                        _shadow_wf_state = {
+                            "intent": _sh_wf_state_obj.data.get("intent", ""),
+                            "phase": getattr(_sh_wf_state_obj, "current_state", ""),
+                        }
+                except Exception:
+                    pass
+
+            async def _run_shadow():
+                try:
+                    _sh_result = await _shadow_router.route(
+                        user_text=user_text,
+                        conversation_history=conversation_history[-10:] if conversation_history else None,
+                        workflow_state=_shadow_wf_state,
+                    )
+                    _agrees = (_sh_result.intent == extraction.intent)
+                    logger.warning(
+                        "[SHADOW] llm=%s(%.2f) regex=%s(%.2f) agree=%s ready=%s [%dms]",
+                        _sh_result.intent, _sh_result.confidence,
+                        extraction.intent, extraction.confidence,
+                        _agrees, _sh_result.ready, _sh_result.latency_ms,
+                    )
+
+                except Exception as _sh_err:
+                    import traceback as _tb
+                    logger.warning("[SHADOW] Failed: %s\n%s", _sh_err, _tb.format_exc())
+
+            import asyncio
+            asyncio.create_task(_run_shadow())
+        except Exception as _shadow_init_err:
+            logger.warning("[SHADOW] Init failed: %s", _shadow_init_err)
             _tel_gemini_ms = int((_tel_extraction_end - _tel_extraction_start) * 1000)
             _tel_guard = "none"
             _tel_guard_from = None
@@ -4594,6 +4699,14 @@ class UnifiedAgent:
                     extraction.intent,
                     extraction.confidence,
                 )
+
+
+                # ═══ WF_PRIORITY: Override intent to match active workflow ═══
+                if _wf_priority_intent:
+                    extraction.intent = _wf_priority_intent
+                    extraction.confidence = 0.5
+                    logger.warning("[WF_PRIORITY] Overriding intent to %s for slot fill", _wf_priority_intent)
+
                 return await self._handle_pipeline(
                     user_text=user_text,
                     context=context,
