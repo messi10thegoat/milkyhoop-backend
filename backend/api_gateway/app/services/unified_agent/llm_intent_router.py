@@ -96,6 +96,7 @@ RULES:
     Contoh: history="catat biaya" → "listrik 450rb" = slot_fill create_expense.
     Contoh: history="bayar tagihan" → "BCA" = slot_fill create_bill_payment (BUKAN query_bank).
 14. "ringkasan/total pengeluaran bulan ini" → calc_sum_expenses_this_month (BUKAN query_expenses_summary).
+15. "arus kas" → query_cash_flow. "neraca saldo" → query_trial_balance. "neraca" → query_balance_sheet. "laba rugi" → query_profit_loss.
     "ringkasan X" tanpa "bulan ini/total" → query_X_summary."""
 
 
