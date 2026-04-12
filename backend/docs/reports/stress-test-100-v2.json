@@ -1,0 +1,1032 @@
+{
+  "summary": {
+    "total": 100,
+    "pass": 95,
+    "fail": 0,
+    "warn": 4,
+    "slow": 1,
+    "pass_rate": 95.0
+  },
+  "tier_stats": {
+    "core": {
+      "pass": 38,
+      "fail": 0,
+      "warn": 2,
+      "slow": 0
+    },
+    "natural": {
+      "pass": 29,
+      "fail": 0,
+      "warn": 1,
+      "slow": 0
+    },
+    "edge": {
+      "pass": 28,
+      "fail": 0,
+      "warn": 1,
+      "slow": 1
+    }
+  },
+  "results": [
+    {
+      "group": "T1_01_ar_deep",
+      "tier": "core",
+      "turn": 1,
+      "query": "piutang saya berapa?",
+      "status": "PASS",
+      "latency_ms": 4690,
+      "response_preview": "Total piutang kamu saat ini Rp 175.000 ya.\n\nDari total 7 piutang, ada 3 yang masih draft, 2 sudah terposting, 1 parsial, dan 1 sudah lunas. Untungnya, belum ada yang telat bayar nih. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_01_ar_deep",
+      "tier": "core",
+      "turn": 2,
+      "query": "rincian per faktur dong",
+      "status": "PASS",
+      "latency_ms": 6707,
+      "response_preview": "Tentu, ini rincian faktur yang kamu minta:\n\n*   **INV-2604-0032** (Sintia): Rp 300.000 (Lunas)\n*   **INV-2604-0031** (Sintia Runtuwene): Rp 750.000 (Lunas)\n*   **INV-2604-0030** (Sintia Runtuwene): Rp 1.500.000 (Lunas)\n*   **INV-2604-0029** (Sintia): Rp 125.000 (Pembayaran sebagian)\n*   **INV-2604-0",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_01_ar_deep",
+      "tier": "core",
+      "turn": 3,
+      "query": "yang belum dibayar mana aja?",
+      "status": "PASS",
+      "latency_ms": 5264,
+      "response_preview": "Oke, ini dia daftar faktur yang belum lunas ya:\n\n*   **INV-2604-0029** (Sintia) - Rp 125.000 (sudah bayar Rp 100.000)\n*   **INV-2604-0028** (Sintia) - Rp 125.000 (sudah bayar Rp 50.000)\n*   **INV-2604-0027** (Sintia) - Rp 125.000 (sudah bayar Rp 50.000)\n\nAda 3 faktur lagi yang statusnya belum lunas.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_01_ar_deep",
+      "tier": "core",
+      "turn": 4,
+      "query": "ada yang jatuh tempo minggu ini?",
+      "status": "PASS",
+      "latency_ms": 3642,
+      "response_preview": "Ada beberapa invoice yang jatuh tempo minggu ini, nih. Ini daftarnya:\n\n*   INV-2604-0032 - Sintia (Rp 300.000) - Lunas\n*   INV-2604-0031 - Sintia Runtuwene (Rp 750.000) - Lunas\n*   INV-2604-0026 - Sintia Runtuwene (Rp 5.208.000) - Lunas\n*   INV-2604-0030 - Sintia Runtuwene (Rp 1.500.000) - Lunas\n*  ",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_01_ar_deep",
+      "tier": "core",
+      "turn": 5,
+      "query": "tampilkan dalam tabel",
+      "status": "PASS",
+      "latency_ms": 3536,
+      "response_preview": "Tentu, ini dia data invoice dalam format tabel markdown:\n\n| Nomor Invoice | Nama Pelanggan     | Jumlah      | Status           |\n|---------------|--------------------|-------------|------------------|\n| INV-2604-0032 | Sintia             | Rp 300.000  | Lunas            |\n| INV-2604-0031 | Sintia R",
+      "model": "pipeline"
+    },
+    {
+      "group": "T1_02_ap_deep",
+      "tier": "core",
+      "turn": 1,
+      "query": "total hutang kita berapa ya?",
+      "status": "PASS",
+      "latency_ms": 3568,
+      "response_preview": "Total hutang kita saat ini Rp 1.722.805, dengan rincian Rp 1.622.805 belum dibayar dan Rp 100.000 dibayar sebagian. Ada 5 total tagihan dari 2 vendor.\n\n✅ Hutang kita masih terkendali karena semua tagihan belum jatuh tempo.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_02_ap_deep",
+      "tier": "core",
+      "turn": 2,
+      "query": "rincian per faktur pembelian",
+      "status": "PASS",
+      "latency_ms": 3678,
+      "response_preview": "Oke, ini dia rincian per faktur pembelian yang kamu minta:\n\n*   **BILL-2604-0037** dari **Knitto**: Total Rp 150.000, sudah dibayar Rp 50.000, sisa Rp 100.000. Statusnya *partial*.\n*   **BILL-2604-0036** dari **Knitto Textile Holis**: Total Rp 111.000, belum dibayar sama sekali. Statusnya *unpaid*.\n",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_02_ap_deep",
+      "tier": "core",
+      "turn": 3,
+      "query": "yang overdue mana?",
+      "status": "PASS",
+      "latency_ms": 3928,
+      "response_preview": "Wah, untuk yang overdue saat ini datanya kosong nih. Total tagihanmu Rp 1.722.805, dan nggak ada yang lewat jatuh tempo. Aman ya! ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_02_ap_deep",
+      "tier": "core",
+      "turn": 4,
+      "query": "urutkan dari yang terbesar",
+      "status": "PASS",
+      "latency_ms": 3255,
+      "response_preview": "Oke, ini dia urutan dari yang terbesar ya:\n\n*   **Total Saat Ini**: Rp 1.722.805\n*   **Total Keseluruhan**: Rp 1.722.805\n\nSisanya masih Rp 0 untuk periode waktu tertentu.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_02_ap_deep",
+      "tier": "core",
+      "turn": 5,
+      "query": "total yang belum dibayar berapa?",
+      "status": "PASS",
+      "latency_ms": 3325,
+      "response_preview": "Total yang belum dibayar ada Rp 1.622.805.\n\nDari total 5 tagihan, ada 4 yang belum dibayar dan 1 yang baru dibayar sebagian. Untungnya, semua tagihan ini belum jatuh tempo, jadi masih aman kok. 👍",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_03_items_stok",
+      "tier": "core",
+      "turn": 1,
+      "query": "ada berapa barang yang dijual?",
+      "status": "PASS",
+      "latency_ms": 2908,
+      "response_preview": "Ada 6 jenis barang yang lagi dijual nih. Dari jumlah itu, 2 masih ada stoknya, sisanya 4 lagi habis.\n\n**Insight:**\nStok barang yang masih ada cuma 2 jenis, jadi mungkin perlu dipikirin buat restock ya biar nggak kehabisan. 📦",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_03_items_stok",
+      "tier": "core",
+      "turn": 2,
+      "query": "yang paling mahal apa?",
+      "status": "PASS",
+      "latency_ms": 2642,
+      "response_preview": "**Item Berdasarkan Harga Jual (Termahal)** (Top 1)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Poloshirt Hitam + Bordir | Rp 155.000 |\n\n_Total 1 item dihitung_",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_03_items_stok",
+      "tier": "core",
+      "turn": 3,
+      "query": "ada yang stoknya habis?",
+      "status": "PASS",
+      "latency_ms": 3452,
+      "response_preview": "Ada beberapa item yang stoknya habis nih:\n\n*   Kerah Hitam Wangky (Aksesori)\n*   Manset Hitam Wangky (Aksesori)\n*   Label (Aksesori)\n*   Benang Jahit Hitam 1 Lusin (Aksesori)\n\nSemuanya habis stoknya (0 pcs). Mungkin perlu segera diorder lagi ya.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_03_items_stok",
+      "tier": "core",
+      "turn": 4,
+      "query": "daftar kategori barang",
+      "status": "PASS",
+      "latency_ms": 2640,
+      "response_preview": "4 daftar kategori:\nAksesori, Bahan Kain, Produk Jadi, Test",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_03_items_stok",
+      "tier": "core",
+      "turn": 5,
+      "query": "total nilai stok semua barang?",
+      "status": "PASS",
+      "latency_ms": 2460,
+      "response_preview": "**Total Stok Semua Item Aktif**: 42.50\n(Berdasarkan 6 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_04_kas_bank",
+      "tier": "core",
+      "turn": 1,
+      "query": "saldo semua rekening berapa?",
+      "status": "PASS",
+      "latency_ms": 4222,
+      "response_preview": "Hai! Total saldo semua rekening kamu saat ini Rp 11.744.160. 💰\n\n**Insight:**\n⚠️ Saldo kamu saat ini cukup untuk sekitar 999 hari operasional. Ada piutang yang bisa dikejar untuk menambah kas, nih?",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_04_kas_bank",
+      "tier": "core",
+      "turn": 2,
+      "query": "saldo BCA berapa?",
+      "status": "PASS",
+      "latency_ms": 1881,
+      "response_preview": "Rekening bca berapa? tidak ditemukan.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_04_kas_bank",
+      "tier": "core",
+      "turn": 3,
+      "query": "rekening mana yang paling banyak?",
+      "status": "PASS",
+      "latency_ms": 6174,
+      "response_preview": "Rekening dengan saldo tertinggi adalah **Kas BCA** dengan saldo saat ini Rp 11.744.160. \n\nRekening lainnya, **BCA Pengeluaran**, saat ini memiliki saldo Rp 0. \n\nMau saya bantu dengan hal lain terkait rekening ini?",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_04_kas_bank",
+      "tier": "core",
+      "turn": 4,
+      "query": "daftar rekening aktif",
+      "status": "PASS",
+      "latency_ms": 3270,
+      "response_preview": "Ini dia daftar rekening aktif kamu:\n\n*   BCA Pengeluaran (8492840281) - BCA\n*   Kas BCA (8295032185) - BCA\n\nKedua rekening ini statusnya aktif. Kas BCA punya saldo Rp 11.744.160.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_04_kas_bank",
+      "tier": "core",
+      "turn": 5,
+      "query": "total uang kita di semua bank?",
+      "status": "PASS",
+      "latency_ms": 2695,
+      "response_preview": "**Total Saldo Semua Rekening**: Rp 11.744.160\n(Berdasarkan 2 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_05_expense",
+      "tier": "core",
+      "turn": 1,
+      "query": "total pengeluaran bulan ini?",
+      "status": "PASS",
+      "latency_ms": 2546,
+      "response_preview": "**Total Pengeluaran Bulan Ini**: Rp 850.000\n(Berdasarkan 1 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_05_expense",
+      "tier": "core",
+      "turn": 2,
+      "query": "pengeluaran terbesar untuk apa?",
+      "status": "PASS",
+      "latency_ms": 2962,
+      "response_preview": "Bulan ini pengeluaran terbesar ada di **Biaya Operasional** sebesar Rp 850.000.\n\nSecara total, ada 3 transaksi pengeluaran di bulan ini.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_05_expense",
+      "tier": "core",
+      "turn": 3,
+      "query": "daftar biaya bulan ini",
+      "status": "PASS",
+      "latency_ms": 3480,
+      "response_preview": "Oke, ini dia daftar biaya bulan ini:\n\n*   EXP-2604-0013: Rp 735.000 (Ongkos kirim kain April)\n*   EXP-2604-0011: Rp 750.000 (Pengiriman 30 pcs poloshirt ke Sintia Runtuwene) - status VOID\n*   EXP-2604-0012: Rp 735.000 (Pengiriman 30 pcs poloshirt ke Sintia Runtuwene) - status VOID\n*   EXP-2604-0014:",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_05_expense",
+      "tier": "core",
+      "turn": 4,
+      "query": "ada berapa transaksi biaya?",
+      "status": "PASS",
+      "latency_ms": 2916,
+      "response_preview": "Ada 3 transaksi biaya bulan ini, totalnya Rp 850.000.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_05_expense",
+      "tier": "core",
+      "turn": 5,
+      "query": "ringkasan pengeluaran",
+      "status": "PASS",
+      "latency_ms": 2838,
+      "response_preview": "Oke, ini ringkasan pengeluaran bulan ini ya:\n\n*   Total pengeluaran: Rp 850.000\n*   Jumlah transaksi: 3 transaksi\n\nBelum ada data vendor, transaksi yang bisa ditagihkan (billable), atau pajaknya nih.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_06_crud_customer",
+      "tier": "core",
+      "turn": 1,
+      "query": "daftar pelanggan siapa aja?",
+      "status": "PASS",
+      "latency_ms": 3049,
+      "response_preview": "Ini daftar pelanggan kita:\n\n*   PT Maju Jaya\n*   Sintia Runtuwene\n\nAda 2 pelanggan terdaftar saat ini.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_06_crud_customer",
+      "tier": "core",
+      "turn": 2,
+      "query": "ada berapa pelanggan aktif?",
+      "status": "PASS",
+      "latency_ms": 1927,
+      "response_preview": "**Jumlah Pelanggan Aktif**: 2\n(Berdasarkan 2 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_06_crud_customer",
+      "tier": "core",
+      "turn": 3,
+      "query": "tambah pelanggan baru Budi Santoso",
+      "status": "PASS",
+      "latency_ms": 2963,
+      "response_preview": "### Buat Pelanggan\n\n| Field | Value |\n|-------|-------|\n| Nama Pelanggan | Budi Santoso |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T1_06_crud_customer",
+      "tier": "core",
+      "turn": 4,
+      "query": "detail pelanggan Sintia",
+      "status": "PASS",
+      "latency_ms": 2783,
+      "response_preview": "Mohon sebutkan nama pelanggan yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_06_crud_customer",
+      "tier": "core",
+      "turn": 5,
+      "query": "piutang Sintia berapa?",
+      "status": "WARN(missing kw)",
+      "latency_ms": 2062,
+      "response_preview": "Mohon sebutkan nama pelanggan yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_07_crud_vendor",
+      "tier": "core",
+      "turn": 1,
+      "query": "daftar vendor",
+      "status": "PASS",
+      "latency_ms": 3753,
+      "response_preview": "Oke, ini daftar vendor yang ada:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nAda 6 vendor totalnya.\n\n**Insight:**\nDari data yang ada, ada 2 vendor yang punya saldo terutang (AP Balance):\n*   Knitto Textile Holis: Rp 1.482.8",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_07_crud_vendor",
+      "tier": "core",
+      "turn": 2,
+      "query": "berapa vendor aktif?",
+      "status": "PASS",
+      "latency_ms": 2191,
+      "response_preview": "**Jumlah Vendor Aktif**: 6\n(Berdasarkan 6 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T1_07_crud_vendor",
+      "tier": "core",
+      "turn": 3,
+      "query": "buat vendor baru PT Maju Bersama",
+      "status": "PASS",
+      "latency_ms": 3125,
+      "response_preview": "### Buat Vendor/Supplier\n\n| Field | Value |\n|-------|-------|\n| Nama Vendor | PT Maju Bersama |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T1_07_crud_vendor",
+      "tier": "core",
+      "turn": 4,
+      "query": "detail vendor PT Bahagia",
+      "status": "PASS",
+      "latency_ms": 1630,
+      "response_preview": "Mohon sebutkan nama vendor yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_07_crud_vendor",
+      "tier": "core",
+      "turn": 5,
+      "query": "hutang ke PT Bahagia berapa?",
+      "status": "WARN(missing kw)",
+      "latency_ms": 2417,
+      "response_preview": "Mohon sebutkan nama vendor yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T1_08_report_basic",
+      "tier": "core",
+      "turn": 1,
+      "query": "laba rugi bulan ini gimana?",
+      "status": "PASS",
+      "latency_ms": 3903,
+      "response_preview": "Bulan April 2026 kemarin, kita mencatat **laba bersih Rp 166.900**.\n\nSecara rinci:\n*   Total pendapatan kita Rp 5.495.000.\n*   Harga Pokok Penjualan (HPP) kita Rp 6.127.358, ini yang bikin laba kotor jadi minus Rp 632.358.\n*   Untungnya, ada beban lainnya yang tercatat negatif (seperti pengembalian ",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_08_report_basic",
+      "tier": "core",
+      "turn": 2,
+      "query": "neraca saldo?",
+      "status": "PASS",
+      "latency_ms": 3546,
+      "response_preview": "Halo! Ini dia neraca saldo per 12 April 2026:\n\n*   **Total Debit:** Rp 59.836.317,16\n*   **Total Kredit:** Rp 59.836.317,16\n*   **Jumlah Akun:** 22\n\nNeraca saldonya seimbang ya, ✅.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_08_report_basic",
+      "tier": "core",
+      "turn": 3,
+      "query": "posisi keuangan kita sehat ga?",
+      "status": "PASS",
+      "latency_ms": 3341,
+      "response_preview": "Secara umum, posisi keuangan kita per 30 April 2026 menunjukkan **aset lancar sebesar Rp 14.632.705** dan **total kewajiban sebesar Rp 2.460.805**.\n\n⚠️ Dari sisi ekuitas, tercatat **laba periode berjalan sebesar -Rp 3.118.100**. Ini berarti ada kerugian di periode berjalan yang mengurangi total ekui",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_08_report_basic",
+      "tier": "core",
+      "turn": 4,
+      "query": "arus kas bulan ini?",
+      "status": "PASS",
+      "latency_ms": 3300,
+      "response_preview": "Hai! Untuk arus kas bulan April 2026, datanya menunjukkan **Rp 0**.\n\nIni karena belum ada transaksi yang tercatat di bagian investasi maupun pendanaan selama periode tersebut. Kas awal periode juga tercatat Rp 0, jadi kas akhir periodenya pun tetap Rp 0.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T1_08_report_basic",
+      "tier": "core",
+      "turn": 5,
+      "query": "ringkasan dashboard",
+      "status": "PASS",
+      "latency_ms": 3617,
+      "response_preview": "Halo! Ini ringkasan dashboard kamu ya:\n\n*   **Arus Kas:** Kas masuk Rp 39.765.107, kas keluar Rp 25.887.402, jadi ada net flow positif Rp 13.877.705.\n*   **Pengeluaran:** Total pengeluaran hari ini Rp 7.477.370.\n*   **Penjualan Hari Ini:** Belum ada transaksi penjualan hari ini.\n*   **Invoice & Tagi",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_09_prefix_noise",
+      "tier": "natural",
+      "turn": 1,
+      "query": "eh btw piutang berapa ya?",
+      "status": "PASS",
+      "latency_ms": 3370,
+      "response_preview": "Hai! Untuk piutang kita totalnya Rp 175.000 ya.\n\nDari total 7 piutang, ada 1 yang sudah lunas, 1 yang sudah dibayar sebagian, dan 3 masih dalam draf. Yang paling penting, **saat ini nggak ada piutang yang telat bayar** nih. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_09_prefix_noise",
+      "tier": "natural",
+      "turn": 2,
+      "query": "hmm kalau hutangnya gimana?",
+      "status": "PASS",
+      "latency_ms": 3027,
+      "response_preview": "Oke, aku cek data hutangnya ya.\n\nPer tanggal 12 April 2026, total hutang yang belum dibayar itu Rp 1.722.805. Dari jumlah itu, ada Rp 1.622.805 yang belum dibayar sama sekali, dan Rp 100.000 itu pembayaran sebagian. Jadi total ada 5 hutang, 4 di antaranya belum dibayar sama sekali dan 1 pembayaran s",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_09_prefix_noise",
+      "tier": "natural",
+      "turn": 3,
+      "query": "ok terus daftar barang dong",
+      "status": "PASS",
+      "latency_ms": 398,
+      "response_preview": "Baik, Anda ingin melihat daftar barang. Apakah Anda ingin melihat daftar barang untuk periode waktu tertentu?",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_09_prefix_noise",
+      "tier": "natural",
+      "turn": 4,
+      "query": "oh iya, saldo kas masih ada?",
+      "status": "PASS",
+      "latency_ms": 4150,
+      "response_preview": "Halo! Untuk saldo kas, saat ini **Rp 0** ya.\n\nTapi jangan khawatir, saldo bank kita masih ada **Rp 11.744.160**. Jadi total saldo kita aman kok. 👍\n\nDari data yang ada, ada insight nih:\n⚠️ Saldo kas kita memang lagi kosong, tapi saldo bank kita masih cukup banget buat operasional sekitar 999 hari. Mu",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_09_prefix_noise",
+      "tier": "natural",
+      "turn": 5,
+      "query": "nah gw mau bikin faktur nih",
+      "status": "PASS",
+      "latency_ms": 4252,
+      "response_preview": "Baik, saya akan daftarkan faktur penjualan. Boleh tahu nama pelanggannya dan tanggal faktur serta jatuh temponya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T2_10_slang_casual",
+      "tier": "natural",
+      "turn": 1,
+      "query": "duit kita tinggal berapa sih?",
+      "status": "PASS",
+      "latency_ms": 3452,
+      "response_preview": "Total dana kita saat ini Rp 11.744.160. 💰\n\n**Insight:**\n⚠️ Saldo kas kita perlu perhatian nih. Dengan Rp 11.744.160, ini cukup untuk sekitar 999 hari operasional. Mungkin ada piutang yang bisa dikejar untuk menambah kas kita?",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_10_slang_casual",
+      "tier": "natural",
+      "turn": 2,
+      "query": "ada yang nunggak ga?",
+      "status": "PASS",
+      "latency_ms": 2763,
+      "response_preview": "Nggak ada yang nunggak nih, semua pembayaran sudah beres. Total outstanding juga Rp 0. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_10_slang_casual",
+      "tier": "natural",
+      "turn": 3,
+      "query": "siapa yang belum bayar?",
+      "status": "PASS",
+      "latency_ms": 2993,
+      "response_preview": "Ada 7 total pesanan yang belum lunas. Dari jumlah tersebut, 3 masih dalam draft, 2 sudah diposting, 1 baru dibayar sebagian, dan 1 sudah lunas.\n\nSaat ini belum ada pesanan yang jatuh tempo pembayaran. Total tagihan yang belum terbayar adalah Rp 175.000.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_10_slang_casual",
+      "tier": "natural",
+      "turn": 4,
+      "query": "vendor mana yang kita belum bayar?",
+      "status": "PASS",
+      "latency_ms": 3056,
+      "response_preview": "Hai! Untuk vendor yang belum kita bayar, totalnya ada 4 vendor dengan total tagihan Rp 1.622.805 yang belum dibayar. Ada juga 1 vendor yang baru dibayar sebagian senilai Rp 100.000.\n\nSecara keseluruhan, hutang kita masih terkendali nih, karena semua tagihan belum jatuh tempo. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_10_slang_casual",
+      "tier": "natural",
+      "turn": 5,
+      "query": "bulan ini untung ga sih?",
+      "status": "PASS",
+      "latency_ms": 3927,
+      "response_preview": "Bulan April kemarin laba bersih kita Rp 166.900 ya.\n\nSecara keseluruhan, pendapatan penjualan kita Rp 5.495.000. Tapi, karena Harga Pokok Penjualan (HPP) kita lebih tinggi, yaitu Rp 6.127.358, jadi laba kotornya minus Rp 632.358. Untungnya, ada beban lainnya yang masuknya positif (mungkin pengembali",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_11_abbreviation",
+      "tier": "natural",
+      "turn": 1,
+      "query": "brp total piutang?",
+      "status": "PASS",
+      "latency_ms": 3425,
+      "response_preview": "Total piutang kamu saat ini Rp 175.000 ya. 📊\n\nDari total 7 piutang, ada 3 yang masih draft, 2 sudah terposting, 1 parsial, dan 1 sudah dibayar. Untungnya, belum ada yang *overdue* nih. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_11_abbreviation",
+      "tier": "natural",
+      "turn": 2,
+      "query": "cek stok poloshirt",
+      "status": "WARN(missing kw)",
+      "latency_ms": 2554,
+      "response_preview": "Mohon sebutkan nama barang yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T2_11_abbreviation",
+      "tier": "natural",
+      "turn": 3,
+      "query": "brp vendor aktif?",
+      "status": "PASS",
+      "latency_ms": 1971,
+      "response_preview": "**Jumlah Vendor Aktif**: 6\n(Berdasarkan 6 data)",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T2_11_abbreviation",
+      "tier": "natural",
+      "turn": 4,
+      "query": "tgl jatuh tempo faktur?",
+      "status": "PASS",
+      "latency_ms": 4487,
+      "response_preview": "Oke, ini dia daftar tanggal jatuh tempo faktur yang kamu minta:\n\n*   **INV-2604-0032** (Sintia): 10 April 2026\n*   **INV-2604-0031** (Sintia Runtuwene): 10 April 2026\n*   **INV-2604-0030** (Sintia Runtuwene): 10 Mei 2026\n*   **INV-2604-0029** (Sintia): 10 Mei 2026\n*   **INV-2604-0028** (Sintia): 10 ",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_11_abbreviation",
+      "tier": "natural",
+      "turn": 5,
+      "query": "info pelanggan sintia dong",
+      "status": "PASS",
+      "latency_ms": 1906,
+      "response_preview": "Mohon sebutkan nama pelanggan yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T2_12_mixed_indo_english",
+      "tier": "natural",
+      "turn": 1,
+      "query": "show me outstanding receivable",
+      "status": "PASS",
+      "latency_ms": 3915,
+      "response_preview": "Oke, ini dia rincian piutang outstanding kamu:\n\n*   Ada **7** total piutang yang belum lunas.\n*   Dari jumlah itu, **3** masih dalam tahap draft.\n*   **2** piutang sudah diposting.\n*   **1** piutang terbayar sebagian.\n*   **1** piutang sudah lunas.\n\nTotal nilai piutang outstanding kamu saat ini adal",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_12_mixed_indo_english",
+      "tier": "natural",
+      "turn": 2,
+      "query": "total payable berapa?",
+      "status": "PASS",
+      "latency_ms": 3726,
+      "response_preview": "Total payable kamu saat ini Rp 1.722.805. Ini terdiri dari Rp 1.622.805 yang belum dibayar dan Rp 100.000 yang dibayar sebagian.\n\nDari total 5 tagihan, ada 4 yang belum dibayar dan 1 yang dibayar sebagian. Semuanya masih aman karena belum ada yang jatuh tempo. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_12_mixed_indo_english",
+      "tier": "natural",
+      "turn": 3,
+      "query": "list semua items",
+      "status": "PASS",
+      "latency_ms": 4120,
+      "response_preview": "Oke, ini dia daftar item yang ada:\n\n*   Poloshirt Hitam + Bordir (42 pcs) - Kategori: Produk Jadi, Harga Jual: Rp 155.000\n*   Kerah Hitam Wangky (0 pcs) - Kategori: Aksesori, Harga Beli: Rp 10.000\n*   Manset Hitam Wangky (0 pcs) - Kategori: Aksesori, Harga Beli: Rp 5.000\n*   Label (0 pcs) - Kategori",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_12_mixed_indo_english",
+      "tier": "natural",
+      "turn": 4,
+      "query": "cash balance berapa?",
+      "status": "PASS",
+      "latency_ms": 3348,
+      "response_preview": "Hai! Untuk cash balance saat ini Rp 0 ya.\n\nTapi jangan khawatir, total saldo kita di bank ada Rp 11.744.160.\n\n**Insight:**\n⚠️ Saldo kas kita memang Rp 0, tapi total saldo di bank masih Rp 11.744.160. Ini cukup untuk sekitar 999 hari operasional lho. Mungkin bisa coba cek piutang yang ada, siapa tahu",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_12_mixed_indo_english",
+      "tier": "natural",
+      "turn": 5,
+      "query": "create new customer Ahmad",
+      "status": "PASS",
+      "latency_ms": 2679,
+      "response_preview": "### Buat Pelanggan\n\n| Field | Value |\n|-------|-------|\n| Nama Pelanggan | Ahmad |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T2_13_incomplete_sentence",
+      "tier": "natural",
+      "turn": 1,
+      "query": "piutang?",
+      "status": "PASS",
+      "latency_ms": 4242,
+      "response_preview": "Oke, ini dia info soal piutang kita:\n\n*   Total ada 7 piutang.\n*   3 di antaranya masih draft.\n*   2 sudah diposting.\n*   1 masih partial.\n*   1 sudah lunas.\n\nTotal piutang yang belum lunas saat ini Rp 175.000. Untungnya, belum ada yang *overdue* nih. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_13_incomplete_sentence",
+      "tier": "natural",
+      "turn": 2,
+      "query": "hutang?",
+      "status": "PASS",
+      "latency_ms": 3605,
+      "response_preview": "Oke, ini dia info soal hutang kita per 12 April 2026:\n\n*   Total hutang yang belum dibayar ada Rp 1.622.805.\n*   Ada juga hutang yang sudah dibayar sebagian sebesar Rp 100.000.\n*   Jadi, total hutang outstanding kita Rp 1.722.805.\n*   Ini dari 4 vendor yang belum lunas dan 1 vendor yang sudah bayar ",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_13_incomplete_sentence",
+      "tier": "natural",
+      "turn": 3,
+      "query": "stok?",
+      "status": "PASS",
+      "latency_ms": 3192,
+      "response_preview": "Ada 6 item barang yang terdata, dan 2 di antaranya masih ada stoknya nih. Sisanya, 4 item, lagi habis. 📦 Stoknya masih aman ya untuk yang ada.",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_13_incomplete_sentence",
+      "tier": "natural",
+      "turn": 4,
+      "query": "vendor?",
+      "status": "PASS",
+      "latency_ms": 3688,
+      "response_preview": "Ini daftar vendor yang ada:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nDari data ini, ada dua vendor yang punya saldo terutang (AP Balance):\n\n*   Knitto Textile Holis: Rp 1.482.805\n*   Noneng: Rp 240.000\n\nMungkin perlu dic",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_13_incomplete_sentence",
+      "tier": "natural",
+      "turn": 5,
+      "query": "kas?",
+      "status": "PASS",
+      "latency_ms": 2958,
+      "response_preview": "Hai! Untuk kas tunai (cash balance) saat ini Rp 0 ya.\n\n**Insight:**\n⚠️ Saldo kas tunai kita memang lagi kosong nih. Tapi jangan khawatir, total saldo kita masih Rp 11.744.160, yang mana cukup untuk sekitar 999 hari operasional. Mungkin ada piutang yang bisa kita kejar untuk menambah kas tunai kita?",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_14_long_natural",
+      "tier": "natural",
+      "turn": 1,
+      "query": "saya mau tahu berapa total piutang yang belum dibayar oleh semua pelanggan saya saat ini",
+      "status": "PASS",
+      "latency_ms": 3779,
+      "response_preview": "Total piutang yang belum dibayar saat ini sebesar Rp 175.000.\n\nDari total 7 piutang, ada 3 yang masih draft, 2 sudah diposting, 1 terbayar sebagian, dan 1 sudah lunas. Untungnya, saat ini belum ada piutang yang jatuh tempo ya. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_14_long_natural",
+      "tier": "natural",
+      "turn": 2,
+      "query": "tolong carikan vendor yang kita punya hutang paling besar supaya bisa saya prioritaskan pembayaran",
+      "status": "PASS",
+      "latency_ms": 2024,
+      "response_preview": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 6)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 1.482.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT Top Tri Land | Rp 0 |\n| 4 | Toptriland Label | Rp 0 |\n| 5 | SYM TEST VENDOR | Rp 0 |\n| 6 | TEST BILL TAX FIX | Rp 0 |\n\n_Total",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T2_14_long_natural",
+      "tier": "natural",
+      "turn": 3,
+      "query": "bisa bantu saya lihat semua barang yang stoknya sudah habis atau tinggal sedikit di gudang?",
+      "status": "PASS",
+      "latency_ms": 4107,
+      "response_preview": "Oke, siap! Berdasarkan data yang ada, saat ini **tidak ada barang yang stoknya habis atau tinggal sedikit** di gudang. 📦✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_14_long_natural",
+      "tier": "natural",
+      "turn": 4,
+      "query": "saya ingin tahu apakah ada tagihan yang sudah jatuh tempo dan belum kita bayar ke vendor",
+      "status": "PASS",
+      "latency_ms": 4673,
+      "response_preview": "Oke, siap! Ada beberapa tagihan yang sudah jatuh tempo dan belum lunas ke vendor nih.\n\n*   **BILL-2604-0037** (Knitto): Rp 100.000 (sudah dibayar sebagian)\n*   **BILL-2604-0036** (Knitto Textile Holis): Rp 111.000\n*   **BILL-2604-0035** (Knitto): Rp 150.000\n*   **BILL-2604-0034** (Knitto Textile Hol",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T2_14_long_natural",
+      "tier": "natural",
+      "turn": 5,
+      "query": "tolong buatkan faktur penjualan untuk pelanggan Sintia Runtuwene",
+      "status": "PASS",
+      "latency_ms": 4269,
+      "response_preview": "Siap, saya akan daftarkan faktur penjualan untuk Sintia Runtuwene. Boleh tahu tanggal faktur dan kapan jatuh temponya? Untuk itemnya, apakah itu barang atau jasa, dan apa saja detailnya seperti nama, jumlah, dan harga satuan?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_15_correction_midflow",
+      "tier": "edge",
+      "turn": 1,
+      "query": "buat faktur untuk Sintia",
+      "status": "PASS",
+      "latency_ms": 4502,
+      "response_preview": "Siap, saya akan daftarkan faktur penjualan untuk Sintia. Boleh tahu tanggal faktur dan tanggal jatuh temponya kapan ya? Lalu, untuk item penjualannya, apakah ini barang atau jasa?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_15_correction_midflow",
+      "tier": "edge",
+      "turn": 2,
+      "query": "eh salah, bukan Sintia tapi Budi",
+      "status": "PASS",
+      "latency_ms": 6150,
+      "response_preview": "Sepertinya saya tidak menemukan data pelanggan dengan nama Budi. Apakah Anda ingin membuat pelanggan baru dengan nama Budi, atau ada nama lain yang bisa saya cari?",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_15_correction_midflow",
+      "tier": "edge",
+      "turn": 3,
+      "query": "harganya 150 ribu per pcs",
+      "status": "PASS",
+      "latency_ms": 3807,
+      "response_preview": "Siap, saya akan daftarkan faktur penjualan untuk Sintia. Boleh tahu tanggal jatuh temponya kapan dan apa saja barang atau jasa yang akan dimasukkan ke dalam faktur ini beserta jumlah dan harganya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_15_correction_midflow",
+      "tier": "edge",
+      "turn": 4,
+      "query": "eh bukan, 200 ribu deng",
+      "status": "PASS",
+      "latency_ms": 4457,
+      "response_preview": "Siap, saya akan daftarkan faktur penjualan untuk Sintia. Kapan kira-kira jatuh temponya dan apa saja barang atau jasa yang ingin dimasukkan ke dalam faktur ini, beserta jumlah dan harganya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_15_correction_midflow",
+      "tier": "edge",
+      "turn": 5,
+      "query": "ya sudah, batal aja",
+      "status": "PASS",
+      "latency_ms": 3593,
+      "response_preview": "Baik, saya akan batalkan pembuatan faktur penjualan untuk Sintia. Jika ada yang ingin Anda lakukan selanjutnya, silakan beri tahu.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_16_topic_jump",
+      "tier": "edge",
+      "turn": 1,
+      "query": "piutang berapa?",
+      "status": "PASS",
+      "latency_ms": 3534,
+      "response_preview": "Total piutang kamu saat ini Rp 175.000 ya.\n\nDari total 7 piutang, ada 3 yang masih draft, 2 sudah diposting, 1 parsial, dan 1 sudah lunas. Untungnya, belum ada yang jatuh tempo nih. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_16_topic_jump",
+      "tier": "edge",
+      "turn": 2,
+      "query": "oh iya ada vendor baru mau didaftarin",
+      "status": "PASS",
+      "latency_ms": 4258,
+      "response_preview": "Baik, saya akan daftarkan vendor baru. Boleh tahu nama vendornya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_16_topic_jump",
+      "tier": "edge",
+      "turn": 3,
+      "query": "namanya PT Citra Mandiri",
+      "status": "PASS",
+      "latency_ms": 3865,
+      "response_preview": "### Buat Vendor/Supplier\n\n| Field | Value |\n|-------|-------|\n| Nama Vendor | PT Citra Mandiri |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_16_topic_jump",
+      "tier": "edge",
+      "turn": 4,
+      "query": "btw barang terlaris apa ya?",
+      "status": "WARN(missing kw)",
+      "latency_ms": 2447,
+      "response_preview": "**Item Berdasarkan Stok (Terbanyak)** (Top 6)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Poloshirt Hitam + Bordir | 42 |\n| 2 | Lacoste Pique 24s Hitam Ecer | 0.50 |\n| 3 | Kerah Hitam Wangky | 0 |\n| 4 | Manset Hitam Wangky | 0 |\n| 5 | Label | 0 |\n| 6 | Benang Jahit Hitam 1 Lusin | 0 |\n\n_Total",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T3_16_topic_jump",
+      "tier": "edge",
+      "turn": 5,
+      "query": "ok makasih ya",
+      "status": "PASS",
+      "latency_ms": 729,
+      "response_preview": "Sama-sama! Ada lagi yang bisa saya bantu?",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_17_long_pronoun_chain",
+      "tier": "edge",
+      "turn": 1,
+      "query": "hutang kita berapa?",
+      "status": "PASS",
+      "latency_ms": 3062,
+      "response_preview": "Total hutang kita saat ini Rp 1.722.805. Ini terdiri dari Rp 1.622.805 yang belum dibayar dan Rp 100.000 yang dibayar sebagian.\n\nSecara keseluruhan, hutang kita masih terkendali karena belum ada yang jatuh tempo. ✅",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_17_long_pronoun_chain",
+      "tier": "edge",
+      "turn": 2,
+      "query": "ke siapa aja?",
+      "status": "PASS",
+      "latency_ms": 3080,
+      "response_preview": "Hai! Untuk pertanyaan \"ke siapa aja?\", ini rinciannya:\n\nAda total 5 transaksi, dengan rincian:\n*   4 transaksi belum dibayar (unpaid) senilai Rp 1.622.805\n*   1 transaksi dibayar sebagian (partial) senilai Rp 100.000\n\nTotal tagihan yang belum lunas (outstanding) adalah Rp 1.722.805.\n\n✅ Hutang kita m",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_17_long_pronoun_chain",
+      "tier": "edge",
+      "turn": 3,
+      "query": "yang paling besar?",
+      "status": "PASS",
+      "latency_ms": 2569,
+      "response_preview": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 6)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 1.482.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT Top Tri Land | Rp 0 |\n| 4 | Toptriland Label | Rp 0 |\n| 5 | SYM TEST VENDOR | Rp 0 |\n| 6 | TEST BILL TAX FIX | Rp 0 |\n\n_Total",
+      "model": "llm_router+calc_engine"
+    },
+    {
+      "group": "T3_17_long_pronoun_chain",
+      "tier": "edge",
+      "turn": 4,
+      "query": "detailnya?",
+      "status": "PASS",
+      "latency_ms": 2325,
+      "response_preview": "Mohon sebutkan nama vendor yang ingin dicek.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_17_long_pronoun_chain",
+      "tier": "edge",
+      "turn": 5,
+      "query": "bisa dibayar sekarang?",
+      "status": "PASS",
+      "latency_ms": 4767,
+      "response_preview": "Siap, saya akan daftarkan pembayaran faktur pembelian Anda. Boleh tahu Vendor ID, Bill ID, Bank Account ID, Jumlah Bayar, dan Tanggal pembayarannya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_18_cancel_restart",
+      "tier": "edge",
+      "turn": 1,
+      "query": "buat vendor baru",
+      "status": "PASS",
+      "latency_ms": 4250,
+      "response_preview": "Baik, saya akan daftarkan vendor baru. Bisa tolong sebutkan nama vendornya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_18_cancel_restart",
+      "tier": "edge",
+      "turn": 2,
+      "query": "batal",
+      "status": "PASS",
+      "latency_ms": 2979,
+      "response_preview": "Proses pendaftaran vendor baru dibatalkan. Jika ada hal lain yang ingin Anda lakukan, silakan beri tahu.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_18_cancel_restart",
+      "tier": "edge",
+      "turn": 3,
+      "query": "hutang berapa?",
+      "status": "PASS",
+      "latency_ms": 3719,
+      "response_preview": "Total hutang kamu saat ini Rp 1.722.805. Dari jumlah itu, ada Rp 1.622.805 yang belum dibayar dan Rp 100.000 masih terbayar sebagian.\n\n✅ Hutangnya masih terkendali kok, semua tagihan belum jatuh tempo. Aman!",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_18_cancel_restart",
+      "tier": "edge",
+      "turn": 4,
+      "query": "buat pelanggan baru Dewi Lestari",
+      "status": "PASS",
+      "latency_ms": 5962,
+      "response_preview": "### Buat Pelanggan\n\n| Field | Value |\n|-------|-------|\n| Nama Pelanggan | Dewi Lestari |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_18_cancel_restart",
+      "tier": "edge",
+      "turn": 5,
+      "query": "batal juga deh",
+      "status": "PASS",
+      "latency_ms": 3865,
+      "response_preview": "Proses pendaftaran pelanggan baru dibatalkan. Jika ada yang ingin Anda lakukan selanjutnya, silakan beri tahu.",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_19_ambiguous_intent",
+      "tier": "edge",
+      "turn": 1,
+      "query": "gimana kondisi keuangan?",
+      "status": "PASS",
+      "latency_ms": 3568,
+      "response_preview": "Kondisi keuangan kita lagi bagus nih! 💰\n\n*   **Kas Masuk:** Rp 39.765.107\n*   **Kas Keluar:** Rp 25.887.402\n*   **Net Flow (Keuntungan Bersih):** Rp 13.877.705\n\nSecara keseluruhan, kas masuk kita jauh lebih besar dari kas keluar, jadi ada keuntungan bersih yang lumayan. Mantap! 👍",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_19_ambiguous_intent",
+      "tier": "edge",
+      "turn": 2,
+      "query": "ada masalah ga?",
+      "status": "PASS",
+      "latency_ms": 3394,
+      "response_preview": "Secara umum sih aman, nggak ada masalah besar.\n\n*   **Arus kas** kita positif banget, Rp 13.877.705. Ini artinya pemasukan lebih besar dari pengeluaran. 👍\n*   **Pengeluaran** tercatat Rp 7.477.370.\n*   Nggak ada **invoice atau tagihan yang jatuh tempo** atau **terlambat bayar**. ✅\n\nSemua lancar ya!",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_19_ambiguous_intent",
+      "tier": "edge",
+      "turn": 3,
+      "query": "apa yang harus diprioritaskan?",
+      "status": "PASS",
+      "latency_ms": 4173,
+      "response_preview": "Hai! Berdasarkan data yang ada, ini rangkumannya:\n\n*   **Kas Masuk:** Rp 39.765.107\n*   **Kas Keluar:** Rp 25.887.402\n*   **Net Flow:** Rp 13.877.705\n*   **Total Pengeluaran:** Rp 7.477.370\n\nDari angka-angka ini, terlihat ada arus kas yang positif ya.\n\n**Insight:**\nMeskipun kas masuk dan keluar cuku",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_19_ambiguous_intent",
+      "tier": "edge",
+      "turn": 4,
+      "query": "rekap dong",
+      "status": "PASS",
+      "latency_ms": 3490,
+      "response_preview": "Tentu, ini data yang Anda berikan dalam format tabel markdown:\n\n| Keterangan      | Jumlah         |\n| :-------------- | :------------- |\n| Kas Masuk       | Rp 39.765.107  |\n| Kas Keluar      | Rp 25.887.402  |\n| Net Flow        | Rp 13.877.705  |\n| Total Pengeluaran | Rp 7.477.370   |",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_19_ambiguous_intent",
+      "tier": "edge",
+      "turn": 5,
+      "query": "update terbaru?",
+      "status": "PASS",
+      "latency_ms": 3607,
+      "response_preview": "Halo! Ini update terbaru per tanggal 12 April 2026:\n\n*   **Arus Kas:** Kas masuk Rp 39.765.107, kas keluar Rp 25.887.402, jadi ada *net flow* positif Rp 13.877.705.\n*   **Pengeluaran:** Total pengeluaran hari ini Rp 7.477.370.\n*   **Penjualan Hari Ini:** Belum ada transaksi penjualan hari ini.\n\nUntu",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_20_double_intent",
+      "tier": "edge",
+      "turn": 1,
+      "query": "cek piutang sekalian hutang",
+      "status": "PASS",
+      "latency_ms": 4384,
+      "response_preview": "Oke, siap! Cek piutang dan utang ya.\n\nUntuk piutang, totalnya ada **Rp 175.000**. Dari jumlah itu, ada **1** yang sudah dibayar, **2** yang sudah terposting, dan **3** yang masih draft. Untungnya, **0** yang overdue alias telat bayar. Stok piutang kita masih aman nih. ✅\n\nKalau ada yang mau ditanyaka",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_20_double_intent",
+      "tier": "edge",
+      "turn": 2,
+      "query": "buat faktur sekaligus cek stok poloshirt",
+      "status": "PASS",
+      "latency_ms": 5106,
+      "response_preview": "Siap, saya akan daftarkan faktur penjualan. Boleh tahu nama pelanggannya, tanggal faktur, dan kapan jatuh temponya? Untuk itemnya, apakah itu barang atau jasa, dan berapa jumlah serta harga satuannya?",
+      "model": "pipeline"
+    },
+    {
+      "group": "T3_20_double_intent",
+      "tier": "edge",
+      "turn": 3,
+      "query": "siapa pelanggan terbesar dan vendor terbesar?",
+      "status": "PASS",
+      "latency_ms": 3907,
+      "response_preview": "Wah, lagi mau cek siapa aja nih yang paling banyak transaksi ya?\n\nDari data yang ada, belum kelihatan siapa pelanggan terbesar atau vendor terbesar. Data yang tersedia ini lebih ke ringkasan status pesanan ya, kayak total pesanan, yang sudah diposting, yang masih draf, dan yang sudah dibayar.\n\nMungk",
+      "model": "gemini-2.5-flash-lite"
+    },
+    {
+      "group": "T3_20_double_intent",
+      "tier": "edge",
+      "turn": 4,
+      "query": "daftar barang sama daftar vendor",
+      "status": "SLOW(15255ms>10000ms)",
+      "latency_ms": 15255,
+      "response_preview": "Berikut adalah daftar barang dan vendor yang tersedia:\n\n### Daftar Barang\n1. **Poloshirt Hitam + Bordir**\n   - SKU: BRG-0008\n   - Stok: 42 pcs\n   - Harga Jual: Rp 155.000\n   - Kategori: Produk Jadi\n\n2. **Kerah Hitam Wangky**\n   - SKU: BRG-0007\n   - Stok: 0 pcs\n   - Harga Beli: Rp 10.000\n   - Kategor",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "group": "T3_20_double_intent",
+      "tier": "edge",
+      "turn": 5,
+      "query": "hapus barang test sekalian tambah barang baru",
+      "status": "PASS",
+      "latency_ms": 3602,
+      "response_preview": "Siap, saya akan bantu daftarkan barang/jasa baru. Boleh tahu ID dan Nama barang/jasanya?",
+      "model": "pipeline"
+    }
+  ]
+}
