@@ -97,7 +97,13 @@ RULES:
     Contoh: history="bayar tagihan" → "BCA" = slot_fill create_bill_payment (BUKAN query_bank).
 14. "ringkasan/total pengeluaran bulan ini" → calc_sum_expenses_this_month (BUKAN query_expenses_summary).
 15. "arus kas" → query_cash_flow. "neraca saldo" → query_trial_balance. "neraca" → query_balance_sheet. "laba rugi" → query_profit_loss.
-    "ringkasan X" tanpa "bulan ini/total" → query_X_summary."""
+    "ringkasan X" tanpa "bulan ini/total" → query_X_summary.
+16. DOMAIN CONTINUITY (CRITICAL): Pesan pendek (<6 kata) atau pronoun TANPA keyword domain eksplisit → TETAP di domain RIWAYAT sebelumnya.
+    Setelah hutang/AP: "ke siapa aja?" → query_ap_outstanding. "ke vendor siapa aja?" → query_ap_outstanding. "yang paling besar?" → calc_rank_vendors_by_ap. "bayar yang paling besar" → create_bill_payment.
+    Setelah piutang/AR: "ke siapa aja?" → query_ar_invoices. "dari siapa aja?" → query_ar_invoices. "yang paling besar?" → calc_rank_customers_by_ar. "yang paling besar siapa?" → calc_rank_customers_by_ar.
+    Setelah barang: "yang paling mahal?" → calc_rank_items_by_price. "yang stoknya habis?" → query_items_no_stock.
+    DILARANG: switch domain, minta klarifikasi, atau jawab "sebutkan nama" untuk query pendek yang jelas merujuk history.
+17. REFORMAT: "tampilkan dalam tabel/tabelkan/bikin tabel/rekapan tabel" → SELALU reformat_as_table. Confidence 1.0. Tidak perlu tanya "data apa?"."""
 
 
 ROUTER_RESPONSE_SCHEMA = {

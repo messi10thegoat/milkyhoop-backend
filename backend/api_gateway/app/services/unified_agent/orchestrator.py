@@ -3269,6 +3269,7 @@ class UnifiedAgent:
         context,
         tool_executor=None,
         event_callback=None,
+        conversation_history=None,
     ) -> "AgentResponse":
         """Re-format last bot response as a markdown table using Gemini Flash."""
         import time as _time
@@ -3308,6 +3309,16 @@ class UnifiedAgent:
                         last_response = rows[0]["content"]
             except Exception as _e2:
                 logger.warning("[REFORMAT] Fallback fetch failed: %s", _e2)
+
+        # Fallback 2: extract from conversation_history
+        if not last_response and conversation_history:
+            for msg in reversed(conversation_history):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    _c = msg["content"]
+                    if len(_c) > 30:  # skip short acks
+                        last_response = _c[:2000]
+                        logger.warning("[REFORMAT] Using conversation_history fallback (%d chars)", len(_c))
+                        break
 
         if not last_response:
             return AgentResponse(
@@ -4498,6 +4509,18 @@ class UnifiedAgent:
                     extraction.confidence = 1.0
                     break
 
+            # 3c-bis. REFORMAT GUARD — regex caught "tampilkan dalam tabel"
+            if _qci_guard == "reformat_as_table" and extraction.intent != "reformat_as_table":
+                _tel_guard = "reformat_guard"
+                _tel_guard_from = extraction.intent
+                _tel_guard_to = "reformat_as_table"
+                _tel_decision_source = "reformat_guard"
+                _tel_guard_matches["reformat_guard"] = "reformat_as_table"
+                logger.warning("[REFORMAT_GUARD] %s -> reformat_as_table", extraction.intent)
+                extraction.intent = "reformat_as_table"
+                extraction.confidence = 1.0
+                extraction.needs_escalation = False
+
             # 3c. DRILL-DOWN GUARD
             if _qci_guard in ("contextual_drill_down", "drilldown_table"):
                 if extraction.intent not in ("contextual_drill_down", "drilldown_table", "reformat_as_table"):
@@ -4848,6 +4871,7 @@ class UnifiedAgent:
                     context=context,
                     tool_executor=tool_executor,
                     event_callback=event_callback,
+                    conversation_history=conversation_history,
                 )
 
             if (
@@ -4904,6 +4928,22 @@ class UnifiedAgent:
             if _llm_extraction is not None:
                 from .entity_extractor import is_pipeline_enabled as _llm_is_pipe
                 _lr_intent = _llm_extraction.intent or ""
+
+                # ── Reformat + drill-down (dispatch to existing handlers) ──
+                if _lr_intent == "reformat_as_table":
+                    logger.warning("[LLM_ROUTER_PRIMARY] reformat_as_table")
+                    return await self._handle_reformat_as_table(
+                        user_text=user_text, context=context,
+                        tool_executor=tool_executor, event_callback=event_callback,
+                        conversation_history=conversation_history,
+                    )
+                if _lr_intent == "contextual_drill_down":
+                    logger.warning("[LLM_ROUTER_PRIMARY] contextual_drill_down")
+                    return await self._handle_contextual_drill_down(
+                        user_text=user_text, context=context,
+                        extraction=_llm_extraction,
+                        tool_executor=tool_executor, event_callback=event_callback,
+                    )
 
                 # ── Calc pipeline ──
                 if _lr_intent.startswith("calc_") and _llm_is_pipe(_lr_intent):

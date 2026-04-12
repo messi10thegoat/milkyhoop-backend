@@ -164,23 +164,43 @@ class SessionManager:
             )
             if row:
                 return str(row["id"])
-        
-        # Create new session
+            # Session ID provided but doesn't exist — create WITH this ID
+            try:
+                await self.db.execute(
+                    "INSERT INTO chat_sessions (id, tenant_id, user_id) VALUES ($1::uuid, $2, $3::uuid)",
+                    session_id, self.tenant_id, self.user_id
+                )
+                await self.db.execute(
+                    "INSERT INTO chat_session_state (session_id, tenant_id) VALUES ($1::uuid, $2)",
+                    session_id, self.tenant_id
+                )
+                logger.info(f"[SESSION] Created session with provided ID {session_id[:8]}")
+                return session_id
+            except Exception as _e:
+                logger.warning(f"[SESSION] Create with ID failed (race?): {_e}")
+                row = await self.db.fetchrow(
+                    "SELECT id FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
+                    session_id, self.tenant_id
+                )
+                if row:
+                    return str(row["id"])
+
+        # Create new session (no ID provided)
         row = await self.db.fetchrow(
             "INSERT INTO chat_sessions (tenant_id, user_id) VALUES ($1, $2::uuid) RETURNING id",
             self.tenant_id, self.user_id
         )
         session_id = str(row["id"])
-        
+
         # Initialize empty structured state
         await self.db.execute(
             "INSERT INTO chat_session_state (session_id, tenant_id) VALUES ($1::uuid, $2)",
             session_id, self.tenant_id
         )
-        
+
         logger.info(f"[SESSION] Created new session {session_id[:8]} for tenant={self.tenant_id}")
         return session_id
-    
+
     # ========================================================================
     # LAYER 1: WORKING WINDOW
     # ========================================================================
