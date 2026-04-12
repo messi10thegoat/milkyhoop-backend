@@ -14,9 +14,13 @@ The agent loop:
 
 import asyncio
 import json
+import os
 import time
 import logging
 from datetime import date
+
+# Phase 2: LLM Router primary classifier feature flag
+USE_LLM_ROUTER = os.environ.get("USE_LLM_ROUTER", "false").lower() == "true"
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -3931,6 +3935,158 @@ class UnifiedAgent:
         """Rename field to human-readable Indonesian name."""
         return self._FIELD_RENAMES.get(field_name, field_name)
 
+    async def _classify_via_llm_router(
+        self,
+        user_text: str,
+        context,
+        tool_executor,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        db_pool=None,
+    ):
+        """
+        Phase 2 primary classifier. Calls LLM Intent Router and returns an
+        ExtractionResult-compatible object, or None to force regex fallback.
+
+        Guardrails:
+        1. Anti-loop: if same intent appeared 3+ times in recent history, force fallback.
+        2. FALLBACK check: intent=='FALLBACK' or confidence<0.3 => force fallback.
+        3. Field validation: drop amount/quantity if not positive numeric.
+        4. Entity sanity: log warning if entity keys mismatch intent family (no override).
+        """
+        from .llm_intent_router import LLMIntentRouter
+        from .entity_extractor import ExtractionResult
+
+        # Build workflow context from active crud_form state (if any)
+        _wf_ctx = None
+        if tool_executor and tool_executor.session_id:
+            try:
+                from .workflow_engine import WorkflowEngine
+                from .db_utils import get_session_db_pool as _wf_pool_fn
+
+                _wf_db = await _wf_pool_fn()
+                _wf_eng = WorkflowEngine(
+                    _wf_db,
+                    context.tenant_id,
+                    getattr(context, "user_id", ""),
+                    getattr(context, "auth_token", ""),
+                )
+                _wf_state = await _wf_eng.get_state(
+                    tool_executor.session_id, "crud_form"
+                )
+                if _wf_state and _wf_state.status == "active":
+                    _wf_ctx = {
+                        "intent": _wf_state.data.get("intent", ""),
+                        "phase": getattr(_wf_state, "current_state", ""),
+                    }
+            except Exception as _wf_err:
+                logger.warning("[LLM_ROUTER_PRIMARY] WF state fetch failed: %s", _wf_err)
+
+        # Build OCR/image context from session state if present
+        _ocr_text = None
+        _last_action = None
+        try:
+            if (
+                tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and tool_executor.session_id
+            ):
+                _s = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
+                _doc_ctx = getattr(_s, "document_context", None) if _s else None
+                if isinstance(_doc_ctx, dict):
+                    _ocr_text = _doc_ctx.get("ocr_text") or _doc_ctx.get("text")
+                _last_action = getattr(_s, "last_action_type", None) if _s else None
+        except Exception:
+            pass
+
+        _entity_memory = None  # Router handles its own memory via entity_memory param
+
+        # Call LLM Router
+        try:
+            _router = LLMIntentRouter(self.router)
+            _result = await _router.route(
+                user_text=user_text,
+                conversation_history=conversation_history[-10:] if conversation_history else None,
+                workflow_state=_wf_ctx,
+                entity_memory=_entity_memory,
+                ocr_text=_ocr_text,
+            )
+        except Exception as _rt_err:
+            logger.warning("[LLM_ROUTER_PRIMARY] route() failed: %s", _rt_err)
+            return None
+
+        _intent_val = (_result.intent or "").strip()
+        _conf = float(_result.confidence or 0.0)
+        _entities = dict(_result.entities or {})
+
+        # Guardrail 2: FALLBACK / low-confidence
+        if _intent_val in ("FALLBACK", "", "ambiguous") or _conf < 0.3:
+            logger.warning(
+                "[LLM_ROUTER_FALLBACK] intent=%s conf=%.2f -> regex fallback",
+                _intent_val, _conf,
+            )
+            return None
+
+        # Guardrail 1: Anti-loop (same intent 3+ times in last 6 user turns)
+        if conversation_history:
+            try:
+                _user_msgs = [m for m in conversation_history[-12:] if m.get("role") == "user"]
+                if len(_user_msgs) >= 3:
+                    # Count same intent in router memory not available — use text heuristic
+                    _same = 0
+                    for _m in _user_msgs[-6:]:
+                        if _m.get("content", "").strip().lower() == user_text.strip().lower():
+                            _same += 1
+                    if _same >= 3:
+                        logger.warning(
+                            "[LLM_ROUTER_FALLBACK] anti-loop: same text %dx -> fallback",
+                            _same,
+                        )
+                        return None
+            except Exception:
+                pass
+
+        # Guardrail 3: Field validation — drop non-positive numeric amount/quantity
+        for _num_key in ("amount", "quantity", "unit_price"):
+            if _num_key in _entities:
+                try:
+                    _v = float(_entities[_num_key])
+                    if _v <= 0:
+                        _entities.pop(_num_key, None)
+                except (TypeError, ValueError):
+                    _entities.pop(_num_key, None)
+
+        # Guardrail 4: Sanity check entity-intent match (log only)
+        try:
+            if _intent_val.startswith("create_vendor") and "customer_name" in _entities:
+                logger.warning("[LLM_ROUTER_SANITY] create_vendor has customer_name entity")
+            if _intent_val.startswith("create_customer") and "vendor_name" in _entities:
+                logger.warning("[LLM_ROUTER_SANITY] create_customer has vendor_name entity")
+        except Exception:
+            pass
+
+        # Build ExtractionResult-compatible object
+        extraction = ExtractionResult(
+            intent=_intent_val,
+            entities=_entities,
+            modifiers=[],
+            confidence=_conf,
+            raw_response=dict(_result.raw_response or {}),
+            needs_escalation=False,
+        )
+
+        logger.warning(
+            "[LLM_ROUTER_PRIMARY] intent=%s conf=%.2f ready=%s entities=%s latency=%dms",
+            _intent_val, _conf, _result.ready,
+            list(_entities.keys()), _result.latency_ms,
+        )
+        logger.warning(
+            "[CLASSIFY_FINAL] intent=%s confidence=%.2f source=llm_router",
+            _intent_val, _conf,
+        )
+        return extraction
+
     async def process_message(
         self,
         user_text: str,
@@ -4727,6 +4883,117 @@ class UnifiedAgent:
                     extraction.needs_escalation,
                 )
         # ── END COMPILER PIPELINE ──
+
+        # ═══ PHASE 2: LLM ROUTER PRIMARY PATH (feature flagged) ═══
+        # When USE_LLM_ROUTER=true, classify via LLM Router and dispatch to
+        # calc/query/create pipelines. Falls through to existing agent loop on
+        # fallback/failure (never breaks existing behavior).
+        if USE_LLM_ROUTER and _intent in ("ACTION", "SIMPLE_READ"):
+            try:
+                _llm_extraction = await self._classify_via_llm_router(
+                    user_text=user_text,
+                    context=context,
+                    tool_executor=tool_executor,
+                    conversation_history=conversation_history,
+                    db_pool=db_pool,
+                )
+            except Exception as _llm_primary_err:
+                logger.warning("[LLM_ROUTER_PRIMARY] dispatch failed: %s", _llm_primary_err)
+                _llm_extraction = None
+
+            if _llm_extraction is not None:
+                from .entity_extractor import is_pipeline_enabled as _llm_is_pipe
+                _lr_intent = _llm_extraction.intent or ""
+
+                # ── Calc pipeline ──
+                if _lr_intent.startswith("calc_") and _llm_is_pipe(_lr_intent):
+                    try:
+                        from .calculation_engine import (
+                            is_calculation_intent,
+                            get_calculation_template,
+                            execute_calculation,
+                            format_calculation_result,
+                        )
+                        if is_calculation_intent(_lr_intent):
+                            logger.warning(
+                                "[LLM_ROUTER_PRIMARY] calc pipeline: %s", _lr_intent
+                            )
+                            _tpl = get_calculation_template(_lr_intent)
+                            _calc_res = await execute_calculation(
+                                _tpl,
+                                auth_token=getattr(context, "auth_token", "") or "",
+                                tenant_id=context.tenant_id,
+                            )
+                            if _calc_res.get("type") != "error":
+                                _txt = format_calculation_result(_calc_res)
+                                if (
+                                    tool_executor
+                                    and getattr(tool_executor, "session_manager", None)
+                                    and tool_executor.session_id
+                                ):
+                                    try:
+                                        await tool_executor.session_manager.update_state(
+                                            tool_executor.session_id,
+                                            last_action_type=_lr_intent,
+                                            last_action_result={"response_text": _txt[:2000]},
+                                        )
+                                    except Exception:
+                                        pass
+                                return AgentResponse(
+                                    message_type="TEXT",
+                                    content=_txt,
+                                    iterations=1,
+                                    model_used="llm_router+calc_engine",
+                                    total_latency_ms=int(
+                                        (_time.monotonic() - _process_start) * 1000
+                                    ),
+                                )
+                    except Exception as _calc_err:
+                        logger.warning("[LLM_ROUTER_PRIMARY] calc pipeline failed: %s", _calc_err)
+
+                # ── Query pipeline ──
+                if _lr_intent.startswith("query_") and _llm_is_pipe(_lr_intent):
+                    try:
+                        from .direct_action_registry import get_query_action
+                        if get_query_action(_lr_intent):
+                            logger.warning(
+                                "[LLM_ROUTER_PRIMARY] query pipeline: %s", _lr_intent
+                            )
+                            return await self._handle_query_pipeline(
+                                user_text=user_text,
+                                context=context,
+                                extraction=_llm_extraction,
+                                tool_executor=tool_executor,
+                                event_callback=event_callback,
+                            )
+                    except Exception as _q_err:
+                        logger.warning("[LLM_ROUTER_PRIMARY] query pipeline failed: %s", _q_err)
+
+                # ── CRUD / DirectAction pipeline ──
+                if _lr_intent.startswith(
+                    ("create_", "update_", "delete_", "void_", "reverse_")
+                ) and _llm_is_pipe(_lr_intent):
+                    try:
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] crud pipeline: %s", _lr_intent
+                        )
+                        return await self._handle_pipeline(
+                            user_text=user_text,
+                            context=context,
+                            extraction=_llm_extraction,
+                            conversation_history=conversation_history,
+                            tool_executor=tool_executor,
+                            event_callback=event_callback,
+                        )
+                    except Exception as _crud_err:
+                        logger.warning("[LLM_ROUTER_PRIMARY] crud pipeline failed: %s", _crud_err)
+
+                # No pipeline match — fall through to agent loop with LLM Router intent
+                logger.warning(
+                    "[LLM_ROUTER_PRIMARY] no pipeline match for %s, falling to agent loop",
+                    _lr_intent,
+                )
+        # ═══ END LLM ROUTER PRIMARY PATH ═══
 
         # Build messages — segmented system prompt (Phase 3A)
         # Segments loaded based on intent: CHITCHAT=~500tok, SIMPLE_READ=~2.5K, etc.
