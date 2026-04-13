@@ -103,7 +103,14 @@ RULES:
     Setelah piutang/AR: "ke siapa aja?" → query_ar_invoices. "dari siapa aja?" → query_ar_invoices. "yang paling besar?" → calc_rank_customers_by_ar. "yang paling besar siapa?" → calc_rank_customers_by_ar.
     Setelah barang: "yang paling mahal?" → calc_rank_items_by_price. "yang stoknya habis?" → query_items_no_stock.
     DILARANG: switch domain, minta klarifikasi, atau jawab "sebutkan nama" untuk query pendek yang jelas merujuk history.
-17. REFORMAT: "tampilkan dalam tabel/tabelkan/bikin tabel/rekapan tabel" → SELALU reformat_as_table. Confidence 1.0. Tidak perlu tanya "data apa?"."""
+17. REFORMAT: "tampilkan dalam tabel/tabelkan/bikin tabel/rekapan tabel" → SELALU reformat_as_table. Confidence 1.0. Tidak perlu tanya "data apa?".
+18. ENTITY EXTRACTION WAJIB: Jika user sebut NAMA di query, SELALU extract:
+    "piutang [nama]" → query_customer_ar, customer_name=[nama]. "hutang ke [nama]" → query_vendor_ap, vendor_name=[nama].
+    "cek stok [nama]" / "stok [nama] berapa" → query_item_detail, item_name=[nama].
+    "saldo [bank]" → query_bank_account_balance, bank_name=[bank].
+    DILARANG jawab "sebutkan nama" jika nama SUDAH ada di pesan. Bahkan setelah CRUD/daftar context.
+19. STANDALONE STOCK: "stok habis/kosong/nol/0" tanpa context barang sebelumnya → query_items_no_stock. "stok rendah/sedikit" → query_items_low_stock.
+    "rekening/bank paling banyak/terbesar" → query_bank_accounts_list (bukan agent loop)."""
 
 
 ROUTER_RESPONSE_SCHEMA = {

@@ -1,6 +1,6 @@
 """
 100-Query Multi-Turn Stress Test v2
-20 groups × 5 turns = 100 queries
+20 groups x 5 turns = 100 queries
 3 tiers: core flows, natural language stress, conversation edge cases
 
 DIAGNOSTIC: log everything, fix nothing.
@@ -12,6 +12,7 @@ EMAIL = "grapmanado@gmail.com"
 PASSWORD = "grapgrap007"
 
 GROUPS = [
+    # TIER 1: CORE FLOWS (8 groups, 40 queries)
     ("T1_01_ar_deep", "core", [
         ("piutang saya berapa?", ["piutang", "Rp"], ["barang"], 8000),
         ("rincian per faktur dong", ["faktur", "INV", "tabel", "|"], ["barang"], 8000),
@@ -68,6 +69,8 @@ GROUPS = [
         ("arus kas bulan ini?", ["arus kas", "cash flow", "Rp"], [], 15000),
         ("ringkasan dashboard", ["ringkasan", "Rp", "piutang", "hutang", "kas", "penjualan"], [], 15000),
     ]),
+
+    # TIER 2: NATURAL LANGUAGE STRESS (6 groups, 30 queries)
     ("T2_09_prefix_noise", "natural", [
         ("eh btw piutang berapa ya?", ["piutang", "Rp"], [], 8000),
         ("hmm kalau hutangnya gimana?", ["hutang", "Rp"], [], 8000),
@@ -110,6 +113,8 @@ GROUPS = [
         ("saya ingin tahu apakah ada tagihan yang sudah jatuh tempo dan belum kita bayar ke vendor", ["jatuh tempo", "overdue", "tagihan", "belum"], [], 8000),
         ("tolong buatkan faktur penjualan untuk pelanggan Sintia Runtuwene", ["Sintia", "faktur", "penjualan", "invoice", "konfirmasi"], [], 10000),
     ]),
+
+    # TIER 3: CONVERSATION EDGE CASES (6 groups, 30 queries)
     ("T3_15_correction_midflow", "edge", [
         ("buat faktur untuk Sintia", ["Sintia", "faktur", "konfirmasi", "penjualan"], [], 10000),
         ("eh salah, bukan Sintia tapi Budi", ["Budi", "faktur", "konfirmasi", "penjualan", "ganti"], [], 10000),
@@ -156,7 +161,9 @@ GROUPS = [
 
 async def run_test():
     async with httpx.AsyncClient(timeout=60) as client:
-        login = await client.post(f"{BASE}/api/auth/login", json={"email": EMAIL, "password": PASSWORD})
+        login = await client.post(f"{BASE}/api/auth/login", json={
+            "email": EMAIL, "password": PASSWORD
+        })
         token = login.json()["data"]["access_token"]
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -244,6 +251,7 @@ async def run_test():
                 await asyncio.sleep(1.5)
             await asyncio.sleep(2)
 
+        # SUMMARY
         total = len(results)
         total_pass = sum(1 for r in results if r["status"] == "PASS")
         total_fail = sum(1 for r in results if r["status"].startswith("FAIL") or r["status"].startswith("ERROR"))
@@ -282,7 +290,7 @@ async def run_test():
             g = [r for r in results if r["group"] == group_name]
             g_pass = sum(1 for r in g if r["status"] == "PASS")
             g_avg = sum(r["latency_ms"] for r in g) / max(len(g), 1)
-            icon = "\u2705" if g_pass == len(g) else "\u26a0\ufe0f" if g_pass >= len(g) * 0.6 else "\u274c"
+            icon = "OK" if g_pass == len(g) else "WARN" if g_pass >= len(g) * 0.6 else "FAIL"
             print(f"  {icon} {group_name} [{tier}]: {g_pass}/{len(g)} pass, avg {g_avg:.0f}ms")
 
         failures = [r for r in results if r["status"] != "PASS"]

@@ -4929,6 +4929,19 @@ class UnifiedAgent:
                 from .entity_extractor import is_pipeline_enabled as _llm_is_pipe
                 _lr_intent = _llm_extraction.intent or ""
 
+                # ── Entity merge: code classifier entities → LLM router ──
+                # LLM Router often returns correct intent but empty entities.
+                # Code classifier (extraction) extracts entities reliably.
+                # Merge code classifier entities into LLM extraction if missing.
+                if extraction and extraction.entities:
+                    for _ek, _ev in extraction.entities.items():
+                        if _ek not in _llm_extraction.entities and _ev:
+                            _llm_extraction.entities[_ek] = _ev
+                            logger.warning(
+                                "[LLM_ROUTER_PRIMARY] merged entity %s=%s from code classifier",
+                                _ek, str(_ev)[:50],
+                            )
+
                 # ── Reformat + drill-down (dispatch to existing handlers) ──
                 if _lr_intent == "reformat_as_table":
                     logger.warning("[LLM_ROUTER_PRIMARY] reformat_as_table")
