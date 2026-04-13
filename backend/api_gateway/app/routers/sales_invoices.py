@@ -31,20 +31,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
-
-
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+    return await get_db_pool()
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
@@ -296,8 +288,11 @@ async def list_invoices(
 
             # Status filter (with dynamic overdue calculation like bills)
             if status:
-                if status == "active":
-                    # Exclude draft & void — for piutang/AR queries
+                if status == "unpaid":
+                    # Exclude draft, void, AND paid — for piutang queries (outstanding > 0 only)
+                    conditions.append("si.status IN ('posted', 'partial')")
+                elif status == "active":
+                    # Exclude draft & void
                     conditions.append("si.status NOT IN ('draft', 'void')")
                 elif status == "overdue":
                     # Overdue = posted/partial + past due + has outstanding via DB function
@@ -2056,9 +2051,9 @@ async def post_invoice(
                             f"Sale: {invoice['invoice_number']}",
                             posting_warehouse_id,
                             si_batch_id,
-                            transaction_unit_si2,
-                            transaction_quantity_si2,
-                            float(conversion_factor_si2),
+                            (product.get("base_unit") or item.get("unit") or "pcs"),
+                            quantity,
+                            1.0,
                         )
 
                         # Batch deduction (if batch tracking)
