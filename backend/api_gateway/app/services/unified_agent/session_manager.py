@@ -312,20 +312,27 @@ class SessionManager:
         idx = 3
         
         for key, value in updates.items():
-            set_clauses.append(f"{key} = ${idx}")
             if isinstance(value, (dict, list)):
+                set_clauses.append(f"{key} = ${idx}::jsonb")
                 values.append(json.dumps(value))
+            elif value is None:
+                set_clauses.append(f"{key} = NULL")
+                # Don't increment idx for NULL literals
+                continue
             else:
+                set_clauses.append(f"{key} = ${idx}")
                 values.append(value)
             idx += 1
         
         set_clauses.append("updated_at = now()")
         
-        await self.db.execute(f"""
-            UPDATE chat_session_state 
-            SET {', '.join(set_clauses)}
-            WHERE session_id = $1::uuid AND tenant_id = $2
-        """, *values)
+        # Use acquire() to trigger RLS monkey-patch, not pool.execute() which bypasses it
+        async with self.db.acquire() as _conn:
+            await _conn.execute(f"""
+                UPDATE chat_session_state 
+                SET {', '.join(set_clauses)}
+                WHERE session_id = $1::uuid AND tenant_id = $2
+            """, *values)
     
     async def update_state_from_search(self, session_id: str, tool_name: str, result: Dict):
         """Auto-update structured state when a search tool returns results.

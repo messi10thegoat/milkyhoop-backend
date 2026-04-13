@@ -667,7 +667,8 @@ async def send_message(request: Request, body: ChatMessageRequest):
     # ── Bank selection re-trigger (from document clarification) ──
     # When user taps a bank option from CLARIFICATION, text = bank_account_id (UUID).
     # Check Layer 2 document_context.pending_bank_selection and re-resolve.
-    if body.session_id and body.text:
+    _retrigger_sid = body.session_id or body.conversation_id
+    if _retrigger_sid and body.text:
         try:
             _retrigger_pool = await get_session_db_pool()
             _retrigger_sm = SessionManager(
@@ -675,7 +676,7 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 tenant_id=ctx["tenant_id"],
                 user_id=ctx["user_id"],
             )
-            _retrigger_state = await _retrigger_sm.get_state(body.session_id)
+            _retrigger_state = await _retrigger_sm.get_state(_retrigger_sid)
             _doc_ctx = (
                 _retrigger_state.document_context if _retrigger_state else None
             ) or {}
@@ -2030,14 +2031,46 @@ Aturan:
                                     if _match_result and _match_result.best_match
                                     else None,
                                 }
-                                await _sm_cl.update_state(
-                                    session_id, document_context=_doc_ctx_cl
-                                )
-                                logger.info(
-                                    "[DocResolver] Stored pending_bank_selection in Layer 2"
-                                )
-                            except Exception:
-                                pass
+                                # Use direct connection with explicit RLS set (pool.execute bypasses RLS)
+                                async with _ocr_pool.acquire() as _store_conn:
+                                  async with _store_conn.transaction():
+                                    await _store_conn.execute(
+                                        f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'"
+                                    )
+                                    import json as _ctx_json
+                                    _rows = await _store_conn.execute(
+                                        "UPDATE chat_session_state SET document_context = $1::jsonb, updated_at = now() "
+                                        "WHERE session_id = $2::uuid AND tenant_id = $3",
+                                        _ctx_json.dumps(_doc_ctx_cl),
+                                        __import__("uuid").UUID(session_id),
+                                        ctx["tenant_id"],
+                                    )
+                                    logger.error("[DocResolver] Direct SQL result: %s (session=%s, tenant=%s)", _rows, session_id, ctx["tenant_id"])
+                                # Verify it actually persisted
+                                _verify_state = await _sm_cl.get_state(session_id)
+                                _verify_dc = getattr(_verify_state, "document_context", None)
+                                if _verify_dc and _verify_dc.get("pending_bank_selection"):
+                                    logger.info(
+                                        "[DocResolver] VERIFIED pending_bank_selection stored (session=%s)",
+                                        session_id,
+                                    )
+                                else:
+                                    logger.error(
+                                        "[DocResolver] STORE FAILED SILENTLY — update_state returned OK but DB has no document_context (session=%s, verify_dc=%s)",
+                                        session_id, _verify_dc,
+                                    )
+                                    # Retry with direct SQL
+                                    import json as _store_json
+                                    await _ocr_pool.execute(
+                                        "UPDATE chat_session_state SET document_context = $1::jsonb WHERE session_id = $2::uuid AND tenant_id = $3",
+                                        _store_json.dumps(_doc_ctx_cl),
+                                        __import__("uuid").UUID(session_id),
+                                        ctx["tenant_id"],
+                                    )
+                                    logger.info("[DocResolver] Retried with direct SQL (session=%s)", session_id)
+                            except Exception as _store_err:
+                                import traceback as _store_tb
+                                logger.error("[DocResolver] FAILED to store pending_bank_selection: %s (session=%s)\n%s", _store_err, session_id, _store_tb.format_exc())
 
                             _dir_word_cl = (
                                 "ke"
