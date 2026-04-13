@@ -2374,11 +2374,14 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_ap_outstanding": QueryActionConfig(
         action_key="query_ap_outstanding",
         display_name="Utang (AP Outstanding)",
-        rest_endpoint="/api/bills/outstanding-summary",
-        response_format="summary",
-        description="Total utang (AP) — journal-derived, ARAP compliant.",
-        signal_words=["utang", "total utang", "ap outstanding", "hutang"],
-        query_params=[],
+        rest_endpoint="/api/bills",
+        response_format="list",
+        description="Daftar hutang per vendor — status=unpaid excludes draft/void/paid. Only bills with real outstanding.",
+        signal_words=["utang", "total utang", "ap outstanding", "hutang", "siapa yang punya hutang"],
+        query_params=[
+            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
     ),
     # Kas & Bank
     "query_bank_accounts_list": QueryActionConfig(
@@ -2459,9 +2462,10 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         display_name="Daftar Faktur Pembelian",
         rest_endpoint="/api/bills",
         response_format="list",
-        description="Daftar semua faktur pembelian.",
+        description="Daftar faktur pembelian yang belum lunas. status=unpaid excludes draft/void/paid.",
         signal_words=["daftar faktur pembelian", "list tagihan"],
         query_params=[
+            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
             QueryParam(name="limit", label="Limit", param_type="number", default="20")
         ],
     ),
