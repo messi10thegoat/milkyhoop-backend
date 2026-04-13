@@ -2350,11 +2350,14 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_ar_outstanding": QueryActionConfig(
         action_key="query_ar_outstanding",
         display_name="Piutang (AR Outstanding)",
-        rest_endpoint="/api/sales-invoices/summary",
-        response_format="summary",
-        description="Total piutang (AR) — journal-derived, ARAP compliant.",
-        signal_words=["piutang", "total piutang", "ar outstanding"],
-        query_params=[],
+        rest_endpoint="/api/sales-invoices",
+        response_format="list",
+        description="Daftar piutang per pelanggan — status=active excludes draft/void. Polish: group by customer, show outstanding > 0 only, exclude paid (outstanding=0).",
+        signal_words=["piutang", "total piutang", "ar outstanding", "siapa yang punya piutang"],
+        query_params=[
+            QueryParam(name="status", label="Status", param_type="string", default="active"),
+            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
+        ],
     ),
     "query_ar_invoices": QueryActionConfig(
         action_key="query_ar_invoices",
