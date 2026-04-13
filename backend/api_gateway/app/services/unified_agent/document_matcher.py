@@ -113,6 +113,31 @@ EXPENSE_KEYWORDS = {
     "atk": ("5-20600", "Beban Perlengkapan Kantor"),
     "makan": ("5-20700", "Beban Konsumsi"),
     "catering": ("5-20700", "Beban Konsumsi"),
+    # Maintenance & repair
+    "perbaikan": ("5-20700", "Beban Pemeliharaan"),
+    "reparasi": ("5-20700", "Beban Pemeliharaan"),
+    "servis": ("5-20700", "Beban Pemeliharaan"),
+    "service": ("5-20700", "Beban Pemeliharaan"),
+    "maintenance": ("5-20700", "Beban Pemeliharaan"),
+    "jasa": ("5-20700", "Beban Pemeliharaan"),
+    "perawatan": ("5-20700", "Beban Pemeliharaan"),
+    # Cleaning
+    "laundry": ("5-20700", "Beban Pemeliharaan"),
+    "cuci": ("5-20700", "Beban Pemeliharaan"),
+    # Printing & copies
+    "fotokopi": ("5-20600", "Beban Perlengkapan Kantor"),
+    "print": ("5-20600", "Beban Perlengkapan Kantor"),
+    "cetak": ("5-20600", "Beban Perlengkapan Kantor"),
+    # Shipping
+    "kirim": ("5-20500", "Beban Transportasi"),
+    "ongkir": ("5-20500", "Beban Transportasi"),
+    "ekspedisi": ("5-20500", "Beban Transportasi"),
+    "kurir": ("5-20500", "Beban Transportasi"),
+    # Other common
+    "asuransi": ("5-20900", "Beban Lain-lain"),
+    "iuran": ("5-20900", "Beban Lain-lain"),
+    "donasi": ("5-20900", "Beban Lain-lain"),
+    "sumbangan": ("5-20900", "Beban Lain-lain"),
 }
 
 TAX_KEYWORDS = {
@@ -548,7 +573,8 @@ class DocumentMatcher:
                 code, name = EXPENSE_KEYWORDS[keyword]
                 return await self._resolve_account(code, name)
 
-        return None
+        # Fallback: generic expense account if user context suggests expense
+        return await self._resolve_account("5-20900", "Beban Lain-lain")
 
     async def _recommend_tax_account(
         self, ocr: dict

@@ -779,6 +779,22 @@ async def send_message(request: Request, body: ChatMessageRequest):
                             ),
                             session_id=body.session_id,
                         )
+                    else:
+                        # propose failed — return error message, DON'T fall through to pipeline
+                        _err_msg = _propose_result.get("error", "Gagal memproses dokumen.")
+                        # Clear pending state so user can retry
+                        try:
+                            await _retrigger_sm.update_state(
+                                body.session_id,
+                                document_context={"pending_bank_selection": False},
+                            )
+                        except Exception:
+                            pass
+                        return ChatMessageResponse(
+                            message_type="TEXT",
+                            text=_err_msg,
+                            session_id=body.session_id,
+                        )
         except Exception as _retrigger_err:
             logger.debug("[DocRetrigger] Not a bank selection: %s", _retrigger_err)
 
@@ -984,6 +1000,10 @@ async def send_message(request: Request, body: ChatMessageRequest):
         session_id=body.session_id,
     )
 
+    # Ensure session_id is propagated to response (AgentResponse may not set it)
+    if body.session_id and hasattr(agent_resp, 'session_id') and not agent_resp.session_id:
+        agent_resp.session_id = body.session_id
+
     # Post-process: strip draft/void rows from tables
     if hasattr(agent_resp, "content") and agent_resp.content:
         agent_resp.content = _strip_draft_void_rows(agent_resp.content)
@@ -1186,7 +1206,7 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
                 "message_type": chat_resp.message_type,
                 "text": chat_resp.text,
                 "data": chat_resp.data,
-                "session_id": chat_resp.session_id,
+                "session_id": body.session_id or chat_resp.session_id,
                 "pending_action_id": chat_resp.pending_action_id,
                 "iterations": chat_resp.iterations,
                 "model_used": chat_resp.model_used,
