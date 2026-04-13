@@ -3108,7 +3108,9 @@ class ToolExecutor:
     async def _enrich_expense(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_EXPENSE: field translation, CoA→bank_account lookup, date default."""
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("expense_date", today)
+        # Fix: setdefault doesn't override empty/null values from document pipeline
+        if not payload.get("expense_date") or payload.get("expense_date") in ("null", "", "-", "None"):
+            payload["expense_date"] = today
         # Translate LLM field names → kernel field names
         if "payment_account_id" in payload and "paid_through_id" not in payload:
             payload["paid_through_id"] = payload.pop("payment_account_id")
