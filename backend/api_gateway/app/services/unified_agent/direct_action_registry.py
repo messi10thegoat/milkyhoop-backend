@@ -2450,8 +2450,8 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_sales_invoices_summary": QueryActionConfig(
         action_key="query_sales_invoices_summary",
         display_name="Ringkasan Faktur Penjualan",
-        rest_endpoint="/api/sales-invoices/summary",
-        response_format="summary",
+        rest_endpoint="/api/sales-invoices",
+        response_format="list",
         description="Ringkasan faktur penjualan.",
         signal_words=["ringkasan penjualan", "total penjualan"],
         query_params=[],
@@ -2483,8 +2483,8 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_bills_summary": QueryActionConfig(
         action_key="query_bills_summary",
         display_name="Ringkasan Faktur Pembelian",
-        rest_endpoint="/api/bills/summary",
-        response_format="summary",
+        rest_endpoint="/api/bills",
+        response_format="list",
         description="Ringkasan faktur pembelian.",
         signal_words=["ringkasan pembelian", "total pembelian"],
         query_params=[],
@@ -2654,8 +2654,8 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_bills_outstanding": QueryActionConfig(
         action_key="query_bills_outstanding",
         display_name="Tagihan Outstanding",
-        rest_endpoint="/api/bills/outstanding-summary",
-        response_format="summary",
+        rest_endpoint="/api/bills",
+        response_format="list",
         description="Tagihan belum bayar: total outstanding, overdue, vendor count, urgency.",
         signal_words=[
             "tagihan outstanding",
@@ -4099,8 +4099,8 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_vendors_with_overdue": QueryActionConfig(
         action_key="query_vendors_with_overdue",
         display_name="Vendor Jatuh Tempo",
-        rest_endpoint="/api/bills/outstanding-summary",
-        response_format="summary",
+        rest_endpoint="/api/bills",
+        response_format="list",
         description="Vendor dengan tagihan jatuh tempo.",
         signal_words=["vendor jatuh tempo", "vendor overdue", "vendor terlambat"],
         query_params=[],
