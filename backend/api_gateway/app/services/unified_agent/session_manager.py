@@ -58,6 +58,11 @@ class StructuredState:
     pending_payload: Dict = field(default_factory=dict)
     pending_intent: str = ""
     editing_mode: bool = False
+    # ── Response Entity Context (REC) ──
+    last_domain: Optional[str] = None
+    last_response_items: Optional[List[Dict]] = None  # max 10
+    active_entity: Optional[Dict] = None  # {type, name, id}
+    last_numeric: Optional[Dict] = None  # {total, count, max, min}
 
     def to_context_string(self) -> str:
         """Convert to minimal injection string for LLM context."""

@@ -527,3 +527,71 @@ class EntityResolver:
         except Exception as e:
             logger.warning("[RESOLVE] Bill lookup failed: %s", e)
             return None
+
+    # ── Response Entity Context (REC): Session-based resolution ──
+
+    @staticmethod
+    def resolve_from_session(user_text: str, session_state) -> dict:
+        """Resolve pronouns and ordinals from REC session context.
+        Returns dict of resolved fields to merge into extraction.entities.
+        """
+        t = user_text.lower()
+        items = getattr(session_state, "last_response_items", None) or []
+        entity = getattr(session_state, "active_entity", None)
+        resolved = {}
+
+        # Pronoun resolution
+        _PRONOUNS = [" dia ", " mereka ", "nya?", "nya ", "ke mereka",
+                      "dari mereka", "di situ", "ke dia", "sama dia",
+                      " dia?", " dia,"]
+        if entity and any(p in f" {t} " or t.endswith(p.strip()) for p in _PRONOUNS):
+            _type = entity.get("type", "")
+            _name = entity.get("name", "")
+            if _type == "customer" and _name:
+                resolved["customer_name"] = _name
+            elif _type == "vendor" and _name:
+                resolved["vendor_name"] = _name
+            elif _type == "item" and _name:
+                resolved["item_name"] = _name
+            elif _type == "bank_account" and _name:
+                resolved["bank_name"] = _name
+            if entity.get("id"):
+                resolved[f"{_type}_id"] = entity["id"]
+
+        # Ordinal resolution
+        if items:
+            target = None
+            if any(w in t for w in ["yang pertama", "pertama", "nomor 1", "no 1", "no. 1"]):
+                target = items[0]
+            elif any(w in t for w in ["yang terakhir", "terakhir"]):
+                target = items[-1]
+            elif any(w in t for w in ["yang kedua", "nomor 2", "no 2"]) and len(items) > 1:
+                target = items[1]
+            elif any(w in t for w in ["yang ketiga", "nomor 3", "no 3"]) and len(items) > 2:
+                target = items[2]
+            elif any(w in t for w in ["yang terbesar", "terbesar", "paling besar",
+                                       "paling gede", "paling banyak", "tergede"]):
+                _with_amt = [i for i in items if i.get("_amount") is not None]
+                if _with_amt:
+                    target = max(_with_amt, key=lambda x: x["_amount"])
+            elif any(w in t for w in ["yang terkecil", "terkecil", "paling kecil",
+                                       "paling sedikit", "paling dikit"]):
+                _with_amt = [i for i in items if i.get("_amount") is not None]
+                if _with_amt:
+                    target = min(_with_amt, key=lambda x: x["_amount"])
+
+            if target:
+                resolved["_resolved_item"] = target
+                if target.get("_name") and not any(
+                    resolved.get(k) for k in ["customer_name", "vendor_name", "item_name"]
+                ):
+                    _domain = getattr(session_state, "last_domain", None)
+                    if _domain in ("ar", "customer"):
+                        resolved["customer_name"] = target["_name"]
+                    elif _domain in ("ap", "vendor"):
+                        resolved["vendor_name"] = target["_name"]
+                    elif _domain == "items":
+                        resolved["item_name"] = target["_name"]
+
+        return resolved
+

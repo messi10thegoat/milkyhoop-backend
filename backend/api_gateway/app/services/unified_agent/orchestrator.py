@@ -2490,6 +2490,121 @@ class UnifiedAgent:
             return "Oke, " + collected_str + ". Masih butuh: " + missing_str
         return "Untuk lanjut, saya butuh: " + missing_str
 
+
+    # ═══ Response Entity Context (REC) ═══
+
+    _INTENT_DOMAIN_MAP = {
+        "query_ar_outstanding": "ar", "query_ar_invoices": "ar",
+        "query_customer_ar": "ar", "query_sales_invoices_list": "ar",
+        "query_sales_invoice_detail": "ar", "query_sales_invoices_overdue": "ar",
+        "query_sales_invoices_unpaid": "ar",
+        "query_ap_outstanding": "ap", "query_bills_list": "ap",
+        "query_bill_detail": "ap", "query_bills_overdue": "ap",
+        "query_bills_unpaid": "ap", "query_vendor_ap": "ap",
+        "query_customer_detail": "customer", "query_customers_list": "customer",
+        "query_customers_summary": "customer", "query_customers_with_overdue": "customer",
+        "query_vendor_detail": "vendor", "query_vendors_list": "vendor",
+        "query_vendors_summary": "vendor", "query_vendors_with_overdue": "vendor",
+        "query_item_detail": "items", "query_items_list": "items",
+        "query_items_summary": "items", "query_items_low_stock": "items",
+        "query_items_search": "items", "query_items_by_price": "items",
+        "query_items_by_stock": "items",
+        "query_bank_accounts_list": "bank", "query_bank_account_detail": "bank",
+        "query_bank_account_balance": "bank", "query_bank_transactions": "bank",
+        "query_expenses_list": "expense", "query_expense_detail": "expense",
+        "query_expenses_summary": "expense",
+        "query_receive_payments_list": "ar", "query_bill_payments_list": "ap",
+        "query_journals_list": "journal", "query_journal_detail": "journal",
+        "query_accounts_list": "coa", "query_account_detail": "coa",
+    }
+
+    _NAME_KEYS = ["customer_name", "vendor_name", "nama", "name", "item_name",
+                   "account_name", "bank_name", "display_name"]
+    _ID_KEYS = ["customer_id", "vendor_id", "id", "item_id", "account_id"]
+    _AMOUNT_KEYS = ["outstanding", "total_amount", "amount", "amount_due",
+                     "harga_jual", "sales_price", "balance", "saldo",
+                     "current_balance", "ap_balance", "ar_balance",
+                     "outstanding_balance"]
+    _REF_KEYS = ["invoice_number", "bill_number", "journal_number",
+                  "reference_number", "payment_number"]
+
+    def _extract_rec(self, intent: str, data) -> dict:
+        """Extract Response Entity Context from API response. Pure code, 0ms."""
+        domain = self._INTENT_DOMAIN_MAP.get(intent)
+        if not domain:
+            return None
+
+        # Find items list in response
+        items_raw = []
+        if isinstance(data, list):
+            items_raw = data
+        elif isinstance(data, dict):
+            for key in ("items", "data", "results", "invoices", "bills",
+                         "customers", "vendors", "payments", "accounts"):
+                if isinstance(data.get(key), list):
+                    items_raw = data[key]
+                    break
+            if not items_raw and not any(isinstance(v, list) for v in data.values()):
+                items_raw = [data]
+
+        if not items_raw:
+            return None
+
+        # Extract essential fields (generic, max 10, preserve order)
+        items = []
+        for raw in items_raw[:10]:
+            if not isinstance(raw, dict):
+                continue
+            item = {}
+            for k in self._NAME_KEYS:
+                if raw.get(k):
+                    item["_name"] = str(raw[k]); break
+            for k in self._ID_KEYS:
+                if raw.get(k):
+                    item["_id"] = str(raw[k]); break
+            for k in self._AMOUNT_KEYS:
+                if raw.get(k) is not None:
+                    try: item["_amount"] = float(raw[k])
+                    except (ValueError, TypeError): pass
+                    break
+            for k in self._REF_KEYS:
+                if raw.get(k):
+                    item["_ref"] = str(raw[k]); break
+            if raw.get("status"):
+                item["_status"] = raw["status"]
+            if item.get("_name") or item.get("_ref"):
+                items.append(item)
+
+        if not items:
+            return None
+
+        # Primary entity = most frequent name
+        from collections import Counter
+        names = [i["_name"] for i in items if i.get("_name")]
+        primary_entity = None
+        if names:
+            primary_name = Counter(names).most_common(1)[0][0]
+            primary_id = next((i["_id"] for i in items
+                              if i.get("_name") == primary_name and i.get("_id")), None)
+            _type_map = {"ar": "customer", "ap": "vendor", "customer": "customer",
+                         "vendor": "vendor", "items": "item", "bank": "bank_account",
+                         "expense": "expense", "journal": "journal", "coa": "account"}
+            primary_entity = {
+                "type": _type_map.get(domain, "unknown"),
+                "name": primary_name,
+                "id": primary_id,
+            }
+
+        # Numeric summary
+        amounts = [i["_amount"] for i in items if i.get("_amount") is not None]
+        numeric = None
+        if amounts:
+            numeric = {"total": sum(amounts), "count": len(amounts),
+                       "max": max(amounts), "min": min(amounts)}
+
+        return {"domain": domain, "items": items,
+                "primary_entity": primary_entity, "numeric": numeric}
+
     async def _handle_query_pipeline(
         self,
         user_text: str,
@@ -2974,6 +3089,20 @@ class UnifiedAgent:
                 "category": "search",
             },
         )
+
+        # ── REC: Extract and store response entity context ──
+        try:
+            _rec = self._extract_rec(query_config.action_key, data)
+            if _rec and tool_executor and getattr(tool_executor, "session_id", None):
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_domain=_rec["domain"],
+                    last_response_items=_rec["items"],
+                    active_entity=_rec.get("primary_entity"),
+                    last_numeric=_rec.get("numeric"),
+                )
+        except Exception as _rec_err:
+            logger.warning("[REC] Extract/store failed: %s", _rec_err)
 
         # Format + LLM Polish
         await emit(
@@ -4458,6 +4587,49 @@ class UnifiedAgent:
 
             if not isinstance(extraction.entities, dict):
                 extraction.entities = {}
+
+            # 2.5 REC: Domain-aware follow-up routing (conservative: <4 words, no domain keyword)
+            if _state:
+                _rec_last_domain = getattr(_state, "last_domain", None)
+                if _rec_last_domain:
+                    _rec_words = user_text.strip().split()
+                    _rec_domain_kws = {
+                        "piutang","hutang","utang","stok","bank","biaya","faktur",
+                        "vendor","pelanggan","customer","barang","item","saldo",
+                        "pengeluaran","penjualan","pembelian","rekening","gudang",
+                        "invoice","bill","expense","payment","journal",
+                    }
+                    _rec_has_kw = any(
+                        w.lower().rstrip("?.,!") in _rec_domain_kws for w in _rec_words
+                    )
+                    if len(_rec_words) < 4 and not _rec_has_kw:
+                        _REC_FOLLOWUP = {
+                            "ar": "query_ar_invoices", "ap": "query_ap_outstanding",
+                            "customer": "query_customers_list", "vendor": "query_vendors_list",
+                            "items": "query_items_list", "bank": "query_bank_accounts_list",
+                            "expense": "query_expenses_list",
+                        }
+                        _rec_followup = _REC_FOLLOWUP.get(_rec_last_domain)
+                        if _rec_followup:
+                            extraction.intent = _rec_followup
+                            extraction.confidence = 0.9
+                            logger.warning(
+                                "[REC_FOLLOWUP] '%s' (%d words) → %s (domain=%s)",
+                                user_text[:30], len(_rec_words), _rec_followup, _rec_last_domain,
+                            )
+
+            # 2.6 REC: Pronoun + ordinal resolution from session
+            if _state:
+                try:
+                    from .entity_resolver import EntityResolver
+                    _rec_resolved = EntityResolver.resolve_from_session(user_text, _state)
+                    if _rec_resolved:
+                        for _rk, _rv in _rec_resolved.items():
+                            if _rk != "_resolved_item" and not extraction.entities.get(_rk):
+                                extraction.entities[_rk] = _rv
+                        logger.warning("[REC_RESOLVE] Merged: %s", list(_rec_resolved.keys()))
+                except Exception as _rec_err:
+                    logger.warning("[REC_RESOLVE] Failed: %s", _rec_err)
 
             # 3. ARAP GUARD (financial-critical only)
             from .entity_extractor import classify_query_intent
