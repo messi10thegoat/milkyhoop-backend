@@ -110,7 +110,14 @@ RULES:
     "saldo [bank]" → query_bank_account_balance, bank_name=[bank].
     DILARANG jawab "sebutkan nama" jika nama SUDAH ada di pesan. Bahkan setelah CRUD/daftar context.
 19. STANDALONE STOCK: "stok habis/kosong/nol/0" tanpa context barang sebelumnya → query_items_no_stock. "stok rendah/sedikit" → query_items_low_stock.
-    "rekening/bank paling banyak/terbesar" → query_bank_accounts_list (bukan agent loop)."""
+    "rekening/bank paling banyak/terbesar" → query_bank_accounts_list (bukan agent loop).
+20. ENTITY FROM HISTORY (CRITICAL): Jika user refer entity dari respons BOT sebelumnya, extract NAMA LENGKAP dari riwayat, BUKAN dari user text saja.
+    "poloshirt harganya?" setelah bot sebut "Poloshirt Hitam + Bordir (42 pcs)" → item_name="Poloshirt Hitam + Bordir".
+    "detail Sintia" setelah bot sebut "Sintia Runtuwene (Rp 175.000)" → customer_name="Sintia Runtuwene".
+    "hutang ke Knitto?" setelah bot sebut "Knitto Textile Holis" → vendor_name="Knitto Textile Holis".
+    "harganya?" / "stoknya?" / "piutangnya?" / "hutangnya?" → ambil entity dari riwayat terdekat.
+    Juga berlaku untuk pronoun: "mereka"/"dia"/"di situ" → resolve ke entity dari riwayat.
+    DILARANG jawab "sebutkan nama" jika entity bisa di-resolve dari riwayat."""
 
 
 ROUTER_RESPONSE_SCHEMA = {
