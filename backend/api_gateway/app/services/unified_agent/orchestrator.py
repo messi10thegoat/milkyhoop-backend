@@ -3021,6 +3021,17 @@ class UnifiedAgent:
                 and getattr(tool_executor, "session_manager", None)
                 and getattr(tool_executor, "session_id", None)
             ):
+                # Build entity context for session persistence
+                _entity_updates = {}
+                if extraction.entities.get("customer_name"):
+                    _entity_updates["active_customer_name"] = extraction.entities["customer_name"]
+                if extraction.entities.get("vendor_name"):
+                    _entity_updates["active_vendor_name"] = extraction.entities["vendor_name"]
+                if extraction.entities.get("item_name"):
+                    _entity_updates["active_items"] = [{"name": extraction.entities["item_name"]}]
+                if extraction.entities.get("bank_name"):
+                    _entity_updates["active_customer_name"] = _entity_updates.get("active_customer_name")  # no-op, keep existing
+
                 await tool_executor.session_manager.update_state(
                     tool_executor.session_id,
                     last_action_type=extraction.intent,
@@ -3029,6 +3040,7 @@ class UnifiedAgent:
                         "query_text": user_text,
                         "last_query_params": query_params,
                     },
+                    **_entity_updates,
                 )
         except Exception as _save_err:
             logger.warning("[QUERY_PIPELINE] Failed to save last query: %s", _save_err)
@@ -4324,6 +4336,20 @@ class UnifiedAgent:
         # Feature-flagged: only enabled intents use pipeline.
         from .entity_extractor import EntityExtractor, is_pipeline_enabled
 
+        # ── Telemetry: init all _tel_* vars (prevent UnboundLocalError on early-exit paths) ──
+        import time as _time_mod
+        _tel_extraction_start = _tel_extraction_end = None
+        _tel_raw_intent = _tel_raw_conf = None
+        _tel_raw_entities = {}
+        _tel_gemini_ms = 0
+        _tel_guard = "none"
+        _tel_guard_from = _tel_guard_to = None
+        _tel_decision_source = "gemini"
+        _tel_guard_matches = {}
+        _tel_guard_conflict = False
+        _tel_conv_id = _tel_session_id = None
+        extraction = None  # prevent UnboundLocalError if _intent not in ACTION/SIMPLE_READ
+
         if _intent in ("ACTION", "SIMPLE_READ"):
             # ═══ LLM-FIRST CLASSIFICATION (v3) ═══
 
@@ -4423,7 +4449,7 @@ class UnifiedAgent:
             asyncio.create_task(_run_shadow())
         except Exception as _shadow_init_err:
             logger.warning("[SHADOW] Init failed: %s", _shadow_init_err)
-            _tel_gemini_ms = int((_tel_extraction_end - _tel_extraction_start) * 1000)
+            _tel_gemini_ms = int((_tel_extraction_end - _tel_extraction_start) * 1000) if _tel_extraction_end and _tel_extraction_start else 0
             _tel_guard = "none"
             _tel_guard_from = None
             _tel_guard_to = None
@@ -4941,6 +4967,30 @@ class UnifiedAgent:
                                 "[LLM_ROUTER_PRIMARY] merged entity %s=%s from code classifier",
                                 _ek, str(_ev)[:50],
                             )
+
+                # ── Entity inject from session state (pronoun follow-ups) ──
+                # If extraction still has no entity but intent needs one, inject from session
+                if not _llm_extraction.entities and tool_executor and tool_executor.session_id:
+                    try:
+                        _sess = await tool_executor.session_manager.get_state(tool_executor.session_id) if tool_executor.session_manager else None
+                        if _sess:
+                            _lr_i = _llm_extraction.intent or ""
+                            # Customer context for AR/customer queries
+                            if _lr_i in ("query_customer_ar", "query_customer_detail", "query_ar_invoices") and getattr(_sess, "active_customer_name", None):
+                                _llm_extraction.entities["customer_name"] = _sess.active_customer_name
+                                logger.warning("[LLM_ROUTER_PRIMARY] injected customer_name=%s from session", _sess.active_customer_name)
+                            # Vendor context for AP/vendor queries
+                            elif _lr_i in ("query_vendor_ap", "query_vendor_detail", "query_ap_outstanding", "query_bills_list") and getattr(_sess, "active_vendor_name", None):
+                                _llm_extraction.entities["vendor_name"] = _sess.active_vendor_name
+                                logger.warning("[LLM_ROUTER_PRIMARY] injected vendor_name=%s from session", _sess.active_vendor_name)
+                            # Item context for item queries
+                            elif _lr_i in ("query_item_detail", "query_warehouse_stock", "query_items_search") and getattr(_sess, "active_items", None):
+                                _items = _sess.active_items
+                                if isinstance(_items, list) and _items and isinstance(_items[0], dict):
+                                    _llm_extraction.entities["item_name"] = _items[0].get("name", "")
+                                    logger.warning("[LLM_ROUTER_PRIMARY] injected item_name=%s from session", _items[0].get("name"))
+                    except Exception as _sess_err:
+                        logger.warning("[LLM_ROUTER_PRIMARY] session entity inject failed: %s", _sess_err)
 
                 # ── Reformat + drill-down (dispatch to existing handlers) ──
                 if _lr_intent == "reformat_as_table":
