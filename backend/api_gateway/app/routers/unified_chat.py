@@ -2250,6 +2250,8 @@ Aturan:
                             if _match_result.best_match
                             else "none",
                         )
+                    except _VisionGateSkip:
+                        raise  # Re-raise — must reach outer handler
                     except Exception as _match_err:
                         logger.warning(
                             "[DocMatch] Smart match failed (non-blocking): %s",
