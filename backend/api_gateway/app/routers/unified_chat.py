@@ -230,7 +230,6 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
     if file_already_exists:
         logger.info(f"[FileUpload] Dedup hit: {file.filename} -> {file_hash[:12]}")
     else:
-
         # Session-level advisory lock (released explicitly, not tied to transaction)
         lock_key = f"CHAT_FILE:{tenant_id}:{file_hash}"
         try:
@@ -251,35 +250,52 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
 
     # Insert into documents table for entity linking (Phase A — audit trail)
     try:
-        relative_path = store_path[len(UPLOAD_BASE_DIR):].lstrip("/") if store_path.startswith(UPLOAD_BASE_DIR) else store_path
+        relative_path = (
+            store_path[len(UPLOAD_BASE_DIR) :].lstrip("/")
+            if store_path.startswith(UPLOAD_BASE_DIR)
+            else store_path
+        )
         async with pool.acquire() as _doc_conn:
             async with _doc_conn.transaction():
                 await _doc_conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
                 # Check if document already exists by SHA-256 (dedup)
                 existing = await _doc_conn.fetchrow(
                     "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2 AND deleted_at IS NULL LIMIT 1",
-                    tenant_id, file_hash,
+                    tenant_id,
+                    file_hash,
                 )
                 if existing:
                     file_meta["document_id"] = str(existing["id"])
-                    logger.info(f"[FileUpload] Document dedup: {file_hash[:12]} -> {existing['id']}")
+                    logger.info(
+                        f"[FileUpload] Document dedup: {file_hash[:12]} -> {existing['id']}"
+                    )
                 else:
                     # file_url points to chat file-serving endpoint (tenant-isolated)
-                    file_url_path = f"/api/v3/chat/files/{tenant_id}/chat/{file_hash}{ext}"
+                    file_url_path = (
+                        f"/api/v3/chat/files/{tenant_id}/chat/{file_hash}{ext}"
+                    )
                     doc_id = await _doc_conn.fetchval(
                         """INSERT INTO documents (
                             tenant_id, file_name, original_name, file_type, file_extension,
                             file_size, storage_type, file_path, file_url, category, checksum_sha256, source
                         ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, 'receipt', $9, 'chat')
                         RETURNING id""",
-                        tenant_id, file.filename or f"upload{ext}", file.filename,
-                        file.content_type, ext, len(content), relative_path, file_url_path,
+                        tenant_id,
+                        file.filename or f"upload{ext}",
+                        file.filename,
+                        file.content_type,
+                        ext,
+                        len(content),
+                        relative_path,
+                        file_url_path,
                         file_hash,
                     )
                     file_meta["document_id"] = str(doc_id)
                     logger.info(f"[FileUpload] Document created: {doc_id}")
     except Exception as _doc_err:
-        logger.warning(f"[FileUpload] documents table insert failed (non-blocking): {_doc_err}")
+        logger.warning(
+            f"[FileUpload] documents table insert failed (non-blocking): {_doc_err}"
+        )
 
     return file_meta
 
@@ -782,7 +798,9 @@ async def send_message(request: Request, body: ChatMessageRequest):
                         )
                     else:
                         # propose failed — return error message, DON'T fall through to pipeline
-                        _err_msg = _propose_result.get("error", "Gagal memproses dokumen.")
+                        _err_msg = _propose_result.get(
+                            "error", "Gagal memproses dokumen."
+                        )
                         # Clear pending state so user can retry
                         try:
                             await _retrigger_sm.update_state(
@@ -799,7 +817,151 @@ async def send_message(request: Request, body: ChatMessageRequest):
         except Exception as _retrigger_err:
             logger.debug("[DocRetrigger] Not a bank selection: %s", _retrigger_err)
 
-    # ── Workflow continuation shortcut ──
+    # ── Editing Mode Handler: apply field revisions to pending payload ──
+    if body.session_id and body.text:
+        try:
+            from ..services.unified_agent.db_utils import (
+                get_session_db_pool as _get_edit_pool,
+            )
+
+            _edit_pool = await _get_edit_pool()
+            _edit_sm = SessionManager(
+                db_pool=_edit_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+            )
+            _edit_state = await _edit_sm.get_state(body.session_id)
+            if _edit_state and _edit_state.editing_mode and _edit_state.pending_payload:
+                _payload = dict(_edit_state.pending_payload)
+                _intent = _edit_state.pending_intent or ""
+                _user_text = body.text.strip().lower()
+                logger.info(
+                    "[EditMode] Active for session=%s intent=%s text=%s",
+                    body.session_id[:8],
+                    _intent,
+                    _user_text[:60],
+                )
+
+                # ── LLM-based field extraction (Gemini Flash Lite, ~200ms) ──
+                from ..services.llm import LLMRouter, LLMMessage
+                import json as _edit_json
+
+                _edit_router = LLMRouter.from_env()
+                _payload_summary = ", ".join(
+                    f"{k}={v}"
+                    for k, v in _payload.items()
+                    if k not in ("_uploaded_document_id",) and v and str(v) != "null"
+                )
+                _edit_prompt = f"""User mau edit data berikut:
+{_payload_summary}
+
+User bilang: "{body.text}"
+
+Ekstrak field mana yang mau diubah dan nilai barunya. Return JSON ONLY:
+{{"changes": {{"field_name": new_value, ...}}}}
+
+Rules:
+- field_name HARUS salah satu dari: amount, expense_date, description, vendor_name, account_name, reference, paid_through_name
+- amount: angka tanpa Rp/titik/koma. "120rb"=120000, "Rp 120.000"=120000, "1.5jt"=1500000
+- expense_date: format YYYY-MM-DD. "hari ini"=tanggal hari ini, "kemarin"=tanggal kemarin
+- Jika user hanya sebut angka tanpa field, assume amount
+- Jika tidak ada perubahan yang jelas, return {{"changes": {{}}}}"""
+
+                _edit_resp = await _edit_router.complete(
+                    task_type="extraction",
+                    messages=[LLMMessage(role="user", content=_edit_prompt)],
+                    temperature=0.0,
+                    max_tokens=200,
+                )
+                _edit_text = (_edit_resp.content or "").strip()
+                if _edit_text.startswith("```"):
+                    _edit_text = _edit_text.split("\n", 1)[-1].rsplit("```", 1)[0]
+
+                _changes = {}
+                try:
+                    _parsed = _edit_json.loads(_edit_text)
+                    _changes = _parsed.get("changes", {})
+                except (ValueError, KeyError):
+                    logger.warning("[EditMode] LLM parse failed: %s", _edit_text[:100])
+
+                _changed = bool(_changes)
+                if _changed:
+                    for _ck, _cv in _changes.items():
+                        if _ck in ("amount",) and _cv is not None:
+                            _payload[_ck] = float(_cv)
+                        elif _cv is not None:
+                            _payload[_ck] = str(_cv)
+                        logger.info(
+                            "[EditMode] LLM extracted: %s = %s", _ck, str(_cv)[:50]
+                        )
+
+                if _changed:
+                    # Determine action_key from intent
+                    _action_key = _intent if _intent else "create_expense"
+                    if not _action_key.startswith(
+                        "create_"
+                    ) and not _action_key.startswith("void_"):
+                        _action_key = (
+                            f"create_{_action_key}"
+                            if "expense" in _action_key
+                            else _action_key
+                        )
+
+                    # Re-propose with updated payload
+                    _te_edit = ToolExecutor(
+                        context=TenantContext(
+                            tenant_id=ctx["tenant_id"],
+                            user_id=ctx["user_id"],
+                            auth_token=ctx["auth_token"],
+                            tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                        ),
+                        session_id=body.session_id,
+                    )
+                    _propose_edit = await _te_edit._execute_propose_direct(
+                        {
+                            "action_key": _action_key,
+                            "payload": _payload,
+                        }
+                    )
+
+                    if _propose_edit.get("success"):
+                        # Save updated payload and clear editing mode
+                        await _edit_sm.update_state(
+                            body.session_id,
+                            editing_mode=False,
+                            pending_payload=_payload,
+                            pending_intent=_action_key,
+                        )
+                        return ChatMessageResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            text="Sudah diperbarui:",
+                            data=_propose_edit["data"],
+                            pending_action_id=_propose_edit["data"].get(
+                                "pending_action_id"
+                            ),
+                            session_id=body.session_id,
+                        )
+                    else:
+                        # Propose failed — report error but stay in edit mode
+                        return ChatMessageResponse(
+                            message_type="TEXT",
+                            text=_propose_edit.get(
+                                "error", "Gagal memperbarui. Coba lagi."
+                            ),
+                            session_id=body.session_id,
+                        )
+                else:
+                    # Couldn't parse — ask user to be more specific
+                    _field_list = (
+                        "jumlah, tanggal, deskripsi, vendor, akun biaya, referensi"
+                    )
+                    return ChatMessageResponse(
+                        message_type="TEXT",
+                        text=f"Mau ubah field yang mana? Contoh: 'ubah jumlah jadi 120000'. Field: {_field_list}",
+                        session_id=body.session_id,
+                    )
+        except Exception as _edit_err:
+            logger.warning("[EditMode] Error: %s", _edit_err, exc_info=True)
+
+        # ── Workflow continuation shortcut ──
     # If user sends "lanjut" etc. and there's an active workflow in REVIEWING state,
     # bypass LLM and directly resume workflow for reliability + speed.
     if body.session_id and body.text:
@@ -1002,7 +1164,11 @@ async def send_message(request: Request, body: ChatMessageRequest):
     )
 
     # Ensure session_id is propagated to response (AgentResponse may not set it)
-    if body.session_id and hasattr(agent_resp, 'session_id') and not agent_resp.session_id:
+    if (
+        body.session_id
+        and hasattr(agent_resp, "session_id")
+        and not agent_resp.session_id
+    ):
         agent_resp.session_id = body.session_id
 
     # Post-process: strip draft/void rows from tables
@@ -1572,6 +1738,7 @@ async def send_message_with_files(
 
     # ── Document Pipeline: Single gpt-4o vision call for financial docs ──
     import time as _t_mod
+
     _t_pipeline_start = _t_mod.perf_counter()
     _doc_pipeline_result = None
     if file_metas and not _recon_shortcut_result:
@@ -1581,28 +1748,45 @@ async def send_message_with_files(
             for fm in file_metas
         )
         # Skip OCR pipeline if user text has explicit action intent
-            # (e.g. "daftarkan vendor", "buat vendor") — let LLM handle with vision
+        # (e.g. "daftarkan vendor", "buat vendor") — let LLM handle with vision
         _text_lower = text.lower().strip() if text else ""
-        _has_explicit_intent = any(kw in _text_lower for kw in [
-                "daftarkan vendor", "daftarkan customer", "daftarkan pelanggan",
-                "buat vendor", "buat customer", "buat pelanggan",
-                "tambah vendor", "tambah customer", "tambah pelanggan",
-                "vendor baru", "customer baru", "pelanggan baru",
-                "register vendor", "create vendor", "create customer",
-            ])
+        _has_explicit_intent = any(
+            kw in _text_lower
+            for kw in [
+                "daftarkan vendor",
+                "daftarkan customer",
+                "daftarkan pelanggan",
+                "buat vendor",
+                "buat customer",
+                "buat pelanggan",
+                "tambah vendor",
+                "tambah customer",
+                "tambah pelanggan",
+                "vendor baru",
+                "customer baru",
+                "pelanggan baru",
+                "register vendor",
+                "create vendor",
+                "create customer",
+            ]
+        )
 
         # When user has explicit intent + image: extract text from image via
         # quick OCR and inject into enriched_text so the pipeline can use it
         if _has_image and _has_explicit_intent:
             try:
                 _intent_img = next(
-                    (fm for fm in file_metas
-                     if fm.get("content_type", "").startswith("image/")),
+                    (
+                        fm
+                        for fm in file_metas
+                        if fm.get("content_type", "").startswith("image/")
+                    ),
                     None,
                 )
                 if _intent_img and _intent_img.get("stored_path"):
                     import base64 as _b64_intent
                     from openai import AsyncOpenAI as _IntentOCR
+
                     with open(_intent_img["stored_path"], "rb") as _f_intent:
                         _raw = _f_intent.read()
                     _b64_data = _b64_intent.b64encode(_raw).decode()
@@ -1610,19 +1794,32 @@ async def send_message_with_files(
                     _ocr_client = _IntentOCR()
                     _ocr_resp = await _ocr_client.chat.completions.create(
                         model="gpt-4o-mini",
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Baca semua teks yang terlihat di gambar ini. Keluarkan sebagai plain text, termasuk nama, alamat, telepon, nomor rekening, nama bank, nominal, tanggal, dan informasi lainnya. Output raw text saja, tanpa penjelasan."},
-                                {"type": "image_url", "image_url": {"url": f"data:{_mime};base64,{_b64_data}", "detail": "low"}},
-                            ],
-                        }],
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Baca semua teks yang terlihat di gambar ini. Keluarkan sebagai plain text, termasuk nama, alamat, telepon, nomor rekening, nama bank, nominal, tanggal, dan informasi lainnya. Output raw text saja, tanpa penjelasan.",
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{_mime};base64,{_b64_data}",
+                                            "detail": "low",
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
                         max_tokens=500,
                     )
                     _extracted = _ocr_resp.choices[0].message.content.strip()
                     if _extracted:
                         enriched_text = f"{text}\n\n[Data dari gambar]:\n{_extracted}"
-                        logger.info(f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}")
+                        logger.info(
+                            f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}"
+                        )
             except Exception as _iocr_err:
                 logger.warning(f"[IntentOCR] Failed: {_iocr_err}")
 
@@ -1681,6 +1878,7 @@ async def send_message_with_files(
                     try:
                         from PIL import Image as _PILImage
                         import io as _io_resize
+
                         _img_pil = _PILImage.open(_io_resize.BytesIO(_img_bytes))
                         if _img_pil.mode in ("RGBA", "LA", "P"):
                             _img_pil = _img_pil.convert("RGB")
@@ -1691,9 +1889,13 @@ async def send_message_with_files(
                         _img_pil.save(_buf, format="JPEG", quality=75, optimize=True)
                         _img_bytes = _buf.getvalue()
                         _mime = "image/jpeg"
-                        logger.info(f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start)*1000:.0f}ms since start")
+                        logger.info(
+                            f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start)*1000:.0f}ms since start"
+                        )
                     except Exception as _resize_err:
-                        logger.warning(f"[DocSimple] Image resize failed: {_resize_err}")
+                        logger.warning(
+                            f"[DocSimple] Image resize failed: {_resize_err}"
+                        )
                     _img_b64 = _b64.b64encode(_img_bytes).decode()
 
                     # Single gpt-4o call: OCR + extract + understand user intent
@@ -1704,7 +1906,7 @@ async def send_message_with_files(
 
 Return JSON ONLY:
 {{
-  "doc_type": "expense|bank_transfer|purchase_invoice|sales_invoice|receipt|unknown",
+  "doc_type": "expense|bank_transfer|qris|merchant_payment|purchase_invoice|sales_invoice|receipt|unknown",
   "vendor_name": "nama vendor (untuk struk PLN: 'PLN', untuk transfer keluar: nama penerima)",
   "customer_name": "nama customer atau null",
   "document_number": "no faktur/no ref",
@@ -1719,6 +1921,7 @@ Return JSON ONLY:
 
 Aturan:
 - Struk PLN: doc_type="expense", total_amount=field "RP BAYAR" (BUKAN RP STROOM/TOKEN, BUKAN total dengan ADMIN BANK), tax_amount=PBJT-TL, vendor_name="PLN"
+- QRIS/merchant payment ("Pembayaran QRIS Berhasil", Merchant PAN, Terminal ID): doc_type="qris", NOT bank_transfer. Ini pembayaran ke merchant, bukan transfer antar bank.
 - Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
 - Semua angka Rupiah tanpa desimal"""
 
@@ -1728,7 +1931,9 @@ Aturan:
                     _gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
                         "GEMINI_API_KEY", ""
                     )
-                    _gemini_key = ""  # Disabled — Gemini Flash too slow + 503 in container
+                    _gemini_key = (
+                        ""  # Disabled — Gemini Flash too slow + 503 in container
+                    )
                     _ocr_text = "{}"
                     _ocr_used_gemini = False
                     if _gemini_key:
@@ -1779,6 +1984,7 @@ Aturan:
 
                     if not _ocr_used_gemini:
                         import time as _t_mod
+
                         _t_start = _t_mod.perf_counter()
                         _ocr_response = await _ocr_client.chat.completions.create(
                             model="gpt-4o-mini",
@@ -1837,10 +2043,73 @@ Aturan:
                                 "[DocSimple] Bank hint from caption: %s", _bank_hint
                             )
 
+                        # Inject user caption so matcher can use it for keyword-based account recommendation
+                        if text:
+                            _ocr_data["user_caption"] = text
+                            _existing_raw = _ocr_data.get("raw_text") or ""
+                            _ocr_data["raw_text"] = f"{_existing_raw} {text}".strip()
+                            # Caption keyword → doc_type override
+                            # Fires when: (a) OCR returns unknown/empty, OR
+                            # (b) OCR returns bank_transfer but caption has expense intent keywords
+                            # QRIS/merchant payments often get misclassified as bank_transfer by OCR
+                            _ocr_doc_type = (_ocr_data.get("doc_type") or "").lower()
+                            _expense_kws = (
+                                "beban",
+                                "biaya",
+                                "pengeluaran",
+                                "expense",
+                                "servis",
+                                "service",
+                                "listrik",
+                                "air",
+                                "telepon",
+                                "internet",
+                                "catat",
+                                "dicatat",
+                                "bayar",
+                                "beli",
+                                "parkir",
+                                "tol",
+                                "makan",
+                                "bensin",
+                                "solar",
+                                "sewa",
+                                "atk",
+                                "laundry",
+                                "cuci",
+                                "ongkir",
+                                "perbaikan",
+                                "motor",
+                                "mobil",
+                            )
+                            _caption_lower_kw = text.lower()
+                            _caption_has_expense = any(
+                                kw in _caption_lower_kw for kw in _expense_kws
+                            )
+                            if (
+                                _ocr_doc_type in ("unknown", "", "null")
+                                and _caption_has_expense
+                            ):
+                                _ocr_data["doc_type"] = "expense"
+                                logger.info(
+                                    "[DocSimple] Caption override doc_type: unknown → expense"
+                                )
+                            elif (
+                                _ocr_doc_type == "bank_transfer"
+                                and _caption_has_expense
+                            ):
+                                # QRIS/merchant receipts misclassified as bank_transfer
+                                _ocr_data["doc_type"] = "expense"
+                                logger.info(
+                                    "[DocSimple] Caption override doc_type: bank_transfer → expense (expense keywords in caption)"
+                                )
+
                         _matcher = DocumentMatcher(_ocr_pool, ctx["tenant_id"])
                         _t_match_start = _t_mod.perf_counter()
                         _match_result = await _matcher.match(_ocr_data)
-                        logger.info(f"[DocSimple] Match took {(_t_mod.perf_counter() - _t_match_start)*1000:.0f}ms")
+                        logger.info(
+                            f"[DocSimple] Match took {(_t_mod.perf_counter() - _t_match_start)*1000:.0f}ms"
+                        )
                         logger.info(
                             "[DocMatch] category=%s direction=%s confidence=%s match=%s",
                             _match_result.doc_category,
@@ -1903,7 +2172,9 @@ Aturan:
                             )
                             # Inject document_id for audit trail (Phase A.2)
                             if _fm and _fm.get("document_id"):
-                                _resolved_action.payload["_uploaded_document_id"] = _fm["document_id"]
+                                _resolved_action.payload["_uploaded_document_id"] = _fm[
+                                    "document_id"
+                                ]
                             _propose_result = await _te._execute_propose_direct(
                                 {
                                     "action_key": _resolved_action.action_key,
@@ -1918,6 +2189,9 @@ Aturan:
                                     "receipt": "Kwitansi",
                                     "bank_transfer": "Transfer Bank",
                                     "expense": "Biaya/Pengeluaran",
+                                    "qris": "Pembayaran QRIS",
+                                    "merchant_payment": "Pembayaran Merchant",
+                                    "e_wallet": "Pembayaran E-Wallet",
                                 }
                                 _type_display = _type_labels.get(_doc_type, _doc_type)
                                 _vendor = (
@@ -1989,6 +2263,9 @@ Aturan:
                             "receipt": "Kwitansi",
                             "bank_transfer": "Transfer Bank",
                             "expense": "Biaya/Pengeluaran",
+                            "qris": "Pembayaran QRIS",
+                            "merchant_payment": "Pembayaran Merchant",
+                            "e_wallet": "Pembayaran E-Wallet",
                         }
                         _type_display_cl = _type_labels_cl.get(_doc_type, _doc_type)
                         _vendor_cl = (
@@ -2020,7 +2297,10 @@ Aturan:
                                     "pending_bank_selection": True,
                                     "resolved_action_key": _resolved_action.action_key,
                                     "resolved_payload": (
-                                        {**_resolved_action.payload, "_uploaded_document_id": _fm["document_id"]}
+                                        {
+                                            **_resolved_action.payload,
+                                            "_uploaded_document_id": _fm["document_id"],
+                                        }
                                         if _fm and _fm.get("document_id")
                                         else _resolved_action.payload
                                     ),
@@ -2031,46 +2311,93 @@ Aturan:
                                     if _match_result and _match_result.best_match
                                     else None,
                                 }
-                                # Use direct connection with explicit RLS set (pool.execute bypasses RLS)
-                                async with _ocr_pool.acquire() as _store_conn:
-                                  async with _store_conn.transaction():
-                                    await _store_conn.execute(
-                                        f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'"
+                                # ── Store document_context (fix: UPSERT + diagnostics) ──
+                                import json as _ctx_json
+
+                                _doc_json = _ctx_json.dumps(_doc_ctx_cl)
+                                _sid_uuid = __import__("uuid").UUID(session_id)
+                                _tid = ctx["tenant_id"]
+
+                                # Pre-check: does the row exist?
+                                _pre_check = await _ocr_pool.fetchrow(
+                                    "SELECT session_id, tenant_id FROM chat_session_state WHERE session_id = $1::uuid AND tenant_id = $2",
+                                    _sid_uuid,
+                                    _tid,
+                                )
+                                logger.info(
+                                    "[DocResolver] Pre-check row exists: %s (session=%s, tenant=%s)",
+                                    bool(_pre_check),
+                                    session_id,
+                                    _tid,
+                                )
+
+                                if not _pre_check:
+                                    # Row missing — UPSERT
+                                    await _ocr_pool.execute(
+                                        "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
+                                        "VALUES ($1::uuid, $2, $3::jsonb) "
+                                        "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
+                                        _sid_uuid,
+                                        _tid,
+                                        _doc_json,
                                     )
-                                    import json as _ctx_json
-                                    _rows = await _store_conn.execute(
+                                    logger.info(
+                                        "[DocResolver] UPSERT (row was missing) session=%s",
+                                        session_id,
+                                    )
+                                else:
+                                    # Row exists — plain UPDATE (no transaction wrapper)
+                                    _rows = await _ocr_pool.execute(
                                         "UPDATE chat_session_state SET document_context = $1::jsonb, updated_at = now() "
                                         "WHERE session_id = $2::uuid AND tenant_id = $3",
-                                        _ctx_json.dumps(_doc_ctx_cl),
-                                        __import__("uuid").UUID(session_id),
-                                        ctx["tenant_id"],
+                                        _doc_json,
+                                        _sid_uuid,
+                                        _tid,
                                     )
-                                    logger.error("[DocResolver] Direct SQL result: %s (session=%s, tenant=%s)", _rows, session_id, ctx["tenant_id"])
-                                # Verify it actually persisted
-                                _verify_state = await _sm_cl.get_state(session_id)
-                                _verify_dc = getattr(_verify_state, "document_context", None)
-                                if _verify_dc and _verify_dc.get("pending_bank_selection"):
                                     logger.info(
-                                        "[DocResolver] VERIFIED pending_bank_selection stored (session=%s)",
+                                        "[DocResolver] UPDATE result: %s (session=%s)",
+                                        _rows,
+                                        session_id,
+                                    )
+
+                                    if _rows == "UPDATE 0":
+                                        # Fallback UPSERT
+                                        logger.warning(
+                                            "[DocResolver] UPDATE 0 despite pre-check — UPSERT fallback"
+                                        )
+                                        await _ocr_pool.execute(
+                                            "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
+                                            "VALUES ($1::uuid, $2, $3::jsonb) "
+                                            "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
+                                            _sid_uuid,
+                                            _tid,
+                                            _doc_json,
+                                        )
+
+                                # Verify
+                                _verify_dc = await _ocr_pool.fetchval(
+                                    "SELECT document_context IS NOT NULL FROM chat_session_state WHERE session_id = $1::uuid",
+                                    _sid_uuid,
+                                )
+                                if _verify_dc:
+                                    logger.info(
+                                        "[DocResolver] VERIFIED document_context stored (session=%s)",
                                         session_id,
                                     )
                                 else:
                                     logger.error(
-                                        "[DocResolver] STORE FAILED SILENTLY — update_state returned OK but DB has no document_context (session=%s, verify_dc=%s)",
-                                        session_id, _verify_dc,
+                                        "[DocResolver] STORE STILL FAILED (session=%s)",
+                                        session_id,
                                     )
-                                    # Retry with direct SQL
-                                    import json as _store_json
-                                    await _ocr_pool.execute(
-                                        "UPDATE chat_session_state SET document_context = $1::jsonb WHERE session_id = $2::uuid AND tenant_id = $3",
-                                        _store_json.dumps(_doc_ctx_cl),
-                                        __import__("uuid").UUID(session_id),
-                                        ctx["tenant_id"],
-                                    )
-                                    logger.info("[DocResolver] Retried with direct SQL (session=%s)", session_id)
                             except Exception as _store_err:
                                 import traceback as _store_tb
-                                logger.error("[DocResolver] FAILED to store pending_bank_selection: %s (session=%s)\n%s", _store_err, session_id, _store_tb.format_exc())
+
+                                logger.error(
+                                    "[DocResolver] FAILED to store pending_bank_selection: %s (session=%s)\n%s",
+                                    _store_err,
+                                    session_id,
+                                    _store_tb.format_exc(),
+                                )
 
                             _dir_word_cl = (
                                 "ke"
@@ -2119,6 +2446,9 @@ Aturan:
                             "receipt": "Kwitansi",
                             "bank_transfer": "Transfer Bank",
                             "expense": "Biaya/Pengeluaran",
+                            "qris": "Pembayaran QRIS",
+                            "merchant_payment": "Pembayaran Merchant",
+                            "e_wallet": "Pembayaran E-Wallet",
                         }
                         _type_display = _type_labels.get(_doc_type, _doc_type)
 
@@ -2429,14 +2759,26 @@ Aturan:
         except ImportError:
             pass
         try:
-            from ..services.unified_agent.workflow_engine import WorkflowEngine as _WFE_cancel
-            from ..services.unified_agent.db_utils import get_session_db_pool as _wf_cancel_pool
+            from ..services.unified_agent.workflow_engine import (
+                WorkflowEngine as _WFE_cancel,
+            )
+            from ..services.unified_agent.db_utils import (
+                get_session_db_pool as _wf_cancel_pool,
+            )
+
             _wfc_db = await _wf_cancel_pool()
-            _wfc = _WFE_cancel(_wfc_db, ctx["tenant_id"], ctx.get("user_id", ""), ctx.get("auth_token", ""))
+            _wfc = _WFE_cancel(
+                _wfc_db,
+                ctx["tenant_id"],
+                ctx.get("user_id", ""),
+                ctx.get("auth_token", ""),
+            )
             _wfc_state = await _wfc.get_state(session_id, "crud_form")
             if _wfc_state and _wfc_state.status == "active":
                 await _wfc.cancel(session_id, "crud_form")
-                logger.info("[Upload] Cancelled stale crud_form workflow for fresh upload")
+                logger.info(
+                    "[Upload] Cancelled stale crud_form workflow for fresh upload"
+                )
         except Exception as _wfc_err:
             logger.warning("[Upload] Failed to cancel stale workflow: %s", _wfc_err)
 
@@ -2856,7 +3198,8 @@ async def _confirm_direct_action(
         )
         # Phase D: Update chat message metadata status to EXPIRED
         try:
-            await pool.execute("""
+            await pool.execute(
+                """
                 UPDATE chat_messages
                 SET metadata = jsonb_set(
                     COALESCE(metadata, '{}'::jsonb),
@@ -2864,9 +3207,14 @@ async def _confirm_direct_action(
                 )
                 WHERE metadata->>'pending_action_id' = $1
                   AND tenant_id = $2
-            """, str(pending_action_id), tenant_id)
+            """,
+                str(pending_action_id),
+                tenant_id,
+            )
         except Exception as _md_err:
-            logger.warning("[Phase-D] Failed to update message metadata on expire: %s", _md_err)
+            logger.warning(
+                "[Phase-D] Failed to update message metadata on expire: %s", _md_err
+            )
         return ChatMessageResponse(
             message_type="ACTION_RESULT",
             text="Action sudah kedaluwarsa. Silakan buat ulang.",
@@ -2974,7 +3322,11 @@ async def _confirm_direct_action(
         # For DELETE/path-param requests, strip ID fields from body to avoid endpoint rejections
         request_body = clean_payload
         # Phase A: extract uploaded_document_id (audit trail) before stripping
-        _uploaded_document_id = clean_payload.pop("_uploaded_document_id", None) if isinstance(clean_payload, dict) else None
+        _uploaded_document_id = (
+            clean_payload.pop("_uploaded_document_id", None)
+            if isinstance(clean_payload, dict)
+            else None
+        )
 
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}
@@ -3012,19 +3364,27 @@ async def _confirm_direct_action(
                     try:
                         async with pool.acquire() as _link_conn:
                             async with _link_conn.transaction():
-                                await _link_conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+                                await _link_conn.execute(
+                                    f"SET LOCAL app.tenant_id = '{tenant_id}'"
+                                )
                                 await _link_conn.execute(
                                     """INSERT INTO document_attachments
                                        (tenant_id, document_id, entity_type, entity_id, attachment_type, attached_by)
                                        VALUES ($1, $2, $3, $4, 'receipt', $5)
                                        ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING""",
-                                    tenant_id, uuid_mod.UUID(_uploaded_document_id),
-                                    _link_entity_type, uuid_mod.UUID(entity_id),
+                                    tenant_id,
+                                    uuid_mod.UUID(_uploaded_document_id),
+                                    _link_entity_type,
+                                    uuid_mod.UUID(entity_id),
                                     uuid_mod.UUID(user_id) if user_id else None,
                                 )
-                                logger.info(f"[DocLink] Attached document {_uploaded_document_id[:8]} to {_link_entity_type}/{entity_id[:8]}")
+                                logger.info(
+                                    f"[DocLink] Attached document {_uploaded_document_id[:8]} to {_link_entity_type}/{entity_id[:8]}"
+                                )
                     except Exception as _link_err:
-                        logger.warning(f"[DocLink] Failed to attach document: {_link_err}")
+                        logger.warning(
+                            f"[DocLink] Failed to attach document: {_link_err}"
+                        )
 
             await pool.execute(
                 """UPDATE pending_actions
@@ -3037,7 +3397,8 @@ async def _confirm_direct_action(
 
             # Phase D: Update chat message metadata status to COMPLETED
             try:
-                await pool.execute("""
+                await pool.execute(
+                    """
                     UPDATE chat_messages
                     SET metadata = jsonb_set(
                         jsonb_set(
@@ -3048,9 +3409,15 @@ async def _confirm_direct_action(
                     )
                     WHERE metadata->>'pending_action_id' = $1
                       AND tenant_id = $2
-                """, str(pending_action_id), tenant_id)
+                """,
+                    str(pending_action_id),
+                    tenant_id,
+                )
             except Exception as _md_err:
-                logger.warning("[Phase-D] Failed to update message metadata on confirm: %s", _md_err)
+                logger.warning(
+                    "[Phase-D] Failed to update message metadata on confirm: %s",
+                    _md_err,
+                )
 
             success_msg = config.get_success_message(payload)
 
@@ -3407,7 +3774,8 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         # Phase D: Update chat message metadata status to CANCELLED
         try:
             _cancel_pool = await get_session_db_pool()
-            await _cancel_pool.execute("""
+            await _cancel_pool.execute(
+                """
                 UPDATE chat_messages
                 SET metadata = jsonb_set(
                     COALESCE(metadata, '{}'::jsonb),
@@ -3415,9 +3783,14 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 )
                 WHERE metadata->>'pending_action_id' = $1
                   AND tenant_id = $2
-            """, str(body.pending_action_id), ctx["tenant_id"])
+            """,
+                str(body.pending_action_id),
+                ctx["tenant_id"],
+            )
         except Exception as _md_err:
-            logger.warning("[Phase-D] Failed to update message metadata on cancel: %s", _md_err)
+            logger.warning(
+                "[Phase-D] Failed to update message metadata on cancel: %s", _md_err
+            )
 
         # FSM: AWAITING_CONFIRMATION -> IDLE
         try:
@@ -3472,10 +3845,39 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                     tenant_id=ctx["tenant_id"],
                     user_id=ctx["user_id"],
                 )
-                # Set editing_mode=True, keep pending_payload and pending_intent
-                await sm_edit.update_state(body.session_id, editing_mode=True)
-                logger.warning(
-                    "[Cancel-Edit] editing_mode=True for session=%s",
+                # Extract payload from pending_actions and save to session state
+                _pa_row = await db_pool_edit.fetchrow(
+                    "SELECT action_type, action_plan FROM pending_actions WHERE id = $1::uuid AND tenant_id = $2",
+                    body.pending_action_id,
+                    ctx["tenant_id"],
+                )
+                _edit_payload = {}
+                _edit_intent = ""
+                if _pa_row:
+                    _edit_intent = (_pa_row["action_type"] or "").lower()
+                    _raw_payload = _pa_row["action_plan"]
+                    if isinstance(_raw_payload, str):
+                        import json as _ej
+
+                        _edit_payload = _ej.loads(_raw_payload)
+                    elif isinstance(_raw_payload, dict):
+                        _edit_payload = _raw_payload
+                    else:
+                        _edit_payload = {}
+                    logger.info(
+                        "[Cancel-Edit] Extracted payload: intent=%s keys=%s",
+                        _edit_intent,
+                        list(_edit_payload.keys())[:8],
+                    )
+
+                await sm_edit.update_state(
+                    body.session_id,
+                    editing_mode=True,
+                    pending_payload=_edit_payload,
+                    pending_intent=_edit_intent,
+                )
+                logger.info(
+                    "[Cancel-Edit] editing_mode=True + payload saved for session=%s",
                     body.session_id[:8],
                 )
             except Exception as edit_err:
