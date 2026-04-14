@@ -27,6 +27,7 @@ class FieldSpec:
     options: list[str] = field(default_factory=list)  # for enum type
     description: str = ""
     hidden: bool = False  # In payload, NOT shown in confirmation table
+    editable: bool = True  # Editable in inline review card
     display_only: bool = False  # Shown in table, stripped before REST call
     aliases: list[str] = field(
         default_factory=list
@@ -80,7 +81,7 @@ class PreFlightCheck:
     alternatives: list[str] = field(default_factory=list)
 
 
-import re as _re
+import re as _re  # noqa: E402
 
 
 def _safe_format(template: str, payload: dict, **extra) -> str:
@@ -768,7 +769,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ImpactRule(
                 field="amount",
                 condition="always",
-                message_template="Saldo kas/bank akan berkurang Rp {formatted_value}.",
+                message_template="Saldo kas/bank akan berkurang {formatted_value}.",
             ),
         ],
         fields=[
@@ -1579,6 +1580,24 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
             FieldSpec(name="sku", label="Kode/SKU"),
             FieldSpec(name="description", label="Deskripsi"),
+            FieldSpec(
+                name="kategori",
+                label="Kategori",
+                aliases=["category", "category_name", "kategori_barang"],
+                description="Kategori barang, contoh: Bahan Kain, Elektronik, Makanan",
+            ),
+            FieldSpec(
+                name="purchase_tax",
+                label="Pajak Beli",
+                aliases=["pajak_beli", "tax_purchase", "ppn_beli"],
+                description="Kode pajak pembelian, contoh: PPN 12%, PPN 11%",
+            ),
+            FieldSpec(
+                name="sales_tax",
+                label="Pajak Jual",
+                aliases=["pajak_jual", "tax_sales", "ppn_jual"],
+                description="Kode pajak penjualan, contoh: PPN 12%, PPN 11%",
+            ),
         ],
     ),
     "create_account": DirectActionConfig(
@@ -2097,10 +2116,19 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         loading_message_template="Membuat nota kredit…",
         success_message_template="Nota kredit berhasil dibuat.",
         fields=[
-            FieldSpec(name="customer_id", label="ID Pelanggan", required=True, hidden=True),
+            FieldSpec(
+                name="customer_id", label="ID Pelanggan", required=True, hidden=True
+            ),
             FieldSpec(name="customer_name", label="Pelanggan", display_only=True),
-            FieldSpec(name="credit_note_date", label="Tanggal", field_type="date", required=True),
-            FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
+            FieldSpec(
+                name="credit_note_date",
+                label="Tanggal",
+                field_type="date",
+                required=True,
+            ),
+            FieldSpec(
+                name="amount", label="Jumlah", field_type="number", required=True
+            ),
             FieldSpec(name="reason", label="Alasan", required=True),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2121,7 +2149,9 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         success_message_template="Nota kredit berhasil di-void.",
         fields=[
             FieldSpec(name="id", label="Credit Note ID", required=True, hidden=True),
-            FieldSpec(name="credit_note_number", label="No. Nota Kredit", display_only=True),
+            FieldSpec(
+                name="credit_note_number", label="No. Nota Kredit", display_only=True
+            ),
             FieldSpec(name="reason", label="Alasan Void", required=True),
         ],
     ),
@@ -2143,8 +2173,15 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="vendor_id", label="ID Vendor", required=True, hidden=True),
             FieldSpec(name="vendor_name", label="Vendor", display_only=True),
-            FieldSpec(name="vendor_credit_date", label="Tanggal", field_type="date", required=True),
-            FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
+            FieldSpec(
+                name="vendor_credit_date",
+                label="Tanggal",
+                field_type="date",
+                required=True,
+            ),
+            FieldSpec(
+                name="amount", label="Jumlah", field_type="number", required=True
+            ),
             FieldSpec(name="reason", label="Alasan", required=True),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2165,7 +2202,11 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         success_message_template="Vendor credit berhasil di-void.",
         fields=[
             FieldSpec(name="id", label="Vendor Credit ID", required=True, hidden=True),
-            FieldSpec(name="vendor_credit_number", label="No. Vendor Credit", display_only=True),
+            FieldSpec(
+                name="vendor_credit_number",
+                label="No. Vendor Credit",
+                display_only=True,
+            ),
             FieldSpec(name="reason", label="Alasan Void", required=True),
         ],
     ),
@@ -2185,9 +2226,13 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         loading_message_template="Membuat penawaran…",
         success_message_template="Penawaran berhasil dibuat.",
         fields=[
-            FieldSpec(name="customer_id", label="ID Pelanggan", required=True, hidden=True),
+            FieldSpec(
+                name="customer_id", label="ID Pelanggan", required=True, hidden=True
+            ),
             FieldSpec(name="customer_name", label="Pelanggan", display_only=True),
-            FieldSpec(name="quote_date", label="Tanggal", field_type="date", required=True),
+            FieldSpec(
+                name="quote_date", label="Tanggal", field_type="date", required=True
+            ),
             FieldSpec(name="expiry_date", label="Berlaku Sampai", field_type="date"),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2215,12 +2260,25 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
         ],
         fields=[
-            FieldSpec(name="from_account_id", label="Dari Rekening", required=True, hidden=True),
-            FieldSpec(name="from_account_name", label="Dari Rekening", display_only=True),
-            FieldSpec(name="to_account_id", label="Ke Rekening", required=True, hidden=True),
+            FieldSpec(
+                name="from_account_id",
+                label="Dari Rekening",
+                required=True,
+                hidden=True,
+            ),
+            FieldSpec(
+                name="from_account_name", label="Dari Rekening", display_only=True
+            ),
+            FieldSpec(
+                name="to_account_id", label="Ke Rekening", required=True, hidden=True
+            ),
             FieldSpec(name="to_account_name", label="Ke Rekening", display_only=True),
-            FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
-            FieldSpec(name="transfer_date", label="Tanggal", field_type="date", required=True),
+            FieldSpec(
+                name="amount", label="Jumlah", field_type="number", required=True
+            ),
+            FieldSpec(
+                name="transfer_date", label="Tanggal", field_type="date", required=True
+            ),
             FieldSpec(name="reference", label="Referensi"),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2261,12 +2319,20 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         loading_message_template="Mencatat deposit pelanggan…",
         success_message_template="Deposit pelanggan berhasil dicatat.",
         fields=[
-            FieldSpec(name="customer_id", label="ID Pelanggan", required=True, hidden=True),
+            FieldSpec(
+                name="customer_id", label="ID Pelanggan", required=True, hidden=True
+            ),
             FieldSpec(name="customer_name", label="Pelanggan", display_only=True),
-            FieldSpec(name="bank_account_id", label="Rekening", required=True, hidden=True),
+            FieldSpec(
+                name="bank_account_id", label="Rekening", required=True, hidden=True
+            ),
             FieldSpec(name="bank_account_name", label="Rekening", display_only=True),
-            FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
-            FieldSpec(name="deposit_date", label="Tanggal", field_type="date", required=True),
+            FieldSpec(
+                name="amount", label="Jumlah", field_type="number", required=True
+            ),
+            FieldSpec(
+                name="deposit_date", label="Tanggal", field_type="date", required=True
+            ),
             FieldSpec(name="reference", label="Referensi"),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2309,10 +2375,16 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         fields=[
             FieldSpec(name="vendor_id", label="ID Vendor", required=True, hidden=True),
             FieldSpec(name="vendor_name", label="Vendor", display_only=True),
-            FieldSpec(name="bank_account_id", label="Rekening", required=True, hidden=True),
+            FieldSpec(
+                name="bank_account_id", label="Rekening", required=True, hidden=True
+            ),
             FieldSpec(name="bank_account_name", label="Rekening", display_only=True),
-            FieldSpec(name="amount", label="Jumlah", field_type="number", required=True),
-            FieldSpec(name="deposit_date", label="Tanggal", field_type="date", required=True),
+            FieldSpec(
+                name="amount", label="Jumlah", field_type="number", required=True
+            ),
+            FieldSpec(
+                name="deposit_date", label="Tanggal", field_type="date", required=True
+            ),
             FieldSpec(name="reference", label="Referensi"),
             FieldSpec(name="notes", label="Catatan"),
         ],
@@ -2337,7 +2409,6 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="reason", label="Alasan Void", required=True),
         ],
     ),
-
 }
 
 
@@ -2353,9 +2424,16 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/sales-invoices",
         response_format="list",
         description="Daftar piutang per pelanggan — status=unpaid excludes draft/void/paid. Only invoices with real outstanding.",
-        signal_words=["piutang", "total piutang", "ar outstanding", "siapa yang punya piutang"],
+        signal_words=[
+            "piutang",
+            "total piutang",
+            "ar outstanding",
+            "siapa yang punya piutang",
+        ],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
             QueryParam(name="limit", label="Limit", param_type="number", default="50"),
         ],
     ),
@@ -2367,7 +2445,9 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Daftar faktur penjualan yang belum lunas. status=unpaid excludes draft/void/paid.",
         signal_words=["faktur belum lunas", "siapa yang punya piutang"],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
             QueryParam(name="limit", label="Limit", param_type="number", default="50"),
         ],
     ),
@@ -2377,9 +2457,17 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/bills",
         response_format="list",
         description="Daftar hutang per vendor — status=unpaid excludes draft/void/paid. Only bills with real outstanding.",
-        signal_words=["utang", "total utang", "ap outstanding", "hutang", "siapa yang punya hutang"],
+        signal_words=[
+            "utang",
+            "total utang",
+            "ap outstanding",
+            "hutang",
+            "siapa yang punya hutang",
+        ],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
             QueryParam(name="limit", label="Limit", param_type="number", default="50"),
         ],
     ),
@@ -2465,8 +2553,10 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Daftar faktur pembelian yang belum lunas. status=unpaid excludes draft/void/paid.",
         signal_words=["daftar faktur pembelian", "list tagihan"],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
-            QueryParam(name="limit", label="Limit", param_type="number", default="20")
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
+            QueryParam(name="limit", label="Limit", param_type="number", default="20"),
         ],
     ),
     "query_bill_detail": QueryActionConfig(
@@ -3460,7 +3550,7 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         display_name="Stok Rendah",
         rest_endpoint="/api/inventory/low-stock",
         response_format="table",
-        description="Barang dengan stok di bawah reorder level.",
+        description="Barang dengan stok di bawah reorder level atau stok habis.",
         signal_words=[
             "stok rendah",
             "low stock",
@@ -3470,6 +3560,14 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             "perlu restock",
             "reorder",
             "stok kritis",
+        ],
+        query_params=[
+            QueryParam(
+                name="include_zero_stock",
+                label="Include Zero Stock",
+                param_type="string",
+                default="true",
+            ),
         ],
     ),
     "query_items_top_products": QueryActionConfig(
@@ -4057,12 +4155,23 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_items_no_stock": QueryActionConfig(
         action_key="query_items_no_stock",
         display_name="Barang Stok Habis",
-        rest_endpoint="/api/items",
-        response_format="list",
+        rest_endpoint="/api/inventory/low-stock",
+        response_format="table",
         description="Daftar barang yang stoknya habis (out of stock).",
-        signal_words=["stok habis", "barang habis", "out of stock", "stok kosong", "stok nol"],
+        signal_words=[
+            "stok habis",
+            "barang habis",
+            "out of stock",
+            "stok kosong",
+            "stok nol",
+        ],
         query_params=[
-            QueryParam(name="stock_status", label="Status Stok", param_type="string", default="out_of_stock"),
+            QueryParam(
+                name="include_zero_stock",
+                label="Include Zero Stock",
+                param_type="string",
+                default="true",
+            ),
         ],
     ),
     "query_customers_list": QueryActionConfig(
@@ -4071,9 +4180,16 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/customers",
         response_format="list",
         description="Daftar semua pelanggan.",
-        signal_words=["daftar pelanggan", "list pelanggan", "siapa pelanggan", "customer list"],
+        signal_words=[
+            "daftar pelanggan",
+            "list pelanggan",
+            "siapa pelanggan",
+            "customer list",
+        ],
         query_params=[
-            QueryParam(name="is_active", label="Aktif", param_type="string", default="true"),
+            QueryParam(
+                name="is_active", label="Aktif", param_type="string", default="true"
+            ),
         ],
     ),
     "query_vendors_list": QueryActionConfig(
@@ -4084,7 +4200,9 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Daftar semua vendor/pemasok.",
         signal_words=["daftar vendor", "list vendor", "daftar pemasok", "vendor list"],
         query_params=[
-            QueryParam(name="is_active", label="Aktif", param_type="string", default="true"),
+            QueryParam(
+                name="is_active", label="Aktif", param_type="string", default="true"
+            ),
         ],
     ),
     "query_customers_with_overdue": QueryActionConfig(
@@ -4093,7 +4211,11 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/sales-invoices/summary",
         response_format="summary",
         description="Pelanggan dengan faktur jatuh tempo.",
-        signal_words=["pelanggan jatuh tempo", "customer overdue", "pelanggan terlambat"],
+        signal_words=[
+            "pelanggan jatuh tempo",
+            "customer overdue",
+            "pelanggan terlambat",
+        ],
         query_params=[],
     ),
     "query_vendors_with_overdue": QueryActionConfig(
@@ -4111,9 +4233,15 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/sales-invoices",
         response_format="list",
         description="Daftar faktur penjualan yang belum dibayar.",
-        signal_words=["faktur belum bayar", "invoice unpaid", "faktur penjualan belum lunas"],
+        signal_words=[
+            "faktur belum bayar",
+            "invoice unpaid",
+            "faktur penjualan belum lunas",
+        ],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
         ],
     ),
     "query_bills_by_vendor": QueryActionConfig(
@@ -4124,7 +4252,9 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Daftar tagihan/faktur pembelian dari vendor tertentu. vendor_id via entity resolution.",
         signal_words=["tagihan vendor", "faktur pembelian vendor", "bills vendor"],
         query_params=[
-            QueryParam(name="vendor_id", label="Vendor ID", param_type="string", required=True),
+            QueryParam(
+                name="vendor_id", label="Vendor ID", param_type="string", required=True
+            ),
         ],
     ),
     "query_bills_unpaid": QueryActionConfig(
@@ -4133,9 +4263,15 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/bills",
         response_format="list",
         description="Daftar tagihan/faktur pembelian yang belum dibayar.",
-        signal_words=["tagihan belum bayar", "bills unpaid", "faktur pembelian belum lunas"],
+        signal_words=[
+            "tagihan belum bayar",
+            "bills unpaid",
+            "faktur pembelian belum lunas",
+        ],
         query_params=[
-            QueryParam(name="status", label="Status", param_type="string", default="unpaid"),
+            QueryParam(
+                name="status", label="Status", param_type="string", default="unpaid"
+            ),
         ],
     ),
     "query_expenses_by_date_range": QueryActionConfig(
@@ -4158,7 +4294,12 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Mutasi/buku besar untuk akun tertentu. account_id via entity resolution.",
         signal_words=["buku besar", "general ledger", "mutasi akun", "ledger akun"],
         query_params=[
-            QueryParam(name="account_id", label="Account ID", param_type="string", required=True),
+            QueryParam(
+                name="account_id",
+                label="Account ID",
+                param_type="string",
+                required=True,
+            ),
         ],
     ),
     "query_dashboard_summary": QueryActionConfig(
@@ -4167,7 +4308,12 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/dashboard/all",
         response_format="summary",
         description="Ringkasan bisnis/keuangan dari dashboard.",
-        signal_words=["ringkasan bisnis", "summary keuangan", "dashboard summary", "rangkuman usaha"],
+        signal_words=[
+            "ringkasan bisnis",
+            "summary keuangan",
+            "dashboard summary",
+            "rangkuman usaha",
+        ],
         query_params=[],
     ),
     "query_overdue_all": QueryActionConfig(
@@ -4194,9 +4340,15 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/bank-accounts/{id}/transactions",
         response_format="list",
         description="Daftar transaksi bank/kas dalam rentang tanggal. bank_account + date via entity resolution.",
-        signal_words=["transaksi bank tanggal", "mutasi bank periode", "transaksi rekening tanggal"],
+        signal_words=[
+            "transaksi bank tanggal",
+            "mutasi bank periode",
+            "transaksi rekening tanggal",
+        ],
         query_params=[
-            QueryParam(name="id", label="Bank Account ID", param_type="string", required=True),
+            QueryParam(
+                name="id", label="Bank Account ID", param_type="string", required=True
+            ),
             QueryParam(name="start_date", label="Tanggal Mulai", param_type="date"),
             QueryParam(name="end_date", label="Tanggal Akhir", param_type="date"),
         ],
@@ -4221,7 +4373,9 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Detail 1 nota kredit.",
         signal_words=["detail nota kredit", "info nota kredit"],
         query_params=[
-            QueryParam(name="id", label="Credit Note ID", param_type="string", required=True),
+            QueryParam(
+                name="id", label="Credit Note ID", param_type="string", required=True
+            ),
         ],
     ),
     "query_credit_notes_summary": QueryActionConfig(
@@ -4253,7 +4407,9 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         description="Detail 1 vendor credit.",
         signal_words=["detail vendor credit"],
         query_params=[
-            QueryParam(name="id", label="Vendor Credit ID", param_type="string", required=True),
+            QueryParam(
+                name="id", label="Vendor Credit ID", param_type="string", required=True
+            ),
         ],
     ),
     "query_vendor_credits_summary": QueryActionConfig(
@@ -4316,7 +4472,11 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         rest_endpoint="/api/customer-deposits",
         response_format="list",
         description="Daftar semua deposit/uang muka pelanggan.",
-        signal_words=["daftar deposit pelanggan", "uang muka pelanggan", "customer deposit"],
+        signal_words=[
+            "daftar deposit pelanggan",
+            "uang muka pelanggan",
+            "customer deposit",
+        ],
         query_params=[
             QueryParam(name="limit", label="Limit", param_type="number", default="20"),
         ],
@@ -4333,7 +4493,6 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             QueryParam(name="limit", label="Limit", param_type="number", default="20"),
         ],
     ),
-
 }
 
 
@@ -4560,11 +4719,19 @@ def build_review_card_payload(
         if f.options and isinstance(value, str):
             _api_to_label = _build_api_to_label(f.options)
             display_value = _api_to_label.get(str(value).lower(), display_value)
+        _is_editable = (
+            f.editable
+            and not f.display_only
+            and not f.name.endswith("_id")
+            and f.field_type not in ("enum", "boolean")
+        )
         header.append(
             {
                 "label": f.label,
                 "value": display_value,
                 "field_type": f.field_type,
+                "key": f.name,
+                "editable": _is_editable,
             }
         )
 
