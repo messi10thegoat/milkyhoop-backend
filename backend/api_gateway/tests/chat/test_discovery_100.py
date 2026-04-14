@@ -164,7 +164,7 @@ SINGLE_QUERIES = [
     {
         "id": "S25",
         "text": "faktur yang sudah jatuh tempo",
-        "expect_intent": "query_overdue_all",
+        "expect_intent": "query_sales_invoices_overdue",
         "expect_data": False,
     },
     {

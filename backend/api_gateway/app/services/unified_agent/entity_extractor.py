@@ -1339,6 +1339,11 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_items_low_stock", None, None
     if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
         return "query_items_inactive", None, None
+    # KEEP: Slow moving — fast-path to avoid LLM latency
+    if _qre.search(r"\b(slow[\s-]?moving|dead\s*stock)\b", t) or _qre.search(
+        r"\bbarang\s+(lambat|lama|mati|tidak\s+laku|slow)\b", t
+    ):
+        return "query_items_slow_moving", None, None
     # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
     #     return "query_categories_list", None, None

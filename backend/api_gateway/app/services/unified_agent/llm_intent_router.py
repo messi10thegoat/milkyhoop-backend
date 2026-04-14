@@ -70,9 +70,10 @@ query_customers_list, query_customer_detail, query_vendors_list, query_vendor_de
 query_bank_accounts_list, query_bank_account_balance, query_bank_transactions
 query_accounts_list, query_account_ledger, query_profit_loss, query_balance_sheet, query_trial_balance, query_cash_balance
 query_receive_payments_list, query_bill_payments_list, query_categories_list
+query_warehouses, query_items_inactive, query_items_slow_moving
 calc_avg_harga_jual, calc_sum_harga_beli, calc_sum_stok, calc_sum_all_bank_balances
 calc_count_items_active, calc_count_customers_active, calc_count_vendors_active
-calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, calc_rank_vendors_by_ap
+calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, calc_rank_vendors_by_ap, calc_rank_expense_accounts
 calc_sum_sales_this_month, calc_sum_purchases_this_month, calc_sum_expenses_this_month
 calc_sum_received_this_month, calc_sum_paid_this_month
 
@@ -112,6 +113,11 @@ RULES:
     DILARANG jawab "sebutkan nama" jika nama SUDAH ada di pesan. Bahkan setelah CRUD/daftar context.
 19. STANDALONE STOCK: "stok habis/kosong/nol/0" tanpa context barang sebelumnya → query_items_no_stock. "stok rendah/sedikit" → query_items_low_stock.
     "rekening/bank paling banyak/terbesar" → query_bank_accounts_list (bukan agent loop).
+21. MORE MAPPINGS (fast-path, hindari agent loop):
+    "daftar gudang" / "list gudang" / "warehouse" / "semua gudang" → query_warehouses.
+    "pengeluaran terbesar" / "biaya terbesar" / "top expenses" / "akun beban terbesar" → calc_rank_expense_accounts.
+    "barang tidak aktif" / "item nonaktif" / "produk inactive" / "barang nonaktif" → query_items_inactive.
+    "barang slow moving" / "slow moving" / "barang tidak laku" / "barang lama" / "dead stock" → query_items_slow_moving.
 20. ENTITY FROM HISTORY (CRITICAL): Jika user refer entity dari respons BOT sebelumnya, extract NAMA LENGKAP dari riwayat, BUKAN dari user text saja.
     "poloshirt harganya?" setelah bot sebut "Poloshirt Hitam + Bordir (42 pcs)" → item_name="Poloshirt Hitam + Bordir".
     "detail Sintia" setelah bot sebut "Sintia Runtuwene (Rp 175.000)" → customer_name="Sintia Runtuwene".

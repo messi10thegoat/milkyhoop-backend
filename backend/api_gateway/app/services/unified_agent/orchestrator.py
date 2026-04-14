@@ -4197,6 +4197,46 @@ class UnifiedAgent:
         ):
             data = data["data"]
 
+        # Special handling: trial-balance (neraca saldo) can have up to 360 CoA
+        # rows. LLM polish over the full list is slow (~11s). Filter out
+        # zero-balance accounts and cap at top 20 by absolute balance. Preserve
+        # top-level totals so LLM can still summarize accurately.
+        if action_key == "query_trial_balance" and isinstance(data, dict):
+            _accounts = data.get("accounts", []) or []
+            _filtered = [
+                a
+                for a in _accounts
+                if float(a.get("total_debit", 0) or 0) != 0
+                or float(a.get("total_credit", 0) or 0) != 0
+                or float(a.get("balance", 0) or 0) != 0
+            ]
+            _filtered.sort(
+                key=lambda a: abs(float(a.get("balance", 0) or 0)),
+                reverse=True,
+            )
+            _top = _filtered[:20]
+            return {
+                "as_of_date": data.get("as_of_date"),
+                "period_id": data.get("period_id"),
+                "total_debit": data.get("total_debit"),
+                "total_credit": data.get("total_credit"),
+                "is_balanced": data.get("is_balanced"),
+                "account_count": data.get("account_count", len(_accounts)),
+                "_accounts_nonzero": len(_filtered),
+                "_accounts_shown": len(_top),
+                "accounts": [
+                    {
+                        "code": a.get("account_code"),
+                        "name": a.get("account_name"),
+                        "type": a.get("account_type"),
+                        "debit": a.get("total_debit"),
+                        "credit": a.get("total_credit"),
+                        "balance": a.get("balance"),
+                    }
+                    for a in _top
+                ],
+            }
+
         # If data is a list, wrap it
         if isinstance(data, list):
             return {"total": len(data), "items": self._compact_list(data, max_items=10)}
