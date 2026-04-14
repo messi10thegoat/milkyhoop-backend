@@ -1305,7 +1305,7 @@ def classify_query_intent(user_text: str) -> tuple:
 
     # Low stock / inactive / categories
     if _qre.search(
-        r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis)\b", t
+        r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis|stok.*menipis|menipis)\b", t
     ):
         return "query_items_low_stock", None, None
     if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
@@ -1416,20 +1416,27 @@ def classify_query_intent(user_text: str) -> tuple:
     ("calc_count_expenses_this_month",)
 
     # Re-format requests — user wants last response as table
-    if _qre.search(
-        r"(?:tampilkan|tunjukkan|bikin|buat|format|ubah)\s+(?:dalam|ke|jadi|sebagai)\s+(?:bentuk\s+)?(?:tabel|table)",
-        t,
-    ):
-        return "reformat_as_table", None, None
-    if _qre.search(
-        r"(?:rekapan|rekap)\s+(?:dalam|ke)?\s*(?:bentuk\s+)?(?:tabel|table)", t
-    ):
-        return "reformat_as_table", None, None
-    if _qre.search(
-        r"(?:tolong|bisa|mau)\s+(?:di)?(?:bikin|buat|format)(?:kan)?\s+(?:tabel|table)",
-        t,
-    ):
-        return "reformat_as_table", None, None
+    # GUARD: if text contains domain-specific nouns, it's a NEW query, not reformat
+    _has_domain_noun = bool(_qre.search(
+        r"\b(?:barang|item|produk|stok|stock|pelanggan|customer|vendor|pemasok|"
+        r"faktur|invoice|tagihan|bill|pengeluaran|biaya|expense|"
+        r"jurnal|akun|account|rekening|bank|gaji|payroll)\b", t
+    ))
+    if not _has_domain_noun:
+        if _qre.search(
+            r"(?:tampilkan|tunjukkan|bikin|buat|format|ubah)\s+(?:dalam|ke|jadi|sebagai)\s+(?:bentuk\s+)?(?:tabel|table)",
+            t,
+        ):
+            return "reformat_as_table", None, None
+        if _qre.search(
+            r"(?:rekapan|rekap)\s+(?:dalam|ke)?\s*(?:bentuk\s+)?(?:tabel|table)", t
+        ):
+            return "reformat_as_table", None, None
+        if _qre.search(
+            r"(?:tolong|bisa|mau)\s+(?:di)?(?:bikin|buat|format)(?:kan)?\s+(?:tabel|table)",
+            t,
+        ):
+            return "reformat_as_table", None, None
 
     return None, None, None
 
