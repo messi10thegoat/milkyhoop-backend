@@ -628,7 +628,15 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         # Tutorial step: preview contains TutorialStepData
         data = preview or {}
     elif message_type == "CLARIFICATION":
-        data = extra_data if (extra_data and isinstance(extra_data, dict) and extra_data.get("options")) else None
+        data = (
+            extra_data
+            if (
+                extra_data
+                and isinstance(extra_data, dict)
+                and extra_data.get("options")
+            )
+            else None
+        )
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
 
@@ -1282,11 +1290,6 @@ Rules:
     except Exception as _tel_err:
         logger.warning("[TELEMETRY] Failed to record: %s", _tel_err)
 
-    import logging as _dbg_log
-    _dbg_log.getLogger("unified_chat").warning("[PRE_CONVERT] type=%s extra_data=%s has_attr=%s", 
-        getattr(agent_resp, "message_type", "?"), 
-        str(getattr(agent_resp, "extra_data", "NOATTR"))[:100],
-        hasattr(agent_resp, "extra_data"))
     return _to_chat_response(agent_resp)
 
 
@@ -1502,7 +1505,7 @@ async def send_message_with_files(
     if session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            sm_guard = SessionManager(
+            _sm_guard = SessionManager(
                 db_pool=db_pool_guard,
                 tenant_id=ctx["tenant_id"],
                 user_id=ctx["user_id"],
@@ -1825,18 +1828,36 @@ async def send_message_with_files(
                     )
                     _extracted = _ocr_resp.choices[0].message.content.strip()
                     # Guard: model sometimes refuses with "Maaf..." instead of extracting text
-                    _refusal_markers = ("maaf", "sorry", "i cannot", "i can't", "tidak dapat", "tidak bisa")
-                    if _extracted and not any(_extracted.lower().startswith(m) for m in _refusal_markers):
+                    _refusal_markers = (
+                        "maaf",
+                        "sorry",
+                        "i cannot",
+                        "i can't",
+                        "tidak dapat",
+                        "tidak bisa",
+                    )
+                    if _extracted and not any(
+                        _extracted.lower().startswith(m) for m in _refusal_markers
+                    ):
                         enriched_text = f"{text}\n\n[Data dari gambar]:\n{_extracted}"
                         logger.info(
                             f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}"
                         )
                         # ── Persist OCR text to session for multi-turn reference ──
                         try:
-                            from ..services.unified_agent.session_manager import SessionManager as _OCR_SM
-                            from ..services.unified_agent.db_utils import get_session_db_pool as _ocr_sm_pool
+                            from ..services.unified_agent.session_manager import (
+                                SessionManager as _OCR_SM,
+                            )
+                            from ..services.unified_agent.db_utils import (
+                                get_session_db_pool as _ocr_sm_pool,
+                            )
+
                             _ocr_sm_db = await _ocr_sm_pool()
-                            _ocr_sm = _OCR_SM(db_pool=_ocr_sm_db, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
+                            _ocr_sm = _OCR_SM(
+                                db_pool=_ocr_sm_db,
+                                tenant_id=ctx["tenant_id"],
+                                user_id=ctx["user_id"],
+                            )
                             if session_id:
                                 await _ocr_sm.update_state(
                                     session_id,
@@ -1845,9 +1866,15 @@ async def send_message_with_files(
                                         "source": "intent_ocr",
                                     },
                                 )
-                                logger.info("[IntentOCR] Persisted %d chars to document_context", len(_extracted))
+                                logger.info(
+                                    "[IntentOCR] Persisted %d chars to document_context",
+                                    len(_extracted),
+                                )
                         except Exception as _ocr_persist_err:
-                            logger.warning("[IntentOCR] Persist failed (non-blocking): %s", _ocr_persist_err)
+                            logger.warning(
+                                "[IntentOCR] Persist failed (non-blocking): %s",
+                                _ocr_persist_err,
+                            )
             except Exception as _iocr_err:
                 logger.warning(f"[IntentOCR] Failed: {_iocr_err}")
 
@@ -1934,6 +1961,8 @@ async def send_message_with_files(
 
 Return JSON ONLY:
 {{
+  "is_financial_document": true,
+  "extracted_text": "teks utama yang terbaca dari gambar, apa adanya",
   "doc_type": "expense|bank_transfer|qris|merchant_payment|purchase_invoice|sales_invoice|receipt|unknown",
   "vendor_name": "nama vendor (untuk struk PLN: 'PLN', untuk transfer keluar: nama penerima)",
   "customer_name": "nama customer atau null",
@@ -1951,7 +1980,10 @@ Aturan:
 - Struk PLN: doc_type="expense", total_amount=field "RP BAYAR" (BUKAN RP STROOM/TOKEN, BUKAN total dengan ADMIN BANK), tax_amount=PBJT-TL, vendor_name="PLN"
 - QRIS/merchant payment ("Pembayaran QRIS Berhasil", Merchant PAN, Terminal ID): doc_type="qris", NOT bank_transfer. Ini pembayaran ke merchant, bukan transfer antar bank.
 - Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
-- Semua angka Rupiah tanpa desimal"""
+- Semua angka Rupiah tanpa desimal
+- is_financial_document: true jika gambar berisi dokumen keuangan (struk, invoice, bukti transfer, kwitansi, nota, faktur, slip gaji). false jika gambar berisi tabel data, screenshot aplikasi, foto produk, chat/pesan, atau konten non-keuangan.
+- extracted_text: teks utama yang terbaca dari gambar, apa adanya. WAJIB diisi meskipun is_financial_document=false.
+- Jika is_financial_document=false, isi semua field KECUALI extracted_text dan confidence dengan null/0/"unknown"."""
 
                     # Use Gemini 2.5 Flash for vision OCR (~700ms vs gpt-4o ~2-3s)
                     import httpx as _ocr_httpx
@@ -2783,7 +2815,7 @@ Aturan:
     # File uploads represent a fresh user action, not continuation of prior multi-turn
     if file_metas and session_id:
         try:
-            from .unified_chat import logger as _uc_logger
+            from .unified_chat import logger as _uc_logger  # noqa: F401
         except ImportError:
             pass
         try:
@@ -3077,10 +3109,10 @@ async def _propose_document_draft(
     _jd = draft_plan.get("journal_draft") or {}
     _jd_lines = _jd.get("lines") or []
     _total_debit = sum(
-        float(l.get("debit") or 0) for l in _jd_lines if isinstance(l, dict)
+        float(ln.get("debit") or 0) for ln in _jd_lines if isinstance(ln, dict)
     )
     _total_credit = sum(
-        float(l.get("credit") or 0) for l in _jd_lines if isinstance(l, dict)
+        float(ln.get("credit") or 0) for ln in _jd_lines if isinstance(ln, dict)
     )
 
     # Extract vendor/counterparty from multiple possible locations
