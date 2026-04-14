@@ -21,7 +21,6 @@ from typing import Optional
 import logging
 import asyncpg
 import json
-import uuid
 from uuid import UUID
 from datetime import date as dateclass
 from decimal import Decimal
@@ -62,7 +61,7 @@ from ..schemas.items import (
     PURCHASE_ACCOUNTS,
 )
 from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,18 +91,13 @@ def get_tenant_id(request: Request) -> str:
 
 
 # Connection pool for newer endpoints
-_pool = None
 
 
 async def get_pool():
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request):
@@ -384,7 +378,7 @@ async def create_item(request: Request, body: CreateItemRequest):
 
         # Check for duplicate name
         existing = await conn.fetchrow(
-            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2",
+            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
             tenant_id,
             body.name,
         )
@@ -695,7 +689,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
         # Check for duplicate name (if changing)
         if body.name:
             duplicate = await conn.fetchrow(
-                "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3",
+                "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3 AND deleted_at IS NULL",
                 ctx["tenant_id"],
                 body.name,
                 str(item_id),
@@ -1021,18 +1015,29 @@ async def delete_item(request: Request, item_id: UUID):
                 detail=f"Item '{existing['nama_produk']}' tidak bisa dihapus karena masih memiliki {txn_count} transaksi. Gunakan fitur Nonaktifkan.",
             )
 
-        # Soft delete: mark as inactive with deleted_at timestamp
+        # No ledger footprint → hard delete (including cascading data)
+        # Clean up related data first
         await conn.execute(
-            "UPDATE products SET deleted_at = NOW(), status = 'inactive' WHERE id = $1 AND tenant_id = $2",
+            "DELETE FROM item_pricing WHERE product_id = $1::uuid",
+            str(item_id),
+        )
+        await conn.execute(
+            "DELETE FROM unit_conversions WHERE product_id = $1",
+            str(item_id),
+        )
+        await conn.execute(
+            "DELETE FROM products WHERE id = $1 AND tenant_id = $2",
             str(item_id),
             tenant_id,
         )
 
-        logger.info(f"Soft-deleted item {item_id} for tenant {tenant_id}")
+        logger.info(
+            f"Hard-deleted item {item_id} (no ledger footprint) for tenant {tenant_id}"
+        )
 
         return DeleteItemResponse(
             success=True,
-            message=f"Item '{existing['nama_produk']}' berhasil dinonaktifkan",
+            message=f"Item '{existing['nama_produk']}' berhasil dihapus",
         )
 
     except HTTPException:
@@ -1054,7 +1059,7 @@ async def delete_item(request: Request, item_id: UUID):
 async def list_all_conversions(request: Request):
     """List all unit conversions for the tenant — for Satuan desktop page."""
     ctx = get_user_context(request)
-    tenant_id = ctx["tenant_id"]
+    _tenant_id = ctx["tenant_id"]  # noqa: F841
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
@@ -1622,7 +1627,9 @@ async def autocomplete_items(
                 if key in tax_code_map:
                     return tax_code_map[key]
                 # Try common patterns: PPN_12 → ppn 12%, PPN_11 → ppn 11%
-                normalized = key.replace("_", " ").replace("ppn ", "ppn ").replace("%", "")
+                normalized = (
+                    key.replace("_", " ").replace("ppn ", "ppn ").replace("%", "")
+                )
                 for tc_key, tc in tax_code_map.items():
                     if normalized in tc_key or tc_key in normalized:
                         return tc
@@ -1642,13 +1649,21 @@ async def autocomplete_items(
                     "track_batches": row.get("track_batches", False),
                     "track_expiry": row.get("track_expiry", False),
                     "sales_tax": row.get("sales_tax"),
-                    "sales_tax_id": str(row["sales_tax_id"]) if row.get("sales_tax_id") else None,
+                    "sales_tax_id": str(row["sales_tax_id"])
+                    if row.get("sales_tax_id")
+                    else None,
                     "sales_tax_name": row.get("sales_tax_name"),
-                    "sales_tax_rate": float(row["sales_tax_rate"]) if row.get("sales_tax_rate") else None,
+                    "sales_tax_rate": float(row["sales_tax_rate"])
+                    if row.get("sales_tax_rate")
+                    else None,
                     "purchase_tax": row.get("purchase_tax"),
-                    "purchase_tax_id": str(row["purchase_tax_id"]) if row.get("purchase_tax_id") else None,
+                    "purchase_tax_id": str(row["purchase_tax_id"])
+                    if row.get("purchase_tax_id")
+                    else None,
                     "purchase_tax_name": row.get("purchase_tax_name"),
-                    "purchase_tax_rate": float(row["purchase_tax_rate"]) if row.get("purchase_tax_rate") else None,
+                    "purchase_tax_rate": float(row["purchase_tax_rate"])
+                    if row.get("purchase_tax_rate")
+                    else None,
                 }
                 # Resolve legacy strings when UUID is missing
                 if not item["sales_tax_id"] and item["sales_tax"]:
@@ -1983,19 +1998,30 @@ async def get_default_accounts(request: Request):
                    WHERE tenant_id = $1 AND is_active = true AND NOT is_header
                      AND account_code LIKE $2
                    ORDER BY account_code ASC LIMIT 1""",
-                tenant_id, f"{code_prefix}%",
+                tenant_id,
+                f"{code_prefix}%",
             )
             if row:
-                return {"id": str(row["id"]), "code": row["account_code"], "name": row["name"]}
+                return {
+                    "id": str(row["id"]),
+                    "code": row["account_code"],
+                    "name": row["name"],
+                }
             row = await conn.fetchrow(
                 """SELECT id, account_code, name FROM chart_of_accounts
                    WHERE tenant_id = $1 AND is_active = true AND NOT is_header
                      AND account_type = $2 AND name ILIKE $3
                    ORDER BY account_code ASC LIMIT 1""",
-                tenant_id, account_type, f"%{name_hint}%",
+                tenant_id,
+                account_type,
+                f"%{name_hint}%",
             )
             if row:
-                return {"id": str(row["id"]), "code": row["account_code"], "name": row["name"]}
+                return {
+                    "id": str(row["id"]),
+                    "code": row["account_code"],
+                    "name": row["name"],
+                }
             return None
 
         sales = await resolve("REVENUE", "4-10100", "penjualan")
@@ -2015,7 +2041,9 @@ async def get_default_accounts(request: Request):
             "data": {
                 "default_sales_account_id": sales["id"] if sales else None,
                 "default_sales_account": sales,
-                "default_service_sales_account_id": (service_sales or sales or {}).get("id"),
+                "default_service_sales_account_id": (service_sales or sales or {}).get(
+                    "id"
+                ),
                 "default_service_sales_account": service_sales or sales,
                 "default_purchase_account_id": purchase["id"] if purchase else None,
                 "default_purchase_account": purchase,
@@ -2027,7 +2055,9 @@ async def get_default_accounts(request: Request):
         }
     except Exception as e:
         logger.error(f"Error resolving default accounts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to resolve default accounts")
+        raise HTTPException(
+            status_code=500, detail="Failed to resolve default accounts"
+        )
     finally:
         if conn:
             await conn.close()
@@ -2333,7 +2363,6 @@ async def get_item(request: Request, item_id: UUID):
                 "is_returnable": row.get("is_returnable", True),
                 "track_batches": row.get("track_batches", False),
                 "track_expiry": row.get("track_expiry", False),
-                "track_expiry": row.get("track_expiry", False),
                 "default_expiry_days": row.get("default_expiry_days"),
                 "image_url": row.get("image_url"),
                 "reorder_level": row["reorder_level"]
@@ -2345,12 +2374,24 @@ async def get_item(request: Request, item_id: UUID):
                 "preferred_vendor_id": str(row["preferred_vendor_id"])
                 if row.get("preferred_vendor_id")
                 else None,
-                "sales_account": f"{row['sales_acct_code']} - {row['sales_acct_name']}" if row.get("sales_acct_code") else None,
-                "sales_account_name": f"{row['sales_acct_code']} - {row['sales_acct_name']}" if row.get("sales_acct_code") else None,
-                "purchase_account": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}" if row.get("purchase_acct_code") else None,
-                "purchase_account_name": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}" if row.get("purchase_acct_code") else None,
-                "inventory_account_name": f"{row['inventory_acct_code']} - {row['inventory_acct_name']}" if row.get("inventory_acct_code") else None,
-                "cogs_account_name": f"{row['cogs_acct_code']} - {row['cogs_acct_name']}" if row.get("cogs_acct_code") else None,
+                "sales_account": f"{row['sales_acct_code']} - {row['sales_acct_name']}"
+                if row.get("sales_acct_code")
+                else None,
+                "sales_account_name": f"{row['sales_acct_code']} - {row['sales_acct_name']}"
+                if row.get("sales_acct_code")
+                else None,
+                "purchase_account": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}"
+                if row.get("purchase_acct_code")
+                else None,
+                "purchase_account_name": f"{row['purchase_acct_code']} - {row['purchase_acct_name']}"
+                if row.get("purchase_acct_code")
+                else None,
+                "inventory_account_name": f"{row['inventory_acct_code']} - {row['inventory_acct_name']}"
+                if row.get("inventory_acct_code")
+                else None,
+                "cogs_account_name": f"{row['cogs_acct_code']} - {row['cogs_acct_name']}"
+                if row.get("cogs_acct_code")
+                else None,
                 "sales_account_id": str(row["sales_account_id"])
                 if row.get("sales_account_id")
                 else None,
@@ -2651,7 +2692,7 @@ async def duplicate_item(request: Request, item_id: UUID):
         # Ensure unique name
         suffix = 1
         while await conn.fetchval(
-            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2",
+            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
             tenant_id,
             copy_name,
         ):
@@ -2813,7 +2854,6 @@ async def list_cogs_accounts(request: Request):
     finally:
         if conn:
             await conn.close()
-
 
 
 @router.post("/items/{item_id}/stock-adjustment")
