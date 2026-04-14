@@ -73,7 +73,7 @@ class EntityResolver:
             resolve_tasks.append(self._resolve_customer(entities["customer_name"]))
         if entities.get("vendor_name") and not _skip_vendor_resolve:
             resolve_tasks.append(self._resolve_vendor(entities["vendor_name"]))
-        if entities.get("item_name") and not intent.startswith("create_item"):
+        if entities.get("item_name") and not intent.startswith("create_item") and intent != "create_expense":
             resolve_tasks.append(self._resolve_item(entities["item_name"]))
         if entities.get("bank_name") and not _skip_bank_resolve:
             resolve_tasks.append(self._resolve_bank_account(entities["bank_name"]))
@@ -83,6 +83,8 @@ class EntityResolver:
             resolve_tasks.append(self._resolve_invoice(entities["invoice_number"]))
         if entities.get("bill_number"):
             resolve_tasks.append(self._resolve_bill(entities["bill_number"]))
+        if entities.get("account_name"):
+            resolve_tasks.append(self._resolve_account(entities["account_name"]))
 
         if resolve_tasks:
             resolved_entities = await asyncio.gather(*resolve_tasks, return_exceptions=True)
@@ -138,6 +140,51 @@ class EntityResolver:
             action_memory_suggestion=action_memory_suggestion,
         )
 
+        # Step B.5: Auto-resolve account for create_expense (keyword inference)
+        if intent == "create_expense" and "account" not in result.resolved and not result.payload.get("account_id"):
+            acct_name = result.payload.get("account_name", "")
+            desc = result.payload.get("description", "")
+            # Strategy 1: user explicitly said account name
+            if acct_name:
+                acct_res = await self._resolve_account(acct_name)
+                if acct_res and acct_res.confidence >= 0.7:
+                    result.resolved["account"] = acct_res
+                    result.payload["account_id"] = acct_res.entity_id
+                    result.payload["account_name"] = acct_res.entity_name
+            # Strategy 2: keyword inference from description
+            if not result.payload.get("account_id") and desc:
+                _EXPENSE_KW = {
+                    "listrik": "Beban Listrik", "air pdam": "Beban Air",
+                    "telepon": "Beban Telepon", "internet": "Beban Telepon & Internet",
+                    "wifi": "Beban Telepon & Internet", "sewa": "Beban Sewa",
+                    "gaji": "Beban Gaji", "transport": "Beban Transportasi",
+                    "bensin": "Beban Transportasi", "parkir": "Beban Transportasi",
+                    "tol": "Beban Transportasi", "ojek": "Beban Transportasi",
+                    "grab": "Beban Transportasi", "servis": "Beban Pemeliharaan",
+                    "service": "Beban Pemeliharaan", "reparasi": "Beban Pemeliharaan",
+                    "perbaikan": "Beban Pemeliharaan", "maintenance": "Beban Pemeliharaan",
+                    "perawatan": "Beban Pemeliharaan", "makan": "Beban Makan & Minum",
+                    "minum": "Beban Makan & Minum", "snack": "Beban Makan & Minum",
+                    "catering": "Beban Makan & Minum", "konsumsi": "Beban Makan & Minum",
+                    "atk": "Beban Perlengkapan Kantor", "alat tulis": "Beban Perlengkapan Kantor",
+                    "kertas": "Beban Perlengkapan Kantor", "printer": "Beban Perlengkapan Kantor",
+                    "asuransi": "Beban Asuransi", "pajak": "Beban Pajak",
+                    "admin bank": "Biaya Admin Bank", "biaya bank": "Biaya Admin Bank",
+                }
+                desc_lower = desc.lower()
+                matched = None
+                for kw, acct in _EXPENSE_KW.items():
+                    if kw in desc_lower:
+                        matched = acct
+                        break
+                if not matched:
+                    matched = "Beban Lain-lain"
+                acct_res = await self._resolve_account(matched)
+                if acct_res and acct_res.confidence >= 0.5:
+                    result.resolved["account"] = acct_res
+                    result.payload["account_id"] = acct_res.entity_id
+                    result.payload["account_name"] = acct_res.entity_name
+
         # Step C: Check required fields
         from .direct_action_registry import get_direct_action, validate_payload
         config = get_direct_action(intent)
@@ -191,6 +238,10 @@ class EntityResolver:
             r = resolved["bill"]
             payload["bill_id"] = r.entity_id
             payload["bill_number"] = r.entity_name
+        if "account" in resolved:
+            r = resolved["account"]
+            payload["account_id"] = r.entity_id
+            payload["account_name"] = r.entity_name
 
         # Intent-specific: map resolved names to registry field names
         if intent == "create_customer" and "customer" in resolved:
@@ -466,6 +517,13 @@ class EntityResolver:
             candidates = [{"id": str(r["id"]), "name": r["account_name"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
+            # Exact match boost: if one candidate matches exactly, pick it
+            for i, r in enumerate(rows):
+                if r["account_name"].lower().strip() == name_fragment.lower().strip():
+                    best = candidates[i]
+                    confidence = 1.0
+                    candidates = [best]  # collapse to single match
+                    break
             return ResolvedEntity(entity_type="bank_account", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
         except Exception as e:
             logger.warning("[RESOLVE] Bank account lookup failed: %s", e)
@@ -528,7 +586,92 @@ class EntityResolver:
             logger.warning("[RESOLVE] Bill lookup failed: %s", e)
             return None
 
+    async def _resolve_by_number(
+        self,
+        search_val: str,
+        *,
+        table: str,
+        number_column: str,
+        entity_type: str,
+    ) -> Optional[ResolvedEntity]:
+        """Generic document number resolver. Works with any table that has a
+        number column (expense_number, journal_number, credit_note_number, etc.).
+
+        Args:
+            search_val: The document number to search (e.g. "EXP-2604-0016")
+            table: DB table name (e.g. "expenses")
+            number_column: Column containing the document number
+            entity_type: Entity type label for the result
+        """
+        try:
+            rows = await self.db.fetch(
+                f"""SELECT id, {number_column}
+                   FROM {table}
+                   WHERE tenant_id = $1 AND {number_column} ILIKE $2
+                   ORDER BY created_at DESC LIMIT 5""",
+                self.tenant_id, f"%{search_val}%"
+            )
+            if not rows:
+                return ResolvedEntity(
+                    entity_type=entity_type, entity_id="",
+                    entity_name=search_val, confidence=0.0,
+                )
+            candidates = [
+                {"id": str(r["id"]), "name": r[number_column]}
+                for r in rows
+            ]
+            best = candidates[0]
+            confidence = 1.0 if len(candidates) == 1 else 0.7
+            return ResolvedEntity(
+                entity_type=entity_type, entity_id=best["id"],
+                entity_name=best["name"], confidence=confidence,
+                candidates=candidates,
+            )
+        except Exception as e:
+            logger.warning("[RESOLVE] %s lookup failed: %s", entity_type, e)
+            return None
+
     # ── Response Entity Context (REC): Session-based resolution ──
+
+    async def _resolve_account(self, name_fragment: str) -> "Optional[ResolvedEntity]":
+        """Resolve CoA account by name. Excludes is_header=true (Law 18)."""
+        try:
+            rows = await self.db.fetch(
+                """SELECT id, name, account_code, account_type
+                   FROM chart_of_accounts
+                   WHERE tenant_id = $1 AND is_header = false
+                     AND is_active = true
+                     AND name ILIKE $2
+                   ORDER BY
+                     CASE WHEN LOWER(name) = LOWER($3) THEN 0 ELSE 1 END,
+                     name
+                   LIMIT 5""",
+                self.tenant_id, "%" + name_fragment + "%", name_fragment.strip()
+            )
+            if not rows:
+                return ResolvedEntity(
+                    entity_type="account", entity_id="",
+                    entity_name=name_fragment, confidence=0.0
+                )
+            candidates = [
+                {"id": str(r["id"]), "name": r["name"] + " (" + r["account_code"] + ")"}
+                for r in rows
+            ]
+            best = candidates[0]
+            confidence = 1.0 if len(candidates) == 1 else 0.7
+            for i, r in enumerate(rows):
+                if r["name"].lower().strip() == name_fragment.lower().strip():
+                    best = candidates[i]
+                    confidence = 1.0
+                    break
+            return ResolvedEntity(
+                entity_type="account", entity_id=best["id"],
+                entity_name=best["name"], confidence=confidence,
+                candidates=candidates
+            )
+        except Exception as e:
+            logger.warning("[RESOLVE] Account lookup failed: %s", e)
+            return None
 
     @staticmethod
     def resolve_from_session(user_text: str, session_state) -> dict:
@@ -592,6 +735,25 @@ class EntityResolver:
                         resolved["vendor_name"] = target["_name"]
                     elif _domain == "items":
                         resolved["item_name"] = target["_name"]
+
+        # Document reference matching — "EXP-2604-0016" / "INV-0042" / "PB-0001"
+        # Scan last_response_items for _ref match when user mentions a doc number
+        import re as _rec_re
+        _doc_ref_match = _rec_re.search(
+            r"\b(EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b",
+            user_text, _rec_re.IGNORECASE,
+        )
+        if _doc_ref_match and items:
+            _search_ref = _doc_ref_match.group(0).upper()
+            for _item in items:
+                _item_ref = (_item.get("_ref") or "").upper()
+                if _item_ref and _search_ref in _item_ref:
+                    resolved["_resolved_item"] = _item
+                    if _item.get("_id"):
+                        resolved["entity_id"] = _item["_id"]
+                    if _item.get("_name"):
+                        resolved["entity_name"] = _item["_name"]
+                    break
 
         return resolved
 

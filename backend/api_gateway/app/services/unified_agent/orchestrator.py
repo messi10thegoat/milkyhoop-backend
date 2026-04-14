@@ -2965,20 +2965,30 @@ class UnifiedAgent:
 
             # 2. Try entity resolver for specific types
             if not _resolved_id:
+                # (name_key, resolver_method)
+                # Resolvers: "_resolve_invoice" / "_resolve_bill" = dedicated methods
+                # "_resolve_by_number" = generic, needs _DOC_NUMBER_CONFIG below
+                _DOC_NUMBER_CONFIG = {
+                    "query_expense_detail": ("expenses", "expense_number", "expense"),
+                    "query_journal_detail": ("journal_entries", "journal_number", "journal"),
+                    "query_bill_payment_detail": ("bill_payments_v2", "payment_number", "bill_payment"),
+                    "query_receive_payment_detail": ("receive_payments", "payment_number", "receive_payment"),
+                    "query_stock_adjustment_detail": ("stock_adjustments", "adjustment_number", "stock_adjustment"),
+                    "query_credit_note_detail": ("credit_notes", "credit_note_number", "credit_note"),
+                    "query_vendor_credit_detail": ("vendor_credits", "vendor_credit_number", "vendor_credit"),
+                    "query_quote_detail": ("quotes", "quote_number", "quote"),
+                }
                 _intent_entity_map = {
-                    "query_sales_invoice_detail": (
-                        "invoice_number",
-                        "_resolve_invoice",
-                    ),
+                    "query_sales_invoice_detail": ("invoice_number", "_resolve_invoice"),
                     "query_bill_detail": ("bill_number", "_resolve_bill"),
-                    "query_bill_payment_detail": ("bill_payment_number", None),
-                    "query_receive_payment_detail": ("payment_number", None),
-                    "query_expense_detail": ("expense_number", None),
-                    "query_journal_detail": ("journal_number", None),
-                    "query_stock_adjustment_detail": ("adjustment_number", None),
-                    "query_credit_note_detail": ("credit_note_number", None),
-                    "query_vendor_credit_detail": ("vendor_credit_number", None),
-                    "query_quote_detail": ("quote_number", None),
+                    "query_bill_payment_detail": ("bill_payment_number", "_resolve_by_number"),
+                    "query_receive_payment_detail": ("payment_number", "_resolve_by_number"),
+                    "query_expense_detail": ("expense_number", "_resolve_by_number"),
+                    "query_journal_detail": ("journal_number", "_resolve_by_number"),
+                    "query_stock_adjustment_detail": ("adjustment_number", "_resolve_by_number"),
+                    "query_credit_note_detail": ("credit_note_number", "_resolve_by_number"),
+                    "query_vendor_credit_detail": ("vendor_credit_number", "_resolve_by_number"),
+                    "query_quote_detail": ("quote_number", "_resolve_by_number"),
                 }
                 _ie_cfg = _intent_entity_map.get(extraction.intent)
                 if _ie_cfg:
@@ -2996,9 +3006,21 @@ class UnifiedAgent:
 
                             _pool = await get_session_db_pool()
                             _resolver = EntityResolver(_pool, context.tenant_id)
-                            _resolved = await getattr(_resolver, _resolver_method)(
-                                _search_val
-                            )
+                            if _resolver_method == "_resolve_by_number":
+                                _dnc = _DOC_NUMBER_CONFIG.get(extraction.intent)
+                                if _dnc:
+                                    _resolved = await _resolver._resolve_by_number(
+                                        _search_val,
+                                        table=_dnc[0],
+                                        number_column=_dnc[1],
+                                        entity_type=_dnc[2],
+                                    )
+                                else:
+                                    _resolved = None
+                            else:
+                                _resolved = await getattr(_resolver, _resolver_method)(
+                                    _search_val
+                                )
                             if (
                                 _resolved
                                 and _resolved.entity_id
@@ -3041,6 +3063,31 @@ class UnifiedAgent:
                             _last = get_last_node(_eg_state.entity_graph, _graph_type)
                             if _last:
                                 _resolved_id = _last["id"]
+                except Exception:
+                    pass
+
+            # 3.5. Try REC document reference from session state
+            if (
+                not _resolved_id
+                and tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                try:
+                    from .entity_resolver import EntityResolver as _RecResolver
+
+                    _rec_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    _rec_result = _RecResolver.resolve_from_session(
+                        user_text, _rec_state
+                    )
+                    if _rec_result.get("entity_id"):
+                        _resolved_id = _rec_result["entity_id"]
+                        logger.info(
+                            "[QUERY_PIPELINE] Resolved via REC doc-ref: %s",
+                            _resolved_id[:8] if _resolved_id else "?",
+                        )
                 except Exception:
                     pass
 
