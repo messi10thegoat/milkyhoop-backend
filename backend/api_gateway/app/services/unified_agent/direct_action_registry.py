@@ -170,6 +170,10 @@ class DirectActionConfig:
     journal_preview_endpoint: str = (
         ""  # POST endpoint for journal preview (creates_journal actions)
     )
+    # --- Default CoA account resolution (parity with form UI) ---
+    # Format: {"sales_account_id": (account_type, code_prefix, name_hint), ...}
+    # Resolved at confirm time — injects *_id + friendly *_account name into payload.
+    default_accounts_policy: dict = field(default_factory=dict)
 
     def get_entity_name(self, payload: dict) -> str:
         """Extract entity display name from payload."""
@@ -1531,6 +1535,12 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         creates_journal=False,
         ttl_seconds=300,
         action_type_key="CREATE_ITEM",
+        default_accounts_policy={
+            "sales_account_id": ("REVENUE", "4-10100", "penjualan"),
+            "purchase_account_id": ("EXPENSE", "5-20900", "lain"),
+            "inventory_account_id": ("ASSET", "1-10600", "persediaan"),
+            "cogs_account_id": ("COGS", "5-10100", "hpp"),
+        },
         at_least_one_groups=[
             {
                 "fields": ["sales_price", "purchase_price"],

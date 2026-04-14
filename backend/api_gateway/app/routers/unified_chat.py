@@ -2467,54 +2467,29 @@ Aturan:
                                 _sid_uuid = __import__("uuid").UUID(session_id)
                                 _tid = ctx["tenant_id"]
 
-                                # Pre-check: does the row exist?
-                                _pre_check = await _ocr_pool.fetchrow(
-                                    "SELECT session_id, tenant_id FROM chat_session_state WHERE session_id = $1::uuid AND tenant_id = $2",
-                                    _sid_uuid,
-                                    _tid,
-                                )
-                                logger.info(
-                                    "[DocResolver] Pre-check row exists: %s (session=%s, tenant=%s)",
-                                    bool(_pre_check),
-                                    session_id,
-                                    _tid,
-                                )
-
-                                if not _pre_check:
-                                    # Row missing — UPSERT
-                                    await _ocr_pool.execute(
-                                        "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
-                                        "VALUES ($1::uuid, $2, $3::jsonb) "
-                                        "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
-                                        _sid_uuid,
+                                # Pin connection + set RLS tenant context (P0.3 fix)
+                                async with _ocr_pool.acquire() as _rls_conn:
+                                    await _rls_conn.execute(
+                                        "SELECT set_config('app.tenant_id', $1, true)",
                                         _tid,
-                                        _doc_json,
                                     )
-                                    logger.info(
-                                        "[DocResolver] UPSERT (row was missing) session=%s",
-                                        session_id,
-                                    )
-                                else:
-                                    # Row exists — plain UPDATE (no transaction wrapper)
-                                    _rows = await _ocr_pool.execute(
-                                        "UPDATE chat_session_state SET document_context = $1::jsonb, updated_at = now() "
-                                        "WHERE session_id = $2::uuid AND tenant_id = $3",
-                                        _doc_json,
+
+                                    # Pre-check: does the row exist?
+                                    _pre_check = await _rls_conn.fetchrow(
+                                        "SELECT session_id, tenant_id FROM chat_session_state WHERE session_id = $1::uuid AND tenant_id = $2",
                                         _sid_uuid,
                                         _tid,
                                     )
                                     logger.info(
-                                        "[DocResolver] UPDATE result: %s (session=%s)",
-                                        _rows,
+                                        "[DocResolver] Pre-check row exists: %s (session=%s, tenant=%s)",
+                                        bool(_pre_check),
                                         session_id,
+                                        _tid,
                                     )
 
-                                    if _rows == "UPDATE 0":
-                                        # Fallback UPSERT
-                                        logger.warning(
-                                            "[DocResolver] UPDATE 0 despite pre-check — UPSERT fallback"
-                                        )
-                                        await _ocr_pool.execute(
+                                    if not _pre_check:
+                                        # Row missing — UPSERT
+                                        await _rls_conn.execute(
                                             "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
                                             "VALUES ($1::uuid, $2, $3::jsonb) "
                                             "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
@@ -2522,22 +2497,54 @@ Aturan:
                                             _tid,
                                             _doc_json,
                                         )
+                                        logger.info(
+                                            "[DocResolver] UPSERT (row was missing) session=%s",
+                                            session_id,
+                                        )
+                                    else:
+                                        # Row exists — plain UPDATE (no transaction wrapper)
+                                        _rows = await _rls_conn.execute(
+                                            "UPDATE chat_session_state SET document_context = $1::jsonb, updated_at = now() "
+                                            "WHERE session_id = $2::uuid AND tenant_id = $3",
+                                            _doc_json,
+                                            _sid_uuid,
+                                            _tid,
+                                        )
+                                        logger.info(
+                                            "[DocResolver] UPDATE result: %s (session=%s)",
+                                            _rows,
+                                            session_id,
+                                        )
 
-                                # Verify
-                                _verify_dc = await _ocr_pool.fetchval(
-                                    "SELECT document_context IS NOT NULL FROM chat_session_state WHERE session_id = $1::uuid",
-                                    _sid_uuid,
-                                )
-                                if _verify_dc:
-                                    logger.info(
-                                        "[DocResolver] VERIFIED document_context stored (session=%s)",
-                                        session_id,
+                                        if _rows == "UPDATE 0":
+                                            # Fallback UPSERT
+                                            logger.warning(
+                                                "[DocResolver] UPDATE 0 despite pre-check — UPSERT fallback"
+                                            )
+                                            await _rls_conn.execute(
+                                                "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
+                                                "VALUES ($1::uuid, $2, $3::jsonb) "
+                                                "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
+                                                _sid_uuid,
+                                                _tid,
+                                                _doc_json,
+                                            )
+
+                                    # Verify
+                                    _verify_dc = await _rls_conn.fetchval(
+                                        "SELECT document_context IS NOT NULL FROM chat_session_state WHERE session_id = $1::uuid",
+                                        _sid_uuid,
                                     )
-                                else:
-                                    logger.error(
-                                        "[DocResolver] STORE STILL FAILED (session=%s)",
-                                        session_id,
-                                    )
+                                    if _verify_dc:
+                                        logger.info(
+                                            "[DocResolver] VERIFIED document_context stored (session=%s)",
+                                            session_id,
+                                        )
+                                    else:
+                                        logger.error(
+                                            "[DocResolver] STORE STILL FAILED (session=%s)",
+                                            session_id,
+                                        )
                             except Exception as _store_err:
                                 import traceback as _store_tb
 
@@ -3421,80 +3428,27 @@ async def _confirm_direct_action(
             k: v for k, v in payload.items() if k not in display_only_names
         }
 
-        # create_item: resolve default CoA account IDs (same as form UI)
-        if action_key == "create_item":
+        # Resolve default CoA accounts based on DirectActionConfig.default_accounts_policy
+        # (parity with form UI — chat-created entities get same account linkage)
+        if config.default_accounts_policy:
             try:
-                _needs_accounts = not clean_payload.get(
-                    "sales_account_id"
-                ) or not clean_payload.get("purchase_account_id")
-                if _needs_accounts:
-                    _acct_conn = await pool.acquire()
-                    try:
+                from ..services.default_accounts import (
+                    resolve_default_accounts as _resolve_defaults,
+                )
 
-                        async def _resolve_acct(code_prefix, account_type, name_hint):
-                            row = await _acct_conn.fetchrow(
-                                """SELECT id, account_code, name FROM chart_of_accounts
-                                   WHERE tenant_id = $1 AND is_active = true AND NOT is_header
-                                     AND account_code LIKE $2
-                                   ORDER BY account_code ASC LIMIT 1""",
-                                tenant_id,
-                                f"{code_prefix}%",
-                            )
-                            if not row:
-                                row = await _acct_conn.fetchrow(
-                                    """SELECT id, account_code, name FROM chart_of_accounts
-                                       WHERE tenant_id = $1 AND is_active = true AND NOT is_header
-                                         AND account_type = $2 AND name ILIKE $3
-                                       ORDER BY account_code ASC LIMIT 1""",
-                                    tenant_id,
-                                    account_type,
-                                    f"%{name_hint}%",
-                                )
-                            return row
-
-                        _sales_acct = await _resolve_acct(
-                            "4-10100", "REVENUE", "penjualan"
-                        )
-                        _purch_acct = await _resolve_acct("5-20900", "EXPENSE", "lain")
-                        if not _purch_acct:
-                            _purch_acct = await _resolve_acct(
-                                "5-20", "EXPENSE", "operasional"
-                            )
-                        _inv_acct = await _resolve_acct(
-                            "1-10600", "ASSET", "persediaan"
-                        )
-                        _cogs_acct = await _resolve_acct("5-10100", "COGS", "hpp")
-                        if not _cogs_acct:
-                            _cogs_acct = await _resolve_acct(
-                                "5-10100", "EXPENSE", "harga pokok"
-                            )
-
-                        if _sales_acct:
-                            clean_payload["sales_account_id"] = str(_sales_acct["id"])
-                            clean_payload["sales_account"] = _sales_acct["name"]
-                        if _purch_acct:
-                            clean_payload["purchase_account_id"] = str(
-                                _purch_acct["id"]
-                            )
-                            clean_payload["purchase_account"] = _purch_acct["name"]
-                        if _inv_acct:
-                            clean_payload["inventory_account_id"] = str(_inv_acct["id"])
-                        if _cogs_acct:
-                            clean_payload["cogs_account_id"] = str(_cogs_acct["id"])
-
-                        logger.info(
-                            "[create_item] Resolved default accounts: sales=%s purchase=%s inventory=%s cogs=%s",
-                            _sales_acct["name"] if _sales_acct else None,
-                            _purch_acct["name"] if _purch_acct else None,
-                            _inv_acct["name"] if _inv_acct else None,
-                            _cogs_acct["name"] if _cogs_acct else None,
-                        )
-                    finally:
-                        await pool.release(_acct_conn)
+                _acct_conn = await pool.acquire()
+                try:
+                    await _resolve_defaults(
+                        _acct_conn,
+                        tenant_id,
+                        clean_payload,
+                        config.default_accounts_policy,
+                    )
+                finally:
+                    await pool.release(_acct_conn)
             except Exception as _acct_err:
                 logger.warning(
-                    "[create_item] Default account resolve failed (non-blocking): %s",
-                    _acct_err,
+                    "[default_accounts] Resolve failed (non-blocking): %s", _acct_err
                 )
 
         # Bill payment: transform flat payload → allocations[] format for POST /api/bill-payments

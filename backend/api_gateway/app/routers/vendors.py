@@ -25,25 +25,19 @@ from ..schemas.vendors import (
     MergeVendorRequest,
     MergeVendorResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -1021,47 +1015,48 @@ async def toggle_vendor_status(
 # =============================================================================
 @router.delete("/{vendor_id}", response_model=VendorResponse)
 async def delete_vendor(request: Request, vendor_id: UUID):
-    """
-    Hard delete a vendor by removing the row from the database.
+    """Delete a vendor. Hard-deletes if no ledger/transaction footprint; else raises 400."""
+    from ..services.smart_delete import smart_delete
 
-    **Note:** The frontend ensures this is only available for vendors
-    without transactions (has_transactions = false), so hard delete is safe.
-    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Check if vendor exists
-                existing = await conn.fetchrow(
-                    "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                    vendor_id,
-                    ctx["tenant_id"],
+                result = await smart_delete(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    entity_id=str(vendor_id),
+                    table="vendors",
+                    name_column="name",
+                    ledger_checks=[
+                        (
+                            "bills",
+                            "vendor_id",
+                            "Tidak bisa menghapus vendor yang sudah memiliki tagihan. Nonaktifkan saja.",
+                        ),
+                        (
+                            "accounts_payable",
+                            "supplier_id",
+                            "Tidak bisa menghapus vendor yang memiliki catatan utang. Nonaktifkan saja.",
+                        ),
+                        (
+                            "vendor_credits",
+                            "vendor_id",
+                            "Tidak bisa menghapus vendor yang memiliki kredit. Nonaktifkan saja.",
+                        ),
+                        (
+                            "vendor_deposits",
+                            "vendor_id",
+                            "Tidak bisa menghapus vendor yang memiliki deposit. Nonaktifkan saja.",
+                        ),
+                    ],
                 )
-                if not existing:
-                    raise HTTPException(status_code=404, detail="Vendor not found")
-
-                # Hard delete - remove the row entirely
-                await conn.execute(
-                    """
-                DELETE FROM vendors
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                    vendor_id,
-                    ctx["tenant_id"],
-                )
-
-                logger.info(
-                    f"Vendor hard deleted: {vendor_id}, name={existing['name']}"
-                )
-
                 return {
                     "success": True,
-                    "message": "Vendor deleted successfully",
-                    "data": {"id": str(vendor_id), "name": existing["name"]},
+                    "message": result["message"],
+                    "data": {"id": str(vendor_id), "name": result["name"]},
                 }
-
     except HTTPException:
         raise
     except Exception as e:

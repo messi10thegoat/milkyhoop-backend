@@ -973,73 +973,37 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
 
 @router.delete("/items/{item_id}", response_model=DeleteItemResponse)
 async def delete_item(request: Request, item_id: UUID):
-    """Delete an item. This will also delete associated unit conversions and pricing."""
+    """Delete an item. Hard-deletes if no ledger footprint; else raises 400."""
+    from ..services.smart_delete import smart_delete
+
     tenant_id = get_tenant_id(request)
     conn = None
-
     try:
         conn = await get_db_connection()
-
-        # Check item exists and is not already soft-deleted
-        existing = await conn.fetchrow(
-            "SELECT nama_produk FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            str(item_id),
-            tenant_id,
+        result = await smart_delete(
+            conn,
+            tenant_id=tenant_id,
+            entity_id=str(item_id),
+            table="products",
+            name_column="nama_produk",
+            ledger_checks=[
+                ("inventory_ledger", "product_id", None),
+                ("sales_invoice_items", "item_id", None),
+                ("bill_items", "product_id", None),
+                ("stock_adjustment_items", "product_id", None),
+                ("stock_transfer_items", "item_id", None),
+                ("production_orders", "product_id", None),
+                ("recipes", "product_id", None),
+            ],
+            cascade_tables=[
+                ("item_pricing", "product_id"),
+                ("unit_conversions", "product_id"),
+            ],
+            has_footprint_error="Item '{name}' tidak bisa dihapus karena masih memiliki transaksi. Gunakan fitur Nonaktifkan.",
+            id_cast="::uuid",
+            extra_exists_filter="AND deleted_at IS NULL",
         )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Guard: prevent deletion if item has transactions
-        txn_count = await conn.fetchval(
-            """SELECT COUNT(*) FROM (
-                SELECT 1 FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2
-                UNION ALL
-                SELECT 1 FROM sales_invoice_items WHERE item_id = $1::uuid
-                UNION ALL
-                SELECT 1 FROM bill_items WHERE product_id = $1::uuid
-                UNION ALL
-                SELECT 1 FROM stock_adjustment_items WHERE product_id = $1::uuid
-                UNION ALL
-                SELECT 1 FROM stock_transfer_items WHERE item_id = $1::uuid
-                UNION ALL
-                SELECT 1 FROM production_orders WHERE product_id = $1 AND tenant_id = $2
-                UNION ALL
-                SELECT 1 FROM recipes WHERE product_id = $1 AND tenant_id = $2
-            ) txns""",
-            str(item_id),
-            tenant_id,
-        )
-        if txn_count and txn_count > 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Item '{existing['nama_produk']}' tidak bisa dihapus karena masih memiliki {txn_count} transaksi. Gunakan fitur Nonaktifkan.",
-            )
-
-        # No ledger footprint → hard delete (including cascading data)
-        # Clean up related data first
-        await conn.execute(
-            "DELETE FROM item_pricing WHERE product_id = $1::uuid",
-            str(item_id),
-        )
-        await conn.execute(
-            "DELETE FROM unit_conversions WHERE product_id = $1",
-            str(item_id),
-        )
-        await conn.execute(
-            "DELETE FROM products WHERE id = $1 AND tenant_id = $2",
-            str(item_id),
-            tenant_id,
-        )
-
-        logger.info(
-            f"Hard-deleted item {item_id} (no ledger footprint) for tenant {tenant_id}"
-        )
-
-        return DeleteItemResponse(
-            success=True,
-            message=f"Item '{existing['nama_produk']}' berhasil dihapus",
-        )
-
+        return DeleteItemResponse(success=True, message=result["message"])
     except HTTPException:
         raise
     except Exception as e:

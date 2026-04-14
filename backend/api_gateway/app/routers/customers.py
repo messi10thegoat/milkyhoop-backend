@@ -22,24 +22,18 @@ from ..schemas.customers import (
     CustomerActivity,
     CustomerActivityResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -108,12 +102,17 @@ async def autocomplete_customers(
             """
             rows = await conn.fetch(query, *params)
             if not rows:
-                rows = await conn.fetch("""
+                rows = await conn.fetch(
+                    """
                     SELECT id, nama, nomor_member, telepon, company_name, display_name
                     FROM customers
                     WHERE tenant_id = $1 AND is_active = true AND similarity(nama, $2) > 0.25
                     ORDER BY similarity(nama, $2) DESC LIMIT $3
-                """, ctx["tenant_id"], q, limit)
+                """,
+                    ctx["tenant_id"],
+                    q,
+                    limit,
+                )
 
             items = [
                 {
@@ -146,7 +145,9 @@ async def list_customers(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search name, code, or contact"),
     tipe: Optional[str] = Query(None, description="Filter by customer type"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status (null = all)"),
+    is_active: Optional[bool] = Query(
+        None, description="Filter by active status (null = all)"
+    ),
     sort_by: Literal["name", "code", "created_at", "updated_at"] = Query(
         "created_at", description="Sort field"
     ),
@@ -236,13 +237,17 @@ async def list_customers(
             customer_ids = [str(row["id"]) for row in rows]
             ar_balances = {}
             if customer_ids:
-                ar_rows = await conn.fetch("""
+                ar_rows = await conn.fetch(
+                    """
                     SELECT customer_id as cid, COALESCE(SUM(outstanding), 0) as balance
                     FROM compute_ar_outstanding($1)
                     WHERE customer_id = ANY($2)
                     GROUP BY customer_id
-                """, ctx["tenant_id"], customer_ids)
-                ar_balances = {row['cid']: int(row['balance']) for row in ar_rows}
+                """,
+                    ctx["tenant_id"],
+                    customer_ids,
+                )
+                ar_balances = {row["cid"]: int(row["balance"]) for row in ar_rows}
 
             items = [
                 {
@@ -313,7 +318,6 @@ async def get_next_customer_code(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get next code")
 
 
-
 # GET CUSTOMER DETAIL
 # =============================================================================
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
@@ -344,30 +348,42 @@ async def get_customer(request: Request, customer_id: str):
                 raise HTTPException(status_code=404, detail="Customer not found")
 
             # Check if customer has any transactions
-            has_tx = await conn.fetchval("""
+            has_tx = await conn.fetchval(
+                """
                 SELECT EXISTS(
                     SELECT 1 FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2
                     UNION ALL
                     SELECT 1 FROM receive_payments WHERE tenant_id = $1 AND customer_id = $2
                 )
-            """, ctx["tenant_id"], customer_id)
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
 
             # Live query for transaction stats (fallback over stale cached columns)
-            stats = await conn.fetchrow("""
-                SELECT 
+            stats = await conn.fetchrow(
+                """
+                SELECT
                     COUNT(*) as total_transaksi,
                     COALESCE(SUM(total_amount), 0) as total_nilai,
                     MAX(invoice_date) as last_transaction_at
                 FROM sales_invoices
                 WHERE customer_id = $1 AND tenant_id = $2
                   AND status NOT IN ('draft', 'void')
-            """, customer_id, ctx["tenant_id"])
+            """,
+                customer_id,
+                ctx["tenant_id"],
+            )
 
             # Phase 3: AR balance from compute_customer_ar() DB function (Law 16)
-            ar_balance = await conn.fetchrow("""
+            ar_balance = await conn.fetchrow(
+                """
                 SELECT COALESCE(SUM(outstanding), 0) as saldo
                 FROM compute_customer_ar($1, $2)
-            """, ctx["tenant_id"], customer_id)
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
 
             return {
                 "success": True,
@@ -377,7 +393,6 @@ async def get_customer(request: Request, customer_id: str):
                     "name": row["nama"],
                     "company_name": row["company_name"],
                     "display_name": row["display_name"],
-                    
                     # Contact
                     "contact_person": row["contact_person"],
                     "phone": row["telepon"],
@@ -386,41 +401,45 @@ async def get_customer(request: Request, customer_id: str):
                     "email": row["email"],
                     "website": row["website"],
                     "community": row["community"],
-                    
                     # Address
                     "address": row["alamat"],
                     "city": row["city"],
                     "province": row["province"],
                     "postal_code": row["postal_code"],
-                    
                     # Tax info
                     "tax_id": row["tax_id"],
                     "nik": row["nik"],
                     "is_pkp": row["is_pkp"] or False,
                     "customer_type": row["customer_type"],
-                    
                     # Financial
                     "currency": row["currency"] or "IDR",
                     "payment_terms_days": row["payment_terms_days"] or 0,
                     "credit_limit": row["credit_limit"],
-                    
                     # Opening balance
                     "ar_opening_balance": row["ar_opening_balance"] or 0,
                     "opening_balance_date": row["opening_balance_date"].isoformat()
                     if row["opening_balance_date"]
                     else None,
                     "opening_balance_notes": row["opening_balance_notes"],
-                    
                     # Statistics (live query values, fallback to cached)
                     "points": row["points"],
                     "points_per_50k": row["points_per_50k"],
-                    "total_transactions": int(stats["total_transaksi"]) if stats else (row["total_transaksi"] or 0),
-                    "total_value": int(stats["total_nilai"] or 0) if stats else int(row["total_nilai"] or 0),
-                    "outstanding_balance": int(ar_balance["saldo"] or 0) if ar_balance else 0,
+                    "total_transactions": int(stats["total_transaksi"])
+                    if stats
+                    else (row["total_transaksi"] or 0),
+                    "total_value": int(stats["total_nilai"] or 0)
+                    if stats
+                    else int(row["total_nilai"] or 0),
+                    "outstanding_balance": int(ar_balance["saldo"] or 0)
+                    if ar_balance
+                    else 0,
                     "last_transaction_at": stats["last_transaction_at"].isoformat()
                     if stats and stats["last_transaction_at"]
-                    else (row["last_transaction_at"].isoformat() if row["last_transaction_at"] else None),
-                    
+                    else (
+                        row["last_transaction_at"].isoformat()
+                        if row["last_transaction_at"]
+                        else None
+                    ),
                     # Metadata
                     "has_transactions": bool(has_tx),
                     "default_currency_id": str(row["default_currency_id"])
@@ -442,6 +461,8 @@ async def get_customer(request: Request, customer_id: str):
     except Exception as e:
         logger.error(f"Error getting customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get customer")
+
+
 # =============================================================================
 # GET CUSTOMER BALANCE (AR Balance)
 # =============================================================================
@@ -483,9 +504,7 @@ async def get_customer_balance(request: Request, customer_id: str):
                 "data": {
                     "customer_id": str(customer_id),
                     "customer_name": customer["nama"],
-                    "total_balance": int(
-                        balance["total_balance"] or 0
-                    ),
+                    "total_balance": int(balance["total_balance"] or 0),
                     "open_invoices": balance["open_count"] or 0,
                     "partial_invoices": balance["partial_count"] or 0,
                     "overdue_invoices": balance["overdue_count"] or 0,
@@ -547,17 +566,20 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
             import uuid as uuid_mod
 
             new_id = str(uuid_mod.uuid4())
-            
+
             # Parse opening_balance_date if provided
             opening_date = None
             if body.opening_balance_date:
                 try:
                     from datetime import datetime
-                    opening_date = datetime.strptime(body.opening_balance_date, "%Y-%m-%d").date()
+
+                    opening_date = datetime.strptime(
+                        body.opening_balance_date, "%Y-%m-%d"
+                    ).date()
                 except ValueError:
                     raise HTTPException(
                         status_code=400,
-                        detail="Invalid opening_balance_date format. Use YYYY-MM-DD"
+                        detail="Invalid opening_balance_date format. Use YYYY-MM-DD",
                     )
 
             async with conn.transaction():
@@ -582,46 +604,62 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     $27, $28, $29
                 )
             """,
-                    new_id,                           # $1  id
-                    ctx["tenant_id"],                 # $2  tenant_id
-                    body.code,                        # $3  nomor_member
-                    body.name,                        # $4  nama
-                    body.phone,                       # $5  telepon
-                    body.email,                       # $6  email
-                    body.address,                     # $7  alamat
-                    body.contact_person,              # $8  contact_person
-                    body.city,                        # $9  city
-                    body.province,                    # $10 province
-                    body.postal_code,                 # $11 postal_code
-                    body.tax_id,                      # $12 tax_id
-                    body.payment_terms_days,          # $13 payment_terms_days
-                    body.credit_limit,                # $14 credit_limit
-                    body.notes,                       # $15 notes
-                    body.mobile_phone,                # $16 mobile_phone
-                    body.website,                     # $17 website
-                    body.company_name,                # $18 company_name
-                    body.display_name or body.name,   # $19 display_name (default to name)
-                    body.customer_type or "BADAN",    # $20 customer_type
-                    body.is_pkp,                      # $21 is_pkp
-                    body.nik,                         # $22 nik
-                    body.currency or "IDR",           # $23 currency
-                    body.ar_opening_balance or 0,    # $24 ar_opening_balance
-                    opening_date,                     # $25 opening_balance_date
-                    body.opening_balance_notes,       # $26 opening_balance_notes
-                    ctx["user_id"],                   # $27 created_by
-                    body.phone2,                      # $28 phone2
-                    body.community,                   # $29 community
+                    new_id,  # $1  id
+                    ctx["tenant_id"],  # $2  tenant_id
+                    body.code,  # $3  nomor_member
+                    body.name,  # $4  nama
+                    body.phone,  # $5  telepon
+                    body.email,  # $6  email
+                    body.address,  # $7  alamat
+                    body.contact_person,  # $8  contact_person
+                    body.city,  # $9  city
+                    body.province,  # $10 province
+                    body.postal_code,  # $11 postal_code
+                    body.tax_id,  # $12 tax_id
+                    body.payment_terms_days,  # $13 payment_terms_days
+                    body.credit_limit,  # $14 credit_limit
+                    body.notes,  # $15 notes
+                    body.mobile_phone,  # $16 mobile_phone
+                    body.website,  # $17 website
+                    body.company_name,  # $18 company_name
+                    body.display_name
+                    or body.name,  # $19 display_name (default to name)
+                    body.customer_type or "BADAN",  # $20 customer_type
+                    body.is_pkp,  # $21 is_pkp
+                    body.nik,  # $22 nik
+                    body.currency or "IDR",  # $23 currency
+                    body.ar_opening_balance or 0,  # $24 ar_opening_balance
+                    opening_date,  # $25 opening_balance_date
+                    body.opening_balance_notes,  # $26 opening_balance_notes
+                    ctx["user_id"],  # $27 created_by
+                    body.phone2,  # $28 phone2
+                    body.community,  # $29 community
                 )
 
                 # Extract user info for activity logging
-                user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
-                user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+                user_id = (
+                    request.state.user.get("user_id")
+                    if hasattr(request.state, "user")
+                    else None
+                )
+                user_name = (
+                    request.state.user.get("username")
+                    or request.state.user.get("email")
+                    if hasattr(request.state, "user")
+                    else None
+                )
 
                 # Log activity
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
                     VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
-                """, new_id, ctx["tenant_id"], user_id, user_name)
+                """,
+                    new_id,
+                    ctx["tenant_id"],
+                    user_id,
+                    user_name,
+                )
 
                 logger.info(f"Customer created: {new_id}, name={body.name}")
 
@@ -636,6 +674,8 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
     except Exception as e:
         logger.error(f"Error creating customer: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create customer")
+
+
 @router.patch("/{customer_id}", response_model=CustomerResponse)
 async def update_customer(
     request: Request, customer_id: str, body: UpdateCustomerRequest
@@ -675,13 +715,13 @@ async def update_customer(
 
             # Get current values for change tracking
             current = await conn.fetchrow(
-                """SELECT nama, company_name, telepon, email, credit_limit, payment_terms_days, 
-                        is_active, contact_person, city, province, postal_code, 
+                """SELECT nama, company_name, telepon, email, credit_limit, payment_terms_days,
+                        is_active, contact_person, city, province, postal_code,
                         tax_id, notes, mobile_phone, website, display_name,
                         customer_type, is_pkp, nik, currency, alamat,
                         phone2, community
                    FROM customers WHERE id = $1""",
-                customer_id
+                customer_id,
             )
 
             # Build update query dynamically
@@ -711,13 +751,14 @@ async def update_customer(
                 if field == "opening_balance_date" and value:
                     try:
                         from datetime import datetime
+
                         value = datetime.strptime(value, "%Y-%m-%d").date()
                     except ValueError:
                         raise HTTPException(
                             status_code=400,
-                            detail="Invalid opening_balance_date format. Use YYYY-MM-DD"
+                            detail="Invalid opening_balance_date format. Use YYYY-MM-DD",
                         )
-                
+
                 db_field = field_mapping.get(field, field)
                 updates.append(f"{db_field} = ${param_idx}")
                 params.append(value)
@@ -770,7 +811,9 @@ async def update_customer(
 
                     # Compare values (handle None cases)
                     if old_value != new_value:
-                        label = field_labels.get(field, field_labels.get(db_field, field))
+                        label = field_labels.get(
+                            field, field_labels.get(db_field, field)
+                        )
                         old_display = old_value if old_value is not None else "-"
                         new_display = new_value if new_value is not None else "-"
                         change_parts.append(f"{label}: {old_display} -> {new_display}")
@@ -778,14 +821,30 @@ async def update_customer(
                 # Log activity if there were changes
                 if change_parts:
                     details = "\n".join(change_parts)
-                    user_id = request.state.user.get("user_id") if hasattr(request.state, "user") else None
-                    user_name = request.state.user.get("username") or request.state.user.get("email") if hasattr(request.state, "user") else None
+                    user_id = (
+                        request.state.user.get("user_id")
+                        if hasattr(request.state, "user")
+                        else None
+                    )
+                    user_name = (
+                        request.state.user.get("username")
+                        or request.state.user.get("email")
+                        if hasattr(request.state, "user")
+                        else None
+                    )
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO customer_activities
                         (customer_id, tenant_id, type, description, details, actor_id, actor_name)
                         VALUES ($1, $2, 'updated', 'Pelanggan diperbarui', $3, $4, $5)
-                    """, customer_id, ctx["tenant_id"], details, user_id, user_name)
+                    """,
+                        customer_id,
+                        ctx["tenant_id"],
+                        details,
+                        user_id,
+                        user_name,
+                    )
 
                 logger.info(f"Customer updated: {customer_id}")
 
@@ -800,180 +859,69 @@ async def update_customer(
     except Exception as e:
         logger.error(f"Error updating customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update customer")
+
+
 # DELETE CUSTOMER (Soft delete - block if customer has transaction history)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
 async def delete_customer(request: Request, customer_id: str):
     """
-    Soft-delete a customer. Only allowed for customers without any transaction history.
-    Customers with invoices, payments, or journal entries cannot be deleted.
-    Iron Law 12: Audit trail immutability.
+    Delete a customer. Hard-deletes if no ledger/transaction footprint; else raises 400.
+    Iron Law 12: Audit trail immutability preserved via footprint check.
     """
+    from ..services.smart_delete import smart_delete
+
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Check if customer exists
-                existing = await conn.fetchrow(
-                    "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                    customer_id,
-                    ctx["tenant_id"],
+                result = await smart_delete(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    entity_id=str(customer_id),
+                    table="customers",
+                    name_column="nama",
+                    ledger_checks=[
+                        (
+                            "sales_invoices",
+                            "customer_id",
+                            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
+                        ),
+                        (
+                            "receive_payments",
+                            "customer_id",
+                            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
+                        ),
+                        (
+                            "accounts_receivable",
+                            "customer_id",
+                            "Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
+                            "",
+                        ),
+                        (
+                            "credit_notes",
+                            "customer_id",
+                            "Tidak bisa menghapus pelanggan yang memiliki nota kredit. Nonaktifkan saja.",
+                        ),
+                        (
+                            "customer_deposits",
+                            "customer_id",
+                            "Tidak bisa menghapus pelanggan yang memiliki deposit. Nonaktifkan saja.",
+                        ),
+                    ],
+                    extra_exists_filter="",
                 )
-                if not existing:
-                    raise HTTPException(status_code=404, detail="Customer not found")
-
-                # Check for ANY transaction history (invoices)
-                has_invoices = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM sales_invoices
-                        WHERE customer_id = $1 AND tenant_id = $2
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_invoices:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
-                    )
-
-                # Check for receive_payments
-                has_payments = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM receive_payments
-                        WHERE customer_id = $1 AND tenant_id = $2
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_payments:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
-                    )
-
-                # Check for any AR records (even settled ones = proof of past transactions)
-                has_ar = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM accounts_receivable
-                        WHERE customer_id::text = $1 AND tenant_id = $2
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_ar:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
-                    )
-
-                # D01 fix: Check for credit_notes
-                has_credit_notes = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM credit_notes
-                        WHERE customer_id = $1 AND tenant_id = $2
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_credit_notes:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang memiliki nota kredit. Nonaktifkan saja.",
-                    )
-
-                # D01 fix: Check for customer_deposits
-                has_deposits = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM customer_deposits
-                        WHERE customer_id = $1 AND tenant_id = $2
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_deposits:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang memiliki deposit. Nonaktifkan saja.",
-                    )
-
-                # D08 fix: Check for journal_entries (including opening balance)
-                has_journals = await conn.fetchval(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM journal_entries
-                        WHERE source_id::text = $1 AND tenant_id = $2
-                        AND status = 'POSTED' AND reversed_by_id IS NULL
-                        LIMIT 1
-                    )
-                    """,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                if has_journals:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tidak bisa menghapus pelanggan yang memiliki jurnal aktif. Nonaktifkan saja.",
-                    )
-
-                # Soft delete - mark as inactive with audit trail
-                await conn.execute(
-                    """
-                    UPDATE customers
-                    SET is_active = false,
-                        deleted_at = NOW(),
-                        deleted_by = $3,
-                        updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2
-                    """,
-                    customer_id,
-                    ctx["tenant_id"],
-                    str(ctx.get("user_id", "system")),
-                )
-
-                logger.info(
-                    f"Customer soft-deleted: {customer_id}, name={existing['nama']}, by={ctx.get('user_id', 'unknown')}"
-                )
-
                 return {
                     "success": True,
-                    "message": "Customer deactivated successfully",
-                    "data": {"id": str(customer_id), "name": existing["nama"]},
+                    "message": result["message"],
+                    "data": {"id": str(customer_id), "name": result["name"]},
                 }
-
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error deleting customer {customer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete customer")
-
-
-# =============================================================================
-# REACTIVATE CUSTOMER (D05 fix)
-# =============================================================================
 
 
 @router.patch("/{customer_id}/reactivate", response_model=CustomerResponse)
@@ -1016,7 +964,8 @@ async def reactivate_customer(request: Request, customer_id: str):
             await conn.execute(
                 """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
                 VALUES ($1, $2, 'reactivated', $3, $4)""",
-                ctx["tenant_id"], customer_id,
+                ctx["tenant_id"],
+                customer_id,
                 f"Pelanggan {existing['nama']} diaktifkan kembali",
                 str(ctx.get("user_id", "system")),
             )
@@ -1287,10 +1236,14 @@ async def get_customer_credit(request: Request, customer_id: str):
                 raise HTTPException(status_code=404, detail="Customer not found")
             credit_limit = customer["credit_limit"] or 0
             # Phase 3: AR balance from compute_customer_ar() DB function
-            ar_row = await conn.fetchrow("""
+            ar_row = await conn.fetchrow(
+                """
                 SELECT COALESCE(SUM(outstanding), 0) as ar_balance
                 FROM compute_customer_ar($1, $2)
-            """, ctx["tenant_id"], customer_id)
+            """,
+                ctx["tenant_id"],
+                customer_id,
+            )
             used_credit = int(ar_row["ar_balance"]) if ar_row else 0
             return {
                 "credit_limit": credit_limit,
@@ -1314,6 +1267,7 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
     """Set customer opening AR balance via journal entry (Law 1, 7, 20)."""
     try:
         from decimal import Decimal, InvalidOperation
+
         ctx = get_user_context(request)
         pool = await get_pool()
 
@@ -1331,13 +1285,14 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CUSTOMER_OPENING:{str(customer_id)}"
+                    f"CUSTOMER_OPENING:{str(customer_id)}",
                 )
 
                 # Verify customer exists
                 customer = await conn.fetchrow(
                     "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                    str(customer_id), ctx["tenant_id"]
+                    str(customer_id),
+                    ctx["tenant_id"],
                 )
                 if not customer:
                     raise HTTPException(status_code=404, detail="Customer not found")
@@ -1347,19 +1302,29 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                     """SELECT id FROM journal_entries
                     WHERE tenant_id = $1 AND source_type = 'OPENING'
                     AND source_id = $2 AND status = 'POSTED'""",
-                    ctx["tenant_id"], str(customer_id)
+                    ctx["tenant_id"],
+                    str(customer_id),
                 )
                 if existing:
-                    raise HTTPException(status_code=400, detail="Opening balance already set. Use reversal to correct.")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Opening balance already set. Use reversal to correct.",
+                    )
 
                 # Resolve accounts (Law 27)
                 from ..services.resolve_account import resolve_account_id
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], '1-10400')
-                equity_account_id = await resolve_account_id(conn, ctx["tenant_id"], '3-10100')
+
+                ar_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], "1-10400"
+                )
+                equity_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], "3-10100"
+                )
 
                 # Generate journal number
                 import uuid as uuid_module
                 from datetime import date as dt_date
+
                 today = dt_date.today()
                 year_month_str = today.strftime("%y%m")
 
@@ -1369,7 +1334,9 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                     ON CONFLICT (tenant_id, prefix, year, month)
                     DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                     RETURNING last_number""",
-                    ctx["tenant_id"], today.year, today.month
+                    ctx["tenant_id"],
+                    today.year,
+                    today.month,
                 )
                 journal_number = f"OB-{year_month_str}-{journal_seq:04d}"
 
@@ -1383,9 +1350,15 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                         description, source_type, source_id, trace_id,
                         total_debit, total_credit, status, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, $8, $8, 'DRAFT', $9)""",
-                    journal_id, ctx["tenant_id"], journal_number, today,
+                    journal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    today,
                     f"Saldo Awal Piutang - {customer['nama']}",
-                    str(customer_id), trace_id, amount, str(ctx["user_id"])
+                    str(customer_id),
+                    trace_id,
+                    amount,
+                    str(ctx["user_id"]),
                 )
 
                 # Dr. AR (1-10400), Cr. Opening Balance Equity (3-10000)
@@ -1393,30 +1366,37 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                     """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, 1, $3, $4, 0, $5),
                            ($6, $2, 2, $7, 0, $4, $5)""",
-                    uuid_module.uuid4(), journal_id, ar_account_id, amount,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    ar_account_id,
+                    amount,
                     f"Saldo Awal Piutang - {customer['nama']}",
-                    uuid_module.uuid4(), equity_account_id
+                    uuid_module.uuid4(),
+                    equity_account_id,
                 )
 
                 # Law 20: DRAFT→POSTED
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
 
                 # Update reference field (for display only, NOT source of truth)
                 await conn.execute(
                     "UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                    amount, str(customer_id), ctx["tenant_id"]
+                    amount,
+                    str(customer_id),
+                    ctx["tenant_id"],
                 )
 
                 # Log activity
                 await conn.execute(
                     """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
                     VALUES ($1, $2, 'opening_balance', $3, $4)""",
-                    ctx["tenant_id"], str(customer_id),
+                    ctx["tenant_id"],
+                    str(customer_id),
                     f"Saldo awal piutang: Rp {float(amount):,.0f}",
-                    str(ctx["user_id"])
+                    str(ctx["user_id"]),
                 )
 
                 return {
@@ -1426,14 +1406,16 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                         "customer_id": str(customer_id),
                         "amount": amount,
                         "journal_id": str(journal_id),
-                        "journal_number": journal_number
-                    }
+                        "journal_number": journal_number,
+                    },
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error setting opening balance for {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error setting opening balance for {customer_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to set opening balance")
 
 
@@ -1450,7 +1432,6 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
     Law 31: Advisory lock + single transaction + DRAFT->POSTED.
     """
     try:
-        from decimal import Decimal
         import uuid as uuid_module
         from datetime import date as dt_date
 
@@ -1462,7 +1443,7 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                 # Law 13: Advisory lock (same as creation)
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CUSTOMER_OPENING:{str(customer_id)}"
+                    f"CUSTOMER_OPENING:{str(customer_id)}",
                 )
 
                 cid = str(customer_id)
@@ -1474,18 +1455,19 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                     WHERE tenant_id = $1 AND source_type = 'OPENING'
                     AND source_id = $2 AND status = 'POSTED'
                     AND reversed_by_id IS NULL""",
-                    ctx["tenant_id"], cid
+                    ctx["tenant_id"],
+                    cid,
                 )
                 if not original:
                     raise HTTPException(
                         status_code=404,
-                        detail="Tidak ada saldo awal aktif untuk pelanggan ini."
+                        detail="Tidak ada saldo awal aktif untuk pelanggan ini.",
                     )
 
                 # Get original journal lines
                 original_lines = await conn.fetch(
                     "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
-                    original["id"]
+                    original["id"],
                 )
 
                 # Generate reversal journal number
@@ -1497,7 +1479,9 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                     ON CONFLICT (tenant_id, prefix, year, month)
                     DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                     RETURNING last_number""",
-                    ctx["tenant_id"], today.year, today.month
+                    ctx["tenant_id"],
+                    today.year,
+                    today.month,
                 )
                 reversal_number = f"OBR-{year_month_str}-{journal_seq:04d}"
 
@@ -1511,12 +1495,16 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                         description, source_type, source_id, trace_id,
                         total_debit, total_credit, status, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'REVERSAL', $6, $7, $8, $9, 'DRAFT', $10)""",
-                    reversal_id, ctx["tenant_id"], reversal_number, today,
+                    reversal_id,
+                    ctx["tenant_id"],
+                    reversal_number,
+                    today,
                     f"Reversal: {original['description']}",
-                    cid, trace_id,
+                    cid,
+                    trace_id,
                     original["total_credit"],  # Swap debit/credit totals
                     original["total_debit"],
-                    str(ctx["user_id"])
+                    str(ctx["user_id"]),
                 )
 
                 # Insert reversed lines (swap debit/credit)
@@ -1524,38 +1512,43 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                     await conn.execute(
                         """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                        uuid_module.uuid4(), reversal_id, idx,
+                        uuid_module.uuid4(),
+                        reversal_id,
+                        idx,
                         line["account_id"],
                         line["credit"],  # Swap: original credit -> reversal debit
-                        line["debit"],   # Swap: original debit -> reversal credit
-                        f"Reversal: {line['memo'] or ''}"
+                        line["debit"],  # Swap: original debit -> reversal credit
+                        f"Reversal: {line['memo'] or ''}",
                     )
 
                 # Law 20: DRAFT -> POSTED
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_id
+                    reversal_id,
                 )
 
                 # Law 26: Link original to reversal
                 await conn.execute(
                     "UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2",
-                    reversal_id, original["id"]
+                    reversal_id,
+                    original["id"],
                 )
 
                 # Clear the reference field on customer
                 await conn.execute(
                     "UPDATE customers SET ar_opening_balance = NULL, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
-                    cid, ctx["tenant_id"]
+                    cid,
+                    ctx["tenant_id"],
                 )
 
                 # Log activity
                 await conn.execute(
                     """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
                     VALUES ($1, $2, 'opening_balance_reversed', $3, $4)""",
-                    ctx["tenant_id"], cid,
+                    ctx["tenant_id"],
+                    cid,
                     f"Saldo awal piutang dibatalkan (reversal {reversal_number})",
-                    str(ctx["user_id"])
+                    str(ctx["user_id"]),
                 )
 
                 logger.info(
@@ -1569,14 +1562,16 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                         "customer_id": str(customer_id),
                         "original_journal": original["journal_number"],
                         "reversal_journal": reversal_number,
-                        "reversal_id": str(reversal_id)
-                    }
+                        "reversal_id": str(reversal_id),
+                    },
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error reversing opening balance for {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error reversing opening balance for {customer_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to reverse opening balance")
 
 
@@ -1659,7 +1654,7 @@ async def merge_customers(request: Request):
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CUSTOMER_MERGE:{str(target_id)}"
+                    f"CUSTOMER_MERGE:{str(target_id)}",
                 )
 
                 await conn.execute(
@@ -1672,23 +1667,33 @@ async def merge_customers(request: Request):
                 # Update all child tables
                 await conn.execute(
                     "UPDATE receive_payments SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id, ctx["tenant_id"], source_ids,
+                    target_id,
+                    ctx["tenant_id"],
+                    source_ids,
                 )
                 await conn.execute(
                     "UPDATE customer_deposits SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
-                    str(target_id), ctx["tenant_id"], [str(s) for s in source_ids],
+                    str(target_id),
+                    ctx["tenant_id"],
+                    [str(s) for s in source_ids],
                 )
                 await conn.execute(
                     "UPDATE credit_notes SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id, ctx["tenant_id"], source_ids,
+                    target_id,
+                    ctx["tenant_id"],
+                    source_ids,
                 )
                 await conn.execute(
                     "UPDATE accounts_receivable SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
-                    str(target_id), ctx["tenant_id"], [str(s) for s in source_ids],
+                    str(target_id),
+                    ctx["tenant_id"],
+                    [str(s) for s in source_ids],
                 )
                 await conn.execute(
                     "UPDATE customers SET is_active = false, deleted_at = NOW(), deleted_by = $3 WHERE id = ANY($1) AND tenant_id = $2",
-                    source_ids, ctx["tenant_id"], ctx["user_id"],
+                    source_ids,
+                    ctx["tenant_id"],
+                    ctx["user_id"],
                 )
 
                 # Log merge activity
@@ -1696,9 +1701,10 @@ async def merge_customers(request: Request):
                     await conn.execute(
                         """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
                         VALUES ($1, $2, 'merge', $3, $4)""",
-                        ctx["tenant_id"], target_id,
+                        ctx["tenant_id"],
+                        target_id,
                         f"Merged customer {source_id} into this customer",
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
             return {
                 "success": True,
@@ -1721,29 +1727,34 @@ async def merge_customers(request: Request):
 async def get_customer_journal_entries(
     request: Request,
     customer_id: str,
-    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    start_date: Optional[str] = Query(
+        None, description="Start date filter (YYYY-MM-DD)"
+    ),
     end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
-    source_type: Optional[str] = Query(None, description="Filter by source type (INVOICE, RECEIVE_PAYMENT, CUSTOMER_DEPOSIT, CREDIT_NOTE)"),
+    source_type: Optional[str] = Query(
+        None,
+        description="Filter by source type (INVOICE, RECEIVE_PAYMENT, CUSTOMER_DEPOSIT, CREDIT_NOTE)",
+    ),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
 ):
     """
     Get journal entries related to a customer.
-    
+
     Data comes from journal_entries table (Law 1: Ledger Supremacy).
     Read-only endpoint (Law 2: Journal Immutability).
     Results are deterministic and reproducible (Law 9: Deterministic Reporting).
-    
+
     Journal entries are linked via:
     - sales_invoices.journal_id (source_type = INVOICE)
     - receive_payments.journal_id (source_type = RECEIVE_PAYMENT)
     - customer_deposits.journal_id (source_type = CUSTOMER_DEPOSIT)
     - credit_notes.journal_id (source_type = CREDIT_NOTE)
-    
+
     Returns entries sorted by journal_date DESC for deterministic ordering.
     """
     from datetime import datetime
-    
+
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1771,7 +1782,10 @@ async def get_customer_journal_entries(
                     params.append(parsed_start)
                     param_idx += 1
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid start_date format. Use YYYY-MM-DD",
+                    )
 
             if end_date:
                 try:
@@ -1780,7 +1794,10 @@ async def get_customer_journal_entries(
                     params.append(parsed_end)
                     param_idx += 1
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid end_date format. Use YYYY-MM-DD",
+                    )
 
             # Source type filter
             if source_type:
@@ -1794,7 +1811,7 @@ async def get_customer_journal_entries(
             customer_id_param_idx = param_idx
             limit_param_idx = param_idx + 1
             offset_param_idx = param_idx + 2
-            
+
             params.extend([customer_id, limit, offset])
 
             # Query journal entries linked to this customer through invoices, payments, deposits, credit notes
@@ -1806,36 +1823,36 @@ async def get_customer_journal_entries(
                     INNER JOIN sales_invoices si ON si.journal_id = je.id
                     WHERE {where_clause}
                       AND si.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     -- Sales Invoice COGS journals
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
                     WHERE {where_clause}
                       AND si.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     -- Receive Payments
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN receive_payments rp ON rp.journal_id = je.id
                     WHERE {where_clause}
                       AND rp.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     -- Customer Deposits
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
                       AND cd.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     -- Credit Notes
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
@@ -1843,7 +1860,7 @@ async def get_customer_journal_entries(
                     WHERE {where_clause}
                       AND cn.customer_id = ${customer_id_param_idx}
                     UNION
-                    
+
                     -- Inline Payments (sales_invoice_payments)
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
@@ -1868,7 +1885,7 @@ async def get_customer_journal_entries(
                           WHERE rpa2.payment_id = je.source_id
                       )
                 )
-                SELECT 
+                SELECT
                     je.id,
                     je.journal_date,
                     je.journal_number,
@@ -1891,7 +1908,7 @@ async def get_customer_journal_entries(
             for row in rows:
                 # Fetch lines with account names
                 lines_query = """
-                    SELECT 
+                    SELECT
                         jl.id,
                         jl.line_number,
                         jl.account_id,
@@ -1906,7 +1923,7 @@ async def get_customer_journal_entries(
                     ORDER BY jl.line_number ASC
                 """
                 line_rows = await conn.fetch(lines_query, row["id"])
-                
+
                 lines = [
                     {
                         "id": str(lr["id"]),
@@ -1921,17 +1938,23 @@ async def get_customer_journal_entries(
                     for lr in line_rows
                 ]
 
-                entries.append({
-                    "id": str(row["id"]),
-                    "date": row["journal_date"].isoformat(),
-                    "journal_number": row["journal_number"],
-                    "description": row["description"],
-                    "source_type": row["source_type"],
-                    "total_debit": int(row["total_debit"]) if row["total_debit"] else 0,
-                    "total_credit": int(row["total_credit"]) if row["total_credit"] else 0,
-                    "status": row["status"],
-                    "lines": lines,
-                })
+                entries.append(
+                    {
+                        "id": str(row["id"]),
+                        "date": row["journal_date"].isoformat(),
+                        "journal_number": row["journal_number"],
+                        "description": row["description"],
+                        "source_type": row["source_type"],
+                        "total_debit": int(row["total_debit"])
+                        if row["total_debit"]
+                        else 0,
+                        "total_credit": int(row["total_credit"])
+                        if row["total_credit"]
+                        else 0,
+                        "status": row["status"],
+                        "lines": lines,
+                    }
+                )
 
             # Get total count for pagination
             count_query = f"""
@@ -1941,40 +1964,40 @@ async def get_customer_journal_entries(
                     INNER JOIN sales_invoices si ON si.journal_id = je.id
                     WHERE {where_clause}
                       AND si.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
                     WHERE {where_clause}
                       AND si.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN receive_payments rp ON rp.journal_id = je.id
                     WHERE {where_clause}
                       AND rp.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
                       AND cd.customer_id = ${customer_id_param_idx}
-                    
+
                     UNION
-                    
+
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
                       AND cn.customer_id = ${customer_id_param_idx}
                     UNION
-                    
+
                     -- Inline Payments (sales_invoice_payments)
                     SELECT DISTINCT je.id as journal_id
                     FROM journal_entries je
@@ -2005,9 +2028,10 @@ async def get_customer_journal_entries(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting customer journal entries {customer_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting customer journal entries {customer_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
-
 
 
 # CUSTOMER ACTIVITY HISTORY (Read-only - Law 12: Audit Trail Immutability)
