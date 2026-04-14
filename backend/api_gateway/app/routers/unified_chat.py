@@ -627,8 +627,8 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
     elif message_type == "TUTORIAL_STEP":
         # Tutorial step: preview contains TutorialStepData
         data = preview or {}
-    elif message_type == "CLARIFICATION" and extra_data:
-        data = extra_data
+    elif message_type == "CLARIFICATION":
+        data = extra_data if (extra_data and isinstance(extra_data, dict) and extra_data.get("options")) else None
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
 
@@ -1282,6 +1282,11 @@ Rules:
     except Exception as _tel_err:
         logger.warning("[TELEMETRY] Failed to record: %s", _tel_err)
 
+    import logging as _dbg_log
+    _dbg_log.getLogger("unified_chat").warning("[PRE_CONVERT] type=%s extra_data=%s has_attr=%s", 
+        getattr(agent_resp, "message_type", "?"), 
+        str(getattr(agent_resp, "extra_data", "NOATTR"))[:100],
+        hasattr(agent_resp, "extra_data"))
     return _to_chat_response(agent_resp)
 
 
@@ -1829,7 +1834,7 @@ async def send_message_with_files(
                             from ..services.unified_agent.session_manager import SessionManager as _OCR_SM
                             from ..services.unified_agent.db_utils import get_session_db_pool as _ocr_sm_pool
                             _ocr_sm_db = await _ocr_sm_pool()
-                            _ocr_sm = _OCR_SM(db_pool=_ocr_sm_db, tenant_id=ctx["tenant_id"])
+                            _ocr_sm = _OCR_SM(db_pool=_ocr_sm_db, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"])
                             if session_id:
                                 await _ocr_sm.update_state(
                                     session_id,
