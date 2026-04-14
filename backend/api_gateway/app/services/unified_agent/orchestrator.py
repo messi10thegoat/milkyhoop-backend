@@ -1303,6 +1303,60 @@ class UnifiedAgent:
                         ):
                             merged_for_wf[k] = v
 
+                # ── Inject fields from persisted OCR text (document_context) ──
+                # When user says "data ada di file tadi", extraction returns nothing.
+                # But OCR text from Turn 1 is persisted in document_context.ocr_text.
+                if (
+                    tool_executor
+                    and getattr(tool_executor, "session_manager", None)
+                    and getattr(tool_executor, "session_id", None)
+                ):
+                    try:
+                        _ocr_state = await tool_executor.session_manager.get_state(
+                            tool_executor.session_id
+                        )
+                        _ocr_dc = getattr(_ocr_state, "document_context", None) or {}
+                        _ocr_text_saved = _ocr_dc.get("ocr_text", "")
+                        if _ocr_text_saved and _ocr_dc.get("source") == "intent_ocr":
+                            import re as _ocr_re
+
+                            # Extract phone (Indonesian: 08xx-xxxx-xxxx, 021-xxx-xxxx)
+                            if not merged_for_wf.get("phone"):
+                                _phones = _ocr_re.findall(
+                                    r"0\d{2,4}[\s.-]?\d{3,4}[\s.-]?\d{3,5}",
+                                    _ocr_text_saved,
+                                )
+                                if _phones:
+                                    merged_for_wf["phone"] = _phones[0].strip()
+
+                            # Extract address (Jl./Jalan/Alamat prefix)
+                            if not merged_for_wf.get("address"):
+                                _addr = _ocr_re.search(
+                                    r"(?:Jl\.?|Jalan|Alamat\s*:?\s*)([^\n]{5,})",
+                                    _ocr_text_saved,
+                                    _ocr_re.IGNORECASE,
+                                )
+                                if _addr:
+                                    merged_for_wf["address"] = _addr.group(0).strip()
+
+                            # Extract email
+                            if not merged_for_wf.get("email"):
+                                _email = _ocr_re.search(
+                                    r"[\w.+-]+@[\w-]+\.[\w.-]+", _ocr_text_saved
+                                )
+                                if _email:
+                                    merged_for_wf["email"] = _email.group(0)
+
+                            logger.info(
+                                "[WF_OCR] Injected fields from persisted OCR (%d chars)",
+                                len(_ocr_text_saved),
+                            )
+                    except Exception as _ocr_inject_err:
+                        logger.warning(
+                            "[WF_OCR] OCR inject failed (non-blocking): %s",
+                            _ocr_inject_err,
+                        )
+
                 # Process workflow with merged payload
                 _wf_result = await _wf_engine.process(
                     tool_executor.session_id,
