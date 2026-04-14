@@ -66,6 +66,14 @@ if not logger.handlers:
     _uc_handler = logging.StreamHandler()
     _uc_handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(_uc_handler)
+
+
+class _VisionGateSkip(Exception):
+    """Raised by Vision Gate to skip document pipeline for non-financial images."""
+
+    pass
+
+
 router = APIRouter()
 
 # Singleton agent instance (stateless, safe to reuse)
@@ -2164,6 +2172,69 @@ Aturan:
                                     "[DocSimple] Caption override doc_type: bank_transfer → expense (expense keywords in caption)"
                                 )
 
+                        # ── Vision Gate: non-financial image escape hatch ──
+                        _is_financial = _ocr_data.get("is_financial_document", True)
+                        _ocr_confidence_val = float(_ocr_data.get("confidence", 0) or 0)
+                        _ocr_doc_type_gate = (_ocr_data.get("doc_type") or "").lower()
+
+                        _has_caption_hint = False
+                        if text:
+                            _caption_lower_gate = text.lower()
+                            _financial_kws = (
+                                "beban",
+                                "biaya",
+                                "pengeluaran",
+                                "expense",
+                                "servis",
+                                "listrik",
+                                "bayar",
+                                "beli",
+                                "catat",
+                                "struk",
+                                "kwitansi",
+                                "nota",
+                                "invoice",
+                                "faktur",
+                                "transfer",
+                                "parkir",
+                                "makan",
+                                "bensin",
+                                "sewa",
+                            )
+                            _has_caption_hint = any(
+                                kw in _caption_lower_gate for kw in _financial_kws
+                            )
+
+                        if not _has_caption_hint and (
+                            not _is_financial
+                            or (
+                                _ocr_doc_type_gate in ("unknown", "", "null")
+                                and _ocr_confidence_val < 0.4
+                            )
+                        ):
+                            _extracted_text = (
+                                _ocr_data.get("extracted_text")
+                                or _ocr_data.get("raw_text")
+                                or _ocr_data.get("reference_note")
+                                or ""
+                            )
+                            if _extracted_text:
+                                text = (
+                                    f"{text}\n\n[Konteks dari gambar: {_extracted_text}]"
+                                    if text
+                                    else f"[Konteks dari gambar: {_extracted_text}]"
+                                )
+                            logger.info(
+                                "[VisionGate] Non-financial image detected "
+                                "(is_financial=%s, doc_type=%s, confidence=%.2f, caption_hint=%s). "
+                                "Falling through to chat pipeline.",
+                                _is_financial,
+                                _ocr_doc_type_gate,
+                                _ocr_confidence_val,
+                                _has_caption_hint,
+                            )
+                            raise _VisionGateSkip()
+
                         _matcher = DocumentMatcher(_ocr_pool, ctx["tenant_id"])
                         _t_match_start = _t_mod.perf_counter()
                         _match_result = await _matcher.match(_ocr_data)
@@ -2799,6 +2870,8 @@ Aturan:
                             session_id=session_id,
                         )
 
+            except _VisionGateSkip:
+                pass  # Non-financial image — fall through to normal LLM path
             except Exception as _doc_err:
                 logger.error(f"[DocSimple] Failed: {_doc_err}", exc_info=True)
                 # Fall through to normal LLM path
