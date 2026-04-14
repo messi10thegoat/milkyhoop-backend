@@ -639,6 +639,7 @@ class AgentResponse:
     trace_id: str = field(default_factory=lambda: str(uuid4()))
     thinking_stages: List[str] = field(default_factory=list)  # Stage labels for UX
     usage: Dict[str, Any] = field(default_factory=dict)  # Token usage from LLM
+    session_id: str = ""  # Session ID for frontend session tracking
 
 
 # ─── Phase 3C: Conversation History Pruning ──────────────────────────────────
@@ -1058,8 +1059,42 @@ class UnifiedAgent:
             _wf_intent = _active_crud_wf.data.get("intent", "")
             _wf_payload = _active_crud_wf.data.get("payload", {})
 
+            # ── Pre-check: detect user intent switch away from active CRUD workflow ──
+            # Two layers: (1) code classifier for known query patterns,
+            # (2) question-pattern heuristic for "ada X?", "apakah Y?", "berapa Z?" etc.
+            # Without this, workflow path consumes everything and the LLM router never runs.
+            import re as _wf_re
+            from .entity_extractor import classify_query_intent as _wf_qci
+
+            _wf_query_intent, _, _ = _wf_qci(user_text)
+            _wf_is_question = bool(_wf_re.search(
+                r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
+                r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
+                user_text.strip().lower()
+            )) or user_text.strip().endswith("?")
+
+            if _wf_query_intent:
+                await _wf_engine.cancel(tool_executor.session_id, "crud_form")
+                logger.warning(
+                    "[PIPELINE] Cancelled crud_form (query classifier): was %s, query=%s",
+                    _wf_intent, _wf_query_intent,
+                )
+                extraction.intent = _wf_query_intent
+                extraction.confidence = 1.0
+                # Fall through to normal flow below
+            elif _wf_is_question:
+                # User is asking a question — not providing CRUD field data.
+                # Cancel workflow, let LLM router handle intent classification.
+                await _wf_engine.cancel(tool_executor.session_id, "crud_form")
+                logger.warning(
+                    "[PIPELINE] Cancelled crud_form (question heuristic): was %s, text='%s'",
+                    _wf_intent, user_text[:60],
+                )
+                # Don't override extraction.intent — let LLM router classify
+                # Fall through to normal flow below
+
             # Check if user started a DIFFERENT action
-            if (
+            elif (
                 extraction.intent
                 and extraction.intent not in ("ambiguous", "chitchat", "")
                 and _wf_intent
