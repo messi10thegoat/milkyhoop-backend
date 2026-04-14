@@ -230,8 +230,20 @@ class DocumentActionResolver:
         """Build payload for create_expense from OCR data + CoA recommendation."""
         amount = float(ocr_data.get("total_amount") or ocr_data.get("amount") or 0)
         expense_date = ocr_data.get("document_date") or ocr_data.get("date") or ""
+        # Prefer user caption for description ("servis motor kantor" > OCR notes)
+        # Strip common command prefixes so description is clean
+        _raw_caption = ocr_data.get("user_caption") or ""
+        import re as _re
+
+        _clean_caption = _re.sub(
+            r"^(tolong|mohon|bisa|mau|coba)?\s*(dicatat|catat|input|masukkan|record)\s*(dong|ya|in)?[,.]?\s*",
+            "",
+            _raw_caption,
+            flags=_re.IGNORECASE,
+        ).strip()
         description = (
-            ocr_data.get("notes")
+            _clean_caption
+            or ocr_data.get("notes")
             or ocr_data.get("reference_note")
             or ocr_data.get("document_number")
             or ""
@@ -254,7 +266,7 @@ class DocumentActionResolver:
         account_name = f"{acct.account_name} ({acct.account_code})" if acct else ""
 
         # Default expense_date to today if OCR didn't extract
-        if not expense_date or expense_date == "-":
+        if not expense_date or expense_date in ("-", "null", "None", "none"):
             from datetime import date as _date_today
 
             expense_date = _date_today.today().isoformat()
@@ -287,7 +299,10 @@ class DocumentActionResolver:
             "vendor_name": ocr_data.get("vendor_name")
             or ocr_data.get("counterparty_name")
             or "",
-            "reference": ocr_data.get("document_number") or "",
+            "reference": ocr_data.get("reference_number")
+            or ocr_data.get("document_number")
+            or "",
+            "notes": _raw_caption if _raw_caption else "",
         }
 
         # Resolve vendor if name present
@@ -344,6 +359,7 @@ class DocumentActionResolver:
                             self.tenant_id,
                         )
                         from difflib import SequenceMatcher as _SM
+
                         ocr_digits = "".join(c for c in name_frag_clean if c.isdigit())
                         matched_rows = []
                         for r in all_active:
@@ -365,7 +381,10 @@ class DocumentActionResolver:
                                 if db_digits[-4:] == ocr_digits[-4:]:
                                     matched_rows.append(r)
                         rows = matched_rows
-                        print(f"\n[ResolveBank] Numeric match: ocr={ocr_digits!r}, candidates={len(rows)}\n", flush=True)
+                        print(
+                            f"\n[ResolveBank] Numeric match: ocr={ocr_digits!r}, candidates={len(rows)}\n",
+                            flush=True,
+                        )
                     else:
                         # Text: ILIKE on name fields only
                         rows = await conn.fetch(
