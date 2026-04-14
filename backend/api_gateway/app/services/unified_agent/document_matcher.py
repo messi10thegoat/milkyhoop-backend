@@ -164,6 +164,13 @@ DOC_TYPE_CATEGORY = {
     "faktur_pajak": "tax",
     "spt": "tax",
     "bukti_potong": "tax",
+    # QRIS / merchant payments = expense (not bank transfer)
+    "qris": "expense",
+    "qris_payment": "expense",
+    "merchant_payment": "expense",
+    "e_wallet": "expense",
+    "ewallet": "expense",
+    "payment_receipt": "expense",
 }
 
 
