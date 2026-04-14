@@ -1788,6 +1788,22 @@ async def send_message_with_files(
                 "register vendor",
                 "create vendor",
                 "create customer",
+                "daftarkan item",
+                "daftarkan barang",
+                "daftarkan jasa",
+                "daftarkan produk",
+                "buat item",
+                "buat barang",
+                "buat jasa",
+                "buat produk",
+                "tambah item",
+                "tambah barang",
+                "tambah jasa",
+                "tambah produk",
+                "item baru",
+                "barang baru",
+                "produk baru",
+                "jasa baru",
             ]
         )
 
