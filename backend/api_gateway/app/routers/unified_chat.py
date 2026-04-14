@@ -1815,7 +1815,7 @@ async def send_message_with_files(
                                         "type": "image_url",
                                         "image_url": {
                                             "url": f"data:{_mime};base64,{_b64_data}",
-                                            "detail": "low",
+                                            "detail": "high",
                                         },
                                     },
                                 ],
@@ -1824,7 +1824,9 @@ async def send_message_with_files(
                         max_tokens=500,
                     )
                     _extracted = _ocr_resp.choices[0].message.content.strip()
-                    if _extracted:
+                    # Guard: model sometimes refuses with "Maaf..." instead of extracting text
+                    _refusal_markers = ("maaf", "sorry", "i cannot", "i can't", "tidak dapat", "tidak bisa")
+                    if _extracted and not any(_extracted.lower().startswith(m) for m in _refusal_markers):
                         enriched_text = f"{text}\n\n[Data dari gambar]:\n{_extracted}"
                         logger.info(
                             f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}"
