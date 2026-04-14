@@ -640,6 +640,7 @@ class AgentResponse:
     thinking_stages: List[str] = field(default_factory=list)  # Stage labels for UX
     usage: Dict[str, Any] = field(default_factory=dict)  # Token usage from LLM
     session_id: str = ""  # Session ID for frontend session tracking
+    extra_data: Dict[str, Any] = field(default_factory=dict)  # For CLARIFICATION options
 
 
 # ─── Phase 3C: Conversation History Pruning ──────────────────────────────────
@@ -1636,6 +1637,72 @@ class UnifiedAgent:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ── NO active workflow: original flow ──
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        # ── Bank pills shortcut: if only paid_through_id missing, show tappable pills ──
+        if (
+            resolution.needs_clarification
+            and extraction.intent == "create_expense"
+            and resolution.payload
+            and resolution.payload.get("account_id")
+            and resolution.payload.get("amount")
+            and not resolution.payload.get("paid_through_id")
+            and tool_executor
+            and tool_executor.session_manager
+            and tool_executor.session_id
+        ):
+            try:
+                from .db_utils import get_session_db_pool as _bp_pool
+                _bp_db = await _bp_pool()
+                _bank_rows = await _bp_db.fetch(
+                    "SELECT id, account_name, bank_name, account_number "
+                    "FROM bank_accounts WHERE tenant_id = $1 AND is_active = true "
+                    "ORDER BY account_name",
+                    context.tenant_id,
+                )
+                if _bank_rows:
+                    _bank_options = []
+                    for _br in _bank_rows:
+                        _bl = _br["account_name"] or _br["bank_name"] or "Unknown"
+                        if _br["account_number"]:
+                            _bl += " (" + _br["account_number"][-4:] + ")"
+                        _bank_options.append({"label": _bl, "value": str(_br["id"]), "description": ""})
+
+                    # Save partial payload for re-trigger
+                    _save = {k: v for k, v in (resolution.payload or {}).items() if v is not None}
+                    await tool_executor.session_manager.update_state(
+                        tool_executor.session_id,
+                        document_context={
+                            "pending_bank_selection": True,
+                            "resolved_action_key": extraction.intent,
+                            "resolved_payload": _save,
+                        },
+                    )
+                    logger.warning("[PIPELINE] Bank pills shortcut: %d options for %s", len(_bank_options), extraction.intent)
+
+                    _desc = resolution.payload.get("description", "")
+                    _amt = resolution.payload.get("amount", 0)
+                    try:
+                        _amt_fmt = "Rp {:,.0f}".format(float(_amt)).replace(",", ".")
+                    except (ValueError, TypeError):
+                        _amt_fmt = str(_amt)
+
+                    await emit("THINKING_DONE", {"summary": "Pilih rekening", "total_ms": int((_time.time() - start_time) * 1000)})
+                    return AgentResponse(
+                        message_type="CLARIFICATION",
+                        content="Saya siap catat **%s** %s. Dibayar dari rekening mana?" % (_desc, _amt_fmt),
+                        iterations=1,
+                        tool_calls_made=[],
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                        thinking_stages=["Menganalisis pesan"],
+                        extra_data={
+                            "question": "Dibayar dari rekening mana?",
+                            "options": _bank_options,
+                            "allow_freetext": False,
+                        },
+                    )
+            except Exception as _bp_err:
+                logger.warning("[PIPELINE] Bank pills shortcut failed: %s", _bp_err)
 
         # Clarification needed? -> Natural LLM-driven question + save pending
         if (
@@ -4518,11 +4585,35 @@ class UnifiedAgent:
                     _is_cancel = any(p in user_text.lower().strip() for p in _cancel_patterns)
 
                     if _wf_phase_p0 in ("COLLECTING", "picking_candidate") and not _is_cancel:
-                        logger.warning(
-                            "[WF_PRIORITY] Active workflow state=%s, skipping classification for: %s",
-                            _wf_phase_p0, user_text[:50],
-                        )
-                        _wf_priority_skip = True
+                        # ── Same pre-check as pipeline path: query classifier + question heuristic ──
+                        import re as _wfp_re
+                        from .entity_extractor import classify_query_intent as _wfp_qci
+                        _wfp_query, _, _ = _wfp_qci(user_text)
+                        _wfp_is_question = bool(_wfp_re.search(
+                            r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
+                            r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
+                            user_text.strip().lower()
+                        )) or user_text.strip().endswith("?")
+                        # Also detect document number references (EXP-xxxx, INV-xxxx, etc.)
+                        _wfp_has_doc_ref = bool(_wfp_re.search(
+                            r"\b(?:EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b",
+                            user_text, _wfp_re.IGNORECASE
+                        ))
+
+                        if _wfp_query or _wfp_is_question or _wfp_has_doc_ref:
+                            # User switched away from CRUD — cancel workflow, don't skip classification
+                            await _wf_engine_p0.cancel(tool_executor.session_id, "crud_form")
+                            logger.warning(
+                                "[WF_PRIORITY] Cancelled workflow (query=%s question=%s doc_ref=%s): %s",
+                                _wfp_query or "-", _wfp_is_question, _wfp_has_doc_ref, user_text[:50],
+                            )
+                            # Don't set _wf_priority_skip — let normal classification proceed
+                        else:
+                            logger.warning(
+                                "[WF_PRIORITY] Active workflow state=%s, skipping classification for: %s",
+                                _wf_phase_p0, user_text[:50],
+                            )
+                            _wf_priority_skip = True
             except Exception as _wf_p0_err:
                 logger.warning("[WF_PRIORITY] Pre-check failed (non-fatal): %s", _wf_p0_err)
 
@@ -4715,7 +4806,7 @@ class UnifiedAgent:
 
             # 3. ARAP GUARD (financial-critical only)
             from .entity_extractor import classify_query_intent
-            _qci_guard, _, _ = classify_query_intent(user_text)
+            _qci_guard, _qci_entity_name, _ = classify_query_intent(user_text)
 
             _ARAP_CRITICAL = {
                 "query_ar_outstanding",
@@ -4754,6 +4845,8 @@ class UnifiedAgent:
                     _tel_guard_matches["arap_guard_summary"] = _qci_guard
                     logger.warning("[ARAP_GUARD] summary override: %s -> %s (no entity)", extraction.intent, _qci_guard)
                     extraction.intent = _qci_guard
+                    if _qci_entity_name:
+                        extraction.entities["name"] = _qci_entity_name
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
                 _same_prefix = (
@@ -4867,6 +4960,21 @@ class UnifiedAgent:
                 _tel_decision_source = "de_escalate"
                 logger.warning("[DE_ESCALATE] %s escalation cleared", extraction.intent)
                 extraction.needs_escalation = False
+
+            # ── DOC_DETAIL_GUARD: code classifier doc number → override to detail query ──
+            if _qci_guard and _qci_guard.endswith("_detail") and _qci_entity_name:
+                if extraction.intent != _qci_guard:
+                    logger.warning(
+                        "[DOC_DETAIL_GUARD] %s -> %s (doc_ref=%s)",
+                        extraction.intent, _qci_guard, _qci_entity_name,
+                    )
+                    _tel_guard = "doc_detail_guard"
+                    _tel_guard_from = extraction.intent
+                    _tel_guard_to = _qci_guard
+                    _tel_guard_matches["doc_detail_guard"] = _qci_guard
+                extraction.intent = _qci_guard
+                extraction.confidence = 1.0
+                extraction.entities["name"] = _qci_entity_name
 
             logger.warning("[CLASSIFY_FINAL] intent=%s confidence=%.2f", extraction.intent, extraction.confidence)
 

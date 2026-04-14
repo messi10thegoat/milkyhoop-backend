@@ -357,6 +357,7 @@ EXTRACTION_SCHEMAS = {
                             "warehouse_name": {"type": ["string", "null"]},
                             "invoice_number": {"type": ["string", "null"]},
                             "bill_number": {"type": ["string", "null"]},
+                            "account_name": {"type": ["string", "null"], "description": "Nama akun biaya/beban (e.g. Beban Pemeliharaan, Beban Listrik, Biaya Admin)"},
                             "amount": {"type": ["number", "null"]},
                             "quantity": {"type": ["number", "null"]},
                             "unit_price": {"type": ["number", "null"]},
@@ -1163,7 +1164,31 @@ def classify_query_intent(user_text: str) -> tuple:
     # Bills overdue
     if _qre.search(r"tagihan.*jatuh\s*tempo|overdue.*(?:pembelian|bill)", t):
         return "query_bills_overdue", None, None
-    # Expenses by account
+    # ── Document number detail queries (MUST be before list/summary patterns) ──
+    # "EXP-2604-0016 ini apa?" / "detail INV-0042" / "rincian PB-0003"
+    _doc_ref_match = _qre.search(
+        r"\b(EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b", t, _qre.IGNORECASE
+    )
+    if _doc_ref_match:
+        _doc_prefix = _doc_ref_match.group(1).upper()
+        _doc_number = _doc_ref_match.group(0)
+        _prefix_to_intent = {
+            "EXP": "query_expense_detail",
+            "INV": "query_sales_invoice_detail",
+            "PB": "query_bill_detail",
+            "JE": "query_journal_detail",
+            "CN": "query_credit_note_detail",
+            "VC": "query_vendor_credit_detail",
+            "QT": "query_quote_detail",
+            "RP": "query_receive_payment_detail",
+            "BP": "query_bill_payment_detail",
+            "SA": "query_stock_adjustment_detail",
+        }
+        _detail_intent = _prefix_to_intent.get(_doc_prefix)
+        if _detail_intent:
+            return _detail_intent, _doc_number, None
+
+    # Expenses by account (guard: skip if doc reference present — handled above)
     if _qre.search(r"(?:pengeluaran|biaya).*(?:untuk|akun)", t):
         return "query_expenses_by_account", None, None
     # Receive payments list
