@@ -12,7 +12,6 @@ The agent loop:
 5. Special: if propose_action returns ACTION_PREVIEW → exit immediately
 """
 
-import asyncio
 import json
 import os
 import time
@@ -21,18 +20,20 @@ from datetime import date
 
 # Phase 2: LLM Router primary classifier feature flag
 USE_LLM_ROUTER = os.environ.get("USE_LLM_ROUTER", "false").lower() == "true"
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
-from uuid import uuid4
+from typing import Any, Dict, List, Optional  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
+from uuid import uuid4  # noqa: E402
 
-from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse
-from .system_prompt import build_system_messages, get_intent_bias, _infer_intent
-from .intent_classifier import RouteResult  # classify_and_route removed (Final Cleanup)
-from .tool_registry import get_tools, get_tools_for_domains
-from .tool_executor import ToolExecutor, TenantContext, get_stage_label
+from ..llm import LLMRouter, TaskComplexity, LLMMessage, LLMResponse  # noqa: E402
+from .system_prompt import build_system_messages, get_intent_bias, _infer_intent  # noqa: E402
+from .intent_classifier import (  # noqa: E402
+    RouteResult,
+)  # classify_and_route removed (Final Cleanup)  # noqa: E402
+from .tool_registry import get_tools, get_tools_for_domains  # noqa: E402
+from .tool_executor import ToolExecutor, TenantContext, get_stage_label  # noqa: E402
 from .tool_registry import is_tutorial_tool  # noqa: E402
-from .model_router import ModelRouter
-from .correlation import TurnContext
+from .model_router import ModelRouter  # noqa: E402
+from .correlation import TurnContext  # noqa: E402
 
 logger = logging.getLogger("unified_agent.orchestrator")
 
@@ -640,7 +641,9 @@ class AgentResponse:
     thinking_stages: List[str] = field(default_factory=list)  # Stage labels for UX
     usage: Dict[str, Any] = field(default_factory=dict)  # Token usage from LLM
     session_id: str = ""  # Session ID for frontend session tracking
-    extra_data: Dict[str, Any] = field(default_factory=dict)  # For CLARIFICATION options
+    extra_data: Dict[str, Any] = field(
+        default_factory=dict
+    )  # For CLARIFICATION options
 
 
 # ─── Phase 3C: Conversation History Pruning ──────────────────────────────────
@@ -983,6 +986,24 @@ class UnifiedAgent:
                     for k, v in _s2_result.items():
                         if v is not None:
                             merged_entities[k] = v
+
+                    # ── Price field dedup for create_item ──
+                    # Stage 1 often extracts generic "unit_price" from any price mention.
+                    # If Stage 2 gave purchase_price but NOT sales_price, the Stage 1
+                    # unit_price is a false positive — remove it to avoid wrong Harga Jual.
+                    if (
+                        extraction.intent == "create_item"
+                        and "purchase_price" in _s2_result
+                        and "sales_price" not in _s2_result
+                        and "unit_price" in merged_entities
+                        and "unit_price" not in _s2_result
+                    ):
+                        del merged_entities["unit_price"]
+                        logger.info(
+                            "[PIPELINE] Removed false-positive unit_price "
+                            "(Stage 2 has purchase_price only)"
+                        )
+
                     extraction.entities = merged_entities
                     logger.warning(
                         "[PIPELINE] Stage 2 extracted: %s -> merged total: %s",
@@ -1068,17 +1089,20 @@ class UnifiedAgent:
             from .entity_extractor import classify_query_intent as _wf_qci
 
             _wf_query_intent, _, _ = _wf_qci(user_text)
-            _wf_is_question = bool(_wf_re.search(
-                r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
-                r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
-                user_text.strip().lower()
-            )) or user_text.strip().endswith("?")
+            _wf_is_question = bool(
+                _wf_re.search(
+                    r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
+                    r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
+                    user_text.strip().lower(),
+                )
+            ) or user_text.strip().endswith("?")
 
             if _wf_query_intent:
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
                 logger.warning(
                     "[PIPELINE] Cancelled crud_form (query classifier): was %s, query=%s",
-                    _wf_intent, _wf_query_intent,
+                    _wf_intent,
+                    _wf_query_intent,
                 )
                 extraction.intent = _wf_query_intent
                 extraction.confidence = 1.0
@@ -1089,7 +1113,8 @@ class UnifiedAgent:
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
                 logger.warning(
                     "[PIPELINE] Cancelled crud_form (question heuristic): was %s, text='%s'",
-                    _wf_intent, user_text[:60],
+                    _wf_intent,
+                    user_text[:60],
                 )
                 # Don't override extraction.intent — let LLM router classify
                 # Fall through to normal flow below
@@ -1706,6 +1731,7 @@ class UnifiedAgent:
         ):
             try:
                 from .db_utils import get_session_db_pool as _bp_pool
+
                 _bp_db = await _bp_pool()
                 _bank_rows = await _bp_db.fetch(
                     "SELECT id, account_name, bank_name, account_number "
@@ -1719,10 +1745,16 @@ class UnifiedAgent:
                         _bl = _br["account_name"] or _br["bank_name"] or "Unknown"
                         if _br["account_number"]:
                             _bl += " (" + _br["account_number"][-4:] + ")"
-                        _bank_options.append({"label": _bl, "value": str(_br["id"]), "description": ""})
+                        _bank_options.append(
+                            {"label": _bl, "value": str(_br["id"]), "description": ""}
+                        )
 
                     # Save partial payload for re-trigger
-                    _save = {k: v for k, v in (resolution.payload or {}).items() if v is not None}
+                    _save = {
+                        k: v
+                        for k, v in (resolution.payload or {}).items()
+                        if v is not None
+                    }
                     await tool_executor.session_manager.update_state(
                         tool_executor.session_id,
                         document_context={
@@ -1731,7 +1763,11 @@ class UnifiedAgent:
                             "resolved_payload": _save,
                         },
                     )
-                    logger.warning("[PIPELINE] Bank pills shortcut: %d options for %s", len(_bank_options), extraction.intent)
+                    logger.warning(
+                        "[PIPELINE] Bank pills shortcut: %d options for %s",
+                        len(_bank_options),
+                        extraction.intent,
+                    )
 
                     _desc = resolution.payload.get("description", "")
                     _amt = resolution.payload.get("amount", 0)
@@ -1740,10 +1776,17 @@ class UnifiedAgent:
                     except (ValueError, TypeError):
                         _amt_fmt = str(_amt)
 
-                    await emit("THINKING_DONE", {"summary": "Pilih rekening", "total_ms": int((_time.time() - start_time) * 1000)})
+                    await emit(
+                        "THINKING_DONE",
+                        {
+                            "summary": "Pilih rekening",
+                            "total_ms": int((_time.time() - start_time) * 1000),
+                        },
+                    )
                     return AgentResponse(
                         message_type="CLARIFICATION",
-                        content="Saya siap catat **%s** %s. Dibayar dari rekening mana?" % (_desc, _amt_fmt),
+                        content="Saya siap catat **%s** %s. Dibayar dari rekening mana?"
+                        % (_desc, _amt_fmt),
                         iterations=1,
                         tool_calls_made=[],
                         model_used="pipeline",
@@ -2646,43 +2689,84 @@ class UnifiedAgent:
             return "Oke, " + collected_str + ". Masih butuh: " + missing_str
         return "Untuk lanjut, saya butuh: " + missing_str
 
-
     # ═══ Response Entity Context (REC) ═══
 
     _INTENT_DOMAIN_MAP = {
-        "query_ar_outstanding": "ar", "query_ar_invoices": "ar",
-        "query_customer_ar": "ar", "query_sales_invoices_list": "ar",
-        "query_sales_invoice_detail": "ar", "query_sales_invoices_overdue": "ar",
+        "query_ar_outstanding": "ar",
+        "query_ar_invoices": "ar",
+        "query_customer_ar": "ar",
+        "query_sales_invoices_list": "ar",
+        "query_sales_invoice_detail": "ar",
+        "query_sales_invoices_overdue": "ar",
         "query_sales_invoices_unpaid": "ar",
-        "query_ap_outstanding": "ap", "query_bills_list": "ap",
-        "query_bill_detail": "ap", "query_bills_overdue": "ap",
-        "query_bills_unpaid": "ap", "query_vendor_ap": "ap",
-        "query_customer_detail": "customer", "query_customers_list": "customer",
-        "query_customers_summary": "customer", "query_customers_with_overdue": "customer",
-        "query_vendor_detail": "vendor", "query_vendors_list": "vendor",
-        "query_vendors_summary": "vendor", "query_vendors_with_overdue": "vendor",
-        "query_item_detail": "items", "query_items_list": "items",
-        "query_items_summary": "items", "query_items_low_stock": "items",
-        "query_items_search": "items", "query_items_by_price": "items",
+        "query_ap_outstanding": "ap",
+        "query_bills_list": "ap",
+        "query_bill_detail": "ap",
+        "query_bills_overdue": "ap",
+        "query_bills_unpaid": "ap",
+        "query_vendor_ap": "ap",
+        "query_customer_detail": "customer",
+        "query_customers_list": "customer",
+        "query_customers_summary": "customer",
+        "query_customers_with_overdue": "customer",
+        "query_vendor_detail": "vendor",
+        "query_vendors_list": "vendor",
+        "query_vendors_summary": "vendor",
+        "query_vendors_with_overdue": "vendor",
+        "query_item_detail": "items",
+        "query_items_list": "items",
+        "query_items_summary": "items",
+        "query_items_low_stock": "items",
+        "query_items_search": "items",
+        "query_items_by_price": "items",
         "query_items_by_stock": "items",
-        "query_bank_accounts_list": "bank", "query_bank_account_detail": "bank",
-        "query_bank_account_balance": "bank", "query_bank_transactions": "bank",
-        "query_expenses_list": "expense", "query_expense_detail": "expense",
+        "query_bank_accounts_list": "bank",
+        "query_bank_account_detail": "bank",
+        "query_bank_account_balance": "bank",
+        "query_bank_transactions": "bank",
+        "query_expenses_list": "expense",
+        "query_expense_detail": "expense",
         "query_expenses_summary": "expense",
-        "query_receive_payments_list": "ar", "query_bill_payments_list": "ap",
-        "query_journals_list": "journal", "query_journal_detail": "journal",
-        "query_accounts_list": "coa", "query_account_detail": "coa",
-    }
+        "query_receive_payments_list": "ar",
+        "query_bill_payments_list": "ap",
+        "query_journals_list": "journal",
+        "query_journal_detail": "journal",
+        "query_accounts_list": "coa",
+        "query_account_detail": "coa",
+    }  # noqa: E701,E702
 
-    _NAME_KEYS = ["customer_name", "vendor_name", "nama", "name", "item_name",
-                   "account_name", "bank_name", "display_name"]
+    _NAME_KEYS = [
+        "customer_name",  # noqa: E701,E702
+        "vendor_name",
+        "nama",
+        "name",  # noqa: E701,E702
+        "item_name",  # noqa: E701,E702
+        "account_name",
+        "bank_name",
+        "display_name",
+    ]  # noqa: E701,E702
     _ID_KEYS = ["customer_id", "vendor_id", "id", "item_id", "account_id"]
-    _AMOUNT_KEYS = ["outstanding", "total_amount", "amount", "amount_due",
-                     "harga_jual", "sales_price", "balance", "saldo",
-                     "current_balance", "ap_balance", "ar_balance",
-                     "outstanding_balance"]
-    _REF_KEYS = ["invoice_number", "bill_number", "journal_number",
-                  "reference_number", "payment_number"]
+    _AMOUNT_KEYS = [
+        "outstanding",
+        "total_amount",
+        "amount",
+        "amount_due",
+        "harga_jual",
+        "sales_price",
+        "balance",
+        "saldo",
+        "current_balance",
+        "ap_balance",
+        "ar_balance",
+        "outstanding_balance",
+    ]
+    _REF_KEYS = [
+        "invoice_number",
+        "bill_number",
+        "journal_number",
+        "reference_number",
+        "payment_number",
+    ]
 
     def _extract_rec(self, intent: str, data) -> dict:
         """Extract Response Entity Context from API response. Pure code, 0ms."""
@@ -2695,8 +2779,17 @@ class UnifiedAgent:
         if isinstance(data, list):
             items_raw = data
         elif isinstance(data, dict):
-            for key in ("items", "data", "results", "invoices", "bills",
-                         "customers", "vendors", "payments", "accounts"):
+            for key in (
+                "items",
+                "data",
+                "results",
+                "invoices",
+                "bills",
+                "customers",
+                "vendors",
+                "payments",
+                "accounts",
+            ):
                 if isinstance(data.get(key), list):
                     items_raw = data[key]
                     break
@@ -2714,18 +2807,23 @@ class UnifiedAgent:
             item = {}
             for k in self._NAME_KEYS:
                 if raw.get(k):
-                    item["_name"] = str(raw[k]); break
+                    item["_name"] = str(raw[k])
+                    break
             for k in self._ID_KEYS:
                 if raw.get(k):
-                    item["_id"] = str(raw[k]); break
+                    item["_id"] = str(raw[k])
+                    break
             for k in self._AMOUNT_KEYS:
                 if raw.get(k) is not None:
-                    try: item["_amount"] = float(raw[k])
-                    except (ValueError, TypeError): pass
+                    try:
+                        item["_amount"] = float(raw[k])
+                    except (ValueError, TypeError):
+                        pass
                     break
             for k in self._REF_KEYS:
                 if raw.get(k):
-                    item["_ref"] = str(raw[k]); break
+                    item["_ref"] = str(raw[k])
+                    break
             if raw.get("status"):
                 item["_status"] = raw["status"]
             if item.get("_name") or item.get("_ref"):
@@ -2736,15 +2834,30 @@ class UnifiedAgent:
 
         # Primary entity = most frequent name
         from collections import Counter
+
         names = [i["_name"] for i in items if i.get("_name")]
         primary_entity = None
         if names:
             primary_name = Counter(names).most_common(1)[0][0]
-            primary_id = next((i["_id"] for i in items
-                              if i.get("_name") == primary_name and i.get("_id")), None)
-            _type_map = {"ar": "customer", "ap": "vendor", "customer": "customer",
-                         "vendor": "vendor", "items": "item", "bank": "bank_account",
-                         "expense": "expense", "journal": "journal", "coa": "account"}
+            primary_id = next(
+                (
+                    i["_id"]
+                    for i in items
+                    if i.get("_name") == primary_name and i.get("_id")
+                ),
+                None,
+            )
+            _type_map = {
+                "ar": "customer",
+                "ap": "vendor",
+                "customer": "customer",
+                "vendor": "vendor",
+                "items": "item",
+                "bank": "bank_account",
+                "expense": "expense",
+                "journal": "journal",
+                "coa": "account",
+            }
             primary_entity = {
                 "type": _type_map.get(domain, "unknown"),
                 "name": primary_name,
@@ -2755,11 +2868,19 @@ class UnifiedAgent:
         amounts = [i["_amount"] for i in items if i.get("_amount") is not None]
         numeric = None
         if amounts:
-            numeric = {"total": sum(amounts), "count": len(amounts),
-                       "max": max(amounts), "min": min(amounts)}
+            numeric = {
+                "total": sum(amounts),
+                "count": len(amounts),
+                "max": max(amounts),
+                "min": min(amounts),
+            }
 
-        return {"domain": domain, "items": items,
-                "primary_entity": primary_entity, "numeric": numeric}
+        return {
+            "domain": domain,
+            "items": items,
+            "primary_entity": primary_entity,
+            "numeric": numeric,
+        }
 
     async def _handle_query_pipeline(
         self,
@@ -3091,24 +3212,66 @@ class UnifiedAgent:
                 # "_resolve_by_number" = generic, needs _DOC_NUMBER_CONFIG below
                 _DOC_NUMBER_CONFIG = {
                     "query_expense_detail": ("expenses", "expense_number", "expense"),
-                    "query_journal_detail": ("journal_entries", "journal_number", "journal"),
-                    "query_bill_payment_detail": ("bill_payments_v2", "payment_number", "bill_payment"),
-                    "query_receive_payment_detail": ("receive_payments", "payment_number", "receive_payment"),
-                    "query_stock_adjustment_detail": ("stock_adjustments", "adjustment_number", "stock_adjustment"),
-                    "query_credit_note_detail": ("credit_notes", "credit_note_number", "credit_note"),
-                    "query_vendor_credit_detail": ("vendor_credits", "vendor_credit_number", "vendor_credit"),
+                    "query_journal_detail": (
+                        "journal_entries",
+                        "journal_number",
+                        "journal",
+                    ),
+                    "query_bill_payment_detail": (
+                        "bill_payments_v2",
+                        "payment_number",
+                        "bill_payment",
+                    ),
+                    "query_receive_payment_detail": (
+                        "receive_payments",
+                        "payment_number",
+                        "receive_payment",
+                    ),
+                    "query_stock_adjustment_detail": (
+                        "stock_adjustments",
+                        "adjustment_number",
+                        "stock_adjustment",
+                    ),
+                    "query_credit_note_detail": (
+                        "credit_notes",
+                        "credit_note_number",
+                        "credit_note",
+                    ),
+                    "query_vendor_credit_detail": (
+                        "vendor_credits",
+                        "vendor_credit_number",
+                        "vendor_credit",
+                    ),
                     "query_quote_detail": ("quotes", "quote_number", "quote"),
                 }
                 _intent_entity_map = {
-                    "query_sales_invoice_detail": ("invoice_number", "_resolve_invoice"),
+                    "query_sales_invoice_detail": (
+                        "invoice_number",
+                        "_resolve_invoice",
+                    ),
                     "query_bill_detail": ("bill_number", "_resolve_bill"),
-                    "query_bill_payment_detail": ("bill_payment_number", "_resolve_by_number"),
-                    "query_receive_payment_detail": ("payment_number", "_resolve_by_number"),
+                    "query_bill_payment_detail": (
+                        "bill_payment_number",
+                        "_resolve_by_number",
+                    ),
+                    "query_receive_payment_detail": (
+                        "payment_number",
+                        "_resolve_by_number",
+                    ),
                     "query_expense_detail": ("expense_number", "_resolve_by_number"),
                     "query_journal_detail": ("journal_number", "_resolve_by_number"),
-                    "query_stock_adjustment_detail": ("adjustment_number", "_resolve_by_number"),
-                    "query_credit_note_detail": ("credit_note_number", "_resolve_by_number"),
-                    "query_vendor_credit_detail": ("vendor_credit_number", "_resolve_by_number"),
+                    "query_stock_adjustment_detail": (
+                        "adjustment_number",
+                        "_resolve_by_number",
+                    ),
+                    "query_credit_note_detail": (
+                        "credit_note_number",
+                        "_resolve_by_number",
+                    ),
+                    "query_vendor_credit_detail": (
+                        "vendor_credit_number",
+                        "_resolve_by_number",
+                    ),
                     "query_quote_detail": ("quote_number", "_resolve_by_number"),
                 }
                 _ie_cfg = _intent_entity_map.get(extraction.intent)
@@ -3356,13 +3519,21 @@ class UnifiedAgent:
                 # Build entity context for session persistence
                 _entity_updates = {}
                 if extraction.entities.get("customer_name"):
-                    _entity_updates["active_customer_name"] = extraction.entities["customer_name"]
+                    _entity_updates["active_customer_name"] = extraction.entities[
+                        "customer_name"
+                    ]
                 if extraction.entities.get("vendor_name"):
-                    _entity_updates["active_vendor_name"] = extraction.entities["vendor_name"]
+                    _entity_updates["active_vendor_name"] = extraction.entities[
+                        "vendor_name"
+                    ]
                 if extraction.entities.get("item_name"):
-                    _entity_updates["active_items"] = [{"name": extraction.entities["item_name"]}]
+                    _entity_updates["active_items"] = [
+                        {"name": extraction.entities["item_name"]}
+                    ]
                 if extraction.entities.get("bank_name"):
-                    _entity_updates["active_customer_name"] = _entity_updates.get("active_customer_name")  # no-op, keep existing
+                    _entity_updates["active_customer_name"] = _entity_updates.get(
+                        "active_customer_name"
+                    )  # no-op, keep existing
 
                 await tool_executor.session_manager.update_state(
                     tool_executor.session_id,
@@ -3661,7 +3832,10 @@ class UnifiedAgent:
                     _c = msg["content"]
                     if len(_c) > 30:  # skip short acks
                         last_response = _c[:2000]
-                        logger.warning("[REFORMAT] Using conversation_history fallback (%d chars)", len(_c))
+                        logger.warning(
+                            "[REFORMAT] Using conversation_history fallback (%d chars)",
+                            len(_c),
+                        )
                         break
 
         if not last_response:
@@ -4057,6 +4231,7 @@ class UnifiedAgent:
             "history",
             "journal_entries",
             "purchase_orders",
+            "alerts",
         ]
         for key in _COMMON_LIST_KEYS:
             val = data.get(key)
@@ -4334,7 +4509,9 @@ class UnifiedAgent:
                         "phase": getattr(_wf_state, "current_state", ""),
                     }
             except Exception as _wf_err:
-                logger.warning("[LLM_ROUTER_PRIMARY] WF state fetch failed: %s", _wf_err)
+                logger.warning(
+                    "[LLM_ROUTER_PRIMARY] WF state fetch failed: %s", _wf_err
+                )
 
         # Build OCR/image context from session state if present
         _ocr_text = None
@@ -4362,7 +4539,9 @@ class UnifiedAgent:
             _router = LLMIntentRouter(self.router)
             _result = await _router.route(
                 user_text=user_text,
-                conversation_history=conversation_history[-10:] if conversation_history else None,
+                conversation_history=conversation_history[-10:]
+                if conversation_history
+                else None,
                 workflow_state=_wf_ctx,
                 entity_memory=_entity_memory,
                 ocr_text=_ocr_text,
@@ -4379,19 +4558,25 @@ class UnifiedAgent:
         if _intent_val in ("FALLBACK", "", "ambiguous") or _conf < 0.3:
             logger.warning(
                 "[LLM_ROUTER_FALLBACK] intent=%s conf=%.2f -> regex fallback",
-                _intent_val, _conf,
+                _intent_val,
+                _conf,
             )
             return None
 
         # Guardrail 1: Anti-loop (same intent 3+ times in last 6 user turns)
         if conversation_history:
             try:
-                _user_msgs = [m for m in conversation_history[-12:] if m.get("role") == "user"]
+                _user_msgs = [
+                    m for m in conversation_history[-12:] if m.get("role") == "user"
+                ]
                 if len(_user_msgs) >= 3:
                     # Count same intent in router memory not available — use text heuristic
                     _same = 0
                     for _m in _user_msgs[-6:]:
-                        if _m.get("content", "").strip().lower() == user_text.strip().lower():
+                        if (
+                            _m.get("content", "").strip().lower()
+                            == user_text.strip().lower()
+                        ):
                             _same += 1
                     if _same >= 3:
                         logger.warning(
@@ -4415,9 +4600,13 @@ class UnifiedAgent:
         # Guardrail 4: Sanity check entity-intent match (log only)
         try:
             if _intent_val.startswith("create_vendor") and "customer_name" in _entities:
-                logger.warning("[LLM_ROUTER_SANITY] create_vendor has customer_name entity")
+                logger.warning(
+                    "[LLM_ROUTER_SANITY] create_vendor has customer_name entity"
+                )
             if _intent_val.startswith("create_customer") and "vendor_name" in _entities:
-                logger.warning("[LLM_ROUTER_SANITY] create_customer has vendor_name entity")
+                logger.warning(
+                    "[LLM_ROUTER_SANITY] create_customer has vendor_name entity"
+                )
         except Exception:
             pass
 
@@ -4433,12 +4622,16 @@ class UnifiedAgent:
 
         logger.warning(
             "[LLM_ROUTER_PRIMARY] intent=%s conf=%.2f ready=%s entities=%s latency=%dms",
-            _intent_val, _conf, _result.ready,
-            list(_entities.keys()), _result.latency_ms,
+            _intent_val,
+            _conf,
+            _result.ready,
+            list(_entities.keys()),
+            _result.latency_ms,
         )
         logger.warning(
             "[CLASSIFY_FINAL] intent=%s confidence=%.2f source=llm_router",
-            _intent_val, _conf,
+            _intent_val,
+            _conf,
         )
         return extraction
 
@@ -4468,9 +4661,13 @@ class UnifiedAgent:
         # Merge session_id alias
         if session_id and not chat_session_id:
             chat_session_id = session_id
-        logger.warning("[PROCESS_MSG] chat_session_id=%s session_id=%s tool_executor=%s te_session=%s",
-                       chat_session_id, session_id,
-                       bool(tool_executor), getattr(tool_executor, "session_id", None) if tool_executor else None)
+        logger.warning(
+            "[PROCESS_MSG] chat_session_id=%s session_id=%s tool_executor=%s te_session=%s",
+            chat_session_id,
+            session_id,
+            bool(tool_executor),
+            getattr(tool_executor, "session_id", None) if tool_executor else None,
+        )
 
         start_time = time.time()
         _process_start = _time.monotonic()
@@ -4617,7 +4814,11 @@ class UnifiedAgent:
         # This prevents "sintia" after "pelanggan siapa?" from being classified
         # as query_customer_detail instead of workflow slot fill.
         _wf_priority_skip = False
-        if _intent in ("ACTION", "SIMPLE_READ") and tool_executor and tool_executor.session_id:
+        if (
+            _intent in ("ACTION", "SIMPLE_READ")
+            and tool_executor
+            and tool_executor.session_id
+        ):
             try:
                 from .workflow_engine import WorkflowEngine
                 from .db_utils import get_session_db_pool as _wf_pool_p0
@@ -4632,44 +4833,80 @@ class UnifiedAgent:
                 _active_wf_p0 = await _wf_engine_p0.get_state(
                     tool_executor.session_id, "crud_form"
                 )
-                logger.warning("[WF_P0_DBG2] wf=%s status=%s phase=%s", bool(_active_wf_p0), getattr(_active_wf_p0, "status", None), (getattr(_active_wf_p0, "current_state", None) if _active_wf_p0 else None))
+                logger.warning(
+                    "[WF_P0_DBG2] wf=%s status=%s phase=%s",
+                    bool(_active_wf_p0),
+                    getattr(_active_wf_p0, "status", None),
+                    (
+                        getattr(_active_wf_p0, "current_state", None)
+                        if _active_wf_p0
+                        else None
+                    ),
+                )
                 if _active_wf_p0 and _active_wf_p0.status == "active":
                     _wf_phase_p0 = getattr(_active_wf_p0, "current_state", "")
-                    _cancel_patterns = ["batal", "cancel", "gajadi", "ga jadi", "stop", "sudah", "lupakan"]
-                    _is_cancel = any(p in user_text.lower().strip() for p in _cancel_patterns)
+                    _cancel_patterns = [
+                        "batal",
+                        "cancel",
+                        "gajadi",
+                        "ga jadi",
+                        "stop",
+                        "sudah",
+                        "lupakan",
+                    ]
+                    _is_cancel = any(
+                        p in user_text.lower().strip() for p in _cancel_patterns
+                    )
 
-                    if _wf_phase_p0 in ("COLLECTING", "picking_candidate") and not _is_cancel:
+                    if (
+                        _wf_phase_p0 in ("COLLECTING", "picking_candidate")
+                        and not _is_cancel
+                    ):
                         # ── Same pre-check as pipeline path: query classifier + question heuristic ──
                         import re as _wfp_re
                         from .entity_extractor import classify_query_intent as _wfp_qci
+
                         _wfp_query, _, _ = _wfp_qci(user_text)
-                        _wfp_is_question = bool(_wfp_re.search(
-                            r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
-                            r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
-                            user_text.strip().lower()
-                        )) or user_text.strip().endswith("?")
+                        _wfp_is_question = bool(
+                            _wfp_re.search(
+                                r"^(?:ada(?:kah)?|apakah|berapa|kapan|siapa|apa(?:kah)?|bagaimana|gimana|"
+                                r"mana|kenapa|mengapa|dimana|kemana|sudah|belum|bisa)\b",
+                                user_text.strip().lower(),
+                            )
+                        ) or user_text.strip().endswith("?")
                         # Also detect document number references (EXP-xxxx, INV-xxxx, etc.)
-                        _wfp_has_doc_ref = bool(_wfp_re.search(
-                            r"\b(?:EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b",
-                            user_text, _wfp_re.IGNORECASE
-                        ))
+                        _wfp_has_doc_ref = bool(
+                            _wfp_re.search(
+                                r"\b(?:EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b",
+                                user_text,
+                                _wfp_re.IGNORECASE,
+                            )
+                        )
 
                         if _wfp_query or _wfp_is_question or _wfp_has_doc_ref:
                             # User switched away from CRUD — cancel workflow, don't skip classification
-                            await _wf_engine_p0.cancel(tool_executor.session_id, "crud_form")
+                            await _wf_engine_p0.cancel(
+                                tool_executor.session_id, "crud_form"
+                            )
                             logger.warning(
                                 "[WF_PRIORITY] Cancelled workflow (query=%s question=%s doc_ref=%s): %s",
-                                _wfp_query or "-", _wfp_is_question, _wfp_has_doc_ref, user_text[:50],
+                                _wfp_query or "-",
+                                _wfp_is_question,
+                                _wfp_has_doc_ref,
+                                user_text[:50],
                             )
                             # Don't set _wf_priority_skip — let normal classification proceed
                         else:
                             logger.warning(
                                 "[WF_PRIORITY] Active workflow state=%s, skipping classification for: %s",
-                                _wf_phase_p0, user_text[:50],
+                                _wf_phase_p0,
+                                user_text[:50],
                             )
                             _wf_priority_skip = True
             except Exception as _wf_p0_err:
-                logger.warning("[WF_PRIORITY] Pre-check failed (non-fatal): %s", _wf_p0_err)
+                logger.warning(
+                    "[WF_PRIORITY] Pre-check failed (non-fatal): %s", _wf_p0_err
+                )
 
         _wf_priority_intent = None
         if _wf_priority_skip:
@@ -4677,12 +4914,17 @@ class UnifiedAgent:
             try:
                 _wf_p0_db = await _wf_pool_p0()
                 _wf_p0_eng = WorkflowEngine(
-                    _wf_p0_db, context.tenant_id,
+                    _wf_p0_db,
+                    context.tenant_id,
                     getattr(context, "user_id", ""),
                     getattr(context, "auth_token", ""),
                 )
-                _wf_p0_state = await _wf_p0_eng.get_state(tool_executor.session_id, "crud_form")
-                _wf_priority_intent = _wf_p0_state.data.get("intent", "") if _wf_p0_state else None
+                _wf_p0_state = await _wf_p0_eng.get_state(
+                    tool_executor.session_id, "crud_form"
+                )
+                _wf_priority_intent = (
+                    _wf_p0_state.data.get("intent", "") if _wf_p0_state else None
+                )
             except Exception:
                 _wf_priority_intent = None
             # Fall through to normal extraction below — it will extract entities
@@ -4694,6 +4936,7 @@ class UnifiedAgent:
 
         # ── Telemetry: init all _tel_* vars (prevent UnboundLocalError on early-exit paths) ──
         import time as _time_mod
+
         _tel_extraction_start = _tel_extraction_end = None
         _tel_raw_intent = _tel_raw_conf = None
         _tel_raw_entities = {}
@@ -4704,7 +4947,9 @@ class UnifiedAgent:
         _tel_guard_matches = {}
         _tel_guard_conflict = False
         _tel_conv_id = _tel_session_id = None
-        extraction = None  # prevent UnboundLocalError if _intent not in ACTION/SIMPLE_READ
+        extraction = (
+            None  # prevent UnboundLocalError if _intent not in ACTION/SIMPLE_READ
+        )
 
         if _intent in ("ACTION", "SIMPLE_READ"):
             # ═══ LLM-FIRST CLASSIFICATION (v3) ═══
@@ -4731,6 +4976,7 @@ class UnifiedAgent:
                 _last_action = getattr(_state, "last_action_type", None)
                 if _last_action:
                     from .entity_extractor import SESSION_CONTEXT_HINTS
+
                     _context_hint = SESSION_CONTEXT_HINTS.get(_last_action, "")
                     _last_result = getattr(_state, "last_action_result", None)
                     if _context_hint and isinstance(_last_result, dict):
@@ -4743,7 +4989,8 @@ class UnifiedAgent:
             extractor = EntityExtractor(_extract_client, _extract_model)
 
             # ── Telemetry: start timing ──
-            import time as _time_mod
+            import time as _time_mod  # noqa: F811
+
             _tel_extraction_start = _time_mod.monotonic()
 
             extraction = await extractor.extract(
@@ -4756,20 +5003,33 @@ class UnifiedAgent:
             _tel_extraction_end = _time_mod.monotonic()
             _tel_raw_intent = extraction.intent
             _tel_raw_conf = extraction.confidence
-            _tel_raw_entities = dict(extraction.entities) if isinstance(extraction.entities, dict) else {}
+            _tel_raw_entities = (
+                dict(extraction.entities)
+                if isinstance(extraction.entities, dict)
+                else {}
+            )
 
         # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
         try:
             from .llm_intent_router import LLMIntentRouter
+
             _shadow_router = LLMIntentRouter(self.router)
             _shadow_wf_state = None
             if tool_executor and tool_executor.session_id:
                 try:
                     from .workflow_engine import WorkflowEngine
                     from .db_utils import get_session_db_pool as _sh_pool
+
                     _sh_db = await _sh_pool()
-                    _sh_wf = WorkflowEngine(_sh_db, context.tenant_id, getattr(context, "user_id", ""), getattr(context, "auth_token", ""))
-                    _sh_wf_state_obj = await _sh_wf.get_state(tool_executor.session_id, "crud_form")
+                    _sh_wf = WorkflowEngine(
+                        _sh_db,
+                        context.tenant_id,
+                        getattr(context, "user_id", ""),
+                        getattr(context, "auth_token", ""),
+                    )
+                    _sh_wf_state_obj = await _sh_wf.get_state(
+                        tool_executor.session_id, "crud_form"
+                    )
                     if _sh_wf_state_obj and _sh_wf_state_obj.status == "active":
                         _shadow_wf_state = {
                             "intent": _sh_wf_state_obj.data.get("intent", ""),
@@ -4786,26 +5046,38 @@ class UnifiedAgent:
                 try:
                     _sh_result = await _shadow_router.route(
                         user_text=user_text,
-                        conversation_history=conversation_history[-10:] if conversation_history else None,
+                        conversation_history=conversation_history[-10:]
+                        if conversation_history
+                        else None,
                         workflow_state=_shadow_wf_state,
                     )
-                    _agrees = (_sh_result.intent == _sh_regex_intent)
+                    _agrees = _sh_result.intent == _sh_regex_intent
                     logger.warning(
                         "[SHADOW] llm=%s(%.2f) regex=%s(%.2f) agree=%s ready=%s [%dms]",
-                        _sh_result.intent, _sh_result.confidence,
-                        _sh_regex_intent, _sh_regex_conf,
-                        _agrees, _sh_result.ready, _sh_result.latency_ms,
+                        _sh_result.intent,
+                        _sh_result.confidence,
+                        _sh_regex_intent,
+                        _sh_regex_conf,
+                        _agrees,
+                        _sh_result.ready,
+                        _sh_result.latency_ms,
                     )
 
                 except Exception as _sh_err:
                     import traceback as _tb
+
                     logger.warning("[SHADOW] Failed: %s\n%s", _sh_err, _tb.format_exc())
 
             import asyncio
+
             asyncio.create_task(_run_shadow())
         except Exception as _shadow_init_err:
             logger.warning("[SHADOW] Init failed: %s", _shadow_init_err)
-            _tel_gemini_ms = int((_tel_extraction_end - _tel_extraction_start) * 1000) if _tel_extraction_end and _tel_extraction_start else 0
+            _tel_gemini_ms = (
+                int((_tel_extraction_end - _tel_extraction_start) * 1000)
+                if _tel_extraction_end and _tel_extraction_start
+                else 0
+            )
             _tel_guard = "none"
             _tel_guard_from = None
             _tel_guard_to = None
@@ -4821,19 +5093,41 @@ class UnifiedAgent:
                 if _rec_last_domain:
                     _rec_words = user_text.strip().split()
                     _rec_domain_kws = {
-                        "piutang","hutang","utang","stok","bank","biaya","faktur",
-                        "vendor","pelanggan","customer","barang","item","saldo",
-                        "pengeluaran","penjualan","pembelian","rekening","gudang",
-                        "invoice","bill","expense","payment","journal",
+                        "piutang",
+                        "hutang",
+                        "utang",
+                        "stok",
+                        "bank",
+                        "biaya",
+                        "faktur",
+                        "vendor",
+                        "pelanggan",
+                        "customer",
+                        "barang",
+                        "item",
+                        "saldo",
+                        "pengeluaran",
+                        "penjualan",
+                        "pembelian",
+                        "rekening",
+                        "gudang",
+                        "invoice",
+                        "bill",
+                        "expense",
+                        "payment",
+                        "journal",
                     }
                     _rec_has_kw = any(
                         w.lower().rstrip("?.,!") in _rec_domain_kws for w in _rec_words
                     )
                     if len(_rec_words) < 4 and not _rec_has_kw:
                         _REC_FOLLOWUP = {
-                            "ar": "query_ar_invoices", "ap": "query_ap_outstanding",
-                            "customer": "query_customers_list", "vendor": "query_vendors_list",
-                            "items": "query_items_list", "bank": "query_bank_accounts_list",
+                            "ar": "query_ar_invoices",
+                            "ap": "query_ap_outstanding",
+                            "customer": "query_customers_list",
+                            "vendor": "query_vendors_list",
+                            "items": "query_items_list",
+                            "bank": "query_bank_accounts_list",
                             "expense": "query_expenses_list",
                         }
                         _rec_followup = _REC_FOLLOWUP.get(_rec_last_domain)
@@ -4842,24 +5136,35 @@ class UnifiedAgent:
                             extraction.confidence = 0.9
                             logger.warning(
                                 "[REC_FOLLOWUP] '%s' (%d words) → %s (domain=%s)",
-                                user_text[:30], len(_rec_words), _rec_followup, _rec_last_domain,
+                                user_text[:30],
+                                len(_rec_words),
+                                _rec_followup,
+                                _rec_last_domain,
                             )
 
             # 2.6 REC: Pronoun + ordinal resolution from session
             if _state:
                 try:
                     from .entity_resolver import EntityResolver
-                    _rec_resolved = EntityResolver.resolve_from_session(user_text, _state)
+
+                    _rec_resolved = EntityResolver.resolve_from_session(
+                        user_text, _state
+                    )
                     if _rec_resolved:
                         for _rk, _rv in _rec_resolved.items():
-                            if _rk != "_resolved_item" and not extraction.entities.get(_rk):
+                            if _rk != "_resolved_item" and not extraction.entities.get(
+                                _rk
+                            ):
                                 extraction.entities[_rk] = _rv
-                        logger.warning("[REC_RESOLVE] Merged: %s", list(_rec_resolved.keys()))
+                        logger.warning(
+                            "[REC_RESOLVE] Merged: %s", list(_rec_resolved.keys())
+                        )
                 except Exception as _rec_err:
                     logger.warning("[REC_RESOLVE] Failed: %s", _rec_err)
 
             # 3. ARAP GUARD (financial-critical only)
             from .entity_extractor import classify_query_intent
+
             _qci_guard, _qci_entity_name, _ = classify_query_intent(user_text)
 
             _ARAP_CRITICAL = {
@@ -4871,7 +5176,11 @@ class UnifiedAgent:
             }
 
             _ARAP_DOMAIN = {
-                "query_ar_outstanding": {"query_ar_outstanding", "query_ar_invoices", "query_customer_ar"},
+                "query_ar_outstanding": {
+                    "query_ar_outstanding",
+                    "query_ar_invoices",
+                    "query_customer_ar",
+                },
                 "query_ar_invoices": {"query_ar_outstanding", "query_ar_invoices"},
                 "query_ap_outstanding": {"query_ap_outstanding", "query_vendor_ap"},
                 "query_customer_ar": {"query_customer_ar", "query_ar_outstanding"},
@@ -4897,16 +5206,22 @@ class UnifiedAgent:
                     _tel_guard_to = _qci_guard
                     _tel_decision_source = "arap_guard"
                     _tel_guard_matches["arap_guard_summary"] = _qci_guard
-                    logger.warning("[ARAP_GUARD] summary override: %s -> %s (no entity)", extraction.intent, _qci_guard)
+                    logger.warning(
+                        "[ARAP_GUARD] summary override: %s -> %s (no entity)",
+                        extraction.intent,
+                        _qci_guard,
+                    )
                     extraction.intent = _qci_guard
                     if _qci_entity_name:
                         extraction.entities["name"] = _qci_entity_name
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
                 _same_prefix = (
-                    extraction.intent.startswith("query_ar_") and _qci_guard.startswith("query_ar_")
+                    extraction.intent.startswith("query_ar_")
+                    and _qci_guard.startswith("query_ar_")
                 ) or (
-                    extraction.intent.startswith("query_ap_") and _qci_guard.startswith("query_ap_")
+                    extraction.intent.startswith("query_ap_")
+                    and _qci_guard.startswith("query_ap_")
                 )
                 if extraction.intent not in allowed and not _same_prefix:
                     _tel_guard = "arap_guard"
@@ -4914,7 +5229,9 @@ class UnifiedAgent:
                     _tel_guard_to = _qci_guard
                     _tel_decision_source = "arap_guard"
                     _tel_guard_matches["arap_guard"] = _qci_guard
-                    logger.warning("[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard)
+                    logger.warning(
+                        "[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard
+                    )
                     extraction.intent = _qci_guard
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
@@ -4931,49 +5248,69 @@ class UnifiedAgent:
                     _tel_guard_to = list_intent
                     _tel_decision_source = "list_guard"
                     _tel_guard_matches["list_guard"] = list_intent
-                    logger.warning("[LIST_GUARD] %s -> %s", extraction.intent, list_intent)
+                    logger.warning(
+                        "[LIST_GUARD] %s -> %s", extraction.intent, list_intent
+                    )
                     extraction.intent = list_intent
                     extraction.confidence = 1.0
                     break
 
             # 3c-bis. REFORMAT GUARD — regex caught "tampilkan dalam tabel"
-            if _qci_guard == "reformat_as_table" and extraction.intent != "reformat_as_table":
+            if (
+                _qci_guard == "reformat_as_table"
+                and extraction.intent != "reformat_as_table"
+            ):
                 _tel_guard = "reformat_guard"
                 _tel_guard_from = extraction.intent
                 _tel_guard_to = "reformat_as_table"
                 _tel_decision_source = "reformat_guard"
                 _tel_guard_matches["reformat_guard"] = "reformat_as_table"
-                logger.warning("[REFORMAT_GUARD] %s -> reformat_as_table", extraction.intent)
+                logger.warning(
+                    "[REFORMAT_GUARD] %s -> reformat_as_table", extraction.intent
+                )
                 extraction.intent = "reformat_as_table"
                 extraction.confidence = 1.0
                 extraction.needs_escalation = False
 
             # 3c. DRILL-DOWN GUARD
             if _qci_guard in ("contextual_drill_down", "drilldown_table"):
-                if extraction.intent not in ("contextual_drill_down", "drilldown_table", "reformat_as_table"):
+                if extraction.intent not in (
+                    "contextual_drill_down",
+                    "drilldown_table",
+                    "reformat_as_table",
+                ):
                     _tel_guard = "drill_guard"
                     _tel_guard_from = extraction.intent
                     _tel_guard_to = _qci_guard
                     _tel_decision_source = "drill_guard"
                     _tel_guard_matches["drill_guard"] = _qci_guard
-                    logger.warning("[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard)
+                    logger.warning(
+                        "[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard
+                    )
                     extraction.intent = _qci_guard
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
 
             # 4. CRUD GUARD (explicit action verbs only)
             from .entity_extractor import classify_crud_intent
-            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(user_text)
+
+            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
+                user_text
+            )
 
             if _code_intent:
-                is_crud = extraction.intent.startswith(("create_", "update_", "delete_", "void_", "reverse_"))
+                is_crud = extraction.intent.startswith(
+                    ("create_", "update_", "delete_", "void_", "reverse_")
+                )
                 if not is_crud or extraction.intent != _code_intent:
                     _tel_guard = "crud_guard"
                     _tel_guard_from = extraction.intent
                     _tel_guard_to = _code_intent
                     _tel_decision_source = "crud_guard"
                     _tel_guard_matches["crud_guard"] = _code_intent
-                    logger.warning("[CRUD_GUARD] %s → %s", extraction.intent, _code_intent)
+                    logger.warning(
+                        "[CRUD_GUARD] %s → %s", extraction.intent, _code_intent
+                    )
                     extraction.intent = _code_intent
                     extraction.confidence = 1.0
                     extraction.needs_escalation = False
@@ -4996,7 +5333,12 @@ class UnifiedAgent:
                         _tel_guard_to = _qci_guard
                         _tel_decision_source = "query_boost"
                         _tel_guard_matches["query_boost"] = _qci_guard
-                        logger.warning("[QUERY_BOOST] %s (%.2f) → %s", extraction.intent, extraction.confidence, _qci_guard)
+                        logger.warning(
+                            "[QUERY_BOOST] %s (%.2f) → %s",
+                            extraction.intent,
+                            extraction.confidence,
+                            _qci_guard,
+                        )
                         extraction.intent = _qci_guard
                         extraction.confidence = 0.8
                         extraction.needs_escalation = False
@@ -5020,7 +5362,9 @@ class UnifiedAgent:
                 if extraction.intent != _qci_guard:
                     logger.warning(
                         "[DOC_DETAIL_GUARD] %s -> %s (doc_ref=%s)",
-                        extraction.intent, _qci_guard, _qci_entity_name,
+                        extraction.intent,
+                        _qci_guard,
+                        _qci_entity_name,
                     )
                     _tel_guard = "doc_detail_guard"
                     _tel_guard_from = extraction.intent
@@ -5030,7 +5374,11 @@ class UnifiedAgent:
                 extraction.confidence = 1.0
                 extraction.entities["name"] = _qci_entity_name
 
-            logger.warning("[CLASSIFY_FINAL] intent=%s confidence=%.2f", extraction.intent, extraction.confidence)
+            logger.warning(
+                "[CLASSIFY_FINAL] intent=%s confidence=%.2f",
+                extraction.intent,
+                extraction.confidence,
+            )
 
             # ── Telemetry: fire-and-forget log ──
             _tel_guard_conflict = len(_tel_guard_matches) > 1
@@ -5041,39 +5389,55 @@ class UnifiedAgent:
                 _tel_pool = await _tel_get_pool()
                 _tel = IntentTelemetry(_tel_pool, context.tenant_id)
 
-                _tel_session_id = getattr(tool_executor, "session_id", None) if tool_executor else None
-                _tel_conv_id = getattr(tool_executor, "conversation_id", None) if tool_executor else None
+                _tel_session_id = (
+                    getattr(tool_executor, "session_id", None)
+                    if tool_executor
+                    else None
+                )
+                _tel_conv_id = (
+                    getattr(tool_executor, "conversation_id", None)
+                    if tool_executor
+                    else None
+                )
 
                 if _tel_session_id:
                     asyncio.create_task(_tel.detect_correction(_tel_session_id))
 
-                asyncio.create_task(_tel.log_decision(
-                    user_text=user_text,
-                    conversation_id=_tel_conv_id,
-                    session_id=_tel_session_id,
-                    gemini_intent=_tel_raw_intent,
-                    gemini_confidence=_tel_raw_conf,
-                    gemini_entities=_tel_raw_entities,
-                    gemini_latency_ms=_tel_gemini_ms,
-                    guard_triggered=_tel_guard,
-                    guard_from=_tel_guard_from,
-                    guard_to=_tel_guard_to,
-                    guard_conflict=_tel_guard_conflict,
-                    guard_conflict_detail=_tel_guard_matches if _tel_guard_conflict else None,
-                    final_intent=extraction.intent,
-                    final_confidence=extraction.confidence,
-                    decision_source=_tel_decision_source,
-                    context_hint_used=bool(_context_hint),
-                    last_action_type=getattr(_state, "last_action_type", None) if _state else None,
-                    pipeline_or_agent="pending",
-                    model_used=_extract_model or "gemini-2.5-flash-lite",
-                    total_latency_ms=_tel_gemini_ms,
-                    estimated_cost_usd=estimate_cost(_extract_model or "gemini-2.5-flash-lite", 2000, 200),
-                    input_tokens=2000,
-                    output_tokens=200,
-                    response_type="pending",
-                    response_length=0,
-                ))
+                asyncio.create_task(
+                    _tel.log_decision(
+                        user_text=user_text,
+                        conversation_id=_tel_conv_id,
+                        session_id=_tel_session_id,
+                        gemini_intent=_tel_raw_intent,
+                        gemini_confidence=_tel_raw_conf,
+                        gemini_entities=_tel_raw_entities,
+                        gemini_latency_ms=_tel_gemini_ms,
+                        guard_triggered=_tel_guard,
+                        guard_from=_tel_guard_from,
+                        guard_to=_tel_guard_to,
+                        guard_conflict=_tel_guard_conflict,
+                        guard_conflict_detail=_tel_guard_matches
+                        if _tel_guard_conflict
+                        else None,
+                        final_intent=extraction.intent,
+                        final_confidence=extraction.confidence,
+                        decision_source=_tel_decision_source,
+                        context_hint_used=bool(_context_hint),
+                        last_action_type=getattr(_state, "last_action_type", None)
+                        if _state
+                        else None,
+                        pipeline_or_agent="pending",
+                        model_used=_extract_model or "gemini-2.5-flash-lite",
+                        total_latency_ms=_tel_gemini_ms,
+                        estimated_cost_usd=estimate_cost(
+                            _extract_model or "gemini-2.5-flash-lite", 2000, 200
+                        ),
+                        input_tokens=2000,
+                        output_tokens=200,
+                        response_type="pending",
+                        response_length=0,
+                    )
+                )
             except Exception:
                 pass  # NEVER block on telemetry
 
@@ -5326,12 +5690,14 @@ class UnifiedAgent:
                     extraction.confidence,
                 )
 
-
                 # ═══ WF_PRIORITY: Override intent to match active workflow ═══
                 if _wf_priority_intent:
                     extraction.intent = _wf_priority_intent
                     extraction.confidence = 0.5
-                    logger.warning("[WF_PRIORITY] Overriding intent to %s for slot fill", _wf_priority_intent)
+                    logger.warning(
+                        "[WF_PRIORITY] Overriding intent to %s for slot fill",
+                        _wf_priority_intent,
+                    )
 
                 return await self._handle_pipeline(
                     user_text=user_text,
@@ -5364,11 +5730,14 @@ class UnifiedAgent:
                     db_pool=db_pool,
                 )
             except Exception as _llm_primary_err:
-                logger.warning("[LLM_ROUTER_PRIMARY] dispatch failed: %s", _llm_primary_err)
+                logger.warning(
+                    "[LLM_ROUTER_PRIMARY] dispatch failed: %s", _llm_primary_err
+                )
                 _llm_extraction = None
 
             if _llm_extraction is not None:
                 from .entity_extractor import is_pipeline_enabled as _llm_is_pipe
+
                 _lr_intent = _llm_extraction.intent or ""
 
                 # ── Entity merge: code classifier entities → LLM router ──
@@ -5381,47 +5750,116 @@ class UnifiedAgent:
                             _llm_extraction.entities[_ek] = _ev
                             logger.warning(
                                 "[LLM_ROUTER_PRIMARY] merged entity %s=%s from code classifier",
-                                _ek, str(_ev)[:50],
+                                _ek,
+                                str(_ev)[:50],
                             )
 
                 # ── Entity inject from session state (pronoun follow-ups) ──
                 # If extraction still has no entity but intent needs one, inject from session
-                if not _llm_extraction.entities and tool_executor and tool_executor.session_id:
+                if (
+                    not _llm_extraction.entities
+                    and tool_executor
+                    and tool_executor.session_id
+                ):
                     try:
-                        _sess = await tool_executor.session_manager.get_state(tool_executor.session_id) if tool_executor.session_manager else None
+                        _sess = (
+                            await tool_executor.session_manager.get_state(
+                                tool_executor.session_id
+                            )
+                            if tool_executor.session_manager
+                            else None
+                        )
                         if _sess:
                             _lr_i = _llm_extraction.intent or ""
                             # Customer context for AR/customer queries
-                            if _lr_i in ("query_customer_ar", "query_customer_detail", "query_ar_invoices") and getattr(_sess, "active_customer_name", None):
-                                _llm_extraction.entities["customer_name"] = _sess.active_customer_name
-                                logger.warning("[LLM_ROUTER_PRIMARY] injected customer_name=%s from session", _sess.active_customer_name)
+                            if _lr_i in (
+                                "query_customer_ar",
+                                "query_customer_detail",
+                                "query_ar_invoices",
+                            ) and getattr(_sess, "active_customer_name", None):
+                                _llm_extraction.entities[
+                                    "customer_name"
+                                ] = _sess.active_customer_name
+                                logger.warning(
+                                    "[LLM_ROUTER_PRIMARY] injected customer_name=%s from session",
+                                    _sess.active_customer_name,
+                                )
                             # Vendor context for AP/vendor queries
-                            elif _lr_i in ("query_vendor_ap", "query_vendor_detail", "query_ap_outstanding", "query_bills_list") and getattr(_sess, "active_vendor_name", None):
-                                _llm_extraction.entities["vendor_name"] = _sess.active_vendor_name
-                                logger.warning("[LLM_ROUTER_PRIMARY] injected vendor_name=%s from session", _sess.active_vendor_name)
+                            elif _lr_i in (
+                                "query_vendor_ap",
+                                "query_vendor_detail",
+                                "query_ap_outstanding",
+                                "query_bills_list",
+                            ) and getattr(_sess, "active_vendor_name", None):
+                                _llm_extraction.entities[
+                                    "vendor_name"
+                                ] = _sess.active_vendor_name
+                                logger.warning(
+                                    "[LLM_ROUTER_PRIMARY] injected vendor_name=%s from session",
+                                    _sess.active_vendor_name,
+                                )
                             # Item context for item queries
-                            elif _lr_i in ("query_item_detail", "query_warehouse_stock", "query_items_search") and getattr(_sess, "active_items", None):
+                            elif _lr_i in (
+                                "query_item_detail",
+                                "query_warehouse_stock",
+                                "query_items_search",
+                            ) and getattr(_sess, "active_items", None):
                                 _items = _sess.active_items
-                                if isinstance(_items, list) and _items and isinstance(_items[0], dict):
-                                    _llm_extraction.entities["item_name"] = _items[0].get("name", "")
-                                    logger.warning("[LLM_ROUTER_PRIMARY] injected item_name=%s from session", _items[0].get("name"))
+                                if (
+                                    isinstance(_items, list)
+                                    and _items
+                                    and isinstance(_items[0], dict)
+                                ):
+                                    _llm_extraction.entities["item_name"] = _items[
+                                        0
+                                    ].get("name", "")
+                                    logger.warning(
+                                        "[LLM_ROUTER_PRIMARY] injected item_name=%s from session",
+                                        _items[0].get("name"),
+                                    )
                     except Exception as _sess_err:
-                        logger.warning("[LLM_ROUTER_PRIMARY] session entity inject failed: %s", _sess_err)
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] session entity inject failed: %s",
+                            _sess_err,
+                        )
 
                 # ── Reformat + drill-down (dispatch to existing handlers) ──
                 if _lr_intent == "reformat_as_table":
-                    logger.warning("[LLM_ROUTER_PRIMARY] reformat_as_table")
-                    return await self._handle_reformat_as_table(
-                        user_text=user_text, context=context,
-                        tool_executor=tool_executor, event_callback=event_callback,
-                        conversation_history=conversation_history,
-                    )
+                    # Guard: if regex classifier found a specific query/calc intent,
+                    # the user wants a NEW query formatted as table, not a reformat of last response.
+                    from .entity_extractor import classify_query_intent as _rfg_qci
+
+                    _rfg_intent, _rfg_entity, _ = _rfg_qci(user_text)
+                    if _rfg_intent and _rfg_intent not in (
+                        "reformat_as_table",
+                        "contextual_drill_down",
+                        "drilldown_table",
+                    ):
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] reformat override -> %s (regex found specific query)",
+                            _rfg_intent,
+                        )
+                        _llm_extraction.intent = _rfg_intent
+                        _lr_intent = _rfg_intent
+                        if _rfg_entity:
+                            _llm_extraction.entities["name"] = _rfg_entity
+                    else:
+                        logger.warning("[LLM_ROUTER_PRIMARY] reformat_as_table")
+                        return await self._handle_reformat_as_table(
+                            user_text=user_text,
+                            context=context,
+                            tool_executor=tool_executor,
+                            event_callback=event_callback,
+                            conversation_history=conversation_history,
+                        )
                 if _lr_intent == "contextual_drill_down":
                     logger.warning("[LLM_ROUTER_PRIMARY] contextual_drill_down")
                     return await self._handle_contextual_drill_down(
-                        user_text=user_text, context=context,
+                        user_text=user_text,
+                        context=context,
                         extraction=_llm_extraction,
-                        tool_executor=tool_executor, event_callback=event_callback,
+                        tool_executor=tool_executor,
+                        event_callback=event_callback,
                     )
 
                 # ── Calc pipeline ──
@@ -5433,6 +5871,7 @@ class UnifiedAgent:
                             execute_calculation,
                             format_calculation_result,
                         )
+
                         if is_calculation_intent(_lr_intent):
                             logger.warning(
                                 "[LLM_ROUTER_PRIMARY] calc pipeline: %s", _lr_intent
@@ -5451,10 +5890,14 @@ class UnifiedAgent:
                                     and tool_executor.session_id
                                 ):
                                     try:
-                                        await tool_executor.session_manager.update_state(
-                                            tool_executor.session_id,
-                                            last_action_type=_lr_intent,
-                                            last_action_result={"response_text": _txt[:2000]},
+                                        await (
+                                            tool_executor.session_manager.update_state(
+                                                tool_executor.session_id,
+                                                last_action_type=_lr_intent,
+                                                last_action_result={
+                                                    "response_text": _txt[:2000]
+                                                },
+                                            )
                                         )
                                     except Exception:
                                         pass
@@ -5468,12 +5911,15 @@ class UnifiedAgent:
                                     ),
                                 )
                     except Exception as _calc_err:
-                        logger.warning("[LLM_ROUTER_PRIMARY] calc pipeline failed: %s", _calc_err)
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] calc pipeline failed: %s", _calc_err
+                        )
 
                 # ── Query pipeline ──
                 if _lr_intent.startswith("query_") and _llm_is_pipe(_lr_intent):
                     try:
                         from .direct_action_registry import get_query_action
+
                         if get_query_action(_lr_intent):
                             logger.warning(
                                 "[LLM_ROUTER_PRIMARY] query pipeline: %s", _lr_intent
@@ -5486,7 +5932,9 @@ class UnifiedAgent:
                                 event_callback=event_callback,
                             )
                     except Exception as _q_err:
-                        logger.warning("[LLM_ROUTER_PRIMARY] query pipeline failed: %s", _q_err)
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] query pipeline failed: %s", _q_err
+                        )
 
                 # ── CRUD / DirectAction pipeline ──
                 if _lr_intent.startswith(
@@ -5505,7 +5953,9 @@ class UnifiedAgent:
                             event_callback=event_callback,
                         )
                     except Exception as _crud_err:
-                        logger.warning("[LLM_ROUTER_PRIMARY] crud pipeline failed: %s", _crud_err)
+                        logger.warning(
+                            "[LLM_ROUTER_PRIMARY] crud pipeline failed: %s", _crud_err
+                        )
 
                 # No pipeline match — fall through to agent loop with LLM Router intent
                 logger.warning(
