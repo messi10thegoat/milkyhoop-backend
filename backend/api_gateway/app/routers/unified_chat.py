@@ -590,6 +590,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         latency_ms = agent_resp.get("total_latency_ms")
         session_id = agent_resp.get("session_id")
         thinking_stages = agent_resp.get("thinking_stages")
+        extra_data = agent_resp.get("extra_data")
     else:
         message_type = agent_resp.message_type
         content_text = agent_resp.content
@@ -604,6 +605,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         latency_ms = agent_resp.total_latency_ms
         session_id = getattr(agent_resp, "session_id", None)
         thinking_stages = getattr(agent_resp, "thinking_stages", None)
+        extra_data = getattr(agent_resp, "extra_data", None)
 
     data = None
     pending_action_id = None
@@ -625,6 +627,8 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
     elif message_type == "TUTORIAL_STEP":
         # Tutorial step: preview contains TutorialStepData
         data = preview or {}
+    elif message_type == "CLARIFICATION" and extra_data:
+        data = extra_data
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
 
@@ -1820,6 +1824,23 @@ async def send_message_with_files(
                         logger.info(
                             f"[IntentOCR] Extracted {len(_extracted)} chars from image for intent: {_extracted[:100]}"
                         )
+                        # ── Persist OCR text to session for multi-turn reference ──
+                        try:
+                            from ..services.unified_agent.session_manager import SessionManager as _OCR_SM
+                            from ..services.unified_agent.db_utils import get_session_db_pool as _ocr_sm_pool
+                            _ocr_sm_db = await _ocr_sm_pool()
+                            _ocr_sm = _OCR_SM(db_pool=_ocr_sm_db, tenant_id=ctx["tenant_id"])
+                            if session_id:
+                                await _ocr_sm.update_state(
+                                    session_id,
+                                    document_context={
+                                        "ocr_text": _extracted,
+                                        "source": "intent_ocr",
+                                    },
+                                )
+                                logger.info("[IntentOCR] Persisted %d chars to document_context", len(_extracted))
+                        except Exception as _ocr_persist_err:
+                            logger.warning("[IntentOCR] Persist failed (non-blocking): %s", _ocr_persist_err)
             except Exception as _iocr_err:
                 logger.warning(f"[IntentOCR] Failed: {_iocr_err}")
 
