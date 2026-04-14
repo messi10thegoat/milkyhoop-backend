@@ -357,7 +357,10 @@ EXTRACTION_SCHEMAS = {
                             "warehouse_name": {"type": ["string", "null"]},
                             "invoice_number": {"type": ["string", "null"]},
                             "bill_number": {"type": ["string", "null"]},
-                            "account_name": {"type": ["string", "null"], "description": "Nama akun biaya/beban (e.g. Beban Pemeliharaan, Beban Listrik, Biaya Admin)"},
+                            "account_name": {
+                                "type": ["string", "null"],
+                                "description": "Nama akun biaya/beban (e.g. Beban Pemeliharaan, Beban Listrik, Biaya Admin)",
+                            },
                             "amount": {"type": ["number", "null"]},
                             "quantity": {"type": ["number", "null"]},
                             "unit_price": {"type": ["number", "null"]},
@@ -928,71 +931,75 @@ def classify_query_intent(user_text: str) -> tuple:
 
     t = user_text.strip().lower()
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Calc engine intents (Batch 1 expansion) ──
-    if _qre.search(
-        r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
-    ) or _qre.search(
-        r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
-    ):
-        return "calc_rank_customers_by_ar", None, None
-    if _qre.search(
-        r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
-    ) or _qre.search(
-        r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
-    ):
-        return "calc_rank_vendors_by_ap", None, None
-    if _qre.search(r"(?:total|jumlah).*(?:penjualan|sales).*(?:bulan\s*ini)", t):
-        return "calc_sum_sales_this_month", None, None
-    if _qre.search(r"(?:total|jumlah).*(?:pembelian|purchase).*(?:bulan\s*ini)", t):
-        return "calc_sum_purchases_this_month", None, None
-    if _qre.search(
-        r"(?:total|jumlah).*(?:pengeluaran|biaya|expense).*(?:bulan\s*ini)", t
-    ):
-        return "calc_sum_expenses_this_month", None, None
-    if _qre.search(
-        r"(?:total|jumlah).*(?:saldo|balance).*(?:semua|seluruh).*(?:rekening|bank)", t
-    ) or _qre.search(r"(?:total|jumlah).*(?:semua|seluruh).*(?:saldo|balance)", t):
-        return "calc_sum_all_bank_balances", None, None
+    # if _qre.search(
+    #     r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
+    # ) or _qre.search(
+    #     r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
+    # ):
+    #     return "calc_rank_customers_by_ar", None, None
+    # if _qre.search(
+    #     r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
+    # ) or _qre.search(
+    #     r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
+    # ):
+    #     return "calc_rank_vendors_by_ap", None, None
+    # if _qre.search(r"(?:total|jumlah).*(?:penjualan|sales).*(?:bulan\s*ini)", t):
+    #     return "calc_sum_sales_this_month", None, None
+    # if _qre.search(r"(?:total|jumlah).*(?:pembelian|purchase).*(?:bulan\s*ini)", t):
+    #     return "calc_sum_purchases_this_month", None, None
+    # if _qre.search(
+    #     r"(?:total|jumlah).*(?:pengeluaran|biaya|expense).*(?:bulan\s*ini)", t
+    # ):
+    #     return "calc_sum_expenses_this_month", None, None
+    # if _qre.search(
+    #     r"(?:total|jumlah).*(?:saldo|balance).*(?:semua|seluruh).*(?:rekening|bank)", t
+    # ) or _qre.search(r"(?:total|jumlah).*(?:semua|seluruh).*(?:saldo|balance)", t):
+    #     return "calc_sum_all_bank_balances", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 2 calc intents ──
-    if _qre.search(
-        r"(?:ranking|peringkat).*(?:pengeluaran|biaya).*(?:akun|account)", t
-    ) or _qre.search(r"(?:pengeluaran|biaya).*(?:per|tiap).*(?:akun|account)", t):
-        return "calc_rank_expense_accounts", None, None
-    if _qre.search(
-        r"(?:berapa|jumlah).*(?:pelanggan|customer).*(?:tidak\s*aktif|inactive)", t
-    ):
-        return "calc_count_customers_inactive", None, None
-    if _qre.search(
-        r"(?:berapa|jumlah).*(?:vendor|pemasok).*(?:tidak\s*aktif|inactive)", t
-    ):
-        return "calc_count_vendors_inactive", None, None
-    if _qre.search(r"(?:berapa|jumlah).*(?:pengeluaran|biaya).*(?:bulan\s*ini)", t):
-        return "calc_count_expenses_this_month", None, None
+    # if _qre.search(
+    #     r"(?:ranking|peringkat).*(?:pengeluaran|biaya).*(?:akun|account)", t
+    # ) or _qre.search(r"(?:pengeluaran|biaya).*(?:per|tiap).*(?:akun|account)", t):
+    #     return "calc_rank_expense_accounts", None, None
+    # if _qre.search(
+    #     r"(?:berapa|jumlah).*(?:pelanggan|customer).*(?:tidak\s*aktif|inactive)", t
+    # ):
+    #     return "calc_count_customers_inactive", None, None
+    # if _qre.search(
+    #     r"(?:berapa|jumlah).*(?:vendor|pemasok).*(?:tidak\s*aktif|inactive)", t
+    # ):
+    #     return "calc_count_vendors_inactive", None, None
+    # if _qre.search(r"(?:berapa|jumlah).*(?:pengeluaran|biaya).*(?:bulan\s*ini)", t):
+    #     return "calc_count_expenses_this_month", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Report intents ──
     # IMPORTANT: trial_balance ("neraca saldo") MUST be checked BEFORE balance_sheet ("neraca")
-    if _qre.search(r"(?:neraca\s*saldo|trial\s*balance)", t):
-        return "query_trial_balance", None, None
-    if _qre.search(
-        r"(?:laba\s*rugi|profit\s*loss|untung\s*rugi|pendapatan\s+dan\s+beban)", t
-    ):
-        return "query_profit_loss", None, None
-    if _qre.search(r"\bneraca\b(?!\s*saldo)", t):
-        return "query_balance_sheet", None, None
-    if _qre.search(r"(?:arus\s*kas|cash\s*flow|aliran\s*kas)", t):
-        return "query_cash_flow", None, None
+    # if _qre.search(r"(?:neraca\s*saldo|trial\s*balance)", t):
+    #     return "query_trial_balance", None, None
+    # if _qre.search(
+    #     r"(?:laba\s*rugi|profit\s*loss|untung\s*rugi|pendapatan\s+dan\s+beban)", t
+    # ):
+    #     return "query_profit_loss", None, None
+    # if _qre.search(r"\bneraca\b(?!\s*saldo)", t):
+    #     return "query_balance_sheet", None, None
+    # if _qre.search(r"(?:arus\s*kas|cash\s*flow|aliran\s*kas)", t):
+    #     return "query_cash_flow", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Cross-module calc intents ──
-    if _qre.search(
-        r"(?:margin|keuntungan|profit)\s*(?:per|tiap)?\s*(?:barang|item|produk)", t
-    ):
-        return "calc_profit_margin_per_item", None, None
-    if _qre.search(
-        r"(?:barang|produk|item).*(?:terlaris|paling\s*laku|top\s*selling|paling\s*banyak\s*terjual)",
-        t,
-    ):
-        return "calc_top_selling_items", None, None
+    # if _qre.search(
+    #     r"(?:margin|keuntungan|profit)\s*(?:per|tiap)?\s*(?:barang|item|produk)", t
+    # ):
+    #     return "calc_profit_margin_per_item", None, None
+    # if _qre.search(
+    #     r"(?:barang|produk|item).*(?:terlaris|paling\s*laku|top\s*selling|paling\s*banyak\s*terjual)",
+    #     t,
+    # ):
+    #     return "calc_top_selling_items", None, None
 
     # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
     # These override AP/AR summary when user wants list/table/detail, not total
@@ -1069,20 +1076,24 @@ def classify_query_intent(user_text: str) -> tuple:
         return "drilldown_table", None, None
 
     # ── Batch 2: New query intents ──────────────────────────────────────────
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Items no stock
-    if _qre.search(r"(?:barang|item|stok).*(?:habis|kosong|out of stock|nol)", t):
-        return "query_items_no_stock", None, None
+    # if _qre.search(r"(?:barang|item|stok).*(?:habis|kosong|out of stock|nol)", t):
+    #     return "query_items_no_stock", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Customers list (MUST be before overdue check)
-    if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:pelanggan|customer)", t) or _qre.search(r"(?:pelanggan|customer).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
-        if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
-            return "query_customers_list", None, None
+    # if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:pelanggan|customer)", t) or _qre.search(r"(?:pelanggan|customer).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
+    #     if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
+    #         return "query_customers_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Vendors list (MUST be before overdue check)
-    if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:vendor|pemasok)", t) or _qre.search(r"(?:vendor|pemasok).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
-        if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
-            return "query_vendors_list", None, None
+    # if _qre.search(r"(?:daftar|list|siapa\s+(?:saja|aja)).*(?:vendor|pemasok)", t) or _qre.search(r"(?:vendor|pemasok).*(?:siapa\s+(?:saja|aja)|daftar|list)", t):
+    #     if not _qre.search(r"(?:terlambat|overdue|jatuh\s*tempo)", t):
+    #         return "query_vendors_list", None, None
 
+    # KEEP: overdue patterns are financial-critical
     # Customers with overdue
     if _qre.search(r"(?:pelanggan|customer).*(?:terlambat|overdue|jatuh\s*tempo)", t):
         return "query_customers_with_overdue", None, None
@@ -1091,10 +1102,12 @@ def classify_query_intent(user_text: str) -> tuple:
     if _qre.search(r"(?:vendor|pemasok).*(?:terlambat|overdue|jatuh\s*tempo)", t):
         return "query_vendors_with_overdue", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Sales invoices unpaid
-    if _qre.search(r"(?:faktur penjualan|invoice).*(?:belum\s*(?:di)?bayar|unpaid)", t):
-        return "query_sales_invoices_unpaid", None, None
+    # if _qre.search(r"(?:faktur penjualan|invoice).*(?:belum\s*(?:di)?bayar|unpaid)", t):
+    #     return "query_sales_invoices_unpaid", None, None
 
+    # KEEP: "belum lunas" is financial-critical (AR/AP adjacent)
     # Bills unpaid (careful not to conflict with query_ap_outstanding)
     if _qre.search(
         r"(?:tagihan|faktur pembelian).*(?:belum\s*(?:di)?bayar|unpaid|belum\s*lunas)",
@@ -1102,11 +1115,12 @@ def classify_query_intent(user_text: str) -> tuple:
     ):
         return "query_bills_unpaid", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Account ledger
-    if _qre.search(r"(?:buku\s*besar|general\s*ledger|mutasi).*(?:akun|account)", t):
-        return "query_account_ledger", None, None
-    if _qre.search(r"(?:akun|account).*(?:buku\s*besar|general\s*ledger|mutasi)", t):
-        return "query_account_ledger", None, None
+    # if _qre.search(r"(?:buku\s*besar|general\s*ledger|mutasi).*(?:akun|account)", t):
+    #     return "query_account_ledger", None, None
+    # if _qre.search(r"(?:akun|account).*(?:buku\s*besar|general\s*ledger|mutasi)", t):
+    #     return "query_account_ledger", None, None
 
     # AR/AP aging
     if _qre.search(r"(?:aging|umur).*(?:piutang|ar)", t):
@@ -1118,25 +1132,28 @@ def classify_query_intent(user_text: str) -> tuple:
     if _qre.search(r"(?:hutang|utang|ap).*(?:aging|umur)", t):
         return "query_ap_aging", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Dashboard summary
-    if _qre.search(
-        r"(?:ringkasan|summary|rangkuman).*(?:bisnis|usaha|keuangan|dashboard)", t
-    ):
-        return "query_dashboard_summary", None, None
+    # if _qre.search(
+    #     r"(?:ringkasan|summary|rangkuman).*(?:bisnis|usaha|keuangan|dashboard)", t
+    # ):
+    #     return "query_dashboard_summary", None, None
 
+    # KEEP: overdue patterns are financial-critical
     # Overdue all
     if _qre.search(r"(?:apa\s+(?:saja|aja)).*(?:jatuh\s*tempo|overdue)", t):
         return "query_overdue_all", None, None
     if _qre.search(r"(?:semua|seluruh).*(?:jatuh\s*tempo|overdue)", t):
         return "query_overdue_all", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Recurring bills
-    if _qre.search(
-        r"(?:daftar|list).*(?:recurring|berulang|rutin).*(?:tagihan|faktur|bill)", t
-    ):
-        return "query_recurring_bills_list", None, None
-    if _qre.search(r"(?:tagihan|faktur|bill).*(?:recurring|berulang|rutin)", t):
-        return "query_recurring_bills_list", None, None
+    # if _qre.search(
+    #     r"(?:daftar|list).*(?:recurring|berulang|rutin).*(?:tagihan|faktur|bill)", t
+    # ):
+    #     return "query_recurring_bills_list", None, None
+    # if _qre.search(r"(?:tagihan|faktur|bill).*(?:recurring|berulang|rutin)", t):
+    #     return "query_recurring_bills_list", None, None
 
     # ── Batch 1: Entity-specific queries (Priority 2) ──
     # Customer AR with entity name
@@ -1188,68 +1205,75 @@ def classify_query_intent(user_text: str) -> tuple:
         if _detail_intent:
             return _detail_intent, _doc_number, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Expenses by account (guard: skip if doc reference present — handled above)
-    if _qre.search(r"(?:pengeluaran|biaya).*(?:untuk|akun)", t):
-        return "query_expenses_by_account", None, None
+    # if _qre.search(r"(?:pengeluaran|biaya).*(?:untuk|akun)", t):
+    #     return "query_expenses_by_account", None, None
     # Receive payments list
-    if _qre.search(
-        r"(?:daftar|list).*(?:penerimaan|pembayaran\s*masuk|receive\s*payment)", t
-    ):
-        return "query_receive_payments_list", None, None
+    # if _qre.search(
+    #     r"(?:daftar|list).*(?:penerimaan|pembayaran\s*masuk|receive\s*payment)", t
+    # ):
+    #     return "query_receive_payments_list", None, None
     # Bill payments list
-    if _qre.search(
-        r"(?:daftar|list).*(?:pembayaran\s*keluar|payment\s*out|bill\s*payment|pembayaran\s*tagihan)",
-        t,
-    ):
-        return "query_bill_payments_list", None, None
+    # if _qre.search(
+    #     r"(?:daftar|list).*(?:pembayaran\s*keluar|payment\s*out|bill\s*payment|pembayaran\s*tagihan)",
+    #     t,
+    # ):
+    #     return "query_bill_payments_list", None, None
     # Journals list
-    if _qre.search(r"(?:daftar|list|semua)\s+jurnal", t):
-        return "query_journals_list", None, None
+    # if _qre.search(r"(?:daftar|list|semua)\s+jurnal", t):
+    #     return "query_journals_list", None, None
     # Accounts list
-    if _qre.search(r"(?:daftar|list).*(?:akun|coa|chart\s*of\s*accounts)", t):
-        return "query_accounts_list", None, None
+    # if _qre.search(r"(?:daftar|list).*(?:akun|coa|chart\s*of\s*accounts)", t):
+    #     return "query_accounts_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Credit Notes ──
-    if _qre.search(r"(?:daftar|list|semua).*(?:nota\s*kredit|credit\s*note)", t):
-        return "query_credit_notes_list", None, None
-    if _qre.search(r"(?:detail|info|cek).*(?:nota\s*kredit|credit\s*note)", t):
-        return "query_credit_note_detail", None, None
-    if _qre.search(r"(?:ringkasan|summary|total).*(?:nota\s*kredit|credit\s*note)", t):
-        return "query_credit_notes_summary", None, None
+    # if _qre.search(r"(?:daftar|list|semua).*(?:nota\s*kredit|credit\s*note)", t):
+    #     return "query_credit_notes_list", None, None
+    # if _qre.search(r"(?:detail|info|cek).*(?:nota\s*kredit|credit\s*note)", t):
+    #     return "query_credit_note_detail", None, None
+    # if _qre.search(r"(?:ringkasan|summary|total).*(?:nota\s*kredit|credit\s*note)", t):
+    #     return "query_credit_notes_summary", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Vendor Credits ──
-    if _qre.search(r"(?:daftar|list|semua).*(?:vendor\s*credit|kredit\s*vendor)", t):
-        return "query_vendor_credits_list", None, None
-    if _qre.search(r"(?:detail|info|cek).*(?:vendor\s*credit|kredit\s*vendor)", t):
-        return "query_vendor_credit_detail", None, None
-    if _qre.search(
-        r"(?:ringkasan|summary|total).*(?:vendor\s*credit|kredit\s*vendor)", t
-    ):
-        return "query_vendor_credits_summary", None, None
+    # if _qre.search(r"(?:daftar|list|semua).*(?:vendor\s*credit|kredit\s*vendor)", t):
+    #     return "query_vendor_credits_list", None, None
+    # if _qre.search(r"(?:detail|info|cek).*(?:vendor\s*credit|kredit\s*vendor)", t):
+    #     return "query_vendor_credit_detail", None, None
+    # if _qre.search(
+    #     r"(?:ringkasan|summary|total).*(?:vendor\s*credit|kredit\s*vendor)", t
+    # ):
+    #     return "query_vendor_credits_summary", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Quotes ──
-    if _qre.search(r"(?:daftar|list|semua).*(?:penawaran|quote|quotation)", t):
-        return "query_quotes_list", None, None
-    if _qre.search(r"(?:detail|info|cek).*(?:penawaran|quote)", t):
-        return "query_quote_detail", None, None
-    if _qre.search(r"(?:ringkasan|summary|total).*(?:penawaran|quote)", t):
-        return "query_quotes_summary", None, None
+    # if _qre.search(r"(?:daftar|list|semua).*(?:penawaran|quote|quotation)", t):
+    #     return "query_quotes_list", None, None
+    # if _qre.search(r"(?:detail|info|cek).*(?:penawaran|quote)", t):
+    #     return "query_quote_detail", None, None
+    # if _qre.search(r"(?:ringkasan|summary|total).*(?:penawaran|quote)", t):
+    #     return "query_quotes_summary", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Bank Transfers ──
-    if _qre.search(
-        r"(?:daftar|list|semua|riwayat).*(?:transfer\s*bank|transfer\s*antar)", t
-    ):
-        return "query_bank_transfers_list", None, None
+    # if _qre.search(
+    #     r"(?:daftar|list|semua|riwayat).*(?:transfer\s*bank|transfer\s*antar)", t
+    # ):
+    #     return "query_bank_transfers_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Customer Deposits ──
-    if _qre.search(
-        r"(?:daftar|list|semua).*(?:deposit\s*pelanggan|customer\s*deposit)", t
-    ):
-        return "query_customer_deposits_list", None, None
+    # if _qre.search(
+    #     r"(?:daftar|list|semua).*(?:deposit\s*pelanggan|customer\s*deposit)", t
+    # ):
+    #     return "query_customer_deposits_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # ── Batch 3: Vendor Deposits ──
-    if _qre.search(r"(?:daftar|list|semua).*(?:deposit\s*vendor|vendor\s*deposit)", t):
-        return "query_vendor_deposits_list", None, None
+    # if _qre.search(r"(?:daftar|list|semua).*(?:deposit\s*vendor|vendor\s*deposit)", t):
+    #     return "query_vendor_deposits_list", None, None
 
     # AR
     if _qre.search(r"\b(piutang|receivable|ar outstanding)\b", t) or _qre.search(
@@ -1279,58 +1303,66 @@ def classify_query_intent(user_text: str) -> tuple:
     ):
         return "query_cash_balance", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Bank/Kas list
-    if _qre.search(r"\b(daftar|list|semua)\s+(rekening|bank|kas)\b", t):
-        return "query_bank_accounts_list", None, None
+    # if _qre.search(r"\b(daftar|list|semua)\s+(rekening|bank|kas)\b", t):
+    #     return "query_bank_accounts_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Sales invoices
-    if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+penjualan|invoice)\b", t):
-        return "query_sales_invoices_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(penjualan|sales)\b", t):
-        return "query_sales_invoices_summary", None, None
+    # if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+penjualan|invoice)\b", t):
+    #     return "query_sales_invoices_list", None, None
+    # if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(penjualan|sales)\b", t):
+    #     return "query_sales_invoices_summary", None, None
 
-    # Bills
-    if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+pembelian|tagihan|bill)\b", t):
-        return "query_bills_list", None, None
-    if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(pembelian|bill)\b", t):
-        return "query_bills_summary", None, None
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
+    # Bills (KEEP overdue/unpaid patterns above — financial-critical)
+    # if _qre.search(r"\b(daftar|list|semua)\s+(faktur\s+pembelian|tagihan|bill)\b", t):
+    #     return "query_bills_list", None, None
+    # if _qre.search(r"\b(ringkasan|summary|rekap|total)\s+(pembelian|bill)\b", t):
+    #     return "query_bills_summary", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Expenses
-    if _qre.search(r"\b(daftar|list|semua)\s+(pengeluaran|biaya|expense)\b", t):
-        return "query_expenses_list", None, None
-    if _qre.search(
-        r"\b(ringkasan|summary|rekap|total)\s+(pengeluaran|biaya|expense)\b", t
-    ):
-        return "query_expenses_summary", None, None
+    # if _qre.search(r"\b(daftar|list|semua)\s+(pengeluaran|biaya|expense)\b", t):
+    #     return "query_expenses_list", None, None
+    # if _qre.search(
+    #     r"\b(ringkasan|summary|rekap|total)\s+(pengeluaran|biaya|expense)\b", t
+    # ):
+    #     return "query_expenses_summary", None, None
 
-    # Low stock / inactive / categories
+    # KEEP: Low stock / inactive — financial/operational-critical
     if _qre.search(
-        r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis|stok.*menipis|menipis)\b", t
+        r"\b(stok rendah|hampir habis|low stock|stok.*habis|mau habis|stok.*menipis|menipis)\b",
+        t,
     ):
         return "query_items_low_stock", None, None
     if _qre.search(r"\b(barang|item|produk)\b.*\b(tidak aktif|nonaktif|inactive)\b", t):
         return "query_items_inactive", None, None
-    if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
-        return "query_categories_list", None, None
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
+    # if _qre.search(r"\b(daftar|list|semua)\s+(kategori)\b", t):
+    #     return "query_categories_list", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Account (CoA) detail — "detail akun kas", "info akun beban gaji"
-    if _qre.search(
-        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:akun|account|coa)",
-        t,
-    ):
-        return "query_account_detail", None, None
+    # if _qre.search(
+    #     r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:akun|account|coa)",
+    #     t,
+    # ):
+    #     return "query_account_detail", None, None
 
+    # DISABLED P2.1 (2026-04-14): handled by LLM Router
     # Customer/Vendor detail — "data pelanggan X", "detail vendor Y", "info customer Z"
-    if _qre.search(
-        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:pelanggan|customer)",
-        t,
-    ):
-        return "query_customer_detail", None, None
-    if _qre.search(
-        r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:vendor|pemasok|supplier)",
-        t,
-    ):
-        return "query_vendor_detail", None, None
+    # if _qre.search(
+    #     r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:pelanggan|customer)",
+    #     t,
+    # ):
+    #     return "query_customer_detail", None, None
+    # if _qre.search(
+    #     r"(?:data|detail|info|informasi|cek|lihat)\s+(?:lengkap\s+)?(?:vendor|pemasok|supplier)",
+    #     t,
+    # ):
+    #     return "query_vendor_detail", None, None
 
     # Contextual drill-down — "per faktur", "breakdown", "detailnya" after a summary query
     # Returns drilldown_table — orchestrator resolves to correct pipeline query using session state
@@ -1417,11 +1449,14 @@ def classify_query_intent(user_text: str) -> tuple:
 
     # Re-format requests — user wants last response as table
     # GUARD: if text contains domain-specific nouns, it's a NEW query, not reformat
-    _has_domain_noun = bool(_qre.search(
-        r"\b(?:barang|item|produk|stok|stock|pelanggan|customer|vendor|pemasok|"
-        r"faktur|invoice|tagihan|bill|pengeluaran|biaya|expense|"
-        r"jurnal|akun|account|rekening|bank|gaji|payroll)\b", t
-    ))
+    _has_domain_noun = bool(
+        _qre.search(
+            r"\b(?:barang|item|produk|stok|stock|pelanggan|customer|vendor|pemasok|"
+            r"faktur|invoice|tagihan|bill|pengeluaran|biaya|expense|"
+            r"jurnal|akun|account|rekening|bank|gaji|payroll)\b",
+            t,
+        )
+    )
     if not _has_domain_noun:
         if _qre.search(
             r"(?:tampilkan|tunjukkan|bikin|buat|format|ubah)\s+(?:dalam|ke|jadi|sebagai)\s+(?:bentuk\s+)?(?:tabel|table)",
@@ -1495,14 +1530,18 @@ def classify_crud_intent(user_text: str) -> tuple:
     for _, kw, suffix, config in sorted_entities:
         idx = remaining.find(kw)
         if idx != -1:
-            _entity_candidates.append((idx, len(kw), suffix, config, idx + len(kw), "remaining"))
+            _entity_candidates.append(
+                (idx, len(kw), suffix, config, idx + len(kw), "remaining")
+            )
         else:
             idx_full = search_text.find(kw)
             if idx_full != -1 and idx_full >= action_end_pos - 2:
                 _adj_end = (idx_full + len(kw)) - action_end_pos
                 if _adj_end < 0:
                     _adj_end = len(remaining)
-                _entity_candidates.append((idx_full, len(kw), suffix, config, _adj_end, "full"))
+                _entity_candidates.append(
+                    (idx_full, len(kw), suffix, config, _adj_end, "full")
+                )
 
     if _entity_candidates:
         # Sort by position ASC (earliest first), then by keyword length DESC (longest wins at same position)

@@ -83,6 +83,7 @@ RULES:
 3. "hapus vendor X"→delete_vendor. "hapus barang X"→delete_item. Entity keyword setelah "hapus" = type.
 4. "catat biaya/beban" → create_expense. "catat pembelian dari vendor" → create_bill. Tanpa vendor = expense.
 5. "rekening bank/BCA" → create_bank_account. "akun beban/pendapatan" → create_account. "ke BCA" = bank_name.
+6. Untuk create_expense: jika user sebut nama akun biaya (contoh: "beban pemeliharaan", "beban listrik", "biaya admin"), extract sebagai account_name. JANGAN masukkan ke description.
 6. "penyesuaian/koreksi stok" → create_stock_adjustment.
 7. Angka: "5 juta"→5000000, "500rb"→500000. READY=true jika required fields lengkap.
 8. Chitchat: greeting/thanks/identity → chitchat. Single number/ambigu tanpa workflow → chitchat.
@@ -131,7 +132,7 @@ ROUTER_RESPONSE_SCHEMA = {
                 "intent": {"type": "string"},
                 "entities": {
                     "type": "object",
-                    "description": "Only include fields that user explicitly mentioned. Keys: customer_name, vendor_name, item_name, bank_name, warehouse_name, name, invoice_number, bill_number, amount, quantity, unit_price, description, date, due_date, phone, email, address, reason, payment_method, item_type, base_unit",
+                    "description": "Only include fields that user explicitly mentioned. Keys: customer_name, vendor_name, item_name, bank_name, warehouse_name, name, invoice_number, bill_number, account_name, amount, quantity, unit_price, description, date, due_date, phone, email, address, reason, payment_method, item_type, base_unit",
                 },
                 "confidence": {"type": "number"},
                 "ready": {"type": "boolean"},
@@ -139,7 +140,15 @@ ROUTER_RESPONSE_SCHEMA = {
                 "clarification": {"type": ["string", "null"]},
                 "reasoning": {"type": "string"},
             },
-            "required": ["intent", "entities", "confidence", "ready", "slot_fill", "clarification", "reasoning"],
+            "required": [
+                "intent",
+                "entities",
+                "confidence",
+                "ready",
+                "slot_fill",
+                "clarification",
+                "reasoning",
+            ],
             "additionalProperties": False,
         },
     },
@@ -168,7 +177,7 @@ class LLMIntentRouter:
         if conversation_history:
             recent = conversation_history[-10:]
             history_text = "\n".join(
-                f"{'User' if m.get('role') == 'user' else 'Bot'}: {m.get('content', '')[:200]}"
+                f"{'User' if m.get('role') == 'user' else 'Bot'}: {m.get('content', '')[:200 if m.get('role') == 'user' else 400]}"
                 for m in recent
             )
             parts.append(f"== RIWAYAT ==\n{history_text}")
@@ -180,11 +189,43 @@ class LLMIntentRouter:
                 f"User menjawab pertanyaan workflow → slot_fill, BUKAN intent baru."
             )
 
+        # Inject REC session state (P1.1)
+        if (
+            entity_memory
+            and isinstance(entity_memory, dict)
+            and "last_domain" in entity_memory
+        ):
+            _session_parts = []
+            if entity_memory.get("last_domain"):
+                _session_parts.append(
+                    f"Domain terakhir: {entity_memory['last_domain']}"
+                )
+            if entity_memory.get("active_entity"):
+                _ent = entity_memory["active_entity"]
+                _session_parts.append(
+                    f"Entitas aktif: {_ent.get('name', '?')} ({_ent.get('type', '?')})"
+                )
+            if entity_memory.get("last_numeric"):
+                _num = entity_memory["last_numeric"]
+                if _num.get("total") is not None:
+                    _session_parts.append(f"Angka terakhir: {_num['total']}")
+            if entity_memory.get("last_response_items"):
+                _names = [
+                    i.get("name", "?") for i in entity_memory["last_response_items"][:3]
+                ]
+                _session_parts.append(f"Item terakhir: {', '.join(_names)}")
+            if _session_parts:
+                parts.append("== SESSION STATE ==\n" + "\n".join(_session_parts))
+            entity_memory = None  # Consumed - don't also process as old-format memory
+
         if entity_memory:
-            mem = [f"{k}: {v['data'].get('name','?')}" for k, v in entity_memory.items()
-                   if isinstance(v, dict) and v.get("data")]
+            mem = [
+                f"{k}: {v['data'].get('name','?')}"
+                for k, v in entity_memory.items()
+                if isinstance(v, dict) and v.get("data")
+            ]
             if mem:
-                parts.append(f"== MEMORY ==\n" + "\n".join(mem))
+                parts.append("== MEMORY ==\n" + "\n".join(mem))
 
         if ocr_text:
             parts.append(f"== OCR ==\n{ocr_text[:500]}")
@@ -211,11 +252,19 @@ class LLMIntentRouter:
                 try:
                     raw = json.loads(response.content)
                 except json.JSONDecodeError:
-                    logger.warning("[LLM_ROUTER] JSON parse failed: %s", response.content[:200])
-                    return RouterOutput(intent="FALLBACK", confidence=0.0,
-                                       reasoning="JSON parse error", latency_ms=latency)
+                    logger.warning(
+                        "[LLM_ROUTER] JSON parse failed: %s", response.content[:200]
+                    )
+                    return RouterOutput(
+                        intent="FALLBACK",
+                        confidence=0.0,
+                        reasoning="JSON parse error",
+                        latency_ms=latency,
+                    )
 
-            entities = {k: v for k, v in (raw.get("entities") or {}).items() if v is not None}
+            entities = {
+                k: v for k, v in (raw.get("entities") or {}).items() if v is not None
+            }
 
             return RouterOutput(
                 intent=raw.get("intent", "ambiguous"),
@@ -234,5 +283,9 @@ class LLMIntentRouter:
         except Exception as e:
             latency = int((time.time() - start) * 1000)
             logger.warning("[LLM_ROUTER] Call failed (%dms): %s", latency, e)
-            return RouterOutput(intent="FALLBACK", confidence=0.0,
-                               reasoning=f"LLM error: {str(e)[:100]}", latency_ms=latency)
+            return RouterOutput(
+                intent="FALLBACK",
+                confidence=0.0,
+                reasoning=f"LLM error: {str(e)[:100]}",
+                latency_ms=latency,
+            )

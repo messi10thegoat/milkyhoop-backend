@@ -4231,6 +4231,9 @@ class UnifiedAgent:
             "history",
             "journal_entries",
             "purchase_orders",
+            "accounts",
+            "brackets",
+            "expenses",
             "alerts",
         ]
         for key in _COMMON_LIST_KEYS:
@@ -4532,7 +4535,21 @@ class UnifiedAgent:
         except Exception:
             pass
 
-        _entity_memory = None  # Router handles its own memory via entity_memory param
+        # Build entity_memory from REC session state (P1.1)
+        _entity_memory = None
+        if _s:
+            _rec_ctx = {}
+            if getattr(_s, "last_domain", None):
+                _rec_ctx["last_domain"] = _s.last_domain
+            if getattr(_s, "active_entity", None):
+                _rec_ctx["active_entity"] = _s.active_entity
+            if getattr(_s, "last_numeric", None):
+                _rec_ctx["last_numeric"] = _s.last_numeric
+            if getattr(_s, "last_response_items", None):
+                # Only send first 5 items to keep prompt short
+                _rec_ctx["last_response_items"] = _s.last_response_items[:5]
+            if _rec_ctx:
+                _entity_memory = _rec_ctx
 
         # Call LLM Router
         try:

@@ -35,8 +35,9 @@ async def get_session_db_pool() -> asyncpg.Pool:
         _session_db_pool = await asyncpg.create_pool(
             database_url,
             min_size=2,
-            max_size=10,
-            command_timeout=60,
+            max_size=5,
+            command_timeout=15,
+            max_inactive_connection_lifetime=300,
         )
 
     return _session_db_pool

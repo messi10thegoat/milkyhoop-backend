@@ -21,7 +21,6 @@ CRITICAL RULES:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Optional, List, Dict, Any
 import json
 import logging
@@ -35,9 +34,11 @@ logger = logging.getLogger("unified_agent.session_manager")
 # DATA CLASSES
 # ============================================================================
 
+
 @dataclass
 class StructuredState:
     """Layer 2: Authoritative session state. Updated by BACKEND only, never LLM."""
+
     active_customer_id: Optional[str] = None
     active_customer_name: Optional[str] = None
     active_vendor_id: Optional[str] = None
@@ -68,33 +69,45 @@ class StructuredState:
         """Convert to minimal injection string for LLM context."""
         parts = []
         if self.active_customer_name:
-            parts.append(f"Customer aktif: {self.active_customer_name} ({self.active_customer_id})")
+            parts.append(
+                f"Customer aktif: {self.active_customer_name} ({self.active_customer_id})"
+            )
         if self.active_vendor_name:
-            parts.append(f"Vendor aktif: {self.active_vendor_name} ({self.active_vendor_id})")
+            parts.append(
+                f"Vendor aktif: {self.active_vendor_name} ({self.active_vendor_id})"
+            )
         if self.active_invoice_number:
-            parts.append(f"Invoice aktif: {self.active_invoice_number} ({self.active_invoice_id})")
+            parts.append(
+                f"Invoice aktif: {self.active_invoice_number} ({self.active_invoice_id})"
+            )
         if self.active_bill_number:
-            parts.append(f"Bill aktif: {self.active_bill_number} ({self.active_bill_id})")
+            parts.append(
+                f"Bill aktif: {self.active_bill_number} ({self.active_bill_id})"
+            )
         if self.active_items:
             items_list = []
             for i in self.active_items:
-                desc = i.get('description') or i.get('name', '?')
-                qty = i.get('quantity') or i.get('qty', '?')
-                price = i.get('unit_price') or i.get('price', '?')
+                desc = i.get("description") or i.get("name", "?")
+                qty = i.get("quantity") or i.get("qty", "?")
+                price = i.get("unit_price") or i.get("price", "?")
                 items_list.append(f"{desc} ({qty} x Rp {price})")
             items_str = ", ".join(items_list)
             parts.append(f"Items: {items_str}")
         if self.last_action_type and self.last_action_status:
-            parts.append(f"Last action: {self.last_action_type} → {self.last_action_status}")
+            parts.append(
+                f"Last action: {self.last_action_type} → {self.last_action_status}"
+            )
             if self.last_action_result:
                 r = self.last_action_result
                 if r.get("invoice_number"):
-                    parts.append(f"  Created: {r['invoice_number']} (Rp {r.get('total', '?')})")
+                    parts.append(
+                        f"  Created: {r['invoice_number']} (Rp {r.get('total', '?')})"
+                    )
         if self.pending_action_id:
             parts.append(f"Pending confirmation: {self.pending_action_id}")
         if self.fsm_state and self.fsm_state != "IDLE":
             parts.append(f"FSM state: {self.fsm_state}")
-        
+
         if self.document_context:
             dc = self.document_context
             edits = dc.get("edits", {})
@@ -109,19 +122,24 @@ class StructuredState:
             doc_line = f"Dokumen aktif: {doc_type} {doc_num} dari {vendor}"
             parts.append(doc_line)
             parts.append(f"   Confidence: {int(confidence * 100)}%")
-            parts.append(f"   Items: {len(items)} item, total Rp {total:,.0f}" + (f" (PPN Rp {tax:,.0f})" if tax else ""))
-            parts.append(f"   Status: Menunggu konfirmasi user")
-            parts.append(f"   >> Jika user koreksi data dokumen ini, WAJIB panggil update_document_context(edits={{...}}). JANGAN search_vendors/search_customers.")
+            parts.append(
+                f"   Items: {len(items)} item, total Rp {total:,.0f}"
+                + (f" (PPN Rp {tax:,.0f})" if tax else "")
+            )
+            parts.append("   Status: Menunggu konfirmasi user")
+            parts.append(
+                "   >> Jika user koreksi data dokumen ini, WAJIB panggil update_document_context(edits={...}). JANGAN search_vendors/search_customers."
+            )
 
             if edits:
                 edit_lines = []
                 for k, v in edits.items():
                     if k != "items":
-                        edit_lines.append(f"{k} = \"{v}\"")
+                        edit_lines.append(f'{k} = "{v}"')
                     elif isinstance(v, dict):
                         for idx, item_edits in v.items():
                             for ik, iv in item_edits.items():
-                                edit_lines.append(f"item[{idx}].{ik} = \"{iv}\"")
+                                edit_lines.append(f'item[{idx}].{ik} = "{iv}"')
                 if edit_lines:
                     joined = ", ".join(edit_lines)
                     parts.append(f"   [User koreksi: {joined}]")
@@ -129,14 +147,21 @@ class StructuredState:
         # Entity graph summary
         if self.entity_graph and self.entity_graph.get("nodes"):
             from .entity_graph import to_context_summary
+
             graph_summary = to_context_summary(self.entity_graph)
             if graph_summary:
                 parts.append(graph_summary)
 
         # Pending payload context (for multi-turn field collection)
         if self.pending_intent and self.pending_payload:
-            collected = [k for k, v in self.pending_payload.items() if v is not None and k not in ("date",)]
-            parts.append(f"PENDING: {self.pending_intent} — sudah ada: {', '.join(collected[:8])}")
+            collected = [
+                k
+                for k, v in self.pending_payload.items()
+                if v is not None and k not in ("date",)
+            ]
+            parts.append(
+                f"PENDING: {self.pending_intent} — sudah ada: {', '.join(collected[:8])}"
+            )
 
         if not parts:
             return ""
@@ -147,25 +172,27 @@ class StructuredState:
 # SESSION MANAGER
 # ============================================================================
 
+
 class SessionManager:
     """Manages 4-layer memory for a chat session."""
-    
+
     def __init__(self, db_pool, tenant_id: str, user_id: str):
         self.db = db_pool
         self.tenant_id = tenant_id
         self.user_id = user_id
-    
+
     # ========================================================================
     # SESSION LIFECYCLE
     # ========================================================================
-    
+
     async def get_or_create_session(self, session_id: Optional[str] = None) -> str:
         """Get existing session or create new one."""
         if session_id:
             # Verify session exists and belongs to this tenant/user
             row = await self.db.fetchrow(
                 "SELECT id FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
-                session_id, self.tenant_id
+                session_id,
+                self.tenant_id,
             )
             if row:
                 return str(row["id"])
@@ -173,19 +200,25 @@ class SessionManager:
             try:
                 await self.db.execute(
                     "INSERT INTO chat_sessions (id, tenant_id, user_id) VALUES ($1::uuid, $2, $3::uuid)",
-                    session_id, self.tenant_id, self.user_id
+                    session_id,
+                    self.tenant_id,
+                    self.user_id,
                 )
                 await self.db.execute(
                     "INSERT INTO chat_session_state (session_id, tenant_id) VALUES ($1::uuid, $2)",
-                    session_id, self.tenant_id
+                    session_id,
+                    self.tenant_id,
                 )
-                logger.info(f"[SESSION] Created session with provided ID {session_id[:8]}")
+                logger.info(
+                    f"[SESSION] Created session with provided ID {session_id[:8]}"
+                )
                 return session_id
             except Exception as _e:
                 logger.warning(f"[SESSION] Create with ID failed (race?): {_e}")
                 row = await self.db.fetchrow(
                     "SELECT id FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
-                    session_id, self.tenant_id
+                    session_id,
+                    self.tenant_id,
                 )
                 if row:
                     return str(row["id"])
@@ -193,67 +226,89 @@ class SessionManager:
         # Create new session (no ID provided)
         row = await self.db.fetchrow(
             "INSERT INTO chat_sessions (tenant_id, user_id) VALUES ($1, $2::uuid) RETURNING id",
-            self.tenant_id, self.user_id
+            self.tenant_id,
+            self.user_id,
         )
         session_id = str(row["id"])
 
         # Initialize empty structured state
         await self.db.execute(
             "INSERT INTO chat_session_state (session_id, tenant_id) VALUES ($1::uuid, $2)",
-            session_id, self.tenant_id
+            session_id,
+            self.tenant_id,
         )
 
-        logger.info(f"[SESSION] Created new session {session_id[:8]} for tenant={self.tenant_id}")
+        logger.info(
+            f"[SESSION] Created new session {session_id[:8]} for tenant={self.tenant_id}"
+        )
         return session_id
 
     # ========================================================================
     # LAYER 1: WORKING WINDOW
     # ========================================================================
-    
+
     async def store_message(
-        self, 
-        session_id: str, 
-        role: str, 
+        self,
+        session_id: str,
+        role: str,
         content: str,
-        tool_calls: Optional[Dict] = None, 
+        tool_calls: Optional[Dict] = None,
         tool_call_id: Optional[str] = None,
-        message_type: str = "TEXT", 
+        message_type: str = "TEXT",
         token_count: Optional[int] = None,
         metadata: Optional[Dict] = None,
     ):
         """Store a message in chat history."""
         import json as _json
-        msg_id = await self.db.fetchval("""
+
+        msg_id = await self.db.fetchval(
+            """
             INSERT INTO chat_messages (
-                session_id, tenant_id, role, content, 
+                session_id, tenant_id, role, content,
                 tool_calls, tool_call_id, message_type, token_count, metadata
             )
             VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
             RETURNING id
-        """, session_id, self.tenant_id, role, content,
-             json.dumps(tool_calls) if tool_calls else None,
-             tool_call_id, message_type, token_count,
-             _json.dumps(metadata) if metadata else None)
-        
+        """,
+            session_id,
+            self.tenant_id,
+            role,
+            content,
+            json.dumps(tool_calls) if tool_calls else None,
+            tool_call_id,
+            message_type,
+            token_count,
+            _json.dumps(metadata) if metadata else None,
+        )
+
         # Update session timestamp + auto-summary from first user message
         await self.db.execute(
             """UPDATE chat_sessions SET updated_at = now(),
                summary = COALESCE(NULLIF(summary, ''), LEFT($3, 60))
                WHERE id = $1::uuid AND tenant_id = $2""",
-            session_id, self.tenant_id, content if role == "user" else None
+            session_id,
+            self.tenant_id,
+            content if role == "user" else None,
         )
         return msg_id
-    
-    async def get_working_window(self, session_id: str, max_turns: int = 8) -> List[Dict]:
+
+    async def get_working_window(
+        self, session_id: str, max_turns: int = 8
+    ) -> List[Dict]:
         """Layer 1: Get last N messages (verbatim) for LLM context."""
-        rows = await self.db.fetch("""
+        rows = await self.db.fetch(
+            """
             SELECT role, content, tool_calls, tool_call_id, message_type, created_at
             FROM chat_messages
             WHERE session_id = $1::uuid AND tenant_id = $2
             ORDER BY created_at DESC
             LIMIT $3
-        """, session_id, self.tenant_id, max_turns * 2)  # *2 to account for tool messages
-        
+        """,
+            session_id,
+            self.tenant_id,
+            max_turns * 2,
+        )  # *2 to account for tool messages
+
         # Reverse to chronological order
         messages = []
         for row in reversed(rows):
@@ -263,54 +318,75 @@ class SessionManager:
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             messages.append(msg)
-        
+
         return messages
-    
+
     # ========================================================================
     # LAYER 2: STRUCTURED STATE
     # ========================================================================
-    
+
     async def get_state(self, session_id: str) -> StructuredState:
         """Layer 2: Get authoritative session state."""
         row = await self.db.fetchrow(
             "SELECT * FROM chat_session_state WHERE session_id = $1::uuid AND tenant_id = $2",
-            session_id, self.tenant_id
+            session_id,
+            self.tenant_id,
         )
         if not row:
             return StructuredState()
-        
+
         return StructuredState(
-            active_customer_id=str(row["active_customer_id"]) if row["active_customer_id"] else None,
+            active_customer_id=str(row["active_customer_id"])
+            if row["active_customer_id"]
+            else None,
             active_customer_name=row["active_customer_name"],
-            active_vendor_id=str(row["active_vendor_id"]) if row["active_vendor_id"] else None,
+            active_vendor_id=str(row["active_vendor_id"])
+            if row["active_vendor_id"]
+            else None,
             active_vendor_name=row["active_vendor_name"],
-            active_invoice_id=str(row["active_invoice_id"]) if row["active_invoice_id"] else None,
+            active_invoice_id=str(row["active_invoice_id"])
+            if row["active_invoice_id"]
+            else None,
             active_invoice_number=row["active_invoice_number"],
-            active_bill_id=str(row["active_bill_id"]) if row["active_bill_id"] else None,
+            active_bill_id=str(row["active_bill_id"])
+            if row["active_bill_id"]
+            else None,
             active_bill_number=row["active_bill_number"],
-            active_items=json.loads(row["active_items"]) if isinstance(row["active_items"], str) and row["active_items"] else (row["active_items"] or []),
+            active_items=json.loads(row["active_items"])
+            if isinstance(row["active_items"], str) and row["active_items"]
+            else (row["active_items"] or []),
             current_period=row["current_period"],
             last_action_type=row["last_action_type"],
             last_action_status=row["last_action_status"],
-            last_action_result=json.loads(row["last_action_result"]) if isinstance(row["last_action_result"], str) and row["last_action_result"] else row["last_action_result"],
-            pending_action_id=str(row["pending_action_id"]) if row["pending_action_id"] else None,
+            last_action_result=json.loads(row["last_action_result"])
+            if isinstance(row["last_action_result"], str) and row["last_action_result"]
+            else row["last_action_result"],
+            pending_action_id=str(row["pending_action_id"])
+            if row["pending_action_id"]
+            else None,
             fsm_state=row["fsm_state"] or "IDLE",
-            document_context=json.loads(row["document_context"]) if isinstance(row["document_context"], str) and row["document_context"] else row["document_context"],
-            entity_graph=json.loads(row["entity_graph"]) if isinstance(row.get("entity_graph"), str) and row["entity_graph"] else (row.get("entity_graph") or {}),
-            pending_payload=json.loads(row["pending_payload"]) if isinstance(row.get("pending_payload"), str) and row["pending_payload"] else (row.get("pending_payload") or {}),
+            document_context=json.loads(row["document_context"])
+            if isinstance(row["document_context"], str) and row["document_context"]
+            else row["document_context"],
+            entity_graph=json.loads(row["entity_graph"])
+            if isinstance(row.get("entity_graph"), str) and row["entity_graph"]
+            else (row.get("entity_graph") or {}),
+            pending_payload=json.loads(row["pending_payload"])
+            if isinstance(row.get("pending_payload"), str) and row["pending_payload"]
+            else (row.get("pending_payload") or {}),
             pending_intent=row.get("pending_intent") or "",
             editing_mode=bool(row.get("editing_mode", False)),
         )
-    
+
     async def update_state(self, session_id: str, **updates):
         """Update specific fields in structured state. Backend calls this, NOT LLM."""
         if not updates:
             return
-            
+
         set_clauses = []
         values = [session_id, self.tenant_id]
         idx = 3
-        
+
         for key, value in updates.items():
             if isinstance(value, (dict, list)):
                 set_clauses.append(f"{key} = ${idx}::jsonb")
@@ -323,28 +399,33 @@ class SessionManager:
                 set_clauses.append(f"{key} = ${idx}")
                 values.append(value)
             idx += 1
-        
+
         set_clauses.append("updated_at = now()")
-        
+
         # Use acquire() to trigger RLS monkey-patch, not pool.execute() which bypasses it
-        async with self.db.acquire() as _conn:
-            await _conn.execute(f"""
-                UPDATE chat_session_state 
+        async with self.db.acquire(timeout=5.0) as _conn:
+            await _conn.execute(
+                f"""
+                UPDATE chat_session_state
                 SET {', '.join(set_clauses)}
                 WHERE session_id = $1::uuid AND tenant_id = $2
-            """, *values)
-    
-    async def update_state_from_search(self, session_id: str, tool_name: str, result: Dict):
+            """,
+                *values,
+            )
+
+    async def update_state_from_search(
+        self, session_id: str, tool_name: str, result: Dict
+    ):
         """Auto-update structured state when a search tool returns results.
-        
+
         Called by tool_executor AFTER each tool call.
         This is how Layer 2 stays in sync — deterministic, not LLM-driven.
         """
         if not result.get("success"):
             return
-        
+
         data = result.get("data", {})
-        
+
         if tool_name == "search_customers" and data:
             # Set first result as active customer (best match from search)
             # API returns {"items": [...]} not {"customers": [...]}
@@ -359,9 +440,9 @@ class SessionManager:
                 await self.update_state(
                     session_id,
                     active_customer_id=items[0].get("id"),
-                    active_customer_name=items[0].get("name") or items[0].get("nama")
+                    active_customer_name=items[0].get("name") or items[0].get("nama"),
                 )
-        
+
         elif tool_name == "search_vendors" and data:
             if isinstance(data, dict):
                 items = data.get("vendors") or data.get("items") or [data]
@@ -373,9 +454,9 @@ class SessionManager:
                 await self.update_state(
                     session_id,
                     active_vendor_id=items[0].get("id"),
-                    active_vendor_name=items[0].get("name") or items[0].get("nama")
+                    active_vendor_name=items[0].get("name") or items[0].get("nama"),
                 )
-        
+
         elif tool_name == "search_items" and data:
             if isinstance(data, dict):
                 items = data.get("products") or data.get("items") or [data]
@@ -386,15 +467,20 @@ class SessionManager:
             if items:
                 await self.update_state(
                     session_id,
-                    active_items=[{
-                        "id": item.get("id"),
-                        "name": item.get("name") or item.get("nama"),
-                        "sku": item.get("sku"),
-                        "price": item.get("selling_price") or item.get("harga_jual"),
-                        "buying_price": item.get("buying_price") or item.get("harga_beli"),
-                    } for item in items[:5]]
+                    active_items=[
+                        {
+                            "id": item.get("id"),
+                            "name": item.get("name") or item.get("nama"),
+                            "sku": item.get("sku"),
+                            "price": item.get("selling_price")
+                            or item.get("harga_jual"),
+                            "buying_price": item.get("buying_price")
+                            or item.get("harga_beli"),
+                        }
+                        for item in items[:5]
+                    ],
                 )
-        
+
         elif tool_name in ("get_invoice_detail", "get_invoices") and data:
             items = data if isinstance(data, list) else [data]
             if items:
@@ -404,7 +490,7 @@ class SessionManager:
                     active_invoice_id=inv.get("id"),
                     active_invoice_number=inv.get("invoice_number"),
                 )
-        
+
         elif tool_name in ("get_bill_detail", "get_bills") and data:
             items = data if isinstance(data, list) else [data]
             if items:
@@ -414,23 +500,23 @@ class SessionManager:
                     active_bill_id=bill.get("id"),
                     active_bill_number=bill.get("bill_number"),
                 )
-    
+
     async def update_state_from_action(
-        self, 
-        session_id: str, 
-        action_type: str, 
-        status: str, 
-        result: Optional[Dict] = None
+        self,
+        session_id: str,
+        action_type: str,
+        status: str,
+        result: Optional[Dict] = None,
     ):
         """Auto-update structured state after propose/confirm/reject.
-        
+
         Called by orchestrator AFTER each action lifecycle event.
         """
         updates = {
             "last_action_type": action_type,
             "last_action_status": status,
         }
-        
+
         if result:
             updates["last_action_result"] = result
             # Extract created document info
@@ -440,80 +526,92 @@ class SessionManager:
             if result.get("bill_number"):
                 updates["active_bill_number"] = result["bill_number"]
                 updates["active_bill_id"] = result.get("id")
-        
+
         if status == "proposed" and result and result.get("pending_action_id"):
             updates["pending_action_id"] = result["pending_action_id"]
             updates["fsm_state"] = "AWAITING_CONFIRMATION"
         elif status in ("confirmed", "rejected"):
             updates["pending_action_id"] = None
             updates["fsm_state"] = "IDLE"
-        
+
         await self.update_state(session_id, **updates)
-    
 
     async def transition_fsm(self, session_id: str, target_state: str) -> str:
         """Transition FSM state with validation.
-        
+
         Returns the new state (may be unchanged if transition is invalid).
         """
         from .fsm import FSMEngine, FSMState
-        
+
         state = await self.get_state(session_id)
         current = FSMState(state.fsm_state or "IDLE")
-        
+
         fsm = FSMEngine(current_state=current)
         new_state = fsm.transition_safe(FSMState(target_state))
-        
+
         if new_state.value != current.value:
             await self.update_state(session_id, fsm_state=new_state.value)
-        
+
         return new_state.value
 
     # ========================================================================
     # LAYER 3: EVENT LOG
     # ========================================================================
-    
+
     async def log_event(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         event_type: str,
-        action_type: Optional[str] = None, 
-        payload: Optional[Dict] = None, 
-        result: Optional[Dict] = None
+        action_type: Optional[str] = None,
+        payload: Optional[Dict] = None,
+        result: Optional[Dict] = None,
     ):
         """Layer 3: Log structured event."""
-        await self.db.execute("""
+        await self.db.execute(
+            """
             INSERT INTO chat_events (session_id, tenant_id, event_type, action_type, payload, result)
             VALUES ($1::uuid, $2, $3, $4, $5, $6)
-        """, session_id, self.tenant_id, event_type, action_type,
-             json.dumps(payload) if payload else None,
-             json.dumps(result) if result else None)
-    
+        """,
+            session_id,
+            self.tenant_id,
+            event_type,
+            action_type,
+            json.dumps(payload) if payload else None,
+            json.dumps(result) if result else None,
+        )
+
     async def get_recent_events(self, session_id: str, limit: int = 10) -> List[Dict]:
         """Get recent events for context (used by LLM if needed via tool)."""
-        rows = await self.db.fetch("""
+        rows = await self.db.fetch(
+            """
             SELECT event_type, action_type, result, created_at
             FROM chat_events
             WHERE session_id = $1::uuid AND tenant_id = $2
             ORDER BY created_at DESC
             LIMIT $3
-        """, session_id, self.tenant_id, limit)
-        
+        """,
+            session_id,
+            self.tenant_id,
+            limit,
+        )
+
         return [
             {
                 "event_type": row["event_type"],
                 "action_type": row["action_type"],
                 "result_summary": self._summarize_event_result(row["result"]),
-                "timestamp": row["created_at"].isoformat()
+                "timestamp": row["created_at"].isoformat(),
             }
             for row in rows
         ]
-    
+
     def _summarize_event_result(self, result_json: Any) -> str:
         """Compact event result for context injection."""
         if not result_json:
             return ""
-        result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        result = (
+            json.loads(result_json) if isinstance(result_json, str) else result_json
+        )
         parts = []
         if result.get("invoice_number"):
             parts.append(f"Invoice {result['invoice_number']}")
@@ -524,16 +622,16 @@ class SessionManager:
         if result.get("status"):
             parts.append(result["status"])
         return " | ".join(parts) if parts else "ok"
-    
+
     # ========================================================================
     # LAYER 4: CONVERSATIONAL SUMMARY (Phase C — LLM-powered)
     # ========================================================================
-    
+
     async def get_summary(self, session_id: str) -> str:
         """Get stored summary."""
         row = await self.db.fetchrow(
             "SELECT summary FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
-            session_id
+            session_id,
         )
         return row["summary"] if row and row["summary"] else ""
 
@@ -606,7 +704,9 @@ class SessionManager:
             )
             summary = response.content or ""
         except Exception as e:
-            logger.warning("[SUMMARY] LLM summary failed, falling back to rule-based: %s", e)
+            logger.warning(
+                "[SUMMARY] LLM summary failed, falling back to rule-based: %s", e
+            )
             summary = self._rule_based_summary(messages)
 
         # Merge with existing summary (rolling window)
@@ -621,10 +721,15 @@ class SessionManager:
         # Store in DB
         await self.db.execute(
             "UPDATE chat_sessions SET summary = $1 WHERE id = $2::uuid",
-            summary, session_id
+            summary,
+            session_id,
         )
 
-        logger.info("[SUMMARY] Smart summary for session %s: %d chars", session_id[:8], len(summary))
+        logger.info(
+            "[SUMMARY] Smart summary for session %s: %d chars",
+            session_id[:8],
+            len(summary),
+        )
         return summary
 
     def _get_llm_router(self) -> LLMRouter:
@@ -656,9 +761,6 @@ class SessionManager:
         # Keep last 8 exchanges max
         return chr(10).join(parts[-8:])
 
-
-
-
     # ========================================================================
     # CROSS-SESSION SEARCH (Phase C)
     # ========================================================================
@@ -671,7 +773,8 @@ class SessionManager:
         All queries filtered by tenant_id (Iron Law 24: Tenant Isolation).
         """
         # First: search events (structured, fast, accurate)
-        events = await self.db.fetch("""
+        events = await self.db.fetch(
+            """
             SELECT ce.event_type, ce.action_type, ce.result::text, ce.created_at,
                    cs.id as session_id
             FROM chat_events ce
@@ -683,7 +786,11 @@ class SessionManager:
                    OR ce.payload::text ILIKE $3)
             ORDER BY ce.created_at DESC
             LIMIT 10
-        """, self.tenant_id, days_back, f"%{query}%")
+        """,
+            self.tenant_id,
+            days_back,
+            f"%{query}%",
+        )
 
         if events:
             results = []
@@ -691,21 +798,28 @@ class SessionManager:
                 result_data = None
                 if e["result"]:
                     try:
-                        result_data = json.loads(e["result"]) if isinstance(e["result"], str) else e["result"]
+                        result_data = (
+                            json.loads(e["result"])
+                            if isinstance(e["result"], str)
+                            else e["result"]
+                        )
                     except Exception:
                         result_data = None
-                results.append({
-                    "source": "event",
-                    "session_id": str(e["session_id"]),
-                    "event_type": e["event_type"],
-                    "action_type": e["action_type"],
-                    "result": result_data,
-                    "date": e["created_at"].isoformat()
-                })
+                results.append(
+                    {
+                        "source": "event",
+                        "session_id": str(e["session_id"]),
+                        "event_type": e["event_type"],
+                        "action_type": e["action_type"],
+                        "result": result_data,
+                        "date": e["created_at"].isoformat(),
+                    }
+                )
             return results
 
         # Fallback: search messages
-        messages = await self.db.fetch("""
+        messages = await self.db.fetch(
+            """
             SELECT cm.content, cm.message_type, cm.created_at, cs.id as session_id
             FROM chat_messages cm
             JOIN chat_sessions cs ON cs.id = cm.session_id
@@ -715,7 +829,11 @@ class SessionManager:
               AND cm.role IN ('user', 'assistant')
             ORDER BY cm.created_at DESC
             LIMIT 10
-        """, self.tenant_id, days_back, f"%{query}%")
+        """,
+            self.tenant_id,
+            days_back,
+            f"%{query}%",
+        )
 
         return [
             {
@@ -723,11 +841,10 @@ class SessionManager:
                 "session_id": str(m["session_id"]),
                 "content_preview": m["content"][:200],
                 "type": m["message_type"],
-                "date": m["created_at"].isoformat()
+                "date": m["created_at"].isoformat(),
             }
             for m in messages
         ]
-
 
     # ========================================================================
     # USER PREFERENCES (Cross-Session, Auto-Learning — Phase C)
@@ -741,7 +858,8 @@ class SessionManager:
         """
         row = await self.db.fetchrow(
             "SELECT * FROM user_preferences WHERE tenant_id = $1 AND user_id = $2::uuid",
-            self.tenant_id, self.user_id
+            self.tenant_id,
+            self.user_id,
         )
         if not row:
             return {}
@@ -749,11 +867,19 @@ class SessionManager:
         return {
             "preferred_language": row["preferred_language"],
             "formality": row["formality"],
-            "default_payment_account_id": str(row["default_payment_account_id"]) if row["default_payment_account_id"] else None,
+            "default_payment_account_id": str(row["default_payment_account_id"])
+            if row["default_payment_account_id"]
+            else None,
             "default_payment_account_name": row["default_payment_account_name"],
-            "frequent_customers": json.loads(row["frequent_customers"]) if isinstance(row["frequent_customers"], str) else (row["frequent_customers"] or []),
-            "frequent_vendors": json.loads(row["frequent_vendors"]) if isinstance(row["frequent_vendors"], str) else (row["frequent_vendors"] or []),
-            "frequent_items": json.loads(row["frequent_items"]) if isinstance(row["frequent_items"], str) else (row["frequent_items"] or []),
+            "frequent_customers": json.loads(row["frequent_customers"])
+            if isinstance(row["frequent_customers"], str)
+            else (row["frequent_customers"] or []),
+            "frequent_vendors": json.loads(row["frequent_vendors"])
+            if isinstance(row["frequent_vendors"], str)
+            else (row["frequent_vendors"] or []),
+            "frequent_items": json.loads(row["frequent_items"])
+            if isinstance(row["frequent_items"], str)
+            else (row["frequent_items"] or []),
         }
 
     async def get_preference_context(self) -> str:
@@ -787,7 +913,9 @@ class SessionManager:
             parts.append(f"Item sering dipakai: {names}")
 
         if prefs.get("default_payment_account_name"):
-            parts.append(f"Default pembayaran dari: {prefs['default_payment_account_name']}")
+            parts.append(
+                f"Default pembayaran dari: {prefs['default_payment_account_name']}"
+            )
 
         if len(parts) <= 1:
             return ""  # Only header, no actual preferences
@@ -803,24 +931,28 @@ class SessionManager:
         CRITICAL: All queries filter by tenant_id (Iron Law 24).
         """
         # Ensure preferences row exists
-        await self.db.execute("""
+        await self.db.execute(
+            """
             INSERT INTO user_preferences (tenant_id, user_id)
             VALUES ($1, $2::uuid)
             ON CONFLICT (tenant_id, user_id) DO NOTHING
-        """, self.tenant_id, self.user_id)
+        """,
+            self.tenant_id,
+            self.user_id,
+        )
 
         # Track customer usage
         if payload.get("customer_id") and payload.get("customer_name"):
             await self._increment_frequent(
                 "frequent_customers",
-                {"id": payload["customer_id"], "name": payload["customer_name"]}
+                {"id": payload["customer_id"], "name": payload["customer_name"]},
             )
 
         # Track vendor usage
         if payload.get("vendor_id") and payload.get("vendor_name"):
             await self._increment_frequent(
                 "frequent_vendors",
-                {"id": payload["vendor_id"], "name": payload["vendor_name"]}
+                {"id": payload["vendor_id"], "name": payload["vendor_name"]},
             )
 
         # Track item usage
@@ -829,20 +961,27 @@ class SessionManager:
             if item.get("item_id") and (item.get("description") or item.get("name")):
                 await self._increment_frequent(
                     "frequent_items",
-                    {"id": item["item_id"], "name": item.get("description") or item.get("name")}
+                    {
+                        "id": item["item_id"],
+                        "name": item.get("description") or item.get("name"),
+                    },
                 )
 
         # Track payment account preference
         if payload.get("payment_account_id"):
-            await self.db.execute("""
+            await self.db.execute(
+                """
                 UPDATE user_preferences
                 SET default_payment_account_id = $1::uuid,
                     default_payment_account_name = $2,
                     updated_at = now()
                 WHERE tenant_id = $3 AND user_id = $4::uuid
-            """, payload["payment_account_id"],
-                 payload.get("payment_account_name", ""),
-                 self.tenant_id, self.user_id)
+            """,
+                payload["payment_account_id"],
+                payload.get("payment_account_name", ""),
+                self.tenant_id,
+                self.user_id,
+            )
 
     async def _increment_frequent(self, field_name: str, entity: dict):
         """Increment usage count for a frequent entity. Keep top 10.
@@ -859,7 +998,8 @@ class SessionManager:
 
         row = await self.db.fetchrow(
             f"SELECT {field_name} FROM user_preferences WHERE tenant_id = $1 AND user_id = $2::uuid",
-            self.tenant_id, self.user_id
+            self.tenant_id,
+            self.user_id,
         )
 
         if not row:
@@ -889,22 +1029,24 @@ class SessionManager:
 
         await self.db.execute(
             f"UPDATE user_preferences SET {field_name} = $1, updated_at = now() WHERE tenant_id = $2 AND user_id = $3::uuid",
-            json.dumps(current), self.tenant_id, self.user_id
+            json.dumps(current),
+            self.tenant_id,
+            self.user_id,
         )
 
     # ========================================================================
     # CONTEXT ASSEMBLY (Token Budget Manager)
     # ========================================================================
-    
+
     async def assemble_context(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         system_prompt: str,
-        user_message: str, 
-        token_budget: int = 6000
+        user_message: str,
+        token_budget: int = 6000,
     ) -> List[Dict]:
         """Assemble complete context for LLM call.
-        
+
         Priority order (high to low):
         1. System prompt (MUST include, ~1750 tokens)
         2. User's current message (MUST include)
@@ -913,20 +1055,20 @@ class SessionManager:
         5. Layer 3: Recent events summary (compact, ~50-100 tokens)
         6. Layer 4: Conversational summary (if older turns exist, ~100 tokens)
         7. User preferences (cross-session, ~50-100 tokens)
-        
+
         Token Budget Manager ensures total stays within budget.
         """
         messages = []
-        
+
         # === System prompt (always included) ===
         system_content = system_prompt
-        
+
         # === Layer 2: Inject structured state ===
         state = await self.get_state(session_id)
         state_context = state.to_context_string()
         if state_context:
             system_content += f"\n\n{state_context}"
-        
+
         # === Layer 3: Recent events (compact) ===
         events = await self.get_recent_events(session_id, limit=5)
         if events:
@@ -934,7 +1076,7 @@ class SessionManager:
             for e in reversed(events):  # chronological
                 events_str += f"- [{e['event_type']}] {e.get('action_type', '')} → {e['result_summary']}\n"
             system_content += events_str
-        
+
         # === Layer 4: Summary (if exists) ===
         summary = await self.get_summary(session_id)
         if summary:
@@ -948,13 +1090,15 @@ class SessionManager:
         # Estimate system tokens (~4 chars per token for mixed ID/EN)
         system_tokens = len(system_content) // 4
         messages.append({"role": "system", "content": system_content})
-        
+
         # === User message tokens ===
         user_tokens = len(user_message) // 4
-        
+
         # === Layer 1: Working window (fill remaining budget) ===
-        remaining_tokens = token_budget - system_tokens - user_tokens - 500  # 500 buffer for response
-        
+        remaining_tokens = (
+            token_budget - system_tokens - user_tokens - 500
+        )  # 500 buffer for response
+
         window = []
         if remaining_tokens > 0:
             # Start with 8 turns, reduce if needed
@@ -965,12 +1109,12 @@ class SessionManager:
                     break
             else:
                 window = []  # No room for history
-            
+
             messages.extend(window)
-        
+
         # === Current user message ===
         messages.append({"role": "user", "content": user_message})
-        
+
         # Log assembled context stats
         total_tokens = sum(len(m.get("content", "")) // 4 for m in messages)
         logger.info(
@@ -982,7 +1126,7 @@ class SessionManager:
             f"prefs={'yes' if pref_context else 'no'} | "
             f"total≈{total_tokens} tokens"
         )
-        
+
         return messages
 
 
@@ -990,57 +1134,68 @@ class SessionManager:
 # STATE UPDATE HOOKS
 # ============================================================================
 
+
 class StateUpdateHooks:
     """Hooks that fire after tool calls and actions to keep Layer 2 in sync.
-    
+
     CRITICAL: These are DETERMINISTIC backend logic.
     LLM NEVER updates structured state directly.
     State changes are DERIVED from tool results and action outcomes.
     """
-    
+
     @staticmethod
     async def after_tool_call(
-        session_manager: SessionManager, 
+        session_manager: SessionManager,
         session_id: str,
-        tool_name: str, 
-        tool_args: Dict, 
-        tool_result: Dict
+        tool_name: str,
+        tool_args: Dict,
+        tool_result: Dict,
     ):
         """Called by tool_executor after EVERY tool call."""
         # Update Layer 2 structured state
-        await session_manager.update_state_from_search(session_id, tool_name, tool_result)
-        
+        await session_manager.update_state_from_search(
+            session_id, tool_name, tool_result
+        )
+
         # Log Layer 3 event
         event_type = "search" if tool_name.startswith(("search_", "get_")) else "tool"
         await session_manager.log_event(
             session_id,
             event_type=event_type,
             payload={"tool": tool_name, "args": tool_args},
-            result={"success": tool_result.get("success"), "count": len(tool_result.get("data", []))}
+            result={
+                "success": tool_result.get("success"),
+                "count": len(tool_result.get("data", [])),
+            },
         )
-    
+
     @staticmethod
     async def after_propose(
-        session_manager: SessionManager, 
+        session_manager: SessionManager,
         session_id: str,
-        action_type: str, 
-        payload: Dict, 
-        result: Dict
+        action_type: str,
+        payload: Dict,
+        result: Dict,
     ):
         """Called by orchestrator after propose_action."""
-        await session_manager.update_state_from_action(session_id, action_type, "proposed", result)
-        await session_manager.log_event(session_id, "propose", action_type, payload, result)
-    
+        await session_manager.update_state_from_action(
+            session_id, action_type, "proposed", result
+        )
+        await session_manager.log_event(
+            session_id, "propose", action_type, payload, result
+        )
+
     @staticmethod
     async def after_confirm(
-        session_manager: SessionManager, 
-        session_id: str,
-        action_type: str, 
-        result: Dict
+        session_manager: SessionManager, session_id: str, action_type: str, result: Dict
     ):
         """Called by orchestrator/chat.py after user confirms."""
-        await session_manager.update_state_from_action(session_id, action_type, "confirmed", result)
-        await session_manager.log_event(session_id, "confirm", action_type, result=result)
+        await session_manager.update_state_from_action(
+            session_id, action_type, "confirmed", result
+        )
+        await session_manager.log_event(
+            session_id, "confirm", action_type, result=result
+        )
 
         # Phase C: Update user preferences from confirmed actions
         try:
@@ -1056,15 +1211,15 @@ class StateUpdateHooks:
             )
         except Exception as e:
             logger.warning(f"[ACTION_MEMORY] Hook failed: {e}")
-    
+
     @staticmethod
     async def after_reject(
-        session_manager: SessionManager, 
-        session_id: str,
-        action_type: str
+        session_manager: SessionManager, session_id: str, action_type: str
     ):
         """Called by orchestrator/chat.py after user rejects."""
-        await session_manager.update_state_from_action(session_id, action_type, "rejected")
+        await session_manager.update_state_from_action(
+            session_id, action_type, "rejected"
+        )
         await session_manager.log_event(session_id, "reject", action_type)
 
     @staticmethod
@@ -1093,25 +1248,37 @@ class StateUpdateHooks:
             # Add relationship edges
             if "customer" in node_keys:
                 if "invoice" in node_keys:
-                    graph = add_edge(graph, node_keys["customer"], node_keys["invoice"], "owns")
+                    graph = add_edge(
+                        graph, node_keys["customer"], node_keys["invoice"], "owns"
+                    )
                 if "item" in node_keys:
                     parent = node_keys.get("invoice", node_keys["customer"])
                     graph = add_edge(graph, parent, node_keys["item"], "contains")
             if "vendor" in node_keys:
                 if "bill" in node_keys:
-                    graph = add_edge(graph, node_keys["vendor"], node_keys["bill"], "owns")
+                    graph = add_edge(
+                        graph, node_keys["vendor"], node_keys["bill"], "owns"
+                    )
                 if "item" in node_keys:
                     parent = node_keys.get("bill", node_keys["vendor"])
                     graph = add_edge(graph, parent, node_keys["item"], "contains")
             if "bank_account" in node_keys:
                 for doc_type in ["invoice", "bill"]:
                     if doc_type in node_keys:
-                        graph = add_edge(graph, node_keys[doc_type], node_keys["bank_account"], "paid_via")
+                        graph = add_edge(
+                            graph,
+                            node_keys[doc_type],
+                            node_keys["bank_account"],
+                            "paid_via",
+                        )
 
             await session_manager.update_state(session_id, entity_graph=graph)
             logger.info(
                 "[GRAPH] Updated: session=%s nodes=%d edges=%d focus=%s",
-                session_id[:8], len(graph["nodes"]), len(graph["edges"]), graph.get("focus"),
+                session_id[:8],
+                len(graph["nodes"]),
+                len(graph["edges"]),
+                graph.get("focus"),
             )
         except Exception as e:
             logger.warning("[GRAPH] after_resolve failed (non-fatal): %s", e)
@@ -1135,4 +1302,6 @@ class StateUpdateHooks:
             intent = action_type.lower()
             await am.record_pattern(intent, payload)
         except Exception as e:
-            logger.warning("[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): %s", e)
+            logger.warning(
+                "[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): %s", e
+            )
