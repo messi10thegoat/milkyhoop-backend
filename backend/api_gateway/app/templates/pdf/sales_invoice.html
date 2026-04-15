@@ -189,11 +189,27 @@
                 <td class="value">-Rp {{ invoice.cash_discount_total | currency }}</td>
             </tr>
             {% endif %}
+            {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
             {% set _tax_amt = (invoice.tax_amount or 0)|float %}
-            {% set _tax_rate = (invoice.tax_rate or 0)|float %}
-            {% set _sub = (invoice.subtotal or 0)|float %}
-            {% if _tax_rate <= 0 and _tax_amt > 0 and _sub > 0 %}
-                {% set _tax_rate = ((_tax_amt / _sub) * 10000)|round / 100 %}
+            {% set _dpp = (invoice.dpp or 0)|float %}
+            {% set trs = namespace(rate=(invoice.tax_rate or 0)|float, mixed=false, found=false) %}
+            {% if trs.rate > 0 %}{% set trs.found = true %}{% endif %}
+            {% if not trs.found and invoice["items"] %}
+                {% for it in invoice["items"] %}
+                    {% set r = (it.tax_rate or 0)|float %}
+                    {% if r > 0 %}
+                        {% if not trs.found %}
+                            {% set trs.rate = r %}
+                            {% set trs.found = true %}
+                        {% elif r != trs.rate %}
+                            {% set trs.mixed = true %}
+                        {% endif %}
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+            {% if not trs.found and _tax_amt > 0 and _dpp > 0 %}
+                {% set trs.rate = ((_tax_amt / _dpp) * 100)|round(2) %}
+                {% set trs.found = true %}
             {% endif %}
             {% if _tax_amt > 0 %}
             {% if invoice.dpp %}
@@ -203,7 +219,7 @@
             </tr>
             {% endif %}
             <tr>
-                <td class="label">PPN ({{ _tax_rate }}%)</td>
+                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
                 <td class="value">Rp {{ invoice.tax_amount | currency }}</td>
             </tr>
             {% endif %}

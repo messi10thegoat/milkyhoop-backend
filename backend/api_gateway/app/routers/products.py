@@ -12,25 +12,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Global connection pool for fast queries
-_db_pool: Optional[asyncpg.Pool] = None
 
 
-async def get_db_pool() -> asyncpg.Pool:
-    """Get or create database connection pool"""
-    global _db_pool
-    if _db_pool is None:
-        _db_pool = await asyncpg.create_pool(
-            host="postgres",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="milkydb",
-            min_size=5,  # Keep 5 connections ready
-            max_size=20,  # Max 20 concurrent
-            command_timeout=5,
-        )
-        logger.info("✅ Database pool created (5-20 connections)")
-    return _db_pool
+async def get_db_pool() -> "asyncpg.Pool":
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool as _singleton
+
+    return await _singleton()
 
 
 async def get_db_connection():
@@ -46,6 +34,8 @@ class POSProductItem(BaseModel):
     barcode: Optional[str] = None
     harga_jual: int  # Selling price
     stok: Optional[int] = None
+    unit: Optional[str] = None  # Master base_unit (satuan dasar) — prefill in POS
+    base_unit: Optional[str] = None  # Alias for unit
 
 
 class POSProductSearchResponse(BaseModel):
@@ -62,9 +52,10 @@ class KulakanProductItem(BaseModel):
     code: Optional[str] = None  # Alias for barcode (frontend compatibility)
     category: Optional[str] = None
     harga_jual: Optional[int] = None  # Selling price (may be None)
+    base_unit: Optional[str] = None  # Master base_unit (satuan dasar) — SOURCE OF TRUTH
     # Auto-fill fields from last pembelian transaction
     last_unit: Optional[str] = None  # Wholesale unit (karton, dus, slop)
-    unit: Optional[str] = None  # Alias for last_unit (frontend compatibility)
+    unit: Optional[str] = None  # Resolved: base_unit → last_unit → 'pcs'
     last_price: Optional[int] = None  # Price per wholesale unit
     hpp_per_unit: Optional[float] = None  # HPP per retail unit
     units_per_pack: Optional[int] = None  # Qty per wholesale unit
@@ -234,7 +225,9 @@ async def get_product_by_barcode(request: Request, barcode: str):
                     and last_tx["hpp_per_unit"] > 0
                     and last_tx["last_price"]
                 ):
-                    computed = float(last_tx["last_price"]) / float(last_tx["hpp_per_unit"])
+                    computed = float(last_tx["last_price"]) / float(
+                        last_tx["hpp_per_unit"]
+                    )
                     if computed >= 1:
                         units_per_pack = int(round(computed))
 
@@ -657,6 +650,7 @@ async def search_products_for_pos(
                         id,
                         nama_produk as name,
                         barcode,
+                        base_unit,
                         COALESCE(harga_jual, 0)::int as harga_jual,
                         -- Scoring: higher = better match
                         CASE
@@ -681,7 +675,7 @@ async def search_products_for_pos(
                           OR similarity(LOWER(nama_produk), LOWER($2)) > 0.1
                       )
                 )
-                SELECT id, name, barcode, harga_jual, score
+                SELECT id, name, barcode, base_unit, harga_jual, score
                 FROM search_results
                 WHERE score > 0
                 ORDER BY score DESC, name ASC
@@ -697,6 +691,8 @@ async def search_products_for_pos(
                     barcode=row["barcode"],
                     harga_jual=row["harga_jual"],
                     stok=None,
+                    base_unit=row["base_unit"],
+                    unit=row["base_unit"] or "pcs",
                 )
                 for row in rows
             ]
@@ -755,6 +751,7 @@ async def search_products_for_kulakan(
                         p.kategori as category,
                         COALESCE(p.harga_jual, 0)::int as harga_jual,
                         COALESCE(p.purchase_price, 0)::int as purchase_price,
+                        p.base_unit,
                         p.content_unit,
                         p.track_batches,
                         p.track_expiry,
@@ -786,6 +783,7 @@ async def search_products_for_kulakan(
                         NULL as category,
                         0 as harga_jual,
                         0 as purchase_price,
+                        NULL::text as base_unit,
                         NULL as content_unit,
                         NULL::boolean as track_batches,
                         NULL::boolean as track_expiry,
@@ -814,7 +812,7 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, purchase_price, content_unit, track_batches, track_expiry, sales_tax, sales_tax_id, purchase_tax, purchase_tax_id, source, score
+                        id, name, barcode, category, harga_jual, purchase_price, base_unit, content_unit, track_batches, track_expiry, sales_tax, sales_tax_id, purchase_tax, purchase_tax_id, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
@@ -887,17 +885,28 @@ async def search_products_for_kulakan(
                     barcode=row["barcode"],
                     category=row["category"],
                     harga_jual=row["harga_jual"] if row["harga_jual"] else None,
-                    purchase_price=row["purchase_price"] if row["purchase_price"] else None,
+                    purchase_price=row["purchase_price"]
+                    if row["purchase_price"]
+                    else None,
+                    base_unit=row.get("base_unit"),
                     track_batches=row.get("track_batches"),
                     track_expiry=row.get("track_expiry"),
                     sales_tax=row.get("sales_tax"),
-                    sales_tax_id=str(row["sales_tax_id"]) if row.get("sales_tax_id") else None,
+                    sales_tax_id=str(row["sales_tax_id"])
+                    if row.get("sales_tax_id")
+                    else None,
                     sales_tax_name=row.get("sales_tax_name"),
-                    sales_tax_rate=float(row["sales_tax_rate"]) if row.get("sales_tax_rate") else None,
+                    sales_tax_rate=float(row["sales_tax_rate"])
+                    if row.get("sales_tax_rate")
+                    else None,
                     purchase_tax=row.get("purchase_tax"),
-                    purchase_tax_id=str(row["purchase_tax_id"]) if row.get("purchase_tax_id") else None,
+                    purchase_tax_id=str(row["purchase_tax_id"])
+                    if row.get("purchase_tax_id")
+                    else None,
                     purchase_tax_name=row.get("purchase_tax_name"),
-                    purchase_tax_rate=float(row["purchase_tax_rate"]) if row.get("purchase_tax_rate") else None,
+                    purchase_tax_rate=float(row["purchase_tax_rate"])
+                    if row.get("purchase_tax_rate")
+                    else None,
                 )
 
                 # Resolve legacy tax strings when UUID is missing
@@ -926,7 +935,9 @@ async def search_products_for_kulakan(
                         and last_tx["hpp_per_unit"]
                         and last_tx["hpp_per_unit"] > 0
                     ):
-                        computed = float(last_tx["last_price"]) / float(last_tx["hpp_per_unit"])
+                        computed = float(last_tx["last_price"]) / float(
+                            last_tx["hpp_per_unit"]
+                        )
                         if computed >= 1:
                             product.units_per_pack = int(round(computed))
                     # Use harga_jual from last transaction (not from products table)
@@ -962,10 +973,11 @@ async def search_products_for_kulakan(
             )
 
             # Populate code and unit aliases for frontend compatibility
+            # Unit resolution priority: master base_unit → last transaction unit → 'pcs' fallback
             for p in products:
                 p.code = p.barcode  # Map barcode -> code
-                p.unit = p.last_unit or "pcs"  # Map last_unit -> unit (with default)
-            
+                p.unit = p.base_unit or p.last_unit or "pcs"
+
             return KulakanSearchResponse(products=products, items=products)
 
     except HTTPException:
@@ -1077,7 +1089,7 @@ async def register_barcode(
             raise HTTPException(status_code=401, detail="Authentication required")
 
         tenant_id = request.state.user.get("tenant_id")
-        user_id = request.state.user.get("user_id")
+        _user_id = request.state.user.get("user_id")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 

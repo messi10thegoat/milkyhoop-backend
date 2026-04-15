@@ -177,13 +177,35 @@
                 <td class="value">-Rp {{ bill.cash_discount_total | currency }}</td>
             </tr>
             {% endif %}
+            {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
+            {% set trs = namespace(rate=0, mixed=false, found=false) %}
             {% if bill.tax_rate and bill.tax_rate|float > 0 %}
+                {% set trs.rate = bill.tax_rate|float %}
+                {% set trs.found = true %}
+            {% else %}
+                {% for it in bill["items"] %}
+                    {% set r = (it.tax_rate or 0)|float %}
+                    {% if r > 0 %}
+                        {% if not trs.found %}
+                            {% set trs.rate = r %}
+                            {% set trs.found = true %}
+                        {% elif r != trs.rate %}
+                            {% set trs.mixed = true %}
+                        {% endif %}
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+            {% if not trs.found and bill.tax_amount and bill.dpp and bill.dpp|float > 0 %}
+                {% set trs.rate = ((bill.tax_amount|float / bill.dpp|float) * 100)|round(2) %}
+                {% set trs.found = true %}
+            {% endif %}
+            {% if bill.tax_amount and bill.tax_amount|float > 0 %}
             <tr>
                 <td class="label">DPP</td>
                 <td class="value">Rp {{ bill.dpp | currency }}</td>
             </tr>
             <tr>
-                <td class="label">PPN ({{ bill.tax_rate }}%)</td>
+                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
                 <td class="value">Rp {{ bill.tax_amount | currency }}</td>
             </tr>
             {% endif %}

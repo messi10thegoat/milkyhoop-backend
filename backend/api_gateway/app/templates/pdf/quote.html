@@ -138,8 +138,21 @@
             </tr>
             {% endif %}
             {% if quote.tax_amount and quote.tax_amount|float > 0 %}
+            {# Resolve nominal tax rate from items (majority) #}
+            {% set trs = namespace(rate=0, mixed=false, found=false) %}
+            {% for it in quote["items"] %}
+                {% set r = (it.tax_rate or 0)|float %}
+                {% if r > 0 %}
+                    {% if not trs.found %}
+                        {% set trs.rate = r %}
+                        {% set trs.found = true %}
+                    {% elif r != trs.rate %}
+                        {% set trs.mixed = true %}
+                    {% endif %}
+                {% endif %}
+            {% endfor %}
             <tr>
-                <td class="label">Pajak</td>
+                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
                 <td class="value">Rp {{ quote.tax_amount | currency }}</td>
             </tr>
             {% endif %}
