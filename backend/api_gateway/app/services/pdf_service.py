@@ -64,16 +64,45 @@ class PDFService:
             return "-"
         try:
             from datetime import date, datetime
+
             if isinstance(date_value, str):
                 # Handle YYYY-MM format
                 if len(date_value) == 7 and "-" in date_value:
                     parts = date_value.split("-")
-                    months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agt","Sep","Okt","Nov","Des"]
+                    months = [
+                        "Jan",
+                        "Feb",
+                        "Mar",
+                        "Apr",
+                        "Mei",
+                        "Jun",
+                        "Jul",
+                        "Agt",
+                        "Sep",
+                        "Okt",
+                        "Nov",
+                        "Des",
+                    ]
                     return f"{months[int(parts[1])-1]} {parts[0]}"
                 date_value = datetime.fromisoformat(date_value.replace("Z", "+00:00"))
             if isinstance(date_value, (date, datetime)):
-                months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agt","Sep","Okt","Nov","Des"]
-                return f"{date_value.day} {months[date_value.month-1]} {date_value.year}"
+                months = [
+                    "Jan",
+                    "Feb",
+                    "Mar",
+                    "Apr",
+                    "Mei",
+                    "Jun",
+                    "Jul",
+                    "Agt",
+                    "Sep",
+                    "Okt",
+                    "Nov",
+                    "Des",
+                ]
+                return (
+                    f"{date_value.day} {months[date_value.month-1]} {date_value.year}"
+                )
             return str(date_value)
         except Exception:
             return str(date_value) if date_value else "-"
@@ -198,8 +227,6 @@ class PDFService:
 
         return pdf_bytes
 
-
-
     def generate_quote_pdf(self, quote_data, tenant_info):
         """
         Generate PDF for a quote (penawaran harga).
@@ -245,7 +272,9 @@ class PDFService:
 
         return pdf_bytes
 
-    def generate_income_statement_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+    def generate_income_statement_pdf(
+        self, data: dict, company_name: str, basis: str = "Akrual"
+    ) -> bytes:
         """Generate PDF for Income Statement (Laba Rugi) from PSAK engine output."""
         template = self.jinja_env.get_template("laba_rugi.html")
 
@@ -253,7 +282,11 @@ class PDFService:
             return {
                 "label": label,
                 "items": [
-                    {"accountCode": a["account_code"], "accountName": a["account_name"], "amount": a["balance"]}
+                    {
+                        "accountCode": a["account_code"],
+                        "accountName": a["account_name"],
+                        "amount": a["balance"],
+                    }
                     for a in section.get("akun", [])
                 ],
                 "total": section.get("total", 0),
@@ -280,14 +313,25 @@ class PDFService:
         html_content = template.render(**context)
         css_path = TEMPLATE_DIR / "report.css"
         stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
-        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(
+            stylesheets=stylesheets
+        )
 
-    def generate_balance_sheet_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+    def generate_balance_sheet_pdf(
+        self, data: dict, company_name: str, basis: str = "Akrual"
+    ) -> bytes:
         """Generate PDF for Balance Sheet (Neraca) from PSAK engine output."""
         template = self.jinja_env.get_template("neraca.html")
 
         def _accounts(akun_list: list) -> list:
-            return [{"code": a["account_code"], "name": a["account_name"], "balance": a["balance"]} for a in akun_list]
+            return [
+                {
+                    "code": a["account_code"],
+                    "name": a["account_name"],
+                    "balance": a["balance"],
+                }
+                for a in akun_list
+            ]
 
         # Build asset categories
         al = data.get("aset_lancar", {})
@@ -296,12 +340,24 @@ class PDFService:
             sub = al.get(sub_key, {})
             current_accounts.extend(_accounts(sub.get("akun", [])))
 
-        asset_categories = [{"name": "Aset Lancar", "accounts": current_accounts, "total": al.get("total", 0)}]
+        asset_categories = [
+            {
+                "name": "Aset Lancar",
+                "accounts": current_accounts,
+                "total": al.get("total", 0),
+            }
+        ]
 
         atl = data.get("aset_tidak_lancar", {})
         fa_accounts = _accounts(atl.get("aset_tetap", {}).get("akun", []))
         if fa_accounts or atl.get("total", 0) != 0:
-            asset_categories.append({"name": "Aset Tidak Lancar", "accounts": fa_accounts, "total": atl.get("total", 0)})
+            asset_categories.append(
+                {
+                    "name": "Aset Tidak Lancar",
+                    "accounts": fa_accounts,
+                    "total": atl.get("total", 0),
+                }
+            )
 
         # Build liability categories (PSAK: Jangka Pendek + Jangka Panjang)
         liab = data.get("liabilitas", {})
@@ -315,13 +371,27 @@ class PDFService:
         if jp_lain.get("akun"):
             jp_accounts.extend(_accounts(jp_lain["akun"]))
         if jp_accounts or jp.get("total", 0) != 0:
-            liability_categories.append({"name": "Liabilitas Jangka Pendek", "accounts": jp_accounts, "total": jp.get("total", 0)})
+            liability_categories.append(
+                {
+                    "name": "Liabilitas Jangka Pendek",
+                    "accounts": jp_accounts,
+                    "total": jp.get("total", 0),
+                }
+            )
         jpp = liab.get("jangka_panjang", {})
         jpp_accounts = _accounts(jpp.get("akun", []))
         if jpp_accounts or jpp.get("total", 0) != 0:
-            liability_categories.append({"name": "Liabilitas Jangka Panjang", "accounts": jpp_accounts, "total": jpp.get("total", 0)})
+            liability_categories.append(
+                {
+                    "name": "Liabilitas Jangka Panjang",
+                    "accounts": jpp_accounts,
+                    "total": jpp.get("total", 0),
+                }
+            )
         if not liability_categories:
-            liability_categories.append({"name": "Liabilitas", "accounts": [], "total": 0})
+            liability_categories.append(
+                {"name": "Liabilitas", "accounts": [], "total": 0}
+            )
 
         # Build equity categories
         ek = data.get("ekuitas", {})
@@ -331,8 +401,16 @@ class PDFService:
             equity_accounts.extend(_accounts(sub.get("akun", [])))
         laba_periode = ek.get("laba_periode", 0)
         if laba_periode:
-            equity_accounts.append({"code": "", "name": "Laba Periode Berjalan", "balance": laba_periode})
-        equity_categories = [{"name": "Modal & Saldo Laba", "accounts": equity_accounts, "total": ek.get("total", 0)}]
+            equity_accounts.append(
+                {"code": "", "name": "Laba Periode Berjalan", "balance": laba_periode}
+            )
+        equity_categories = [
+            {
+                "name": "Modal & Saldo Laba",
+                "accounts": equity_accounts,
+                "total": ek.get("total", 0),
+            }
+        ]
 
         context = {
             "company_name": company_name,
@@ -340,7 +418,10 @@ class PDFService:
             "basis": basis,
             "assets": {"categories": asset_categories},
             "total_assets": data.get("total_aset", 0),
-            "liabilities": {"categories": liability_categories, "total": liab.get("total", 0)},
+            "liabilities": {
+                "categories": liability_categories,
+                "total": liab.get("total", 0),
+            },
             "equity": {"categories": equity_categories, "total": ek.get("total", 0)},
             "total_liabilities_and_equity": data.get("total_liabilitas_ekuitas", 0),
             "generated_at": datetime.now(),
@@ -349,9 +430,13 @@ class PDFService:
         html_content = template.render(**context)
         css_path = TEMPLATE_DIR / "report.css"
         stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
-        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(
+            stylesheets=stylesheets
+        )
 
-    def generate_cash_flow_pdf(self, data: dict, company_name: str, basis: str = "Akrual") -> bytes:
+    def generate_cash_flow_pdf(
+        self, data: dict, company_name: str, basis: str = "Akrual"
+    ) -> bytes:
         """Generate PDF for Cash Flow Statement (Arus Kas) from PSAK engine output."""
         template = self.jinja_env.get_template("arus_kas.html")
 
@@ -361,9 +446,21 @@ class PDFService:
             "period_end": data["period"]["end"],
             "basis": basis,
             "opening_balance": data["kas_awal"],
-            "operating": {"label": "Aktivitas Operasi", "items": data["operasi"]["items"], "total": data["operasi"]["total"]},
-            "investing": {"label": "Aktivitas Investasi", "items": data["investasi"]["items"], "total": data["investasi"]["total"]},
-            "financing": {"label": "Aktivitas Pendanaan", "items": data["pendanaan"]["items"], "total": data["pendanaan"]["total"]},
+            "operating": {
+                "label": "Aktivitas Operasi",
+                "items": data["operasi"]["items"],
+                "total": data["operasi"]["total"],
+            },
+            "investing": {
+                "label": "Aktivitas Investasi",
+                "items": data["investasi"]["items"],
+                "total": data["investasi"]["total"],
+            },
+            "financing": {
+                "label": "Aktivitas Pendanaan",
+                "items": data["pendanaan"]["items"],
+                "total": data["pendanaan"]["total"],
+            },
             "net_cash_change": data["kenaikan_kas_bersih"],
             "closing_balance": data["kas_akhir"],
             "generated_at": datetime.now(),
@@ -372,7 +469,26 @@ class PDFService:
         html_content = template.render(**context)
         css_path = TEMPLATE_DIR / "report.css"
         stylesheets = [CSS(filename=str(css_path))] if css_path.exists() else []
-        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(stylesheets=stylesheets)
+        return HTML(string=html_content, base_url=str(TEMPLATE_DIR)).write_pdf(
+            stylesheets=stylesheets
+        )
+
+    def generate_delivery_note_pdf(self, delivery: dict) -> bytes:
+        """Generate PDF for a Surat Jalan (Delivery Note)."""
+        template = self.jinja_env.get_template("delivery_note.html")
+
+        html_content = template.render(
+            delivery=delivery,
+            delivery_items=delivery.get("items", []),
+            generated_at=datetime.now(),
+        )
+
+        css_path = TEMPLATE_DIR / "invoice.css"
+        stylesheets = []
+        if css_path.exists():
+            stylesheets.append(CSS(filename=str(css_path)))
+
+        return HTML(string=html_content).write_pdf(stylesheets=stylesheets)
 
 
 # Singleton instance

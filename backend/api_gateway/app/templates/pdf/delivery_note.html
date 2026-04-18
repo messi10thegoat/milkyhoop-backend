@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Surat Jalan</title>
+<style>
+  @page { size: A4; margin: 20mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 12px; color: #222; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+  .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+  .company-info p { font-size: 11px; color: #555; line-height: 1.5; }
+  .doc-title { text-align: right; }
+  .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
+  .doc-title .subtitle { font-size: 11px; color: #777; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .meta-block table { width: 100%; }
+  .meta-block td { padding: 3px 6px 3px 0; font-size: 11px; }
+  .meta-block td:first-child { color: #666; white-space: nowrap; width: 110px; }
+  .meta-block td:nth-child(2) { width: 10px; }
+  .meta-block td:last-child { font-weight: 500; }
+  table.items { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  table.items thead tr { background: #333; color: #fff; }
+  table.items th { padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 600; }
+  table.items th.center, table.items td.center { text-align: center; }
+  table.items tbody tr:nth-child(even) { background: #f9f9f9; }
+  table.items td { padding: 7px 10px; font-size: 11px; border-bottom: 1px solid #eee; vertical-align: top; }
+  .notes { margin-bottom: 32px; }
+  .notes label { font-size: 11px; color: #666; display: block; margin-bottom: 4px; }
+  .notes p { font-size: 11px; border: 1px solid #ddd; padding: 8px 10px; border-radius: 4px; min-height: 36px; }
+  .signatures { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-top: 40px; }
+  .sig-block { text-align: center; }
+  .sig-block .sig-label { font-size: 11px; color: #555; margin-bottom: 60px; }
+  .sig-block .sig-line { border-top: 1px solid #333; padding-top: 4px; font-size: 11px; }
+  .footer { margin-top: 32px; text-align: center; font-size: 10px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="company-info">
+    <h1>{{ delivery.tenant.name }}</h1>
+    {% if delivery.tenant.address %}<p>{{ delivery.tenant.address }}</p>{% endif %}
+    {% if delivery.tenant.phone %}<p>Telp: {{ delivery.tenant.phone }}</p>{% endif %}
+  </div>
+  <div class="doc-title">
+    <h2>SURAT JALAN</h2>
+    <div class="subtitle">Delivery Note</div>
+  </div>
+</div>
+
+<div class="meta-grid">
+  <div class="meta-block">
+    <table>
+      <tr>
+        <td>No. Surat Jalan</td><td>:</td><td><strong>{{ delivery.delivery_number or "-" }}</strong></td>
+      </tr>
+      <tr>
+        <td>Tanggal</td><td>:</td><td>{{ delivery.delivery_date | date_id if delivery.delivery_date else "-" }}</td>
+      </tr>
+      <tr>
+        <td>No. Faktur</td><td>:</td><td>{{ delivery.invoice_number or "-" }}</td>
+      </tr>
+    </table>
+  </div>
+  <div class="meta-block">
+    <table>
+      <tr>
+        <td>Kepada</td><td>:</td><td><strong>{{ delivery.customer_name or "-" }}</strong></td>
+      </tr>
+      {% if delivery.customer_address %}
+      <tr>
+        <td>Alamat</td><td>:</td><td>{{ delivery.customer_address }}</td>
+      </tr>
+      {% endif %}
+      {% if delivery.customer_phone %}
+      <tr>
+        <td>Telepon</td><td>:</td><td>{{ delivery.customer_phone }}</td>
+      </tr>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+<table class="items">
+  <thead>
+    <tr>
+      <th style="width:32px">No</th>
+      <th>Deskripsi Barang</th>
+      <th class="center" style="width:80px">Qty</th>
+      <th class="center" style="width:70px">Satuan</th>
+      <th style="width:120px">Keterangan</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in delivery_items %}
+    <tr>
+      <td class="center">{{ loop.index }}</td>
+      <td>
+        {{ item.product_name or item.description or "-" }}
+        {% if item.product_sku %}<br><span style="color:#888;font-size:10px">SKU: {{ item.product_sku }}</span>{% endif %}
+      </td>
+      <td class="center">{{ item.quantity }}</td>
+      <td class="center">{{ item.unit or "-" }}</td>
+      <td>{{ item.notes or '' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not delivery_items %}
+    <tr><td colspan="5" class="center" style="color:#aaa;padding:20px">Tidak ada item</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if delivery.notes %}
+<div class="notes">
+  <label>Catatan:</label>
+  <p>{{ delivery.notes }}</p>
+</div>
+{% endif %}
+
+<div class="signatures">
+  <div class="sig-block">
+    <div class="sig-label">Diterima oleh,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+  <div class="sig-block">
+    <div class="sig-label">Pengantar,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+  <div class="sig-block">
+    <div class="sig-label">Gudang,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+</div>
+
+<div class="footer">Dicetak pada {{ generated_at.strftime("%d %B %Y %H:%M") }} &bull; Dokumen ini sah tanpa tanda tangan basah</div>
+
+</body>
+</html>

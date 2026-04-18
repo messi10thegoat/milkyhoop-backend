@@ -8,6 +8,9 @@ Create still uses POST /api/sales-invoices/{id}/fulfill.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
 import logging
+from io import BytesIO
+from fastapi.responses import StreamingResponse
+from ..services.pdf_service import get_pdf_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -344,3 +347,122 @@ async def get_delivery_detail(delivery_id: str, request: Request):
     }
 
     return detail
+
+
+# =============================================================================
+# GENERATE PDF — SURAT JALAN
+# =============================================================================
+
+
+@router.get("/{delivery_id}/pdf")
+async def get_delivery_pdf(
+    delivery_id: str,
+    request: Request,
+):
+    """
+    Generate Surat Jalan PDF for a delivery.
+    Returns PDF bytes inline (for browser preview / download).
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+
+        row = await conn.fetchrow(
+            """
+            SELECT
+                f.id,
+                f.fulfillment_number AS delivery_number,
+                f.fulfillment_date AS delivery_date,
+                f.status,
+                f.notes,
+                si.id AS invoice_id,
+                si.invoice_number,
+                si.customer_id,
+                c.nama AS customer_name,
+                c.telepon AS customer_phone,
+                c.alamat AS customer_address
+            FROM invoice_fulfillments f
+            JOIN sales_invoices si ON si.id = f.invoice_id
+            LEFT JOIN customers c ON c.id = si.customer_id
+            WHERE f.id = $1 AND f.tenant_id = $2
+            """,
+            delivery_id,
+            ctx["tenant_id"],
+        )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Delivery not found")
+
+        items_rows = await conn.fetch(
+            """
+            SELECT
+                fi.id,
+                fi.quantity,
+                fi.notes,
+                p.nama_produk AS product_name,
+                p.sku AS product_sku,
+                sii.unit
+            FROM invoice_fulfillment_items fi
+            LEFT JOIN products p ON p.id = fi.product_id
+            LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
+            WHERE fi.fulfillment_id = $1
+            ORDER BY fi.created_at
+            """,
+            delivery_id,
+        )
+
+        # Fetch tenant info
+        tenant_row = await conn.fetchrow(
+            'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+            ctx["tenant_id"],
+        )
+        tenant_info = {
+            "name": tenant_row["display_name"] if tenant_row else str(ctx["tenant_id"]),
+            "address": tenant_row["address"] if tenant_row else None,
+            "phone": tenant_row["phone"] if tenant_row else None,
+        }
+
+    delivery_data = {
+        "id": str(row["id"]),
+        "delivery_number": row["delivery_number"],
+        "delivery_date": row["delivery_date"].isoformat()
+        if row["delivery_date"]
+        else None,
+        "status": row["status"],
+        "notes": row["notes"],
+        "invoice_id": str(row["invoice_id"]),
+        "invoice_number": row["invoice_number"],
+        "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+        "customer_name": row["customer_name"],
+        "customer_phone": row["customer_phone"],
+        "customer_address": row["customer_address"],
+        "tenant": tenant_info,
+        "items": [
+            {
+                "id": str(i["id"]),
+                "product_name": i["product_name"],
+                "product_sku": i["product_sku"],
+                "quantity": str(i["quantity"]),
+                "unit": i["unit"],
+                "notes": i["notes"],
+            }
+            for i in items_rows
+        ],
+    }
+
+    pdf_service = get_pdf_service()
+    pdf_bytes = pdf_service.generate_delivery_note_pdf(delivery_data)
+
+    delivery_num = row["delivery_number"] or delivery_id[:8]
+    filename = f"SuratJalan-{delivery_num}.pdf"
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
