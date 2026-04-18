@@ -376,6 +376,18 @@ class SessionManager:
             else (row.get("pending_payload") or {}),
             pending_intent=row.get("pending_intent") or "",
             editing_mode=bool(row.get("editing_mode", False)),
+            # ── REC fields (Response Entity Context) ──
+            last_domain=row.get("last_domain"),
+            last_response_items=json.loads(row["last_response_items"])
+            if isinstance(row.get("last_response_items"), str)
+            and row.get("last_response_items")
+            else (row.get("last_response_items") or None),
+            active_entity=json.loads(row["active_entity"])
+            if isinstance(row.get("active_entity"), str) and row.get("active_entity")
+            else (row.get("active_entity") or None),
+            last_numeric=json.loads(row["last_numeric"])
+            if isinstance(row.get("last_numeric"), str) and row.get("last_numeric")
+            else (row.get("last_numeric") or None),
         )
 
     async def update_state(self, session_id: str, **updates):
@@ -1305,3 +1317,22 @@ class StateUpdateHooks:
             logger.warning(
                 "[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): %s", e
             )
+
+    @staticmethod
+    async def log_memory_event(
+        session_manager, session_id: str, event_type: str, payload: dict
+    ):
+        """Fire-and-forget telemetry for memory tiers. Piggybacks on chat_events."""
+        try:
+            await session_manager.db.execute(
+                """
+                INSERT INTO chat_events (id, session_id, tenant_id, event_type, payload, created_at)
+                VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4::jsonb, now())
+            """,
+                session_id,
+                session_manager.tenant_id,
+                event_type,
+                json.dumps(payload),
+            )
+        except Exception as e:
+            logger.warning("[TELEMETRY] Memory event log failed: %s", e)

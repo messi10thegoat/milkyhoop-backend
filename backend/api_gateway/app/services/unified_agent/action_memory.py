@@ -15,11 +15,10 @@ import json
 import re
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger("unified_agent.action_memory")
 
-MIN_USAGE_TO_SUGGEST = 3
+MIN_USAGE_TO_SUGGEST = 5
 MIN_CONFIDENCE_TO_SUGGEST = 0.70
 CONFIDENCE_INCREMENT = 0.10
 CONFIDENCE_MAX = 0.95
@@ -50,8 +49,10 @@ def build_structure_key(intent, payload):
         item_names = []
         for item in items:
             name = (
-                item.get("description") or item.get("product_name") or
-                item.get("name") or item.get("item_id", "")
+                item.get("description")
+                or item.get("product_name")
+                or item.get("name")
+                or item.get("item_id", "")
             )
             normalized = re.sub(r"[^a-z0-9]+", "-", name.lower().strip()).strip("-")
             if normalized:
@@ -80,7 +81,9 @@ def extract_pattern_data(intent, payload):
         for item in items:
             pi = {
                 "item_id": item.get("item_id") or item.get("product_id", ""),
-                "name": item.get("description") or item.get("product_name") or item.get("name", ""),
+                "name": item.get("description")
+                or item.get("product_name")
+                or item.get("name", ""),
             }
             qty = item.get("quantity") or item.get("qty")
             if qty is not None:
@@ -119,7 +122,8 @@ class ActionMemory:
         if not pattern_data:
             return
         try:
-            await self.db.execute("""
+            await self.db.execute(
+                """
                 INSERT INTO action_patterns (tenant_id, user_id, intent, structure_key, pattern, usage_count, confidence)
                 VALUES ($1, $2, $3, $4, $5, 1, 0.30)
                 ON CONFLICT (tenant_id, user_id, structure_key)
@@ -130,12 +134,17 @@ class ActionMemory:
                     last_used_at = now(),
                     updated_at = now()
             """,
-                self.tenant_id, self.user_id,
-                intent, structure_key,
+                self.tenant_id,
+                self.user_id,
+                intent,
+                structure_key,
                 json.dumps(pattern_data),
-                CONFIDENCE_INCREMENT, CONFIDENCE_MAX,
+                CONFIDENCE_INCREMENT,
+                CONFIDENCE_MAX,
             )
-            logger.info("[ACTION_MEMORY] Recorded: intent=%s key=%s", intent, structure_key[:60])
+            logger.info(
+                "[ACTION_MEMORY] Recorded: intent=%s key=%s", intent, structure_key[:60]
+            )
         except Exception as e:
             logger.warning("[ACTION_MEMORY] Failed to record: %s", e)
 
@@ -154,13 +163,19 @@ class ActionMemory:
         try:
             row = None
             if full_key:
-                row = await self.db.fetchrow("""
+                row = await self.db.fetchrow(
+                    """
                     SELECT pattern, confidence, usage_count, last_used_at
                     FROM action_patterns
                     WHERE tenant_id = $1 AND user_id = $2 AND structure_key = $3
-                """, self.tenant_id, self.user_id, full_key)
+                """,
+                    self.tenant_id,
+                    self.user_id,
+                    full_key,
+                )
             if not row:
-                row = await self.db.fetchrow("""
+                row = await self.db.fetchrow(
+                    """
                     SELECT pattern, confidence, usage_count, last_used_at
                     FROM action_patterns
                     WHERE tenant_id = $1 AND user_id = $2
@@ -168,7 +183,12 @@ class ActionMemory:
                       AND structure_key LIKE $4
                     ORDER BY confidence DESC, usage_count DESC
                     LIMIT 1
-                """, self.tenant_id, self.user_id, intent, partial_key + "%")
+                """,
+                    self.tenant_id,
+                    self.user_id,
+                    intent,
+                    partial_key + "%",
+                )
             if not row:
                 return None
             confidence = float(row["confidence"])
@@ -179,10 +199,22 @@ class ActionMemory:
                     decay_periods = (days_since - DECAY_DAYS) / DECAY_DAYS
                     confidence -= DECAY_RATE * decay_periods
                     confidence = max(confidence, 0.10)
-            if row["usage_count"] < MIN_USAGE_TO_SUGGEST or confidence < MIN_CONFIDENCE_TO_SUGGEST:
+            if (
+                row["usage_count"] < MIN_USAGE_TO_SUGGEST
+                or confidence < MIN_CONFIDENCE_TO_SUGGEST
+            ):
                 return None
-            pattern = json.loads(row["pattern"]) if isinstance(row["pattern"], str) else row["pattern"]
-            logger.info("[ACTION_MEMORY] Pattern found: intent=%s confidence=%.2f usage=%d", intent, confidence, row["usage_count"])
+            pattern = (
+                json.loads(row["pattern"])
+                if isinstance(row["pattern"], str)
+                else row["pattern"]
+            )
+            logger.info(
+                "[ACTION_MEMORY] Pattern found: intent=%s confidence=%.2f usage=%d",
+                intent,
+                confidence,
+                row["usage_count"],
+            )
             return {
                 "pattern": pattern,
                 "confidence": round(confidence, 2),
@@ -214,3 +246,93 @@ class ActionMemory:
         if not parts:
             return None
         return "Seperti biasanya? " + ", ".join(parts)
+
+    async def record_rejection(self, intent: str, structure_key: str):
+        """Decrement confidence on rejection. 3x consecutive → pause 30 days."""
+        try:
+            await self.db.execute(
+                """
+                UPDATE action_patterns
+                SET confidence = GREATEST(confidence - $1, 0.10),
+                    updated_at = now()
+                WHERE tenant_id = $2 AND user_id = $3 AND structure_key = $4
+            """,
+                CONFIDENCE_INCREMENT,
+                self.tenant_id,
+                self.user_id,
+                structure_key,
+            )
+
+            row = await self.db.fetchrow(
+                """
+                SELECT confidence, usage_count FROM action_patterns
+                WHERE tenant_id = $1 AND user_id = $2 AND structure_key = $3
+            """,
+                self.tenant_id,
+                self.user_id,
+                structure_key,
+            )
+
+            if row and float(row["confidence"]) <= 0.30:
+                await self.db.execute(
+                    """
+                    UPDATE action_patterns
+                    SET last_used_at = now() - interval '30 days',
+                        confidence = 0.10
+                    WHERE tenant_id = $1 AND user_id = $2 AND structure_key = $3
+                """,
+                    self.tenant_id,
+                    self.user_id,
+                    structure_key,
+                )
+                logger.info(
+                    "[ACTION_MEMORY] Paused pattern (3x reject): %s", structure_key[:60]
+                )
+        except Exception as e:
+            logger.warning("[ACTION_MEMORY] record_rejection failed: %s", e)
+
+    async def get_top_patterns_for_intent(self, intent: str, limit: int = 3) -> list:
+        """Get top patterns for display in suggestion (confidence-ordered)."""
+        if intent not in PATTERN_INTENTS:
+            return []
+        try:
+            rows = await self.db.fetch(
+                """
+                SELECT pattern, confidence, usage_count, structure_key
+                FROM action_patterns
+                WHERE tenant_id = $1 AND user_id = $2 AND intent = $3
+                  AND usage_count >= $4 AND confidence >= $5
+                ORDER BY confidence DESC, usage_count DESC
+                LIMIT $6
+            """,
+                self.tenant_id,
+                self.user_id,
+                intent,
+                MIN_USAGE_TO_SUGGEST,
+                MIN_CONFIDENCE_TO_SUGGEST,
+                limit,
+            )
+
+            results = []
+            for r in rows:
+                pattern = (
+                    json.loads(r["pattern"])
+                    if isinstance(r["pattern"], str)
+                    else r["pattern"]
+                )
+                entity_name = (
+                    pattern.get("customer_name") or pattern.get("vendor_name") or "?"
+                )
+                results.append(
+                    {
+                        "entity_name": entity_name,
+                        "usage_count": r["usage_count"],
+                        "confidence": float(r["confidence"]),
+                        "structure_key": r["structure_key"],
+                        "pattern": pattern,
+                    }
+                )
+            return results
+        except Exception as e:
+            logger.warning("[ACTION_MEMORY] get_top_patterns failed: %s", e)
+            return []
