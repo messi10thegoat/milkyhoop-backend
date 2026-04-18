@@ -1175,6 +1175,39 @@ Rules:
             limit=10,
         )
 
+    # ── Tier 2: Preference intent detection (before agent loop) ──
+    try:
+        from ..services.unified_agent.preference_detector import (
+            detect_preference_intent,
+        )
+        from ..services.unified_agent.preference_manager import PreferenceManager
+
+        _pref_pool = await get_session_db_pool()
+        _pref_mgr = PreferenceManager(_pref_pool, ctx["tenant_id"], ctx["user_id"])
+        _pref_result = await detect_preference_intent(body.text, _pref_mgr)
+        if _pref_result and _pref_result.get("handled"):
+            # Store message for history
+            if body.session_id:
+                try:
+                    _pref_sm = SessionManager(
+                        db_pool=_pref_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
+                    await _pref_sm.store_message(body.session_id, "user", body.text)
+                    await _pref_sm.store_message(
+                        body.session_id, "assistant", _pref_result["response"]
+                    )
+                except Exception:
+                    pass
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text=_pref_result["response"],
+                session_id=body.session_id,
+            )
+    except Exception as _pref_err:
+        logger.warning("[Tier2] Preference detection failed (non-fatal): %s", _pref_err)
+
     # Run the agent loop
     agent_resp = await _agent.process_message(
         user_text=body.text,
@@ -1370,6 +1403,41 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
         conversation_id=body.conversation_id,
         limit=10,
     )
+
+    # ── Tier 2: Preference intent detection (streaming endpoint) ──
+    try:
+        from ..services.unified_agent.preference_detector import (
+            detect_preference_intent,
+        )
+        from ..services.unified_agent.preference_manager import PreferenceManager
+
+        _pref_pool_s = await get_session_db_pool()
+        _pref_mgr_s = PreferenceManager(_pref_pool_s, ctx["tenant_id"], ctx["user_id"])
+        _pref_result_s = await detect_preference_intent(body.text, _pref_mgr_s)
+        if _pref_result_s and _pref_result_s.get("handled"):
+            if body.session_id:
+                try:
+                    _pref_sm_s = SessionManager(
+                        db_pool=_pref_pool_s,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
+                    await _pref_sm_s.store_message(body.session_id, "user", body.text)
+                    await _pref_sm_s.store_message(
+                        body.session_id, "assistant", _pref_result_s["response"]
+                    )
+                except Exception:
+                    pass
+
+            async def _pref_sse_gen():
+                import json as _pj
+
+                yield f"data: {_pj.dumps({'event': 'FINAL_RESPONSE', 'data': {'message_type': 'TEXT', 'text': _pref_result_s['response'], 'session_id': body.session_id or ''}})}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_pref_sse_gen(), media_type="text/event-stream")
+    except Exception as _pref_err_s:
+        logger.warning("[Tier2] Preference detection (stream) failed: %s", _pref_err_s)
 
     queue: _asyncio_stream.Queue = _asyncio_stream.Queue()
 
@@ -3491,6 +3559,96 @@ async def _confirm_direct_action(
                 clean_payload["session_id"] = payload["session_id"]
             if payload.get("statement_line_id"):
                 clean_payload["statement_line_id"] = payload["statement_line_id"]
+
+        elif action_key == "create_vendor_credit":
+            # VC schema requires vendor_name (stripped by display_only), reason enum, items[].
+            _reason_raw = str(payload.get("reason") or "").lower()
+            if any(k in _reason_raw for k in ("cacat", "rusak", "damaged")):
+                _reason_enum = "damaged"
+            elif any(k in _reason_raw for k in ("retur", "kembalikan", "return")):
+                _reason_enum = "return"
+            elif any(k in _reason_raw for k in ("diskon", "discount", "potongan")):
+                _reason_enum = "discount"
+            elif any(
+                k in _reason_raw for k in ("harga salah", "kesalahan harga", "pricing")
+            ):
+                _reason_enum = "pricing_error"
+            else:
+                _reason_enum = "other"
+            _amt = int(float(payload.get("amount") or payload.get("total_amount") or 0))
+            _items = payload.get("items") or []
+            if not _items and _amt > 0:
+                _items = [
+                    {
+                        "description": (payload.get("reason") or "Nota debit").strip()
+                        or "Nota debit",
+                        "quantity": 1,
+                        "unit_price": _amt,
+                    }
+                ]
+            clean_payload = {
+                "vendor_id": payload.get("vendor_id"),
+                "vendor_name": payload.get("vendor_name") or payload.get("name") or "",
+                "vendor_credit_date": payload.get("vendor_credit_date"),
+                "reason": _reason_enum,
+                "reason_detail": payload.get("reason")
+                if payload.get("reason")
+                else None,
+                "items": _items,
+            }
+            if payload.get("notes"):
+                clean_payload["notes"] = payload["notes"]
+            if payload.get("original_bill_id"):
+                clean_payload["original_bill_id"] = payload["original_bill_id"]
+            if payload.get("ref_no"):
+                clean_payload["ref_no"] = payload["ref_no"]
+            clean_payload = {k: v for k, v in clean_payload.items() if v is not None}
+
+        elif action_key == "create_credit_note":
+            # CN schema requires customer_name (stripped by display_only), reason enum, items[].
+            _reason_raw = str(payload.get("reason") or "").lower()
+            if any(k in _reason_raw for k in ("cacat", "rusak", "damaged")):
+                _reason_enum = "damaged"
+            elif any(k in _reason_raw for k in ("retur", "kembalikan", "return")):
+                _reason_enum = "return"
+            elif any(k in _reason_raw for k in ("diskon", "discount", "potongan")):
+                _reason_enum = "discount"
+            elif any(
+                k in _reason_raw for k in ("harga salah", "kesalahan harga", "pricing")
+            ):
+                _reason_enum = "pricing_error"
+            else:
+                _reason_enum = "other"
+            _amt = int(float(payload.get("amount") or payload.get("total_amount") or 0))
+            _items = payload.get("items") or []
+            if not _items and _amt > 0:
+                _items = [
+                    {
+                        "description": (payload.get("reason") or "Nota kredit").strip()
+                        or "Nota kredit",
+                        "quantity": 1,
+                        "unit_price": _amt,
+                    }
+                ]
+            clean_payload = {
+                "customer_id": payload.get("customer_id"),
+                "customer_name": payload.get("customer_name")
+                or payload.get("name")
+                or "",
+                "credit_note_date": payload.get("credit_note_date"),
+                "reason": _reason_enum,
+                "reason_detail": payload.get("reason")
+                if payload.get("reason")
+                else None,
+                "items": _items,
+            }
+            if payload.get("notes"):
+                clean_payload["notes"] = payload["notes"]
+            if payload.get("original_invoice_id"):
+                clean_payload["original_invoice_id"] = payload["original_invoice_id"]
+            if payload.get("ref_no"):
+                clean_payload["ref_no"] = payload["ref_no"]
+            clean_payload = {k: v for k, v in clean_payload.items() if v is not None}
 
         elif action_key == "categorize_statement":
             clean_payload = {
