@@ -4913,10 +4913,12 @@ class UnifiedAgent:
 
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
-            # Phase B.2: Check for resume prompt from Tier 3
+            # Phase B.2: Check for resume prompt + Tier 2 preferences
             _resume_hint = ""
+            _pref_hint = ""
             try:
                 from .summary_generator import get_last_session_context
+                from .preference_manager import PreferenceManager
                 from .db_utils import get_session_db_pool
                 from datetime import datetime, timezone
 
@@ -4929,11 +4931,17 @@ class UnifiedAgent:
                 )
                 if _resume_ctx and "SESI TERTUNDA" in _resume_ctx:
                     _resume_hint = _resume_ctx
-            except Exception as _b2_err:
-                logger.warning("[B2] Resume context failed: %s", _b2_err)
 
+                _b2_pref_mgr = PreferenceManager(
+                    _b2_pool, context.tenant_id, getattr(context, "user_id", "")
+                )
+                _pref_hint = await _b2_pref_mgr.get_preference_context()
+            except Exception as _b2_err:
+                logger.warning("[B2] Resume/pref context failed: %s", _b2_err)
+
+            _combined_hint = "\n\n".join(h for h in [_pref_hint, _resume_hint] if h)
             return await self._handle_chitchat(
-                user_text, context, _route, resume_hint=_resume_hint
+                user_text, context, _route, resume_hint=_combined_hint
             )
 
         # ── Workflow trigger detection ──────────────────────────

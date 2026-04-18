@@ -103,11 +103,11 @@ _SHOW_PATTERNS = [
 
 # Delete preference patterns
 _DELETE_PATTERNS = [
+    re.compile(r"(?:reset|hapus\s+semua)\s+(?:preferensi|setting)", re.IGNORECASE),
     re.compile(
         r"(?:lupakan|hapus|delete|remove)\s+(?:preferensi|setting)\s+(.+)",
         re.IGNORECASE,
     ),
-    re.compile(r"(?:reset|hapus)\s+(?:semua\s+)?(?:preferensi|setting)", re.IGNORECASE),
     re.compile(r"jangan\s+panggil\s+(?:saya|aku)\s+(.+?)\s+lagi", re.IGNORECASE),
 ]
 
@@ -122,20 +122,24 @@ async def detect_preference_intent(
     """
     text_clean = text.strip()
 
+    # === DELETE preferences (check BEFORE show — "hapus preferensi" contains "preferensi") ===
+    for pattern in _DELETE_PATTERNS:
+        m = pattern.search(text_clean)
+        if m:
+            text_lower = text_clean.lower()
+            if "semua" in text_lower or (
+                "reset" in text_lower and "preferensi" in text_lower
+            ):
+                return await _handle_delete_all(pref_mgr)
+            key_hint = m.group(1) if m.lastindex and m.lastindex >= 1 else None
+            if key_hint:
+                return await _handle_delete_one(pref_mgr, key_hint.strip())
+            return await _handle_show(pref_mgr)
+
     # === SHOW preferences ===
     for pattern in _SHOW_PATTERNS:
         if pattern.search(text_clean):
             return await _handle_show(pref_mgr)
-
-    # === DELETE preferences ===
-    for pattern in _DELETE_PATTERNS:
-        m = pattern.search(text_clean)
-        if m:
-            if "semua" in text_clean.lower() or "reset" in text_clean.lower():
-                return await _handle_delete_all(pref_mgr)
-            key_hint = m.group(1) if m.lastindex else None
-            if key_hint:
-                return await _handle_delete_one(pref_mgr, key_hint)
 
     # === SET display_name ===
     for pattern in _DISPLAY_NAME_PATTERNS:
