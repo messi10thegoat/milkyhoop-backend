@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Optional, List, Dict
 
-from .orchestrator import UnifiedAgent, AgentResponse, TenantContext
+from .orchestrator import UnifiedAgent, TenantContext
 from .model_router import ModelRouter
 from .tool_executor import ToolExecutor
 from .session_manager import SessionManager, StateUpdateHooks
@@ -48,9 +48,7 @@ class SessionAwareAgent:
 
         # Create session manager
         session_manager = SessionManager(
-            db_pool=self.db_pool,
-            tenant_id=context.tenant_id,
-            user_id=context.user_id
+            db_pool=self.db_pool, tenant_id=context.tenant_id, user_id=context.user_id
         )
 
         # Get or create session
@@ -90,7 +88,9 @@ class SessionAwareAgent:
         model_choice = ModelRouter.route(
             user_message=user_text,
             session_state=_state_dict,
-            conversation_depth=len(conversation_history) // 2 if conversation_history else 0,
+            conversation_depth=len(conversation_history) // 2
+            if conversation_history
+            else 0,
             previous_turn_proposed=_prev_proposed,
         )
         logger.info(f"[MODEL] tier={model_choice.tier} reason='{model_choice.reason}'")
@@ -143,7 +143,9 @@ class SessionAwareAgent:
         # FSM: Transition based on agent result
         if message_type == "ACTION_PREVIEW":
             # PLANNING -> AWAITING_CONFIRMATION
-            await session_manager.transition_fsm(session_id, FSMState.AWAITING_CONFIRMATION.value)
+            await session_manager.transition_fsm(
+                session_id, FSMState.AWAITING_CONFIRMATION.value
+            )
         elif message_type in ("TEXT", "CLARIFICATION"):
             # PLANNING -> IDLE (no action needed, just answered)
             await session_manager.transition_fsm(session_id, FSMState.IDLE.value)
@@ -169,11 +171,27 @@ class SessionAwareAgent:
                 if items_list:
                     item_desc = items_list[0].get("description", "?")
                     qty = items_list[0].get("quantity", 0)
-                    content_to_store = f"[Usulan faktur untuk {cust}: {item_desc} x {qty} pcs]"
+                    content_to_store = (
+                        f"[Usulan faktur untuk {cust}: {item_desc} x {qty} pcs]"
+                    )
                 else:
                     content_to_store = f"[Usulan faktur untuk {cust}]"
             else:
                 content_to_store = f"[Usulan {action_type}]"
+
+        # Phase D: Build metadata for DIRECT_ACTION_PREVIEW messages
+        _metadata = None
+        if message_type == "DIRECT_ACTION_PREVIEW" and preview:
+            _preview_dict = preview if isinstance(preview, dict) else {}
+            _pa_id = _preview_dict.get("pending_action_id") or pending_action_id
+            _action_key = _preview_dict.get("action_key") or _preview_dict.get("intent")
+            _metadata = {
+                "pending_action_id": str(_pa_id) if _pa_id else None,
+                "action_key": _action_key,
+                "status": "PENDING",
+                "completed_at": None,
+                "preview_snapshot": _preview_dict,
+            }
 
         await session_manager.store_message(
             session_id,
@@ -181,11 +199,14 @@ class SessionAwareAgent:
             content_to_store,
             message_type=message_type,
             token_count=usage.get("total_tokens") or None,
+            metadata=_metadata,
         )
 
         # === Phase B: Auto-summarize if conversation is getting long ===
         try:
-            all_messages = await session_manager.get_working_window(session_id, max_turns=20)
+            all_messages = await session_manager.get_working_window(
+                session_id, max_turns=20
+            )
             if len(all_messages) > 12:  # More than ~6 turns
                 # Summarize older messages (beyond the recent 8)
                 older = all_messages[:-8] if len(all_messages) > 8 else []
@@ -216,7 +237,11 @@ class SessionAwareAgent:
                 # the generic after_tool_call path)
                 if tool_name == "propose_action":
                     action_type = tool_args.get("action_type", "")
-                    result = {"success": tool_success, "data": tool_data} if tool_success else {"success": False}
+                    result = (
+                        {"success": tool_success, "data": tool_data}
+                        if tool_success
+                        else {"success": False}
+                    )
                     await StateUpdateHooks.after_propose(
                         session_manager, session_id, action_type, tool_args, result
                     )
@@ -238,6 +263,7 @@ class SessionAwareAgent:
             "session_id": session_id,
             "thinking_stages": thinking_stages,
             "usage": usage,
+            "extra_data": getattr(agent_response, "extra_data", None) or None,
         }
 
     async def _assemble_session_context(
@@ -247,26 +273,69 @@ class SessionAwareAgent:
         user_text: str,
         token_budget: int = 6000,
     ) -> list:
-        """Build enriched conversation_history with all 4 layers + preferences.
+        """Build enriched conversation_history with all memory tiers + layers.
 
-        L2/L3/L4/preferences fetched in PARALLEL (asyncio.gather) for speed.
-        L1 working window fetched after (depends on token budget from above).
+        Memory Tiers (cross-session):
+          Tier 1: Derived Profile (ledger queries, cached)
+          Tier 2: Explicit Preferences (user_explicit_preferences table)
+          Tier 3: Last Session Summary (gap-based)
 
-        Returns messages list: context system message + L1 working window.
+        Existing Layers (intra-session, unchanged):
+          L2: Structured state (28 fields)
+          L3: Recent 5 events
+          L1: Working window (last 4-8 messages)
+
+        DEPRECATED: L4 rolling summary removed. Replaced by Tier 3 final_summary.
         """
         ctx_start = time.time()
         parts = []
 
-        # === Parallel fetch: L2 + L3 + L4 + Preferences ===
-        state_result, events_result, summary_result, pref_result = await asyncio.gather(
+        from .tier1_profile import get_tier1_context
+        from .preference_manager import PreferenceManager
+        from .summary_generator import get_last_session_context
+        from datetime import datetime, timezone
+
+        pool = session_mgr.db
+
+        pref_mgr = PreferenceManager(pool, session_mgr.tenant_id, session_mgr.user_id)
+
+        (
+            tier1_result,
+            tier2_result,
+            tier3_result,
+            state_result,
+            events_result,
+            legacy_pref_result,
+        ) = await asyncio.gather(
+            get_tier1_context(pool, session_mgr.tenant_id),
+            pref_mgr.get_preference_context(),
+            get_last_session_context(
+                pool,
+                session_mgr.tenant_id,
+                session_mgr.user_id,
+                datetime.now(timezone.utc),
+            ),
             session_mgr.get_state(session_id),
             session_mgr.get_recent_events(session_id, limit=5),
-            session_mgr.get_summary(session_id),
             session_mgr.get_preference_context(),
             return_exceptions=True,
         )
 
-        # Layer 2: Structured state
+        if not isinstance(tier1_result, Exception) and tier1_result:
+            parts.append(tier1_result)
+        elif isinstance(tier1_result, Exception):
+            logger.warning("[CONTEXT] Tier 1 failed (graceful skip): %s", tier1_result)
+
+        if not isinstance(tier2_result, Exception) and tier2_result:
+            parts.append(tier2_result)
+        elif isinstance(tier2_result, Exception):
+            logger.warning("[CONTEXT] Tier 2 failed (graceful skip): %s", tier2_result)
+
+        if not isinstance(tier3_result, Exception) and tier3_result:
+            parts.append(tier3_result)
+        elif isinstance(tier3_result, Exception):
+            logger.warning("[CONTEXT] Tier 3 failed (graceful skip): %s", tier3_result)
+
         state_context = ""
         if not isinstance(state_result, Exception):
             state_context = state_result.to_context_string()
@@ -275,7 +344,6 @@ class SessionAwareAgent:
         else:
             logger.warning("[CONTEXT] Failed to fetch L2 state: %s", state_result)
 
-        # Layer 3: Recent events (compact)
         if not isinstance(events_result, Exception) and events_result:
             events_lines = []
             for e in reversed(events_result):
@@ -286,26 +354,18 @@ class SessionAwareAgent:
         elif isinstance(events_result, Exception):
             logger.warning("[CONTEXT] Failed to fetch L3 events: %s", events_result)
 
-        # Layer 4: Conversational summary
-        if not isinstance(summary_result, Exception) and summary_result:
-            parts.append(f"## RINGKASAN PERCAKAPAN SEBELUMNYA\n{summary_result}")
-        elif isinstance(summary_result, Exception):
-            logger.warning("[CONTEXT] Failed to fetch L4 summary: %s", summary_result)
+        if not isinstance(legacy_pref_result, Exception) and legacy_pref_result:
+            parts.append(legacy_pref_result)
+        elif isinstance(legacy_pref_result, Exception):
+            logger.warning(
+                "[CONTEXT] Failed to fetch legacy preferences: %s", legacy_pref_result
+            )
 
-        # User Preferences (cross-session)
-        if not isinstance(pref_result, Exception) and pref_result:
-            parts.append(pref_result)
-        elif isinstance(pref_result, Exception):
-            logger.warning("[CONTEXT] Failed to fetch preferences: %s", pref_result)
-
-        # Build the context system message
         messages = []
         if parts:
             context_block = "\n\n".join(parts)
             messages.append({"role": "system", "content": context_block})
 
-        # === Layer 1: Working window with token budget ===
-        # (Sequential — depends on token budget from L2/L3/L4 above)
         context_tokens = sum(len(m.get("content", "")) for m in messages) // 4
         user_tokens = len(user_text) // 4
         remaining = token_budget - context_tokens - user_tokens - 3000 - 500
@@ -313,7 +373,9 @@ class SessionAwareAgent:
         window = []
         if remaining > 0:
             for max_turns in [8, 6, 4, 2]:
-                window = await session_mgr.get_working_window(session_id, max_turns=max_turns)
+                window = await session_mgr.get_working_window(
+                    session_id, max_turns=max_turns
+                )
                 window_tokens = sum(len(m.get("content", "")) // 4 for m in window)
                 if window_tokens <= remaining:
                     break
@@ -324,13 +386,23 @@ class SessionAwareAgent:
 
         ctx_ms = int((time.time() - ctx_start) * 1000)
         logger.info(
-            "[CONTEXT] session=%s | L1=%d msgs | L2=%s | L3=%s | L4=%s | prefs=%s | budget=%d | ctx_ms=%d",
+            "[CONTEXT] session=%s | T1=%s | T2=%s | T3=%s | L1=%d msgs | L2=%s | L3=%s | prefs=%s | budget=%d | ctx_ms=%d",
             session_id[:8],
+            "yes"
+            if (not isinstance(tier1_result, Exception) and tier1_result)
+            else "no",
+            "yes"
+            if (not isinstance(tier2_result, Exception) and tier2_result)
+            else "no",
+            "yes"
+            if (not isinstance(tier3_result, Exception) and tier3_result)
+            else "no",
             len(window),
             "yes" if state_context else "no",
             "yes" if any("RIWAYAT" in m.get("content", "") for m in messages) else "no",
-            "yes" if any("RINGKASAN" in m.get("content", "") for m in messages) else "no",
-            "yes" if any("PREFERENSI" in m.get("content", "") for m in messages) else "no",
+            "yes"
+            if any("PREFERENSI" in m.get("content", "") for m in messages)
+            else "no",
             token_budget,
             ctx_ms,
         )

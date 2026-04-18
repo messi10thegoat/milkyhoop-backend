@@ -23,6 +23,7 @@ from .routers import inventory
 from .routers import items
 from .routers import members
 from .routers import team_members
+from .routers import pay_groups
 from .routers import invoices
 from .routers import bills
 from .routers import vendors
@@ -114,6 +115,8 @@ from .routers import expenses
 from .routers import kasbank
 from .routers import expense_extended
 from .routers import payroll
+from .routers import salary_components
+from .routers import payroll_config
 
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
@@ -207,7 +210,7 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             host="postgres",
             port=5432,
             user="postgres",
-            password="Proyek771977",
+            password="Proyek771977",  # pragma: allowlist secret
             database="milkydb",
             min_size=2,
             max_size=5,
@@ -310,6 +313,18 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to connect to Auth Service: {e}")
 
+    # Bot Memory: start Tier 3 summary background poller
+    try:
+        from .services.db_pool import get_db_pool
+        from .services.unified_agent.summary_generator import summary_poller_loop
+        import asyncio as _asyncio_poller
+
+        _pool = await get_db_pool()
+        _asyncio_poller.create_task(summary_poller_loop(_pool))
+        logger.info("Bot memory summary poller started")
+    except Exception as e:
+        logger.warning(f"Summary poller failed to start (non-fatal): {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -362,6 +377,7 @@ app.include_router(items.router, prefix="/api", tags=["items"])
 app.include_router(members.router, prefix="/api/members", tags=["members"])
 app.include_router(team_members.router, tags=["team-members"])
 app.include_router(team_members.permissions_router, tags=["permissions"])
+app.include_router(pay_groups.router, tags=["pay-groups"])
 
 # Invoices router (Faktur Pembelian list)
 app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
@@ -656,6 +672,14 @@ app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
 app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
 # Payroll router (Penggajian)
 app.include_router(payroll.router, prefix="", tags=["payroll"])
+app.include_router(
+    salary_components.router,
+    prefix="/api/salary-components",
+    tags=["salary-components"],
+)
+app.include_router(
+    payroll_config.router, prefix="/api/payroll-config", tags=["payroll-config"]
+)
 
 
 # Agentic Chat Action Mode router (Sprint 1 - Conversational Accounting)
@@ -720,11 +744,10 @@ from datetime import date  # noqa: E402
 
 
 async def _get_pool() -> asyncpg.Pool:
-    """Get database connection pool."""
-    db_config = settings.get_db_config()
-    return await asyncpg.create_pool(
-        **db_config, min_size=2, max_size=10, command_timeout=60
-    )
+    """Get singleton connection pool (Law 32)."""
+    from .services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def _get_user_context(request: Request) -> dict:
