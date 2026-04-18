@@ -136,6 +136,7 @@ from .routers import unified_chat
 from .routers import document_intake
 from .routers import efaktur
 from .routers import units
+from .routers import deliveries
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -692,6 +693,7 @@ app.include_router(
     document_intake.router, prefix="/api/document-intake", tags=["document-intake"]
 )
 app.include_router(efaktur.router, prefix="/api/efaktur", tags=["E-Faktur Export"])
+app.include_router(deliveries.router, prefix="/api/deliveries", tags=["deliveries"])
 app.include_router(units.router, prefix="/api/units", tags=["Units"])
 
 
