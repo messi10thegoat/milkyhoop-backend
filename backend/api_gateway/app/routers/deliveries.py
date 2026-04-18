@@ -318,6 +318,9 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         "customer_name": row["customer_name"],
         "customer_phone": row["customer_phone"],
         "customer_address": row["customer_address"],
+        "warehouse_name": row["warehouse_name"],
+        "item_count": row["item_count"],
+        "total_cogs": float(row["total_cogs"]) if row["total_cogs"] else 0,
         "items": [
             {
                 "id": str(i["id"]),
