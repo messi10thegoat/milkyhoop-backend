@@ -118,6 +118,7 @@ async def list_deliveries(
             FROM invoice_fulfillments f
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE {where_clause}
             """,
             *params,
@@ -141,10 +142,14 @@ async def list_deliveries(
                 si.customer_id,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
-                c.alamat AS customer_address
+                c.alamat AS customer_address,
+                w.name AS warehouse_name,
+                (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
+                (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
             FROM invoice_fulfillments f
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE {where_clause}
             ORDER BY {db_sort} {direction}
             LIMIT ${idx} OFFSET ${idx + 1}
@@ -173,6 +178,9 @@ async def list_deliveries(
             "customer_name": r["customer_name"],
             "customer_phone": r["customer_phone"],
             "customer_address": r["customer_address"],
+            "warehouse_name": r["warehouse_name"],
+            "item_count": r["item_count"],
+            "total_cogs": float(r["total_cogs"]) if r["total_cogs"] else 0,
         }
         for r in rows
     ]
@@ -215,10 +223,14 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 si.customer_id,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
-                c.alamat AS customer_address
+                c.alamat AS customer_address,
+                w.name AS warehouse_name,
+                (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
+                (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
             FROM invoice_fulfillments f
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE f.id = $1 AND f.tenant_id = $2
             """,
             delivery_id,
@@ -382,10 +394,14 @@ async def get_delivery_pdf(
                 si.customer_id,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
-                c.alamat AS customer_address
+                c.alamat AS customer_address,
+                w.name AS warehouse_name,
+                (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
+                (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
             FROM invoice_fulfillments f
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE f.id = $1 AND f.tenant_id = $2
             """,
             delivery_id,
