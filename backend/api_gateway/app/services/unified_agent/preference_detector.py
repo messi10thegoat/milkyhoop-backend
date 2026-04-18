@@ -103,7 +103,10 @@ _SHOW_PATTERNS = [
 
 # Delete preference patterns
 _DELETE_PATTERNS = [
-    re.compile(r"(?:reset|hapus\s+semua)\s+(?:preferensi|setting)", re.IGNORECASE),
+    re.compile(
+        r"(?:reset\s+(?:semua\s+)?|hapus\s+semua\s+)(?:preferensi|setting)",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"(?:lupakan|hapus|delete|remove)\s+(?:preferensi|setting)\s+(.+)",
         re.IGNORECASE,
