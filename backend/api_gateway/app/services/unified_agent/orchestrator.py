@@ -783,6 +783,7 @@ class UnifiedAgent:
         user_text: str,
         context: TenantContext,
         route_result: "RouteResult",
+        resume_hint: str = "",
     ) -> AgentResponse:
         """Phase 4B: CHITCHAT short-circuit.
         0 tools, IDENTITY_ONLY prompt, max_tokens=300, 1 iteration.
@@ -800,6 +801,9 @@ class UnifiedAgent:
         messages = [
             LLMMessage(role=msg["role"], content=msg["content"]) for msg in sys_msgs
         ]
+        # Phase B.2: inject resume context if available
+        if resume_hint:
+            messages.append(LLMMessage(role="system", content=resume_hint))
         messages.append(LLMMessage(role="user", content=user_text))
 
         try:
@@ -4909,7 +4913,28 @@ class UnifiedAgent:
 
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
-            return await self._handle_chitchat(user_text, context, _route)
+            # Phase B.2: Check for resume prompt from Tier 3
+            _resume_hint = ""
+            try:
+                from .summary_generator import get_last_session_context
+                from .db_utils import get_session_db_pool
+                from datetime import datetime, timezone
+
+                _b2_pool = await get_session_db_pool()
+                _resume_ctx = await get_last_session_context(
+                    _b2_pool,
+                    context.tenant_id,
+                    getattr(context, "user_id", ""),
+                    datetime.now(timezone.utc),
+                )
+                if _resume_ctx and "SESI TERTUNDA" in _resume_ctx:
+                    _resume_hint = _resume_ctx
+            except Exception as _b2_err:
+                logger.warning("[B2] Resume context failed: %s", _b2_err)
+
+            return await self._handle_chitchat(
+                user_text, context, _route, resume_hint=_resume_hint
+            )
 
         # ── Workflow trigger detection ──────────────────────────
         _workflow_triggers = {
