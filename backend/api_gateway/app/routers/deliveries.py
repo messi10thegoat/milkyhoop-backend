@@ -43,8 +43,8 @@ async def get_deliveries_summary(request: Request):
         row = await conn.fetchrow(
             """
             SELECT
-                COUNT(*) FILTER (WHERE status = 'POSTED') AS total_posted,
-                COUNT(*) FILTER (WHERE status = 'VOIDED') AS total_voided,
+                COUNT(*) FILTER (WHERE status = 'posted') AS total_posted,
+                COUNT(*) FILTER (WHERE status = 'voided') AS total_voided,
                 COUNT(*) FILTER (WHERE fulfillment_date = CURRENT_DATE) AS today_count,
                 COUNT(*) AS total_all
             FROM invoice_fulfillments
