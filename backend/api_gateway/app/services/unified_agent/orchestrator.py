@@ -941,6 +941,21 @@ class UnifiedAgent:
             except Exception as e:
                 logger.warning("[PIPELINE] Action memory lookup failed: %s", e)
 
+        # Phase B.1: Get top patterns for suggestion in clarification
+        _top_patterns = []
+        if tool_executor and tool_executor.session_manager:
+            try:
+                from .action_memory import ActionMemory
+
+                _am = ActionMemory(
+                    pool, context.tenant_id, getattr(context, "user_id", "")
+                )
+                _top_patterns = await _am.get_top_patterns_for_intent(
+                    extraction.intent, limit=3
+                )
+            except Exception as e:
+                logger.warning("[PIPELINE] Top patterns lookup failed: %s", e)
+
         merged_entities = dict(extraction.entities)
 
         # ── Stage 2: Registry-driven field extraction ──
@@ -2586,6 +2601,7 @@ class UnifiedAgent:
         missing_labels: list,
         resolution=None,
         override_instruction: str = None,
+        pattern_suggestions: list = None,
     ) -> str:
         """Generate natural conversational clarification using LLM."""
         import json as _json
@@ -2704,6 +2720,30 @@ class UnifiedAgent:
                 "Balas user secara natural, singkat (1-2 kalimat)."
             )
         else:
+            # Phase B.1: Pattern suggestion hint
+            _pattern_hint = ""
+            if pattern_suggestions and not override_instruction:
+                _entity_missing = any(
+                    k in field_hints
+                    for k in (
+                        "customer_name",
+                        "vendor_name",
+                        "customer_id",
+                        "vendor_id",
+                    )
+                )
+                if _entity_missing:
+                    _hints = []
+                    for p in pattern_suggestions[:3]:
+                        _hints.append(f"{p['entity_name']} ({p['usage_count']}x)")
+                    if _hints:
+                        _pattern_hint = (
+                            "\nPATTERN SUGGESTION: user sering bertransaksi dengan: "
+                            + ", ".join(_hints)
+                            + ". Tawarkan sebagai opsi (tanya, JANGAN assume). "
+                            'Contoh: "Untuk siapa? Biasanya [nama] ([count]x)."\n'
+                        )
+
             user_prompt = (
                 "User minta: " + _action_desc + "\n"
                 "Data yang sudah ditangkap: "
@@ -2712,7 +2752,8 @@ class UnifiedAgent:
                 "Field WAJIB yang masih kurang: "
                 + _json.dumps(field_hints, ensure_ascii=False)
                 + "\n"
-                "Balas user secara natural."
+                + _pattern_hint
+                + "Balas user secara natural."
             )
 
         try:
