@@ -9,8 +9,9 @@ IRON LAW 3.1: NO financial amounts. Only counts, names, dates, ratios.
 
 import asyncio
 import logging
-from cachetools import TTLCache
 from typing import Optional
+
+from cachetools import TTLCache
 
 logger = logging.getLogger("unified_agent.tier1_profile")
 
@@ -57,12 +58,12 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
 
             items = await conn.fetch(
                 """
-                SELECT i.name, COUNT(*) as cnt
-                FROM invoice_lines il
-                JOIN sales_invoices si ON si.id = il.sales_invoice_id
-                JOIN items i ON i.id = il.item_id
-                WHERE si.status IN ('POSTED', 'PARTIAL') AND il.item_id IS NOT NULL
-                GROUP BY i.id, i.name
+                SELECT p.nama_produk as name, COUNT(*) as cnt
+                FROM sales_invoice_items sii
+                JOIN sales_invoices si ON si.id = sii.sales_invoice_id
+                JOIN products p ON p.id = sii.item_id
+                WHERE si.status IN ('POSTED', 'PARTIAL') AND sii.item_id IS NOT NULL
+                GROUP BY p.id, p.nama_produk
                 ORDER BY cnt DESC LIMIT 10
             """
             )
@@ -109,7 +110,8 @@ async def _query_payment_patterns(pool, tenant_id: str) -> Optional[str]:
                        ROUND(AVG(rp.payment_date - si.invoice_date)) as avg_days,
                        COUNT(*) as cnt
                 FROM receive_payments rp
-                JOIN sales_invoices si ON si.id = rp.invoice_id
+                JOIN receive_payment_allocations rpa ON rpa.payment_id = rp.id
+                JOIN sales_invoices si ON si.id = rpa.invoice_id
                 JOIN customers c ON c.id = si.customer_id
                 WHERE rp.status = 'POSTED'
                 GROUP BY c.id, c.nama
@@ -140,8 +142,8 @@ async def _query_warehouse_defaults(pool, tenant_id: str) -> Optional[str]:
             warehouse = await conn.fetchrow(
                 """
                 SELECT w.name, COUNT(*) as cnt
-                FROM stock_movements sm
-                JOIN warehouses w ON w.id = sm.warehouse_id
+                FROM inventory_ledger il
+                JOIN warehouses w ON w.id = il.warehouse_id
                 GROUP BY w.id, w.name
                 ORDER BY cnt DESC LIMIT 1
             """
@@ -151,7 +153,8 @@ async def _query_warehouse_defaults(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT tax_rate, COUNT(*) as cnt
                 FROM sales_invoices
-                WHERE status IN ('POSTED', 'PARTIAL') AND tax_rate IS NOT NULL AND tax_rate > 0
+                WHERE status IN ('POSTED', 'PARTIAL')
+                  AND tax_rate IS NOT NULL AND tax_rate > 0
                 GROUP BY tax_rate
                 ORDER BY cnt DESC LIMIT 1
             """
@@ -179,7 +182,7 @@ async def _query_overdue_counts(pool, tenant_id: str) -> Optional[str]:
                 FROM sales_invoices
                 WHERE status IN ('POSTED', 'PARTIAL')
                   AND due_date < CURRENT_DATE
-                  AND amount_due > 0
+                  AND (total_amount - COALESCE(amount_paid, 0)) > 0
             """
             )
 
@@ -189,7 +192,7 @@ async def _query_overdue_counts(pool, tenant_id: str) -> Optional[str]:
                 FROM bills
                 WHERE status IN ('POSTED', 'PARTIAL')
                   AND due_date < CURRENT_DATE
-                  AND amount_due > 0
+                  AND (amount - COALESCE(amount_paid, 0)) > 0
             """
             )
 
