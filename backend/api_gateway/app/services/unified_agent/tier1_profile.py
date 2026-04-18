@@ -60,7 +60,7 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT p.nama_produk as name, COUNT(*) as cnt
                 FROM sales_invoice_items sii
-                JOIN sales_invoices si ON si.id = sii.sales_invoice_id
+                JOIN sales_invoices si ON si.id = sii.invoice_id
                 JOIN products p ON p.id = sii.item_id
                 WHERE si.status IN ('POSTED', 'PARTIAL') AND sii.item_id IS NOT NULL
                 GROUP BY p.id, p.nama_produk
