@@ -493,8 +493,16 @@ class SessionManager:
                     ],
                 )
 
-        elif tool_name in ("get_invoice_detail", "get_invoices") and data:
-            items = data if isinstance(data, list) else [data]
+        elif tool_name in ("get_invoice_detail", "get_invoices", "get_customer_invoices") and data:
+            # Handle different response shapes: list, {"items": [...]}, {"results": [...]}, or single dict
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and "items" in data:
+                items = data["items"]
+            elif isinstance(data, dict) and "results" in data:
+                items = data["results"]
+            else:
+                items = [data]
             if items:
                 inv = items[0]
                 await self.update_state(

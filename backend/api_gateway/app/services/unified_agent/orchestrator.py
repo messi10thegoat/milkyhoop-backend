@@ -6132,6 +6132,9 @@ class UnifiedAgent:
                                 "query_customer_ar",
                                 "query_customer_detail",
                                 "query_ar_invoices",
+                                "query_sales_invoice_detail",
+                                "query_sales_invoices_list",
+                                "query_customer_invoices",
                             ) and getattr(_sess, "active_customer_name", None):
                                 _llm_extraction.entities[
                                     "customer_name"
