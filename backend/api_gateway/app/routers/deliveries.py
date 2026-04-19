@@ -252,48 +252,53 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 fi.notes,
                 fi.created_at,
                 p.nama_produk AS product_name,
-                p.sku AS product_sku
+                p.sku AS product_sku,
+                sii.unit
             FROM invoice_fulfillment_items fi
             LEFT JOIN products p ON p.id = fi.product_id
+            LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
             WHERE fi.fulfillment_id = $1
             ORDER BY fi.created_at
             """,
             delivery_id,
         )
 
-        journals_rows = await conn.fetch(
-            """
-            SELECT
-                je.id AS journal_id,
-                je.journal_number,
-                je.journal_date,
-                je.description,
-                je.source_type,
-                je.total_debit,
-                je.total_credit,
-                je.status,
-                json_agg(
-                    json_build_object(
-                        'account_code', coa.account_code,
-                        'account_name', coa.name,
-                        'debit', jl.debit,
-                        'credit', jl.credit,
-                        'description', jl.memo
-                    ) ORDER BY jl.line_number
-                ) AS lines
-            FROM journal_entries je
-            LEFT JOIN journal_lines jl ON jl.journal_id = je.id
-            LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
-            WHERE je.source_type IN ('INVOICE_FULFILLMENT', 'INVOICE_REVENUE')
-              AND je.source_id = $1::uuid
-              AND je.tenant_id = $2
-            GROUP BY je.id, je.journal_number, je.journal_date, je.description,
-                     je.source_type, je.total_debit, je.total_credit, je.status
-            ORDER BY je.journal_date
-            """,
-            delivery_id,
-            ctx["tenant_id"],
-        )
+        journal_ids = [row["journal_id"], row["revenue_journal_id"]]
+        journal_ids = [jid for jid in journal_ids if jid is not None]
+
+        if journal_ids:
+            journals_rows = await conn.fetch(
+                """
+                SELECT
+                    je.id AS journal_id,
+                    je.journal_number,
+                    je.journal_date,
+                    je.description,
+                    je.source_type,
+                    je.total_debit,
+                    je.total_credit,
+                    je.status,
+                    json_agg(
+                        json_build_object(
+                            'account_code', coa.account_code,
+                            'account_name', coa.name,
+                            'debit', jl.debit,
+                            'credit', jl.credit,
+                            'description', jl.memo
+                        ) ORDER BY jl.line_number
+                    ) AS lines
+                FROM journal_entries je
+                LEFT JOIN journal_lines jl ON jl.journal_id = je.id
+                LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.id = ANY($1::uuid[])
+                GROUP BY je.id, je.journal_number, je.journal_date, je.description,
+                         je.source_type, je.total_debit, je.total_credit, je.status
+                ORDER BY je.journal_date
+                """,
+                journal_ids,
+            )
+        else:
+            journals_rows = []
 
     detail = {
         "id": str(row["id"]),
@@ -329,6 +334,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 "product_name": i["product_name"],
                 "product_sku": i["product_sku"],
                 "quantity": str(i["quantity"]),
+                "unit": i["unit"],
                 "unit_cost": str(i["unit_cost"])
                 if i["unit_cost"] is not None
                 else None,

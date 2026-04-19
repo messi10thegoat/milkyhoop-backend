@@ -48,14 +48,12 @@ from ..schemas.receive_payments import (
     UpdateReceivePaymentRequest,
     VoidPaymentRequest,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes
 CUSTOMER_DEPOSIT_ACCOUNT = "2-10500"  # Uang Muka Pelanggan (Liability)
@@ -63,14 +61,10 @@ AR_ACCOUNT = "1-10400"  # Piutang Usaha (A/R)
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -693,6 +687,35 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         else "voided"
                     )
 
+                    # Fetch attachments for journal-only path
+                    jo_attachment_rows = await conn.fetch(
+                        """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
+                          d.file_url as url, d.thumbnail_path as thumbnail_url,
+                          d.uploaded_at, da.attachment_type
+                   FROM document_attachments da
+                   JOIN documents d ON da.document_id = d.id
+                   WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
+                     AND d.deleted_at IS NULL
+                   ORDER BY da.display_order, d.uploaded_at DESC""",
+                        ctx["tenant_id"],
+                        str(journal_row["id"]),
+                    )
+                    jo_attachments = [
+                        {
+                            "id": str(r["id"]),
+                            "file_name": r["file_name"],
+                            "file_size": r["file_size"],
+                            "mime_type": r["mime_type"],
+                            "url": r["url"],
+                            "thumbnail_url": r["thumbnail_url"],
+                            "uploaded_at": r["uploaded_at"].isoformat()
+                            if r["uploaded_at"]
+                            else None,
+                            "attachment_type": r["attachment_type"],
+                        }
+                        for r in jo_attachment_rows
+                    ]
+
                     return {
                         "success": True,
                         "data": {
@@ -750,7 +773,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                             "check_number": "",
                             "check_due_date": "",
                             "check_bank_name": "",
-                            "attachments": [],
+                            "attachments": jo_attachments,
                             "tags": [],
                         },
                     }
@@ -764,6 +787,35 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             """,
                 payment_id,
             )
+
+            # Fetch attachments
+            attachment_rows = await conn.fetch(
+                """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
+                          d.file_url as url, d.thumbnail_path as thumbnail_url,
+                          d.uploaded_at, da.attachment_type
+                   FROM document_attachments da
+                   JOIN documents d ON da.document_id = d.id
+                   WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
+                     AND d.deleted_at IS NULL
+                   ORDER BY da.display_order, d.uploaded_at DESC""",
+                ctx["tenant_id"],
+                str(payment["id"]),
+            )
+            attachments = [
+                {
+                    "id": str(r["id"]),
+                    "file_name": r["file_name"],
+                    "file_size": r["file_size"],
+                    "mime_type": r["mime_type"],
+                    "url": r["url"],
+                    "thumbnail_url": r["thumbnail_url"],
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
+                    "attachment_type": r["attachment_type"],
+                }
+                for r in attachment_rows
+            ]
 
             return {
                 "success": True,
@@ -834,6 +886,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     "created_by": str(payment["created_by"])
                     if payment["created_by"]
                     else None,
+                    "attachments": attachments,
                 },
             }
 
@@ -2192,7 +2245,8 @@ async def list_payment_attachments(request: Request, payment_id: str):
                WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
                  AND d.deleted_at IS NULL
                ORDER BY da.display_order, d.uploaded_at DESC""",
-            ctx["tenant_id"], payment_id,
+            ctx["tenant_id"],
+            payment_id,
         )
         return {
             "success": True,
@@ -2204,7 +2258,9 @@ async def list_payment_attachments(request: Request, payment_id: str):
                     "mime_type": r["mime_type"],
                     "url": r["url"],
                     "thumbnail_url": r["thumbnail_url"],
-                    "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
                     "attachment_type": r["attachment_type"],
                 }
                 for r in rows

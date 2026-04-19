@@ -40,10 +40,8 @@ from uuid import UUID
 import logging
 import asyncpg
 from datetime import date
-import json
 
 from ..schemas.financial_ratios import (
-    CalculateRatiosRequest,
     SaveSnapshotRequest,
     CreateAlertRequest,
     CalculateRatiosResponse,
@@ -54,32 +52,23 @@ from ..schemas.financial_ratios import (
     RatioDashboardResponse,
     FinancialRatioResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -89,10 +78,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def format_ratio_value(value, display_format: str, decimal_places: int = 2) -> str:
@@ -142,6 +128,7 @@ def get_ratio_status(value, ideal_min, ideal_max, higher_is_better) -> str:
 # CALCULATE RATIOS
 # =============================================================================
 
+
 @router.get("", response_model=CalculateRatiosResponse)
 async def get_current_ratios(
     request: Request,
@@ -156,9 +143,13 @@ async def get_current_ratios(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            result = await conn.fetchval("""
+            result = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, $2, NULL, NULL)
-            """, ctx["tenant_id"], as_of_date)
+            """,
+                ctx["tenant_id"],
+                as_of_date,
+            )
 
             if not result:
                 # No data, return empty ratios
@@ -169,20 +160,23 @@ async def get_current_ratios(
                         "period_start": None,
                         "period_end": None,
                         "ratios": {},
-                        "source_data": {}
-                    }
+                        "source_data": {},
+                    },
                 }
 
             # Parse JSON string if needed
             if isinstance(result, str):
                 import json
+
                 result = json.loads(result)
 
             # Get ratio definitions for formatting
-            definitions = await conn.fetch("""
+            definitions = await conn.fetch(
+                """
                 SELECT code, name, ideal_min, ideal_max, higher_is_better, display_format
                 FROM ratio_definitions WHERE is_active = true
-            """)
+            """
+            )
             def_map = {d["code"]: d for d in definitions}
 
             # Format ratios with status
@@ -193,13 +187,19 @@ async def get_current_ratios(
                 formatted_ratios[category] = {}
                 for code, value in ratios.items():
                     defn = def_map.get(code, {})
-                    ideal_min = float(defn["ideal_min"]) if defn.get("ideal_min") else None
-                    ideal_max = float(defn["ideal_max"]) if defn.get("ideal_max") else None
+                    ideal_min = (
+                        float(defn["ideal_min"]) if defn.get("ideal_min") else None
+                    )
+                    ideal_max = (
+                        float(defn["ideal_max"]) if defn.get("ideal_max") else None
+                    )
                     higher_is_better = defn.get("higher_is_better", True)
                     display_format = defn.get("display_format", "decimal")
 
                     float_value = float(value) if value is not None else None
-                    status = get_ratio_status(float_value, ideal_min, ideal_max, higher_is_better)
+                    status = get_ratio_status(
+                        float_value, ideal_min, ideal_max, higher_is_better
+                    )
                     display = format_ratio_value(float_value, display_format)
 
                     ideal_range = None
@@ -214,18 +214,24 @@ async def get_current_ratios(
                         "value": float_value,
                         "display": display,
                         "status": status,
-                        "ideal_range": ideal_range
+                        "ideal_range": ideal_range,
                     }
 
             return {
                 "success": True,
                 "data": {
                     "as_of_date": as_of_date,
-                    "period_start": result.get("period_start") if isinstance(result, dict) else None,
-                    "period_end": result.get("period_end") if isinstance(result, dict) else None,
+                    "period_start": result.get("period_start")
+                    if isinstance(result, dict)
+                    else None,
+                    "period_end": result.get("period_end")
+                    if isinstance(result, dict)
+                    else None,
                     "ratios": formatted_ratios,
-                    "source_data": result.get("source_data", {}) if isinstance(result, dict) else {}
-                }
+                    "source_data": result.get("source_data", {})
+                    if isinstance(result, dict)
+                    else {},
+                },
             }
 
     except HTTPException:
@@ -236,13 +242,13 @@ async def get_current_ratios(
         return {
             "success": True,
             "data": {
-                "as_of_date": as_of_date if 'as_of_date' in dir() else date.today(),
+                "as_of_date": as_of_date if "as_of_date" in dir() else date.today(),
                 "period_start": None,
                 "period_end": None,
                 "ratios": {},
                 "source_data": {},
-                "error": str(e)
-            }
+                "error": str(e),
+            },
         }
 
 
@@ -259,14 +265,17 @@ async def calculate_ratios(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.fetchval("""
+            result = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, $2, $3, $4)
-            """, ctx["tenant_id"], as_of_date, period_start, period_end)
+            """,
+                ctx["tenant_id"],
+                as_of_date,
+                period_start,
+                period_end,
+            )
 
-            return {
-                "success": True,
-                "data": result
-            }
+            return {"success": True, "data": result}
 
     except HTTPException:
         raise
@@ -283,9 +292,14 @@ async def save_snapshot(request: Request, body: SaveSnapshotRequest):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            snapshot_id = await conn.fetchval("""
+            snapshot_id = await conn.fetchval(
+                """
                 SELECT save_ratio_snapshot($1, $2, $3)
-            """, ctx["tenant_id"], body.snapshot_date, body.period_type)
+            """,
+                ctx["tenant_id"],
+                body.snapshot_date,
+                body.period_type,
+            )
 
             return {
                 "success": True,
@@ -293,8 +307,8 @@ async def save_snapshot(request: Request, body: SaveSnapshotRequest):
                 "data": {
                     "id": str(snapshot_id),
                     "snapshot_date": body.snapshot_date.isoformat(),
-                    "period_type": body.period_type
-                }
+                    "period_type": body.period_type,
+                },
             }
 
     except HTTPException:
@@ -308,10 +322,13 @@ async def save_snapshot(request: Request, body: SaveSnapshotRequest):
 # HISTORICAL & TRENDS
 # =============================================================================
 
+
 @router.get("/history", response_model=RatioSnapshotListResponse)
 async def list_snapshots(
     request: Request,
-    period_type: Optional[Literal["daily", "monthly", "quarterly", "yearly"]] = Query(None),
+    period_type: Optional[Literal["daily", "monthly", "quarterly", "yearly"]] = Query(
+        None
+    ),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
@@ -367,21 +384,27 @@ async def list_snapshots(
                     "period_type": row["period_type"],
                     "period_start": row["period_start"],
                     "period_end": row["period_end"],
-                    "current_ratio": float(row["current_ratio"]) if row["current_ratio"] else None,
-                    "quick_ratio": float(row["quick_ratio"]) if row["quick_ratio"] else None,
-                    "gross_profit_margin": float(row["gross_profit_margin"]) if row["gross_profit_margin"] else None,
-                    "net_profit_margin": float(row["net_profit_margin"]) if row["net_profit_margin"] else None,
-                    "debt_to_equity": float(row["debt_to_equity"]) if row["debt_to_equity"] else None,
-                    "created_at": row["created_at"]
+                    "current_ratio": float(row["current_ratio"])
+                    if row["current_ratio"]
+                    else None,
+                    "quick_ratio": float(row["quick_ratio"])
+                    if row["quick_ratio"]
+                    else None,
+                    "gross_profit_margin": float(row["gross_profit_margin"])
+                    if row["gross_profit_margin"]
+                    else None,
+                    "net_profit_margin": float(row["net_profit_margin"])
+                    if row["net_profit_margin"]
+                    else None,
+                    "debt_to_equity": float(row["debt_to_equity"])
+                    if row["debt_to_equity"]
+                    else None,
+                    "created_at": row["created_at"],
                 }
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -404,22 +427,33 @@ async def get_ratio_trend(
 
         async with pool.acquire() as conn:
             # Get ratio definition
-            definition = await conn.fetchrow("""
+            definition = await conn.fetchrow(
+                """
                 SELECT name FROM ratio_definitions WHERE code = $1
-            """, ratio)
+            """,
+                ratio,
+            )
 
             if not definition:
-                raise HTTPException(status_code=400, detail=f"Unknown ratio code: {ratio}")
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown ratio code: {ratio}"
+                )
 
             # Get trend data
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_ratio_trend($1, $2, $3, $4)
-            """, ctx["tenant_id"], ratio, periods, period_type)
+            """,
+                ctx["tenant_id"],
+                ratio,
+                periods,
+                period_type,
+            )
 
             trend_data = [
                 {
                     "period": row["snapshot_date"].strftime("%Y-%m"),
-                    "value": float(row["value"]) if row["value"] else None
+                    "value": float(row["value"]) if row["value"] else None,
                 }
                 for row in reversed(list(rows))  # Oldest to newest
             ]
@@ -444,7 +478,7 @@ async def get_ratio_trend(
                     "change_pct": round(change_pct, 1),
                     "average": round(sum(values) / len(values), 2),
                     "min": round(min(values), 2),
-                    "max": round(max(values), 2)
+                    "max": round(max(values), 2),
                 }
 
             return {
@@ -453,8 +487,8 @@ async def get_ratio_trend(
                     "ratio_code": ratio,
                     "ratio_name": definition["name"],
                     "trend": trend_data,
-                    "analysis": analysis
-                }
+                    "analysis": analysis,
+                },
             }
 
     except HTTPException:
@@ -477,13 +511,21 @@ async def compare_periods(
 
         async with pool.acquire() as conn:
             # Calculate for both periods
-            result1 = await conn.fetchval("""
+            result1 = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, $2, NULL, NULL)
-            """, ctx["tenant_id"], period1_date)
+            """,
+                ctx["tenant_id"],
+                period1_date,
+            )
 
-            result2 = await conn.fetchval("""
+            result2 = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, $2, NULL, NULL)
-            """, ctx["tenant_id"], period2_date)
+            """,
+                ctx["tenant_id"],
+                period2_date,
+            )
 
             # Calculate variances
             comparison = {}
@@ -511,7 +553,7 @@ async def compare_periods(
                         "period1": float(val1) if val1 else None,
                         "period2": float(val2) if val2 else None,
                         "variance": round(variance, 2) if variance else None,
-                        "variance_pct": variance_pct
+                        "variance_pct": variance_pct,
                     }
 
             return {
@@ -519,8 +561,8 @@ async def compare_periods(
                 "data": {
                     "period1": period1_date.isoformat(),
                     "period2": period2_date.isoformat(),
-                    "comparison": comparison
-                }
+                    "comparison": comparison,
+                },
             }
 
     except HTTPException:
@@ -533,6 +575,7 @@ async def compare_periods(
 # =============================================================================
 # DEFINITIONS
 # =============================================================================
+
 
 @router.get("/definitions", response_model=RatioDefinitionListResponse)
 async def list_definitions(
@@ -555,14 +598,17 @@ async def list_definitions(
 
             where_clause = " AND ".join(conditions)
 
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT code, name, category, formula, description,
                        ideal_min, ideal_max, higher_is_better,
                        display_format, decimal_places
                 FROM ratio_definitions
                 WHERE {where_clause}
                 ORDER BY display_order, code
-            """, *params)
+            """,
+                *params,
+            )
 
             items = [
                 {
@@ -575,15 +621,12 @@ async def list_definitions(
                     "ideal_max": float(row["ideal_max"]) if row["ideal_max"] else None,
                     "higher_is_better": row["higher_is_better"],
                     "display_format": row["display_format"],
-                    "decimal_places": row["decimal_places"]
+                    "decimal_places": row["decimal_places"],
                 }
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": len(items)
-            }
+            return {"items": items, "total": len(items)}
 
     except Exception as e:
         logger.error(f"Error listing definitions: {e}", exc_info=True)
@@ -597,12 +640,17 @@ async def get_definition(request: Request, code: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM ratio_definitions WHERE code = $1
-            """, code)
+            """,
+                code,
+            )
 
             if not row:
-                raise HTTPException(status_code=404, detail="Ratio definition not found")
+                raise HTTPException(
+                    status_code=404, detail="Ratio definition not found"
+                )
 
             return {
                 "success": True,
@@ -617,8 +665,8 @@ async def get_definition(request: Request, code: str):
                     "higher_is_better": row["higher_is_better"],
                     "display_format": row["display_format"],
                     "decimal_places": row["decimal_places"],
-                    "is_active": row["is_active"]
-                }
+                    "is_active": row["is_active"],
+                },
             }
 
     except HTTPException:
@@ -632,6 +680,7 @@ async def get_definition(request: Request, code: str):
 # ALERTS & DASHBOARD
 # =============================================================================
 
+
 @router.get("/alerts", response_model=RatioAlertListResponse)
 async def get_ratio_alerts(request: Request):
     """Get ratios that are outside their ideal range."""
@@ -640,27 +689,33 @@ async def get_ratio_alerts(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM check_ratio_alerts($1)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             alerts = [
                 {
                     "ratio_code": row["ratio_code"],
                     "ratio_name": row["ratio_name"],
-                    "current_value": float(row["current_value"]) if row["current_value"] else None,
+                    "current_value": float(row["current_value"])
+                    if row["current_value"]
+                    else None,
                     "alert_level": row["alert_level"],
-                    "threshold_min": float(row["threshold_min"]) if row["threshold_min"] else None,
-                    "threshold_max": float(row["threshold_max"]) if row["threshold_max"] else None
+                    "threshold_min": float(row["threshold_min"])
+                    if row["threshold_min"]
+                    else None,
+                    "threshold_max": float(row["threshold_max"])
+                    if row["threshold_max"]
+                    else None,
                 }
                 for row in rows
                 if row["alert_level"] not in ("normal", "neutral")
             ]
 
-            return {
-                "success": True,
-                "data": alerts
-            }
+            return {"success": True, "data": alerts}
 
     except HTTPException:
         raise
@@ -678,23 +733,33 @@ async def get_ratio_dashboard(request: Request):
 
         async with pool.acquire() as conn:
             # Get current ratios
-            result = await conn.fetchval("""
+            result = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, CURRENT_DATE, NULL, NULL)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             ratios = result.get("ratios", {}) if result else {}
 
             # Key ratios for dashboard
             key_ratio_codes = [
-                "current_ratio", "quick_ratio", "gross_profit_margin",
-                "net_profit_margin", "debt_to_equity", "inventory_turnover"
+                "current_ratio",
+                "quick_ratio",
+                "gross_profit_margin",
+                "net_profit_margin",
+                "debt_to_equity",
+                "inventory_turnover",
             ]
 
             # Get definitions
-            definitions = await conn.fetch("""
+            definitions = await conn.fetch(
+                """
                 SELECT code, name, ideal_min, ideal_max, higher_is_better, display_format
                 FROM ratio_definitions WHERE code = ANY($1)
-            """, key_ratio_codes)
+            """,
+                key_ratio_codes,
+            )
             def_map = {d["code"]: d for d in definitions}
 
             # Format key ratios
@@ -703,34 +768,51 @@ async def get_ratio_dashboard(request: Request):
                 for code, value in cat_ratios.items():
                     if code in key_ratio_codes:
                         defn = def_map.get(code, {})
-                        ideal_min = float(defn["ideal_min"]) if defn.get("ideal_min") else None
-                        ideal_max = float(defn["ideal_max"]) if defn.get("ideal_max") else None
+                        ideal_min = (
+                            float(defn["ideal_min"]) if defn.get("ideal_min") else None
+                        )
+                        ideal_max = (
+                            float(defn["ideal_max"]) if defn.get("ideal_max") else None
+                        )
                         display_format = defn.get("display_format", "decimal")
                         higher_is_better = defn.get("higher_is_better", True)
 
                         float_value = float(value) if value else None
-                        status = get_ratio_status(float_value, ideal_min, ideal_max, higher_is_better)
+                        status = get_ratio_status(
+                            float_value, ideal_min, ideal_max, higher_is_better
+                        )
 
                         key_ratios[code] = {
                             "value": float_value,
                             "display": format_ratio_value(float_value, display_format),
                             "status": status,
-                            "ideal_range": f"{ideal_min} - {ideal_max}" if ideal_min and ideal_max else None
+                            "ideal_range": f"{ideal_min} - {ideal_max}"
+                            if ideal_min and ideal_max
+                            else None,
                         }
 
             # Get alerts
-            alert_rows = await conn.fetch("""
+            alert_rows = await conn.fetch(
+                """
                 SELECT * FROM check_ratio_alerts($1)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             alerts = [
                 {
                     "ratio_code": row["ratio_code"],
                     "ratio_name": row["ratio_name"],
-                    "current_value": float(row["current_value"]) if row["current_value"] else None,
+                    "current_value": float(row["current_value"])
+                    if row["current_value"]
+                    else None,
                     "alert_level": row["alert_level"],
-                    "threshold_min": float(row["threshold_min"]) if row["threshold_min"] else None,
-                    "threshold_max": float(row["threshold_max"]) if row["threshold_max"] else None
+                    "threshold_min": float(row["threshold_min"])
+                    if row["threshold_min"]
+                    else None,
+                    "threshold_max": float(row["threshold_max"])
+                    if row["threshold_max"]
+                    else None,
                 }
                 for row in alert_rows
                 if row["alert_level"] not in ("normal", "neutral")
@@ -739,9 +821,13 @@ async def get_ratio_dashboard(request: Request):
             # Get recent trends (simplified - just direction)
             trends = {}
             for code in ["current_ratio", "net_profit_margin", "debt_to_equity"]:
-                trend_rows = await conn.fetch("""
+                trend_rows = await conn.fetch(
+                    """
                     SELECT * FROM get_ratio_trend($1, $2, 3, 'monthly')
-                """, ctx["tenant_id"], code)
+                """,
+                    ctx["tenant_id"],
+                    code,
+                )
 
                 if len(trend_rows) >= 2:
                     values = [float(r["value"]) for r in trend_rows if r["value"]]
@@ -760,8 +846,8 @@ async def get_ratio_dashboard(request: Request):
                     "as_of_date": date.today(),
                     "key_ratios": key_ratios,
                     "alerts": alerts,
-                    "trends": trends
-                }
+                    "trends": trends,
+                },
             }
 
     except HTTPException:
@@ -775,6 +861,7 @@ async def get_ratio_dashboard(request: Request):
 # ALERT CONFIGURATION
 # =============================================================================
 
+
 @router.post("/alerts", response_model=FinancialRatioResponse, status_code=201)
 async def create_alert(request: Request, body: CreateAlertRequest):
     """Create or update ratio alert thresholds."""
@@ -784,14 +871,20 @@ async def create_alert(request: Request, body: CreateAlertRequest):
 
         async with pool.acquire() as conn:
             # Verify ratio exists
-            ratio = await conn.fetchrow("""
+            ratio = await conn.fetchrow(
+                """
                 SELECT code FROM ratio_definitions WHERE code = $1
-            """, body.ratio_code)
+            """,
+                body.ratio_code,
+            )
 
             if not ratio:
-                raise HTTPException(status_code=400, detail=f"Unknown ratio code: {body.ratio_code}")
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown ratio code: {body.ratio_code}"
+                )
 
-            alert_id = await conn.fetchval("""
+            alert_id = await conn.fetchval(
+                """
                 INSERT INTO ratio_alerts (
                     tenant_id, ratio_code, warning_min, warning_max,
                     critical_min, critical_max, notify_on_warning,
@@ -816,13 +909,13 @@ async def create_alert(request: Request, body: CreateAlertRequest):
                 body.critical_max,
                 body.notify_on_warning,
                 body.notify_on_critical,
-                body.is_active
+                body.is_active,
             )
 
             return {
                 "success": True,
                 "message": "Alert configuration saved",
-                "data": {"id": str(alert_id)}
+                "data": {"id": str(alert_id)},
             }
 
     except HTTPException:
@@ -836,6 +929,7 @@ async def create_alert(request: Request, body: CreateAlertRequest):
 # BENCHMARK COMPARISON
 # =============================================================================
 
+
 @router.get("/benchmark")
 async def compare_to_benchmark(
     request: Request,
@@ -848,18 +942,24 @@ async def compare_to_benchmark(
 
         async with pool.acquire() as conn:
             # Get current ratios
-            result = await conn.fetchval("""
+            result = await conn.fetchval(
+                """
                 SELECT calculate_financial_ratios($1, CURRENT_DATE, NULL, NULL)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             ratios = result.get("ratios", {}) if result else {}
 
             # Get benchmarks
-            benchmarks = await conn.fetch("""
+            benchmarks = await conn.fetch(
+                """
                 SELECT ratio_code, benchmark_min, benchmark_avg, benchmark_max, source, year
                 FROM industry_benchmarks
                 WHERE industry = $1
-            """, industry)
+            """,
+                industry,
+            )
 
             benchmark_map = {b["ratio_code"]: b for b in benchmarks}
 
@@ -869,13 +969,23 @@ async def compare_to_benchmark(
                     bench = benchmark_map.get(code)
                     if bench:
                         float_value = float(value) if value else None
-                        bench_avg = float(bench["benchmark_avg"]) if bench["benchmark_avg"] else None
+                        bench_avg = (
+                            float(bench["benchmark_avg"])
+                            if bench["benchmark_avg"]
+                            else None
+                        )
 
                         variance = None
                         performance = None
 
-                        if float_value is not None and bench_avg is not None and bench_avg != 0:
-                            variance = round(((float_value - bench_avg) / bench_avg) * 100, 1)
+                        if (
+                            float_value is not None
+                            and bench_avg is not None
+                            and bench_avg != 0
+                        ):
+                            variance = round(
+                                ((float_value - bench_avg) / bench_avg) * 100, 1
+                            )
                             if variance > 10:
                                 performance = "above_average"
                             elif variance < -10:
@@ -884,24 +994,25 @@ async def compare_to_benchmark(
                                 performance = "average"
 
                         # Get ratio name
-                        defn = await conn.fetchrow("""
+                        defn = await conn.fetchrow(
+                            """
                             SELECT name FROM ratio_definitions WHERE code = $1
-                        """, code)
+                        """,
+                            code,
+                        )
 
-                        comparisons.append({
-                            "ratio_code": code,
-                            "ratio_name": defn["name"] if defn else code,
-                            "current_value": float_value,
-                            "benchmark_avg": bench_avg,
-                            "variance": variance,
-                            "performance": performance
-                        })
+                        comparisons.append(
+                            {
+                                "ratio_code": code,
+                                "ratio_name": defn["name"] if defn else code,
+                                "current_value": float_value,
+                                "benchmark_avg": bench_avg,
+                                "variance": variance,
+                                "performance": performance,
+                            }
+                        )
 
-            return {
-                "success": True,
-                "industry": industry,
-                "data": comparisons
-            }
+            return {"success": True, "industry": industry, "data": comparisons}
 
     except HTTPException:
         raise

@@ -8,7 +8,7 @@ Enterprise Single Session Enforcement:
 """
 import logging
 import re
-from fastapi import Request
+from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from backend.api_gateway.app.services.auth_instance import auth_client
@@ -194,6 +194,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             return await call_next(request)
 
+        except HTTPException:
+            raise
         except Exception as e:
             import traceback
 
@@ -201,5 +203,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
             )
             return JSONResponse(
-                status_code=500, content={"error": "Authentication error"}
+                status_code=500,
+                content={"error": "Internal server error", "detail": str(e)},
             )

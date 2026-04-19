@@ -77,3 +77,4 @@ backups/*.sql.gz.age
 
 # Git worktrees
 .worktrees/
+.env.bak-pre-minio

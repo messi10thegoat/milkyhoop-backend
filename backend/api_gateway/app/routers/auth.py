@@ -12,7 +12,6 @@ from backend.api_gateway.app.services.session_manager import session_manager
 import os
 import asyncpg
 from datetime import datetime, timedelta
-from backend.api_gateway.app.config import settings
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
 logger = logging.getLogger(__name__)
@@ -64,17 +63,13 @@ class AuthResponse(BaseModel):
 # =====================================================
 # DB POOL FOR TENANT QUERIES
 # =====================================================
-_pool: asyncpg.Pool | None = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=5, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 class SwitchTenantRequest(BaseModel):

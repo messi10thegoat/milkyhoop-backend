@@ -196,6 +196,10 @@ EXTRACTION_SCHEMAS = {
                             "create_bank_account",
                             "create_item",
                             "create_sales_invoice",
+                            "create_sales_order",
+                            "update_sales_invoice",
+                            "update_sales_order",
+                            "void_sales_order",
                             "create_bill",
                             "create_receive_payment",
                             "create_bill_payment",
@@ -771,6 +775,10 @@ PIPELINE_ENABLED_INTENTS = {
     "create_vendor_credit",
     "void_vendor_credit",
     "create_quote",
+    "create_sales_order",
+    "update_sales_invoice",
+    "update_sales_order",
+    "void_sales_order",
     "create_bank_transfer",
     "void_bank_transfer",
     "create_customer_deposit",
@@ -816,6 +824,8 @@ _ACTION_KEYWORDS = {
         "bikinkan",
         "registrasi",
         "register",
+        "terima",
+        "terima pembayaran",
     ],
     "update": [
         "edit",
@@ -931,20 +941,50 @@ def classify_query_intent(user_text: str) -> tuple:
 
     t = user_text.strip().lower()
 
-    # DISABLED P2.1 (2026-04-14): handled by LLM Router
-    # ── Calc engine intents (Batch 1 expansion) ──
-    # if _qre.search(
-    #     r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
-    # ) or _qre.search(
-    #     r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
-    # ):
-    #     return "calc_rank_customers_by_ar", None, None
-    # if _qre.search(
-    #     r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
-    # ) or _qre.search(
-    #     r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
-    # ):
-    #     return "calc_rank_vendors_by_ap", None, None
+    # ── Calc engine intents: superlative + ranking patterns ──
+    # Re-enabled from DISABLED P2.1 — LLM Router unreliable for these intents.
+    # Covers: "piutang paling besar", "siapa yang hutangnya terbesar", "vendor mana paling banyak kita hutangi"
+    if (
+        _qre.search(
+            r"(?:piutang|ar).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+            t,
+        )
+        or _qre.search(
+            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:piutang|ar)", t
+        )
+        or _qre.search(
+            r"(?:pelanggan|customer).*(?:piutang|ar).*(?:paling|terbesar|terbanyak)", t
+        )
+        or _qre.search(
+            r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
+        )
+        or _qre.search(
+            r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
+        )
+    ):
+        return "calc_rank_customers_by_ar", None, None
+    if (
+        _qre.search(
+            r"(?:hutang|utang|ap).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+            t,
+        )
+        or _qre.search(
+            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:hutang|utang|ap)", t
+        )
+        or _qre.search(
+            r"(?:vendor|pemasok).*(?:hutang|utang).*(?:paling|terbesar|terbanyak)", t
+        )
+        or _qre.search(
+            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
+        )
+        or _qre.search(
+            r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
+        )
+        or _qre.search(
+            r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:hutang|hutangi)", t
+        )
+    ):
+        return "calc_rank_vendors_by_ap", None, None
     # if _qre.search(r"(?:total|jumlah).*(?:penjualan|sales).*(?:bulan\s*ini)", t):
     #     return "calc_sum_sales_this_month", None, None
     # if _qre.search(r"(?:total|jumlah).*(?:pembelian|purchase).*(?:bulan\s*ini)", t):

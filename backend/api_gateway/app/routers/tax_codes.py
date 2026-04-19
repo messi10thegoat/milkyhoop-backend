@@ -18,32 +18,23 @@ from ..schemas.tax_codes import (
     TaxCodeDetailResponse,
     TaxCodeDropdownResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -53,10 +44,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -74,8 +62,12 @@ async def health_check():
 @router.get("/dropdown", response_model=TaxCodeDropdownResponse)
 async def get_tax_dropdown(
     request: Request,
-    tax_type: Optional[str] = Query(None, description="Filter by tax type (ppn, pph21, etc.)"),
-    direction: Optional[str] = Query(None, description="Filter by direction: input (purchases) or output (sales)")
+    tax_type: Optional[str] = Query(
+        None, description="Filter by tax type (ppn, pph21, etc.)"
+    ),
+    direction: Optional[str] = Query(
+        None, description="Filter by direction: input (purchases) or output (sales)"
+    ),
 ):
     """
     Get tax codes for dropdown/select components.
@@ -96,7 +88,9 @@ async def get_tax_dropdown(
                 param_idx += 1
 
             if direction:
-                conditions.append(f"(direction = ${param_idx} OR (direction IS NULL AND tax_type = 'none'))")
+                conditions.append(
+                    f"(direction = ${param_idx} OR (direction IS NULL AND tax_type = 'none'))"
+                )
                 params.append(direction)
                 param_idx += 1
 
@@ -153,7 +147,7 @@ async def seed_default_tax_codes(request: Request):
             return {
                 "success": True,
                 "message": "Default tax codes seeded successfully",
-                "data": {}
+                "data": {},
             }
 
     except HTTPException:
@@ -216,7 +210,7 @@ async def list_tax_codes(
                 "code": "code",
                 "name": "name",
                 "rate": "rate",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "code")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -251,11 +245,7 @@ async def list_tax_codes(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -308,7 +298,7 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                     "is_default": row["is_default"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
-                }
+                },
             }
 
     except HTTPException:
@@ -337,16 +327,17 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
             # Check for duplicate code
             existing = await conn.fetchval(
                 "SELECT id FROM tax_codes WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if existing:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"Tax code '{body.code}' already exists"
+                    status_code=400, detail=f"Tax code '{body.code}' already exists"
                 )
 
             # Insert tax code
-            tax_code_id = await conn.fetchval("""
+            tax_code_id = await conn.fetchval(
+                """
                 INSERT INTO tax_codes (
                     tenant_id, code, name, rate, tax_type, is_inclusive,
                     sales_tax_account, purchase_tax_account, description,
@@ -364,7 +355,7 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
                 body.purchase_tax_account,
                 body.description,
                 body.is_default,
-                ctx["user_id"]
+                ctx["user_id"],
             )
 
             logger.info(f"Tax code created: {tax_code_id}, code={body.code}")
@@ -372,11 +363,7 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
             return {
                 "success": True,
                 "message": "Tax code created successfully",
-                "data": {
-                    "id": str(tax_code_id),
-                    "code": body.code,
-                    "name": body.name
-                }
+                "data": {"id": str(tax_code_id), "code": body.code, "name": body.name},
             }
 
     except HTTPException:
@@ -390,7 +377,9 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
 # UPDATE TAX CODE
 # =============================================================================
 @router.patch("/{tax_code_id}", response_model=TaxCodeResponse)
-async def update_tax_code(request: Request, tax_code_id: UUID, body: UpdateTaxCodeRequest):
+async def update_tax_code(
+    request: Request, tax_code_id: UUID, body: UpdateTaxCodeRequest
+):
     """
     Update an existing tax code.
 
@@ -404,7 +393,8 @@ async def update_tax_code(request: Request, tax_code_id: UUID, body: UpdateTaxCo
             # Check if tax code exists
             existing = await conn.fetchrow(
                 "SELECT id, code FROM tax_codes WHERE id = $1 AND tenant_id = $2",
-                tax_code_id, ctx["tenant_id"]
+                tax_code_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Tax code not found")
@@ -413,12 +403,13 @@ async def update_tax_code(request: Request, tax_code_id: UUID, body: UpdateTaxCo
             if body.code and body.code != existing["code"]:
                 duplicate = await conn.fetchval(
                     "SELECT id FROM tax_codes WHERE tenant_id = $1 AND code = $2 AND id != $3",
-                    ctx["tenant_id"], body.code, tax_code_id
+                    ctx["tenant_id"],
+                    body.code,
+                    tax_code_id,
                 )
                 if duplicate:
                     raise HTTPException(
-                        status_code=400,
-                        detail=f"Tax code '{body.code}' already exists"
+                        status_code=400, detail=f"Tax code '{body.code}' already exists"
                     )
 
             # Build update query dynamically
@@ -427,7 +418,7 @@ async def update_tax_code(request: Request, tax_code_id: UUID, body: UpdateTaxCo
                 return {
                     "success": True,
                     "message": "No changes provided",
-                    "data": {"id": str(tax_code_id)}
+                    "data": {"id": str(tax_code_id)},
                 }
 
             updates = []
@@ -454,7 +445,7 @@ async def update_tax_code(request: Request, tax_code_id: UUID, body: UpdateTaxCo
             return {
                 "success": True,
                 "message": "Tax code updated successfully",
-                "data": {"id": str(tax_code_id)}
+                "data": {"id": str(tax_code_id)},
             }
 
     except HTTPException:
@@ -480,24 +471,31 @@ async def delete_tax_code(request: Request, tax_code_id: UUID):
             # Check if tax code exists
             existing = await conn.fetchrow(
                 "SELECT id, code FROM tax_codes WHERE id = $1 AND tenant_id = $2",
-                tax_code_id, ctx["tenant_id"]
+                tax_code_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Tax code not found")
 
             # Soft delete
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE tax_codes
                 SET is_active = false, is_default = false, updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, tax_code_id, ctx["tenant_id"])
+            """,
+                tax_code_id,
+                ctx["tenant_id"],
+            )
 
-            logger.info(f"Tax code soft deleted: {tax_code_id}, code={existing['code']}")
+            logger.info(
+                f"Tax code soft deleted: {tax_code_id}, code={existing['code']}"
+            )
 
             return {
                 "success": True,
                 "message": "Tax code deleted successfully",
-                "data": {"id": str(tax_code_id), "code": existing["code"]}
+                "data": {"id": str(tax_code_id), "code": existing["code"]},
             }
 
     except HTTPException:

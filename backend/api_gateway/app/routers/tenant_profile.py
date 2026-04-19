@@ -59,6 +59,7 @@ PROFILE_SELECT = """
 
 # ── Models ──────────────────────────────────────────
 
+
 class TenantProfileResponse(BaseModel):
     success: bool
     data: Optional[dict] = None
@@ -72,6 +73,7 @@ class UpdateTenantProfileRequest(BaseModel):
 
 
 # ── Endpoints ───────────────────────────────────────
+
 
 @router.get("/profile", response_model=TenantProfileResponse)
 async def get_tenant_profile(request: Request):
@@ -96,6 +98,7 @@ async def get_tenant_profile(request: Request):
 
 
 @router.put("/profile", response_model=TenantProfileResponse)
+@router.patch("/profile", response_model=TenantProfileResponse)
 async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Request):
     """Update tenant business profile fields."""
     tenant_id = _get_tenant_id(request)
@@ -155,7 +158,9 @@ async def upload_tenant_logo(request: Request, file: UploadFile = File(...)):
 
     # Validate content type
     if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG, or WebP images allowed")
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, or WebP images allowed"
+        )
 
     # Read and validate size
     contents = await file.read()
@@ -234,6 +239,7 @@ async def delete_tenant_logo(request: Request):
 async def serve_tenant_logo(filename: str):
     """Serve a tenant logo file."""
     import re
+
     if not re.match(r"^[a-zA-Z0-9_-]+\.\w+$", filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
@@ -242,6 +248,7 @@ async def serve_tenant_logo(filename: str):
         raise HTTPException(status_code=404, detail="Logo not found")
 
     from fastapi.responses import FileResponse
+
     ext = logo_path.suffix.lstrip(".")
     media = f"image/{ext}" if ext != "jpg" else "image/jpeg"
     return FileResponse(

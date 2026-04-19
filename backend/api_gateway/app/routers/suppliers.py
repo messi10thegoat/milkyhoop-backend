@@ -7,28 +7,20 @@ Now reads from the canonical vendors table which is the proper master data sourc
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 import logging
 import asyncpg
 
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        logger.info("Creating database connection pool for suppliers...")
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30,
-        )
-        logger.info("Suppliers connection pool created")
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 class SupplierSuggestion(BaseModel):
@@ -82,7 +74,8 @@ async def get_all_suppliers(
                 ORDER BY v.name ASC
                 LIMIT $2
                 """,
-                ctx["tenant_id"], limit,
+                ctx["tenant_id"],
+                limit,
             )
 
             results = [
@@ -90,7 +83,9 @@ async def get_all_suppliers(
                 for row in rows
             ]
 
-            logger.info(f"Suppliers /all: tenant={ctx[tenant_id]}, returned={len(results)}")
+            logger.info(
+                f"Suppliers /all: tenant={ctx[tenant_id]}, returned={len(results)}"
+            )
             return results
 
     except HTTPException:
@@ -132,15 +127,21 @@ async def search_suppliers(
                 ORDER BY usage_count DESC, v.name ASC
                 LIMIT $3
                 """,
-                ctx["tenant_id"], f"%{q}%", limit,
+                ctx["tenant_id"],
+                f"%{q}%",
+                limit,
             )
 
             suggestions = [
-                SupplierSuggestion(name=row["name"], usage_count=int(row["usage_count"]))
+                SupplierSuggestion(
+                    name=row["name"], usage_count=int(row["usage_count"])
+                )
                 for row in rows
             ]
 
-            logger.info(f"Supplier search: q={q}, tenant={ctx[tenant_id]}, found={len(suggestions)}")
+            logger.info(
+                f"Supplier search: q={q}, tenant={ctx[tenant_id]}, found={len(suggestions)}"
+            )
             return SupplierSearchResponse(suggestions=suggestions)
 
     except HTTPException:
@@ -152,4 +153,8 @@ async def search_suppliers(
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "suppliers_router", "source": "vendors_table"}
+    return {
+        "status": "healthy",
+        "service": "suppliers_router",
+        "source": "vendors_table",
+    }

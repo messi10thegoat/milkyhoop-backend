@@ -42,30 +42,24 @@ from ..schemas.vendor_credits import (
     VendorCreditListResponse,
     VendorCreditSummaryResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes
 AP_ACCOUNT = "2-10100"  # Hutang Usaha
-PURCHASE_RETURN_ACCOUNT = "5-10300"  # Retur Pembelian
+PURCHASE_RETURN_ACCOUNT = "1-10600"  # Persediaan
 TAX_RECEIVABLE_ACCOUNT = "1-10700"  # PPN Masukan
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -906,7 +900,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
     Creates journal entry:
     - Dr. Accounts Payable
-    - Cr. Purchase Returns (Retur Pembelian)
+    - Cr. Purchase Returns (Persediaan)
     - Cr. VAT Receivable (if tax)
 
     Changes status from 'draft' to 'posted'.
@@ -1042,7 +1036,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     line_number,
                     purchase_return_account_id,
                     subtotal,
-                    f"Retur Pembelian - {vc['credit_number']}",
+                    f"Persediaan - {vc['credit_number']}",
                 )
                 line_number += 1
 
@@ -1074,6 +1068,46 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # ── Inventory decrease for goods returned to vendor ──
+                vc_items = await conn.fetch(
+                    "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1",
+                    vendor_credit_id,
+                )
+                for item in vc_items:
+                    if not item["item_id"]:
+                        continue
+                    product = await conn.fetchrow(
+                        "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
+                        item["item_id"],
+                    )
+                    if not product or not product["track_inventory"]:
+                        continue
+
+                    wh_id = await conn.fetchval(
+                        "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                        ctx["tenant_id"],
+                    )
+                    if not wh_id:
+                        continue
+
+                    from ..services.inventory_helpers import record_inventory_outbound
+
+                    await record_inventory_outbound(
+                        conn=conn,
+                        tenant_id=ctx["tenant_id"],
+                        product_id=product["id"],
+                        product_code=product["item_code"],
+                        product_name=product["nama_produk"],
+                        warehouse_id=wh_id,
+                        quantity=float(item["quantity"]),
+                        source_type="VENDOR_CREDIT",
+                        source_id=vendor_credit_id,
+                        source_number=vc["credit_number"],
+                        user_id=ctx["user_id"],
+                        notes=f"Return to vendor - Vendor Credit {vc['credit_number']}",
+                        receipt_date=vc["credit_date"],
+                    )
 
                 # Wave 3: Write document_tax_lines (PPN reversal on VC)
                 if tax_amount > 0 and tax_jl_id:

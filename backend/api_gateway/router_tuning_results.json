@@ -1,0 +1,863 @@
+[
+  {
+    "id": "mt01_1",
+    "text": "buat faktur penjualan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt01",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 5058,
+    "resp": "Untuk membuat faktur penjualan, saya perlu beberapa informasi. \n\nSiapa nama pela"
+  },
+  {
+    "id": "mt01_2",
+    "text": "sintia",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt01",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 7862,
+    "resp": "Saya menemukan pelanggan dengan nama **Sintia Runtuwene**. \n\nSekarang, barang at"
+  },
+  {
+    "id": "mt01_3",
+    "text": "poloshirt hitam 20 pcs harga 150000",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt01",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 12188,
+    "resp": "Saya menemukan barang **Poloshirt Hitam + Bordir** dengan harga jual **Rp 155.00"
+  },
+  {
+    "id": "mt01_4",
+    "text": "besok",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt01",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 3555,
+    "resp": "Untuk faktur penjualan kepada **Sintia Runtuwene** dengan item **Poloshirt Hitam"
+  },
+  {
+    "id": "mt01_5",
+    "text": "oke terbitkan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt01",
+    "step": 5,
+    "mt": "TEXT",
+    "ms": 3403,
+    "resp": "Tentu, apa yang ingin Anda terbitkan?"
+  },
+  {
+    "id": "mt02_1",
+    "text": "mau buat faktur",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt02",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 7909,
+    "resp": "Untuk membuat faktur, saya perlu beberapa informasi. \n\nSiapa pelanggan yang akan"
+  },
+  {
+    "id": "mt02_2",
+    "text": "PT Maju Jaya",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt02",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 6686,
+    "resp": "Saya telah menemukan pelanggan **PT Maju Jaya** dengan nomor telepon **081234567"
+  },
+  {
+    "id": "mt02_3",
+    "text": "keran wastafel 5 pcs",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt02",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 6289,
+    "resp": "Sepertinya saya tidak dapat menemukan item dengan nama \"keran\". Mungkin ada nama"
+  },
+  {
+    "id": "mt02_4",
+    "text": "harga 250000 per pcs",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt02",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 5119,
+    "resp": "Saya masih tidak dapat menemukan item dengan nama \"keran\". Apakah Anda ingin say"
+  },
+  {
+    "id": "mt02_5",
+    "text": "jatuh tempo minggu depan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt02",
+    "step": 5,
+    "mt": "DIRECT_ACTION_PREVIEW",
+    "ms": 13279,
+    "resp": "### Buat Barang/Jasa\n\n| Field | Value |\n|-------|-------|\n| Nama | keran wastafe"
+  },
+  {
+    "id": "mt03_1",
+    "text": "buat faktur penjualan untuk Sintia poloshirt 10 pcs 150rb",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt03",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 44543,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt03_2",
+    "text": "terbitkan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt03",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 13645,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt04_1",
+    "text": "buat faktur untuk Sintia poloshirt 20 pcs 150rb",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt04",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 25240,
+    "resp": "Sepertinya sistem meminta informasi lebih lanjut mengenai pelanggan. Mari kita l"
+  },
+  {
+    "id": "mt04_2",
+    "text": "eh salah, bukan 20 tapi 30 pcs",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "correction"
+    ],
+    "group": "mt04",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 11403,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt04_3",
+    "text": "oke betul",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt04",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 609,
+    "resp": "Baik! Ada lagi yang bisa saya bantu?"
+  },
+  {
+    "id": "mt05_1",
+    "text": "buat vendor baru",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt05",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 3696,
+    "resp": "Untuk membuat vendor baru, saya perlu beberapa informasi. \n\n1. Apa nama vendor t"
+  },
+  {
+    "id": "mt05_2",
+    "text": "PD Suryatex",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt05",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 2553,
+    "resp": "Saya sudah mendapatkan nama vendor \"PD Suryatex\". \n\nApakah Anda ingin menambahka"
+  },
+  {
+    "id": "mt05_3",
+    "text": "alamat Bandung, telepon 022-5408799",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt05",
+    "step": 3,
+    "mt": "DIRECT_ACTION_PREVIEW",
+    "ms": 6310,
+    "resp": "### Buat Vendor/Supplier\n\n| Field | Value |\n|-------|-------|\n| Nama Vendor | PD"
+  },
+  {
+    "id": "mt05_4",
+    "text": "rekening BCA 3790-685-333 atas nama Citra",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt05",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 4315,
+    "resp": "Untuk membuat rekening bank baru, saya perlu beberapa informasi tambahan.\n\n1. Ap"
+  },
+  {
+    "id": "mt05_5",
+    "text": "barang",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt05",
+    "step": 5,
+    "mt": "TEXT",
+    "ms": 5109,
+    "resp": "Untuk membuat item baru, saya memerlukan beberapa informasi berikut:\n\n1. Nama ba"
+  },
+  {
+    "id": "mt06_1",
+    "text": "tambah pelanggan baru",
+    "expected": "create_customer",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt06",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 2975,
+    "resp": "Untuk menambahkan pelanggan baru, saya butuh beberapa informasi. \n\n1. Apa nama p"
+  },
+  {
+    "id": "mt06_2",
+    "text": "Sintia Runtuwene",
+    "expected": "create_customer",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt06",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 3066,
+    "resp": "Saya sudah mendapatkan nama pelanggan, yaitu **Sintia Runtuwene**. \n\nApakah Anda"
+  },
+  {
+    "id": "mt06_3",
+    "text": "Manado, telepon 0431-123456",
+    "expected": "create_customer",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt06",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 4897,
+    "resp": "Saya akan menambahkan pelanggan baru dengan detail berikut:\n\n- **Nama**: Sintia "
+  },
+  {
+    "id": "mt06_4",
+    "text": "oke simpan",
+    "expected": "create_customer",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt06",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 1080,
+    "resp": "Baik, data Anda telah disimpan. Ada lagi yang bisa saya bantu?"
+  },
+  {
+    "id": "mt07_1",
+    "text": "daftarkan vendor PT Makmur Sentosa alamat Jakarta Selatan telepon 021-7891234",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt07",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 4349,
+    "resp": "Sebelum mendaftarkan vendor PT Makmur Sentosa, saya perlu beberapa informasi tam"
+  },
+  {
+    "id": "mt07_2",
+    "text": "jasa",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt07",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 2447,
+    "resp": "Saya akan mendaftarkan vendor PT Makmur Sentosa dengan informasi berikut:\n\n- **N"
+  },
+  {
+    "id": "mt08_1",
+    "text": "catat pembelian dari Knitto",
+    "expected": "create_bill",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt08",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 4379,
+    "resp": "Untuk mencatat pembelian dari Knitto, saya perlu beberapa informasi tambahan. \n\n"
+  },
+  {
+    "id": "mt08_2",
+    "text": "kain hitam 100 meter harga 35000",
+    "expected": "create_bill",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt08",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 8116,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt08_3",
+    "text": "nomor faktur PB-2604-001",
+    "expected": "create_bill",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt08",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 8742,
+    "resp": "Saya perlu beberapa informasi tambahan untuk mencatat pembelian ini:\n\n1. Tanggal"
+  },
+  {
+    "id": "mt08_4",
+    "text": "terbitkan",
+    "expected": "create_bill",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt08",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 5145,
+    "resp": "Sepertinya saya tidak menemukan item \"kain\" dalam sistem. Apakah Anda ingin saya"
+  },
+  {
+    "id": "mt09_1",
+    "text": "hutang kita berapa",
+    "expected": "query_ap_outstanding",
+    "tags": [
+      "multi_turn",
+      "query"
+    ],
+    "group": "mt09",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 7007,
+    "resp": "Total hutang kita saat ini adalah **Rp 1.722.805**. \n\nHutang ini terdiri dari be"
+  },
+  {
+    "id": "mt09_2",
+    "text": "ke vendor mana saja",
+    "expected": "query_ap_outstanding",
+    "tags": [
+      "multi_turn",
+      "follow_up"
+    ],
+    "group": "mt09",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 10434,
+    "resp": "Kita memiliki hutang kepada dua vendor:\n\n1. **Knitto**\n   - **BILL-2604-0035**: "
+  },
+  {
+    "id": "mt09_3",
+    "text": "yang paling besar siapa",
+    "expected": "calc_rank_vendors_by_ap",
+    "tags": [
+      "multi_turn",
+      "follow_up"
+    ],
+    "group": "mt09",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 2550,
+    "resp": "Vendor dengan total hutang terbesar adalah **Knitto** dengan total hutang sebesa"
+  },
+  {
+    "id": "mt09_4",
+    "text": "bayar yang Knitto",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "action_from_query"
+    ],
+    "group": "mt09",
+    "step": 4,
+    "mt": "DIRECT_ACTION_PREVIEW",
+    "ms": 29035,
+    "resp": "### Bayar Faktur Pembelian\n\n| Field | Value |\n|-------|-------|\n| Vendor | Knitt"
+  },
+  {
+    "id": "mt09_5",
+    "text": "dari BCA",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt09",
+    "step": 5,
+    "mt": "TEXT",
+    "ms": 13753,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt10_1",
+    "text": "piutang berapa total",
+    "expected": "query_ar_outstanding",
+    "tags": [
+      "multi_turn",
+      "query"
+    ],
+    "group": "mt10",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 5783,
+    "resp": "Total piutang yang belum dibayar adalah **Rp 175.000**. Terdapat **7** faktur pi"
+  },
+  {
+    "id": "mt10_2",
+    "text": "dari siapa saja",
+    "expected": "query_ar_invoices",
+    "tags": [
+      "multi_turn",
+      "follow_up"
+    ],
+    "group": "mt10",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 10870,
+    "resp": "Berikut adalah rincian piutang dari pelanggan:\n\n1. **Sintia**\n   - Faktur: **INV"
+  },
+  {
+    "id": "mt10_3",
+    "text": "yang terbesar siapa",
+    "expected": "calc_rank_customers_by_ar",
+    "tags": [
+      "multi_turn",
+      "follow_up"
+    ],
+    "group": "mt10",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 2580,
+    "resp": "Pelanggan dengan piutang terbesar adalah **Sintia Runtuwene** dengan total piuta"
+  },
+  {
+    "id": "mt10_4",
+    "text": "detail piutang Sintia",
+    "expected": "query_customer_ar",
+    "tags": [
+      "multi_turn",
+      "follow_up"
+    ],
+    "group": "mt10",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 9303,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt11_1",
+    "text": "ringkasan pengeluaran bulan ini",
+    "expected": "query_expenses_summary",
+    "tags": [
+      "multi_turn",
+      "query"
+    ],
+    "group": "mt11",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 11548,
+    "resp": "Berikut adalah ringkasan pengeluaran bulan ini:\n\n1. **Pengeluaran EXP-2604-0015*"
+  },
+  {
+    "id": "mt11_2",
+    "text": "rinciannya dong",
+    "expected": "query_expenses_list",
+    "tags": [
+      "multi_turn",
+      "drill_down"
+    ],
+    "group": "mt11",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 9017,
+    "resp": "Berikut adalah rincian pengeluaran bulan ini:\n\n- **Total Pengeluaran**: **Rp 850"
+  },
+  {
+    "id": "mt11_3",
+    "text": "tampilkan dalam tabel",
+    "expected": "reformat_as_table",
+    "tags": [
+      "multi_turn",
+      "reformat"
+    ],
+    "group": "mt11",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 9992,
+    "resp": "Berikut adalah rincian pengeluaran bulan ini dalam format tabel:\n\n| No  | Tangga"
+  },
+  {
+    "id": "mt12_1",
+    "text": "buat faktur penjualan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "stress"
+    ],
+    "group": "mt12",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 2762,
+    "resp": "Untuk membuat faktur penjualan, saya perlu beberapa informasi. \n\nSiapa pelanggan"
+  },
+  {
+    "id": "mt12_2",
+    "text": "barang",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill",
+      "stress"
+    ],
+    "group": "mt12",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 11195,
+    "resp": "Berikut adalah beberapa barang yang tersedia untuk dijual:\n\n1. **Poloshirt Hitam"
+  },
+  {
+    "id": "mt12_3",
+    "text": "poloshirt",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill",
+      "stress"
+    ],
+    "group": "mt12",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 2370,
+    "resp": "Berapa jumlah **Poloshirt Hitam + Bordir** yang ingin Anda pesan untuk faktur in"
+  },
+  {
+    "id": "mt12_4",
+    "text": "20",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill",
+      "stress"
+    ],
+    "group": "mt12",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 3095,
+    "resp": "Saya akan membuat faktur penjualan untuk **20 Poloshirt Hitam + Bordir** dengan "
+  },
+  {
+    "id": "mt12_5",
+    "text": "150000",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "slot_fill",
+      "stress"
+    ],
+    "group": "mt12",
+    "step": 5,
+    "mt": "TEXT",
+    "ms": 3295,
+    "resp": "Sepertinya Anda menyebutkan harga **Rp 150.000**. Namun, harga yang terdaftar un"
+  },
+  {
+    "id": "mt13_1",
+    "text": "piutang berapa",
+    "expected": "query_ar_outstanding",
+    "tags": [
+      "multi_turn",
+      "domain_switch"
+    ],
+    "group": "mt13",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 9632,
+    "resp": "Total piutang saat ini adalah **Rp 175.000**. \n\nIni terdiri dari beberapa faktur"
+  },
+  {
+    "id": "mt13_2",
+    "text": "hutang berapa",
+    "expected": "query_ap_outstanding",
+    "tags": [
+      "multi_turn",
+      "domain_switch"
+    ],
+    "group": "mt13",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 8756,
+    "resp": "Total hutang saat ini adalah **Rp 1.722.805**. \n\nRincian hutang per vendor adala"
+  },
+  {
+    "id": "mt13_3",
+    "text": "daftar barang",
+    "expected": "query_items_search",
+    "tags": [
+      "multi_turn",
+      "domain_switch"
+    ],
+    "group": "mt13",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 9680,
+    "resp": "Berikut adalah daftar barang yang tersedia:\n\n1. **Poloshirt Hitam + Bordir**\n   "
+  },
+  {
+    "id": "mt13_4",
+    "text": "buat vendor baru PT ABC",
+    "expected": "create_vendor",
+    "tags": [
+      "multi_turn",
+      "domain_switch"
+    ],
+    "group": "mt13",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 4212,
+    "resp": "Untuk membuat vendor baru PT ABC, saya perlu beberapa informasi tambahan:\n\n1. **"
+  },
+  {
+    "id": "mt14_1",
+    "text": "buat faktur penjualan",
+    "expected": "create_sales_invoice",
+    "tags": [
+      "multi_turn",
+      "cancel"
+    ],
+    "group": "mt14",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 2266,
+    "resp": "Untuk membuat faktur penjualan, saya perlu beberapa informasi. \n\nSiapa nama pela"
+  },
+  {
+    "id": "mt14_2",
+    "text": "batal",
+    "expected": "chitchat",
+    "tags": [
+      "multi_turn",
+      "cancel"
+    ],
+    "group": "mt14",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 3611,
+    "resp": "Tidak ada masalah. Jika ada yang ingin Anda lakukan selanjutnya, silakan beri ta"
+  },
+  {
+    "id": "mt14_3",
+    "text": "hutang berapa",
+    "expected": "query_ap_outstanding",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt14",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 6964,
+    "resp": "Total hutang Anda saat ini adalah **Rp 1.722.805**. \n\nHutang ini terdiri dari be"
+  },
+  {
+    "id": "mt15_1",
+    "text": "catat biaya",
+    "expected": "create_expense",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt15",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 3830,
+    "resp": "Untuk mencatat biaya, saya perlu beberapa informasi. \n\n1. Apa tanggal pengeluara"
+  },
+  {
+    "id": "mt15_2",
+    "text": "listrik 450 ribu",
+    "expected": "create_expense",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt15",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 5339,
+    "resp": "Saya akan mencatat biaya untuk listrik sebesar **Rp 450.000**. \n\nNamun, saya mas"
+  },
+  {
+    "id": "mt15_3",
+    "text": "dari BCA",
+    "expected": "create_expense",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt15",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 4600,
+    "resp": "Saya akan mencatat biaya listrik sebesar **Rp 450.000** yang dibayar dari rekeni"
+  },
+  {
+    "id": "mt16_1",
+    "text": "mau bayar tagihan",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn"
+    ],
+    "group": "mt16",
+    "step": 1,
+    "mt": "TEXT",
+    "ms": 2346,
+    "resp": "Untuk membayar tagihan, saya perlu tahu nomor tagihan dan jumlah yang ingin diba"
+  },
+  {
+    "id": "mt16_2",
+    "text": "Knitto",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt16",
+    "step": 2,
+    "mt": "TEXT",
+    "ms": 4284,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt16_3",
+    "text": "500 ribu",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt16",
+    "step": 3,
+    "mt": "TEXT",
+    "ms": 6662,
+    "resp": "Maaf, saya belum paham maksudnya. Coba ceritakan lebih spesifik, misalnya:\n\n• \"C"
+  },
+  {
+    "id": "mt16_4",
+    "text": "BCA",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt16",
+    "step": 4,
+    "mt": "TEXT",
+    "ms": 3080,
+    "resp": "Saya akan mencatat pembayaran tagihan sebesar **Rp 500.000** kepada vendor **Kni"
+  },
+  {
+    "id": "mt16_5",
+    "text": "oke bayar",
+    "expected": "create_bill_payment",
+    "tags": [
+      "multi_turn",
+      "slot_fill"
+    ],
+    "group": "mt16",
+    "step": 5,
+    "mt": "TEXT",
+    "ms": 431,
+    "resp": "Apakah Anda ingin melihat tutorial tentang cara menerima pembayaran atau cara me"
+  }
+]

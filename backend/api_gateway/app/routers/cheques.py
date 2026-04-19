@@ -54,7 +54,6 @@ from ..schemas.cheques import (
     ClearChequeRequest,
     BounceChequeRequest,
     CancelChequeRequest,
-    ReplaceChequeRequest,
     ChequeListResponse,
     ChequeDetailResponse,
     ChequeSummaryResponse,
@@ -62,40 +61,31 @@ from ..schemas.cheques import (
     ChequeActionResponse,
     ChequeResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id  # Law 27
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes — resolved via resolve_account_id (Law 27)
 CHEQUES_RECEIVABLE = "1-10600"  # Giro Diterima
-CHEQUES_PAYABLE = "2-10500"    # Giro Diberikan
-AR_ACCOUNT = "1-10300"          # Piutang Usaha
-AP_ACCOUNT = "2-10100"          # Hutang Usaha
-OTHER_INCOME = "4-20100"        # Pendapatan Lain-lain
+CHEQUES_PAYABLE = "2-10500"  # Giro Diberikan
+AR_ACCOUNT = "1-10300"  # Piutang Usaha
+AP_ACCOUNT = "2-10100"  # Hutang Usaha
+OTHER_INCOME = "4-20100"  # Pendapatan Lain-lain
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -105,20 +95,23 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def check_period_is_open(conn, tenant_id: str, journal_date: date):
     """Law 5: Validate fiscal period is open before journal creation."""
-    period = await conn.fetchrow("""
+    period = await conn.fetchrow(
+        """
         SELECT id, status FROM fiscal_periods
         WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
-    """, tenant_id, journal_date)
+    """,
+        tenant_id,
+        journal_date,
+    )
     if not period:
-        raise HTTPException(status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini")
+        raise HTTPException(
+            status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini"
+        )
     if period["status"] != "OPEN":
         raise HTTPException(status_code=400, detail="Periode akuntansi sudah ditutup")
 
@@ -132,7 +125,7 @@ async def create_journal_entry(
     source_id: UUID,
     lines: list,
     created_by: UUID,
-    reversal_of_id: UUID = None
+    reversal_of_id: UUID = None,
 ) -> UUID:
     """
     Create a journal entry with lines using DRAFT->POSTED pattern (Law 20).
@@ -147,18 +140,23 @@ async def create_journal_entry(
     total_amount = sum(Decimal(str(line["debit"])) for line in lines)
 
     # Generate journal number
-    journal_number = await conn.fetchval("""
+    journal_number = await conn.fetchval(
+        """
         SELECT 'CHQ-' || TO_CHAR($1, 'YYMM') || '-' ||
                LPAD(COALESCE(
                    (SELECT COUNT(*) + 1 FROM journal_entries
                     WHERE tenant_id = $2 AND journal_number LIKE 'CHQ-' || TO_CHAR($1, 'YYMM') || '%'),
                    1
                )::TEXT, 4, '0')
-    """, journal_date, tenant_id)
+    """,
+        journal_date,
+        tenant_id,
+    )
 
     # Step 1: INSERT as DRAFT (Law 20)
     if reversal_of_id:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO journal_entries (
                 id, tenant_id, journal_number, journal_date, memo,
                 source_type, source_id, trace_id,
@@ -175,10 +173,11 @@ async def create_journal_entry(
             str(trace_id),
             total_amount,
             reversal_of_id,
-            created_by
+            created_by,
         )
     else:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO journal_entries (
                 id, tenant_id, journal_number, journal_date, memo,
                 source_type, source_id, trace_id,
@@ -194,12 +193,13 @@ async def create_journal_entry(
             source_id,
             str(trace_id),
             total_amount,
-            created_by
+            created_by,
         )
 
     # Step 2: INSERT journal_lines
     for idx, line in enumerate(lines, 1):
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO journal_lines (
                 id, journal_id, line_number, account_id, debit, credit, memo
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -210,13 +210,17 @@ async def create_journal_entry(
             line["account_id"],
             Decimal(str(line["debit"])),
             Decimal(str(line["credit"])),
-            line.get("memo", "")
+            line.get("memo", ""),
         )
 
     # Step 3: UPDATE to POSTED (Law 20)
-    await conn.execute("""
+    await conn.execute(
+        """
         UPDATE journal_entries SET status = 'POSTED', posted_at = NOW(), posted_by = $1 WHERE id = $2
-    """, created_by, journal_id)
+    """,
+        created_by,
+        journal_id,
+    )
 
     return journal_id
 
@@ -229,20 +233,25 @@ async def create_reversal_journal(
     memo: str,
     source_type: str,
     source_id: UUID,
-    created_by: UUID
+    created_by: UUID,
 ) -> UUID:
     """
     Law 2: Create a reversal journal instead of DELETE.
     Swaps debit/credit from original lines.
     """
     # Get original journal lines
-    original_lines = await conn.fetch("""
+    original_lines = await conn.fetch(
+        """
         SELECT account_id, debit, credit, memo FROM journal_lines
         WHERE journal_id = $1
-    """, original_journal_id)
+    """,
+        original_journal_id,
+    )
 
     if not original_lines:
-        raise HTTPException(status_code=400, detail="Original journal has no lines to reverse")
+        raise HTTPException(
+            status_code=400, detail="Original journal has no lines to reverse"
+        )
 
     # Swap debit/credit for reversal
     reversed_lines = [
@@ -250,7 +259,7 @@ async def create_reversal_journal(
             "account_id": line["account_id"],
             "debit": line["credit"],
             "credit": line["debit"],
-            "memo": f"Reversal: {line['memo']}" if line["memo"] else "Reversal"
+            "memo": f"Reversal: {line['memo']}" if line["memo"] else "Reversal",
         }
         for line in original_lines
     ]
@@ -264,13 +273,17 @@ async def create_reversal_journal(
         source_id,
         reversed_lines,
         created_by,
-        reversal_of_id=original_journal_id
+        reversal_of_id=original_journal_id,
     )
 
     # Link the original journal to its reversal
-    await conn.execute("""
+    await conn.execute(
+        """
         UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2
-    """, reversal_journal_id, original_journal_id)
+    """,
+        reversal_journal_id,
+        original_journal_id,
+    )
 
     return reversal_journal_id
 
@@ -279,11 +292,14 @@ async def create_reversal_journal(
 # LIST CHEQUES
 # =============================================================================
 
+
 @router.get("", response_model=ChequeListResponse)
 async def list_cheques(
     request: Request,
     cheque_type: Optional[Literal["received", "issued"]] = Query(None),
-    status: Optional[Literal["pending", "deposited", "cleared", "bounced", "cancelled", "replaced"]] = Query(None),
+    status: Optional[
+        Literal["pending", "deposited", "cleared", "bounced", "cancelled", "replaced"]
+    ] = Query(None),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
     search: Optional[str] = Query(None),
@@ -321,7 +337,9 @@ async def list_cheques(
                 param_idx += 1
 
             if search:
-                conditions.append(f"(cheque_number ILIKE ${param_idx} OR party_name ILIKE ${param_idx})")
+                conditions.append(
+                    f"(cheque_number ILIKE ${param_idx} OR party_name ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -359,11 +377,7 @@ async def list_cheques(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -392,14 +406,17 @@ async def list_pending_cheques(
 
             where_clause = " AND ".join(conditions)
 
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT id, cheque_number, cheque_date, bank_name, cheque_type,
                        amount, party_name, status, reference_number,
                        (cheque_date - CURRENT_DATE) as days_until_due
                 FROM cheques
                 WHERE {where_clause}
                 ORDER BY cheque_date ASC
-            """, *params)
+            """,
+                *params,
+            )
 
             return {
                 "items": [
@@ -418,7 +435,7 @@ async def list_pending_cheques(
                     for row in rows
                 ],
                 "total": len(rows),
-                "has_more": False
+                "has_more": False,
             }
 
     except HTTPException:
@@ -436,9 +453,12 @@ async def list_due_today(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_cheques_due_for_deposit($1, CURRENT_DATE)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             return {
                 "success": True,
@@ -450,12 +470,14 @@ async def list_due_today(request: Request):
                         "bank_name": row["bank_name"],
                         "amount": row["amount"],
                         "party_name": row["party_name"],
-                        "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
-                        "days_until_due": row["days_until_due"]
+                        "customer_id": str(row["customer_id"])
+                        if row["customer_id"]
+                        else None,
+                        "days_until_due": row["days_until_due"],
                     }
                     for row in rows
                 ],
-                "count": len(rows)
+                "count": len(rows),
             }
 
     except HTTPException:
@@ -477,9 +499,14 @@ async def list_upcoming_cheques(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_upcoming_cheques($1, $2, $3)
-            """, ctx["tenant_id"], days, cheque_type)
+            """,
+                ctx["tenant_id"],
+                days,
+                cheque_type,
+            )
 
             return {
                 "success": True,
@@ -491,11 +518,11 @@ async def list_upcoming_cheques(
                         "cheque_type": row["cheque_type"],
                         "amount": row["amount"],
                         "party_name": row["party_name"],
-                        "days_until_due": row["days_until_due"]
+                        "days_until_due": row["days_until_due"],
                     }
                     for row in rows
                 ],
-                "days": days
+                "days": days,
             }
 
     except HTTPException:
@@ -513,14 +540,17 @@ async def list_bounced_cheques(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, cheque_number, cheque_date, bank_name, cheque_type,
                        amount, party_name, bounce_reason, bounce_charges,
                        bounced_date, replacement_cheque_id
                 FROM cheques
                 WHERE tenant_id = $1 AND status = 'bounced'
                 ORDER BY bounced_date DESC
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             return {
                 "success": True,
@@ -536,11 +566,13 @@ async def list_bounced_cheques(request: Request):
                         "bounce_reason": row["bounce_reason"],
                         "bounce_charges": row["bounce_charges"],
                         "bounced_date": row["bounced_date"],
-                        "replacement_cheque_id": str(row["replacement_cheque_id"]) if row["replacement_cheque_id"] else None
+                        "replacement_cheque_id": str(row["replacement_cheque_id"])
+                        if row["replacement_cheque_id"]
+                        else None,
                     }
                     for row in rows
                 ],
-                "count": len(rows)
+                "count": len(rows),
             }
 
     except HTTPException:
@@ -562,9 +594,13 @@ async def list_customer_cheques(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_customer_cheques($1, $2)
-            """, customer_id, status)
+            """,
+                customer_id,
+                status,
+            )
 
             return {
                 "success": True,
@@ -578,10 +614,10 @@ async def list_customer_cheques(
                         "status": row["status"],
                         "reference_number": row["reference_number"],
                         "deposited_date": row["deposited_date"],
-                        "cleared_date": row["cleared_date"]
+                        "cleared_date": row["cleared_date"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:
@@ -603,9 +639,13 @@ async def list_vendor_cheques(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_vendor_cheques($1, $2)
-            """, vendor_id, status)
+            """,
+                vendor_id,
+                status,
+            )
 
             return {
                 "success": True,
@@ -619,10 +659,10 @@ async def list_vendor_cheques(
                         "status": row["status"],
                         "reference_number": row["reference_number"],
                         "issued_date": row["issued_date"],
-                        "cleared_date": row["cleared_date"]
+                        "cleared_date": row["cleared_date"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:
@@ -636,6 +676,7 @@ async def list_vendor_cheques(
 # GET CHEQUE DETAIL
 # =============================================================================
 
+
 @router.get("/{cheque_id}", response_model=ChequeDetailResponse)
 async def get_cheque(request: Request, cheque_id: UUID):
     """Get cheque detail with history."""
@@ -644,7 +685,8 @@ async def get_cheque(request: Request, cheque_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT c.*,
                        cu.name as customer_name,
                        v.name as vendor_name,
@@ -654,18 +696,24 @@ async def get_cheque(request: Request, cheque_id: UUID):
                 LEFT JOIN vendors v ON c.vendor_id = v.id
                 LEFT JOIN bank_accounts ba ON c.bank_account_id = ba.id
                 WHERE c.id = $1 AND c.tenant_id = $2
-            """, cheque_id, ctx["tenant_id"])
+            """,
+                cheque_id,
+                ctx["tenant_id"],
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Cheque not found")
 
             # Get status history
-            history = await conn.fetch("""
+            history = await conn.fetch(
+                """
                 SELECT id, old_status, new_status, changed_at, changed_by, notes, journal_id
                 FROM cheque_status_history
                 WHERE cheque_id = $1
                 ORDER BY changed_at DESC
-            """, cheque_id)
+            """,
+                cheque_id,
+            )
 
             return {
                 "success": True,
@@ -677,15 +725,21 @@ async def get_cheque(request: Request, cheque_id: UUID):
                     "bank_branch": row["bank_branch"],
                     "cheque_type": row["cheque_type"],
                     "amount": row["amount"],
-                    "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+                    "customer_id": str(row["customer_id"])
+                    if row["customer_id"]
+                    else None,
                     "customer_name": row["customer_name"],
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
                     "party_name": row["party_name"],
-                    "bank_account_id": str(row["bank_account_id"]) if row["bank_account_id"] else None,
+                    "bank_account_id": str(row["bank_account_id"])
+                    if row["bank_account_id"]
+                    else None,
                     "bank_account_name": row["bank_account_name"],
                     "reference_type": row["reference_type"],
-                    "reference_id": str(row["reference_id"]) if row["reference_id"] else None,
+                    "reference_id": str(row["reference_id"])
+                    if row["reference_id"]
+                    else None,
                     "reference_number": row["reference_number"],
                     "status": row["status"],
                     "received_date": row["received_date"],
@@ -693,11 +747,21 @@ async def get_cheque(request: Request, cheque_id: UUID):
                     "deposited_date": row["deposited_date"],
                     "cleared_date": row["cleared_date"],
                     "bounced_date": row["bounced_date"],
-                    "receipt_journal_id": str(row["receipt_journal_id"]) if row["receipt_journal_id"] else None,
-                    "deposit_journal_id": str(row["deposit_journal_id"]) if row["deposit_journal_id"] else None,
-                    "clear_journal_id": str(row["clear_journal_id"]) if row["clear_journal_id"] else None,
-                    "bounce_journal_id": str(row["bounce_journal_id"]) if row["bounce_journal_id"] else None,
-                    "replacement_cheque_id": str(row["replacement_cheque_id"]) if row["replacement_cheque_id"] else None,
+                    "receipt_journal_id": str(row["receipt_journal_id"])
+                    if row["receipt_journal_id"]
+                    else None,
+                    "deposit_journal_id": str(row["deposit_journal_id"])
+                    if row["deposit_journal_id"]
+                    else None,
+                    "clear_journal_id": str(row["clear_journal_id"])
+                    if row["clear_journal_id"]
+                    else None,
+                    "bounce_journal_id": str(row["bounce_journal_id"])
+                    if row["bounce_journal_id"]
+                    else None,
+                    "replacement_cheque_id": str(row["replacement_cheque_id"])
+                    if row["replacement_cheque_id"]
+                    else None,
                     "bounce_charges": row["bounce_charges"],
                     "bounce_reason": row["bounce_reason"],
                     "notes": row["notes"],
@@ -710,13 +774,17 @@ async def get_cheque(request: Request, cheque_id: UUID):
                             "old_status": h["old_status"],
                             "new_status": h["new_status"],
                             "changed_at": h["changed_at"],
-                            "changed_by": str(h["changed_by"]) if h["changed_by"] else None,
+                            "changed_by": str(h["changed_by"])
+                            if h["changed_by"]
+                            else None,
                             "notes": h["notes"],
-                            "journal_id": str(h["journal_id"]) if h["journal_id"] else None
+                            "journal_id": str(h["journal_id"])
+                            if h["journal_id"]
+                            else None,
                         }
                         for h in history
-                    ]
-                }
+                    ],
+                },
             }
 
     except HTTPException:
@@ -729,6 +797,7 @@ async def get_cheque(request: Request, cheque_id: UUID):
 # =============================================================================
 # RECEIVE CHEQUE (from Customer)
 # =============================================================================
+
 
 @router.post("/receive", response_model=ChequeActionResponse, status_code=201)
 async def receive_cheque(request: Request, body: ReceiveChequeRequest):
@@ -748,20 +817,25 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CHEQUE_RECEIVE:{body.cheque_number}:{ctx['tenant_id']}"
+                    f"CHEQUE_RECEIVE:{body.cheque_number}:{ctx['tenant_id']}",
                 )
 
                 # Ensure cheque accounts exist
                 await conn.execute("SELECT seed_cheque_accounts($1)", ctx["tenant_id"])
 
                 # Law 27: resolve_account_id
-                cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
-                ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
+                cheques_receivable_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], CHEQUES_RECEIVABLE
+                )
+                ar_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], AR_ACCOUNT
+                )
 
                 # Create cheque
                 cheque_id = uuid_module.uuid4()
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO cheques (
                         id, tenant_id, cheque_number, cheque_date, bank_name, bank_branch,
                         cheque_type, amount, customer_id, party_name,
@@ -783,7 +857,7 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                     body.reference_number,
                     body.received_date,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Create journal entry (Law 5 + Law 20 enforced inside helper)
@@ -796,16 +870,30 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                     "CHEQUE_RECEIVED",
                     cheque_id,
                     [
-                        {"account_id": cheques_receivable_id, "debit": body.amount, "credit": 0, "memo": f"Giro {body.cheque_number}"},
-                        {"account_id": ar_account_id, "debit": 0, "credit": body.amount, "memo": f"Pembayaran {body.party_name}"}
+                        {
+                            "account_id": cheques_receivable_id,
+                            "debit": body.amount,
+                            "credit": 0,
+                            "memo": f"Giro {body.cheque_number}",
+                        },
+                        {
+                            "account_id": ar_account_id,
+                            "debit": 0,
+                            "credit": body.amount,
+                            "memo": f"Pembayaran {body.party_name}",
+                        },
                     ],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Update cheque with journal reference
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques SET receipt_journal_id = $1 WHERE id = $2
-                """, journal_id, cheque_id)
+                """,
+                    journal_id,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
@@ -814,8 +902,8 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                         "id": str(cheque_id),
                         "cheque_number": body.cheque_number,
                         "status": "pending",
-                        "receipt_journal_id": str(journal_id)
-                    }
+                        "receipt_journal_id": str(journal_id),
+                    },
                 }
 
     except HTTPException:
@@ -830,6 +918,7 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
 # =============================================================================
 # ISSUE CHEQUE (to Vendor)
 # =============================================================================
+
 
 @router.post("/issue", response_model=ChequeActionResponse, status_code=201)
 async def issue_cheque(request: Request, body: IssueChequeRequest):
@@ -849,20 +938,25 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CHEQUE_ISSUE:{body.cheque_number}:{ctx['tenant_id']}"
+                    f"CHEQUE_ISSUE:{body.cheque_number}:{ctx['tenant_id']}",
                 )
 
                 # Ensure cheque accounts exist
                 await conn.execute("SELECT seed_cheque_accounts($1)", ctx["tenant_id"])
 
                 # Law 27: resolve_account_id
-                cheques_payable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_PAYABLE)
-                ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
+                cheques_payable_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], CHEQUES_PAYABLE
+                )
+                ap_account_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], AP_ACCOUNT
+                )
 
                 # Create cheque
                 cheque_id = uuid_module.uuid4()
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO cheques (
                         id, tenant_id, cheque_number, cheque_date, bank_name, bank_branch,
                         cheque_type, amount, vendor_id, party_name, bank_account_id,
@@ -885,7 +979,7 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
                     body.reference_number,
                     body.issued_date,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Create journal entry (Law 5 + Law 20 enforced inside helper)
@@ -898,16 +992,30 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
                     "CHEQUE_ISSUED",
                     cheque_id,
                     [
-                        {"account_id": ap_account_id, "debit": body.amount, "credit": 0, "memo": f"Pembayaran ke {body.party_name}"},
-                        {"account_id": cheques_payable_id, "debit": 0, "credit": body.amount, "memo": f"Giro {body.cheque_number}"}
+                        {
+                            "account_id": ap_account_id,
+                            "debit": body.amount,
+                            "credit": 0,
+                            "memo": f"Pembayaran ke {body.party_name}",
+                        },
+                        {
+                            "account_id": cheques_payable_id,
+                            "debit": 0,
+                            "credit": body.amount,
+                            "memo": f"Giro {body.cheque_number}",
+                        },
                     ],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Update cheque with journal reference
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques SET receipt_journal_id = $1 WHERE id = $2
-                """, journal_id, cheque_id)
+                """,
+                    journal_id,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
@@ -916,8 +1024,8 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
                         "id": str(cheque_id),
                         "cheque_number": body.cheque_number,
                         "status": "pending",
-                        "receipt_journal_id": str(journal_id)
-                    }
+                        "receipt_journal_id": str(journal_id),
+                    },
                 }
 
     except HTTPException:
@@ -932,6 +1040,7 @@ async def issue_cheque(request: Request, body: IssueChequeRequest):
 # =============================================================================
 # DEPOSIT CHEQUE
 # =============================================================================
+
 
 @router.post("/{cheque_id}/deposit", response_model=ChequeActionResponse)
 async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeRequest):
@@ -953,28 +1062,42 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CHEQUE_DEPOSIT:{cheque_id}"
+                    f"CHEQUE_DEPOSIT:{cheque_id}",
                 )
 
                 # Get cheque
-                cheque = await conn.fetchrow("""
+                cheque = await conn.fetchrow(
+                    """
                     SELECT * FROM cheques
                     WHERE id = $1 AND tenant_id = $2 AND status = 'pending' AND cheque_type = 'received'
-                """, cheque_id, ctx["tenant_id"])
+                """,
+                    cheque_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cheque:
-                    raise HTTPException(status_code=404, detail="Pending received cheque not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending received cheque not found"
+                    )
 
                 # Get bank account's COA (BankSync Rule 1: use bank_accounts.coa_id)
-                bank_account = await conn.fetchrow("""
+                bank_account = await conn.fetchrow(
+                    """
                     SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2
-                """, body.bank_account_id, ctx["tenant_id"])
+                """,
+                    body.bank_account_id,
+                    ctx["tenant_id"],
+                )
 
                 if not bank_account:
-                    raise HTTPException(status_code=400, detail="Bank account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Bank account not found"
+                    )
 
                 # Law 27: resolve_account_id
-                cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
+                cheques_receivable_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], CHEQUES_RECEIVABLE
+                )
 
                 # Create journal entry (Law 5 + Law 20 enforced inside helper)
                 # Dr. Bank, Cr. Giro Diterima
@@ -986,15 +1109,26 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
                     "CHEQUE_DEPOSIT",
                     cheque_id,
                     [
-                        {"account_id": bank_account["coa_id"], "debit": cheque["amount"], "credit": 0, "memo": f"Setoran Giro {cheque['cheque_number']}"},
-                        {"account_id": cheques_receivable_id, "debit": 0, "credit": cheque["amount"], "memo": f"Giro {cheque['cheque_number']}"}
+                        {
+                            "account_id": bank_account["coa_id"],
+                            "debit": cheque["amount"],
+                            "credit": 0,
+                            "memo": f"Setoran Giro {cheque['cheque_number']}",
+                        },
+                        {
+                            "account_id": cheques_receivable_id,
+                            "debit": 0,
+                            "credit": cheque["amount"],
+                            "memo": f"Giro {cheque['cheque_number']}",
+                        },
                     ],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # BankSync Rule 1: Create bank_transaction atomically with journal
                 bank_tx_id = uuid_module.uuid4()
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO bank_transactions (
                         id, tenant_id, bank_account_id, transaction_date, amount,
                         transaction_type, description, reference_number,
@@ -1010,24 +1144,30 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
                     cheque["cheque_number"],
                     journal_id,
                     cheque_id,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Update cheque
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques
                     SET status = 'deposited', deposited_date = $1, deposit_journal_id = $2,
                         bank_account_id = $3, updated_at = NOW()
                     WHERE id = $4
-                """, body.deposited_date, journal_id, body.bank_account_id, cheque_id)
+                """,
+                    body.deposited_date,
+                    journal_id,
+                    body.bank_account_id,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
                     "message": "Cheque deposited",
                     "data": {
                         "status": "deposited",
-                        "deposit_journal_id": str(journal_id)
-                    }
+                        "deposit_journal_id": str(journal_id),
+                    },
                 }
 
     except HTTPException:
@@ -1041,6 +1181,7 @@ async def deposit_cheque(request: Request, cheque_id: UUID, body: DepositChequeR
 # CLEAR CHEQUE
 # =============================================================================
 
+
 @router.post("/{cheque_id}/clear", response_model=ChequeActionResponse)
 async def clear_cheque(request: Request, cheque_id: UUID, body: ClearChequeRequest):
     """Mark a cheque as cleared."""
@@ -1051,25 +1192,35 @@ async def clear_cheque(request: Request, cheque_id: UUID, body: ClearChequeReque
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get cheque
-                cheque = await conn.fetchrow("""
+                cheque = await conn.fetchrow(
+                    """
                     SELECT * FROM cheques
                     WHERE id = $1 AND tenant_id = $2 AND status = 'deposited'
-                """, cheque_id, ctx["tenant_id"])
+                """,
+                    cheque_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cheque:
-                    raise HTTPException(status_code=404, detail="Deposited cheque not found")
+                    raise HTTPException(
+                        status_code=404, detail="Deposited cheque not found"
+                    )
 
                 # Update cheque (no additional journal for simple flow)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques
                     SET status = 'cleared', cleared_date = $1, updated_at = NOW()
                     WHERE id = $2
-                """, body.cleared_date, cheque_id)
+                """,
+                    body.cleared_date,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
                     "message": "Cheque cleared",
-                    "data": {"status": "cleared"}
+                    "data": {"status": "cleared"},
                 }
 
     except HTTPException:
@@ -1082,6 +1233,7 @@ async def clear_cheque(request: Request, cheque_id: UUID, body: ClearChequeReque
 # =============================================================================
 # BOUNCE CHEQUE
 # =============================================================================
+
 
 @router.post("/{cheque_id}/bounce", response_model=ChequeActionResponse)
 async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeRequest):
@@ -1110,26 +1262,36 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CHEQUE_BOUNCE:{cheque_id}"
+                    f"CHEQUE_BOUNCE:{cheque_id}",
                 )
 
                 # Get cheque
-                cheque = await conn.fetchrow("""
+                cheque = await conn.fetchrow(
+                    """
                     SELECT c.*, ba.coa_id as bank_coa_id
                     FROM cheques c
                     LEFT JOIN bank_accounts ba ON c.bank_account_id = ba.id
                     WHERE c.id = $1 AND c.tenant_id = $2 AND c.status IN ('deposited', 'pending')
-                """, cheque_id, ctx["tenant_id"])
+                """,
+                    cheque_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cheque:
-                    raise HTTPException(status_code=404, detail="Cheque not found or invalid status")
+                    raise HTTPException(
+                        status_code=404, detail="Cheque not found or invalid status"
+                    )
 
                 journal_ids = []
 
                 if cheque["cheque_type"] == "received":
                     # Law 27: resolve_account_id
-                    cheques_receivable_id = await resolve_account_id(conn, ctx["tenant_id"], CHEQUES_RECEIVABLE)
-                    ar_account_id = await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT)
+                    cheques_receivable_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], CHEQUES_RECEIVABLE
+                    )
+                    ar_account_id = await resolve_account_id(
+                        conn, ctx["tenant_id"], AR_ACCOUNT
+                    )
 
                     # If deposited, reverse the deposit first
                     if cheque["status"] == "deposited" and cheque["bank_coa_id"]:
@@ -1141,10 +1303,20 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                             "CHEQUE_BOUNCE_REVERSAL",
                             cheque_id,
                             [
-                                {"account_id": cheques_receivable_id, "debit": cheque["amount"], "credit": 0, "memo": "Reversal setoran giro tolak"},
-                                {"account_id": cheque["bank_coa_id"], "debit": 0, "credit": cheque["amount"], "memo": "Reversal setoran giro tolak"}
+                                {
+                                    "account_id": cheques_receivable_id,
+                                    "debit": cheque["amount"],
+                                    "credit": 0,
+                                    "memo": "Reversal setoran giro tolak",
+                                },
+                                {
+                                    "account_id": cheque["bank_coa_id"],
+                                    "debit": 0,
+                                    "credit": cheque["amount"],
+                                    "memo": "Reversal setoran giro tolak",
+                                },
                             ],
-                            ctx["user_id"]
+                            ctx["user_id"],
                         )
                         journal_ids.append(journal_id)
 
@@ -1157,16 +1329,28 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                         "CHEQUE_BOUNCE_AR",
                         cheque_id,
                         [
-                            {"account_id": ar_account_id, "debit": cheque["amount"], "credit": 0, "memo": f"Giro tolak {cheque['cheque_number']}"},
-                            {"account_id": cheques_receivable_id, "debit": 0, "credit": cheque["amount"], "memo": f"Giro tolak {cheque['cheque_number']}"}
+                            {
+                                "account_id": ar_account_id,
+                                "debit": cheque["amount"],
+                                "credit": 0,
+                                "memo": f"Giro tolak {cheque['cheque_number']}",
+                            },
+                            {
+                                "account_id": cheques_receivable_id,
+                                "debit": 0,
+                                "credit": cheque["amount"],
+                                "memo": f"Giro tolak {cheque['cheque_number']}",
+                            },
                         ],
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
                     journal_ids.append(journal_id)
 
                     # Bounce charges
                     if body.bounce_charges and body.bounce_charges > 0:
-                        other_income_id = await resolve_account_id(conn, ctx["tenant_id"], OTHER_INCOME)
+                        other_income_id = await resolve_account_id(
+                            conn, ctx["tenant_id"], OTHER_INCOME
+                        )
                         journal_id = await create_journal_entry(
                             conn,
                             ctx["tenant_id"],
@@ -1175,28 +1359,47 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
                             "CHEQUE_BOUNCE_CHARGES",
                             cheque_id,
                             [
-                                {"account_id": ar_account_id, "debit": body.bounce_charges, "credit": 0, "memo": "Biaya giro tolak"},
-                                {"account_id": other_income_id, "debit": 0, "credit": body.bounce_charges, "memo": "Pendapatan biaya giro tolak"}
+                                {
+                                    "account_id": ar_account_id,
+                                    "debit": body.bounce_charges,
+                                    "credit": 0,
+                                    "memo": "Biaya giro tolak",
+                                },
+                                {
+                                    "account_id": other_income_id,
+                                    "debit": 0,
+                                    "credit": body.bounce_charges,
+                                    "memo": "Pendapatan biaya giro tolak",
+                                },
                             ],
-                            ctx["user_id"]
+                            ctx["user_id"],
                         )
                         journal_ids.append(journal_id)
 
                 # Update cheque
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques
                     SET status = 'bounced', bounced_date = $1, bounce_reason = $2,
                         bounce_charges = $3, bounce_journal_id = $4, updated_at = NOW()
                     WHERE id = $5
-                """, body.bounced_date, body.bounce_reason, body.bounce_charges, journal_ids[-1] if journal_ids else None, cheque_id)
+                """,
+                    body.bounced_date,
+                    body.bounce_reason,
+                    body.bounce_charges,
+                    journal_ids[-1] if journal_ids else None,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
                     "message": "Cheque marked as bounced",
                     "data": {
                         "status": "bounced",
-                        "bounce_journal_id": str(journal_ids[-1]) if journal_ids else None
-                    }
+                        "bounce_journal_id": str(journal_ids[-1])
+                        if journal_ids
+                        else None,
+                    },
                 }
 
     except HTTPException:
@@ -1209,6 +1412,7 @@ async def bounce_cheque(request: Request, cheque_id: UUID, body: BounceChequeReq
 # =============================================================================
 # CANCEL CHEQUE
 # =============================================================================
+
 
 @router.post("/{cheque_id}/cancel", response_model=ChequeActionResponse)
 async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeRequest):
@@ -1226,16 +1430,22 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CHEQUE_CANCEL:{cheque_id}"
+                    f"CHEQUE_CANCEL:{cheque_id}",
                 )
 
-                cheque = await conn.fetchrow("""
+                cheque = await conn.fetchrow(
+                    """
                     SELECT * FROM cheques
                     WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
-                """, cheque_id, ctx["tenant_id"])
+                """,
+                    cheque_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cheque:
-                    raise HTTPException(status_code=404, detail="Pending cheque not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending cheque not found"
+                    )
 
                 # Law 2: Create reversal journal instead of DELETE
                 if cheque["receipt_journal_id"]:
@@ -1247,20 +1457,24 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
                         f"Pembatalan Giro - {cheque['cheque_number']}",
                         "CHEQUE_CANCEL",
                         cheque_id,
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                 # Update cheque
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques
                     SET status = 'cancelled', notes = COALESCE(notes, '') || ' | Cancelled: ' || $1, updated_at = NOW()
                     WHERE id = $2
-                """, body.reason, cheque_id)
+                """,
+                    body.reason,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
                     "message": "Cheque cancelled",
-                    "data": {"status": "cancelled"}
+                    "data": {"status": "cancelled"},
                 }
 
     except HTTPException:
@@ -1274,6 +1488,7 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
 # REPORTS
 # =============================================================================
 
+
 @router.get("/summary", response_model=ChequeSummaryResponse)
 async def get_cheque_summary(request: Request):
     """Get cheque summary by status."""
@@ -1282,9 +1497,12 @@ async def get_cheque_summary(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_cheque_summary($1)
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             summary = {
                 "received_pending": 0,
@@ -1314,20 +1532,20 @@ async def get_cheque_summary(request: Request):
                     summary["bounced_amount"] += row["total_amount"]
 
             # Get due today
-            due_today = await conn.fetch("""
+            due_today = await conn.fetch(
+                """
                 SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
                 FROM cheques
                 WHERE tenant_id = $1 AND status = 'pending' AND cheque_date <= CURRENT_DATE
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             if due_today:
                 summary["due_today_count"] = due_today[0]["count"]
                 summary["due_today_amount"] = due_today[0]["total"]
 
-            return {
-                "success": True,
-                "data": summary
-            }
+            return {"success": True, "data": summary}
 
     except HTTPException:
         raise
@@ -1347,9 +1565,13 @@ async def get_cheque_aging(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_cheque_aging($1, $2)
-            """, ctx["tenant_id"], cheque_type)
+            """,
+                ctx["tenant_id"],
+                cheque_type,
+            )
 
             return {
                 "success": True,
@@ -1357,11 +1579,11 @@ async def get_cheque_aging(
                     {
                         "aging_bucket": row["aging_bucket"],
                         "count": row["count"],
-                        "total_amount": row["total_amount"]
+                        "total_amount": row["total_amount"],
                     }
                     for row in rows
                 ],
-                "cheque_type": cheque_type
+                "cheque_type": cheque_type,
             }
 
     except HTTPException:
@@ -1375,6 +1597,7 @@ async def get_cheque_aging(
 # UPDATE & DELETE (pending only)
 # =============================================================================
 
+
 @router.patch("/{cheque_id}", response_model=ChequeResponse)
 async def update_cheque(request: Request, cheque_id: UUID, body: UpdateChequeRequest):
     """Update a pending cheque."""
@@ -1383,10 +1606,14 @@ async def update_cheque(request: Request, cheque_id: UUID, body: UpdateChequeReq
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id FROM cheques
                 WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
-            """, cheque_id, ctx["tenant_id"])
+            """,
+                cheque_id,
+                ctx["tenant_id"],
+            )
 
             if not existing:
                 raise HTTPException(status_code=404, detail="Pending cheque not found")
@@ -1426,15 +1653,18 @@ async def update_cheque(request: Request, cheque_id: UUID, body: UpdateChequeReq
             updates.append("updated_at = NOW()")
             params.extend([cheque_id, ctx["tenant_id"]])
 
-            await conn.execute(f"""
+            await conn.execute(
+                f"""
                 UPDATE cheques SET {", ".join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            """, *params)
+            """,
+                *params,
+            )
 
             return {
                 "success": True,
                 "message": "Cheque updated",
-                "data": {"id": str(cheque_id)}
+                "data": {"id": str(cheque_id)},
             }
 
     except HTTPException:
@@ -1458,13 +1688,19 @@ async def delete_cheque(request: Request, cheque_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                cheque = await conn.fetchrow("""
+                cheque = await conn.fetchrow(
+                    """
                     SELECT * FROM cheques
                     WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
-                """, cheque_id, ctx["tenant_id"])
+                """,
+                    cheque_id,
+                    ctx["tenant_id"],
+                )
 
                 if not cheque:
-                    raise HTTPException(status_code=404, detail="Pending cheque not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending cheque not found"
+                    )
 
                 # Law 2: Create reversal journal instead of DELETE
                 if cheque["receipt_journal_id"]:
@@ -1476,20 +1712,23 @@ async def delete_cheque(request: Request, cheque_id: UUID):
                         f"Reversal - Hapus Giro {cheque['cheque_number']}",
                         "CHEQUE_DELETE",
                         cheque_id,
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                 # Soft-delete cheque (mark as cancelled instead of hard DELETE)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE cheques
                     SET status = 'cancelled', notes = COALESCE(notes, '') || ' | Deleted', updated_at = NOW()
                     WHERE id = $1
-                """, cheque_id)
+                """,
+                    cheque_id,
+                )
 
                 return {
                     "success": True,
                     "message": "Cheque deleted",
-                    "data": {"id": str(cheque_id)}
+                    "data": {"id": str(cheque_id)},
                 }
 
     except HTTPException:

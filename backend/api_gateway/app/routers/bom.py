@@ -30,23 +30,16 @@ from ..schemas.bom import (
     WhereUsedResponse,
     BOMResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -637,7 +630,8 @@ async def get_bom(request: Request, bom_id: UUID):
             # Ensure total_cost is fresh (auto-heal stale state from pre-V134 BOMs)
             exists = await conn.fetchval(
                 "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id,
+                ctx["tenant_id"],
+                bom_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")
@@ -889,6 +883,8 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
                             o.get("cost_per_piece"),
                         )
 
+                await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+
             return {"success": True, "message": "BOM updated"}
 
     except HTTPException:
@@ -900,23 +896,32 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
 
 @router.delete("/{bom_id}", response_model=BOMResponse)
 async def delete_bom(request: Request, bom_id: UUID):
-    """Delete draft BOM."""
+    """Hard delete BOM (any status) if not referenced by any production_order."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM bill_of_materials WHERE tenant_id = $1 AND id = $2 AND status = 'draft'",
-                ctx["tenant_id"],
-                bom_id,
-            )
-            if result == "DELETE 0":
-                raise HTTPException(
-                    status_code=400, detail="BOM not found or not in draft status"
+            async with conn.transaction():
+                wo_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM production_orders WHERE tenant_id = $1 AND bom_id = $2",
+                    ctx["tenant_id"],
+                    bom_id,
                 )
+                if wo_count and wo_count > 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"BOM tidak bisa dihapus: sudah digunakan oleh {wo_count} Work Order. Gunakan status obsolete untuk mengarsipkan.",
+                    )
+                result = await conn.execute(
+                    "DELETE FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
+                    ctx["tenant_id"],
+                    bom_id,
+                )
+                if result == "DELETE 0":
+                    raise HTTPException(status_code=404, detail="BOM not found")
 
-            return {"success": True, "message": "BOM deleted"}
+                return {"success": True, "message": "BOM deleted"}
 
     except HTTPException:
         raise
@@ -1118,7 +1123,8 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
             # Ensure costs are fresh (auto-heal stale state)
             exists = await conn.fetchval(
                 "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], bom_id,
+                ctx["tenant_id"],
+                bom_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")

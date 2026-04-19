@@ -34,14 +34,12 @@ from ..schemas.bank_accounts import (
     BankTransactionListResponse,
     BankAccountBalanceResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes
 OPENING_BALANCE_EQUITY = "3-50000"  # Modal Saldo Awal
@@ -147,9 +145,10 @@ async def auto_create_coa_for_bank_account(
         """
         INSERT INTO chart_of_accounts (
             id, tenant_id, account_code, name, description,
+            is_cash,
             account_type, normal_balance, parent_code,
             is_header, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true)
+        ) VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, false, true)
     """,
         coa_id,
         tenant_id,
@@ -165,14 +164,10 @@ async def auto_create_coa_for_bank_account(
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -299,7 +294,9 @@ async def list_bank_accounts(
                     "coa_id": str(row["coa_id"]),
                     "coa_code": row["coa_code"],
                     "coa_name": row["coa_name"],
-                    "current_balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "current_balance": float(
+                        row["ledger_balance"] or 0
+                    ),  # Law 21: journal-derived
                     "ledger_balance": float(row["ledger_balance"] or 0),
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
@@ -356,7 +353,9 @@ async def get_bank_accounts_dropdown(request: Request):
                     "name": row["account_name"],
                     "account_number": row["account_number"],
                     "bank_name": row["bank_name"],
-                    "balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "balance": float(
+                        row["ledger_balance"] or 0
+                    ),  # Law 21: journal-derived
                     "currency": row["currency"] or "IDR",
                 }
                 for row in rows
@@ -368,6 +367,8 @@ async def get_bank_accounts_dropdown(request: Request):
     except Exception as e:
         logger.error(f"Error getting dropdown: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get accounts")
+
+
 # =============================================================================
 
 
@@ -426,7 +427,9 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     "coa_code": row["coa_code"],
                     "coa_name": row["coa_name"],
                     "opening_balance": row["opening_balance"] or 0,
-                    "current_balance": float(row["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "current_balance": float(
+                        row["ledger_balance"] or 0
+                    ),  # Law 21: journal-derived
                     "ledger_balance": float(row["ledger_balance"] or 0),
                     "last_reconciled_balance": row["last_reconciled_balance"] or 0,
                     "last_reconciled_date": row["last_reconciled_date"].isoformat()
@@ -912,7 +915,7 @@ async def update_bank_account(
 async def delete_bank_account(request: Request, bank_account_id: UUID):
     """
     Delete a bank account.
-    
+
     - If account has 0 transactions: HARD DELETE (removes bank_account and related CoA)
     - If account has transactions: SOFT DELETE (sets is_active = false)
     """
@@ -933,7 +936,9 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                 )
 
                 if not ba:
-                    raise HTTPException(status_code=404, detail="Bank account not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank account not found"
+                    )
 
                 # Check if has REAL transactions (exclude opening balance - that's just initialization)
                 tx_count = await conn.fetchval(
@@ -962,12 +967,18 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                         bank_account_id,
                     )
 
-                    logger.info(f"Bank account soft deleted (has {tx_count} transactions): {bank_account_id}")
+                    logger.info(
+                        f"Bank account soft deleted (has {tx_count} transactions): {bank_account_id}"
+                    )
 
                     return {
                         "success": True,
                         "message": f"Bank account deactivated (has {tx_count} transactions)",
-                        "data": {"id": str(bank_account_id), "is_active": False, "hard_deleted": False},
+                        "data": {
+                            "id": str(bank_account_id),
+                            "is_active": False,
+                            "hard_deleted": False,
+                        },
                     }
                 else:
                     # HARD DELETE - no real transactions, safe to permanently remove
@@ -977,11 +988,11 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                     # Delete opening balance journal lines first (FK to journal_entries)
                     await conn.execute(
                         """
-                        DELETE FROM journal_lines 
+                        DELETE FROM journal_lines
                         WHERE journal_id IN (
-                            SELECT id FROM journal_entries 
-                            WHERE source_type = 'OPENING' 
-                            AND source_id = $1 
+                            SELECT id FROM journal_entries
+                            WHERE source_type = 'OPENING'
+                            AND source_id = $1
                             AND tenant_id = $2
                         )
                     """,
@@ -992,9 +1003,9 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                     # Delete opening balance journal entries
                     await conn.execute(
                         """
-                        DELETE FROM journal_entries 
-                        WHERE source_type = 'OPENING' 
-                        AND source_id = $1 
+                        DELETE FROM journal_entries
+                        WHERE source_type = 'OPENING'
+                        AND source_id = $1
                         AND tenant_id = $2
                     """,
                         bank_account_id,
@@ -1005,8 +1016,8 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                     await conn.execute(
                         """
                         DELETE FROM bank_transactions
-                        WHERE bank_account_id = $1 
-                        AND tenant_id = $2 
+                        WHERE bank_account_id = $1
+                        AND tenant_id = $2
                         AND transaction_type = 'opening'
                     """,
                         bank_account_id,
@@ -1062,7 +1073,9 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                             ctx["tenant_id"],
                         )
 
-                    logger.info(f"Bank account hard deleted with opening balance cleanup: {bank_account_id}, CoA: {coa_id}")
+                    logger.info(
+                        f"Bank account hard deleted with opening balance cleanup: {bank_account_id}, CoA: {coa_id}"
+                    )
 
                     return {
                         "success": True,
@@ -1146,7 +1159,9 @@ async def get_bank_transactions(
             where_clause = " AND ".join(conditions)
 
             # Count total
-            count_query = f"SELECT COUNT(*) FROM bank_transactions bt WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM bank_transactions bt WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             # Law 1: Journal-derived amounts via LEFT JOIN to journal_lines
@@ -1300,13 +1315,21 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                     "id": str(ba["id"]),
                     "account_name": ba["account_name"],
                     "opening_balance": ba["opening_balance"] or 0,
-                    "current_balance": float(ba["ledger_balance"] or 0),  # Law 21: journal-derived
+                    "current_balance": float(
+                        ba["ledger_balance"] or 0
+                    ),  # Law 21: journal-derived
                     "ledger_balance": float(ba["ledger_balance"] or 0),
-                    "total_deposits": float(journal_stats["total_deposits"] or 0),  # Law 1: journal-derived
-                    "total_withdrawals": float(journal_stats["total_withdrawals"] or 0),  # Law 1: journal-derived
+                    "total_deposits": float(
+                        journal_stats["total_deposits"] or 0
+                    ),  # Law 1: journal-derived
+                    "total_withdrawals": float(
+                        journal_stats["total_withdrawals"] or 0
+                    ),  # Law 1: journal-derived
                     "transaction_count": recon_stats["transaction_count"] or 0,
                     "unreconciled_count": recon_stats["unreconciled_count"] or 0,
-                    "last_transaction_date": journal_stats["last_journal_date"].isoformat()
+                    "last_transaction_date": journal_stats[
+                        "last_journal_date"
+                    ].isoformat()
                     if journal_stats["last_journal_date"]
                     else None,
                 },
@@ -1387,7 +1410,9 @@ async def adjust_bank_balance(
                         status_code=400, detail="Adjustment amount cannot be zero"
                     )
 
-                current_balance = float(ba["ledger_balance"] or 0)  # Law 21: journal-derived balance
+                current_balance = float(
+                    ba["ledger_balance"] or 0
+                )  # Law 21: journal-derived balance
                 new_balance = current_balance + adjustment
 
                 if new_balance < 0:
@@ -1554,6 +1579,7 @@ async def get_bank_account_statement(
     """
     # Parse date strings to date objects
     from datetime import datetime
+
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
     try:
@@ -1699,9 +1725,13 @@ async def create_manual_transaction(
                     ctx["tenant_id"],
                 )
                 if not ba:
-                    raise HTTPException(status_code=404, detail="Bank account not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank account not found"
+                    )
                 if not ba["is_active"]:
-                    raise HTTPException(status_code=400, detail="Bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Bank account is inactive"
+                    )
 
                 # Law 27: CoA from bank_accounts.coa_id (not hardcoded)
                 bank_coa_id = ba["coa_id"]
@@ -1716,7 +1746,9 @@ async def create_manual_transaction(
                     ctx["tenant_id"],
                 )
                 if not contra_coa:
-                    raise HTTPException(status_code=400, detail="Contra account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Contra account not found"
+                    )
                 if contra_coa["account_type"] in ("RECEIVABLE", "PAYABLE"):
                     raise HTTPException(
                         status_code=400,
@@ -1743,16 +1775,19 @@ async def create_manual_transaction(
                     )
 
                 # Compute current ledger balance (for running_balance cache)
-                current_balance = await conn.fetchval(
-                    """
+                current_balance = (
+                    await conn.fetchval(
+                        """
                     SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE jl.account_id = $1 AND je.status = 'POSTED' AND je.tenant_id = $2
                     """,
-                    bank_coa_id,
-                    ctx["tenant_id"],
-                ) or 0
+                        bank_coa_id,
+                        ctx["tenant_id"],
+                    )
+                    or 0
+                )
 
                 amount = body.amount
                 txn_amount = amount if body.direction == "in" else -amount
@@ -1761,7 +1796,9 @@ async def create_manual_transaction(
                 # Law 20, Gate 3: Create DRAFT journal
                 journal_id = uuid_module.uuid4()
                 journal_number = f"MT-{uuid_module.uuid4().hex[:8].upper()}"
-                direction_label = "Uang Masuk" if body.direction == "in" else "Uang Keluar"
+                direction_label = (
+                    "Uang Masuk" if body.direction == "in" else "Uang Keluar"
+                )
 
                 await conn.execute(
                     """
@@ -1785,12 +1822,44 @@ async def create_manual_transaction(
                 contra_uuid = uuid_module.UUID(body.contra_account_id)
                 if body.direction == "in":
                     # Uang Masuk: Dr. Bank CoA, Cr. Contra
-                    line1 = (uuid_module.uuid4(), journal_id, 1, bank_coa_id, amount, 0, body.description)
-                    line2 = (uuid_module.uuid4(), journal_id, 2, contra_uuid, 0, amount, body.description)
+                    line1 = (
+                        uuid_module.uuid4(),
+                        journal_id,
+                        1,
+                        bank_coa_id,
+                        amount,
+                        0,
+                        body.description,
+                    )
+                    line2 = (
+                        uuid_module.uuid4(),
+                        journal_id,
+                        2,
+                        contra_uuid,
+                        0,
+                        amount,
+                        body.description,
+                    )
                 else:
                     # Uang Keluar: Dr. Contra, Cr. Bank CoA
-                    line1 = (uuid_module.uuid4(), journal_id, 1, contra_uuid, amount, 0, body.description)
-                    line2 = (uuid_module.uuid4(), journal_id, 2, bank_coa_id, 0, amount, body.description)
+                    line1 = (
+                        uuid_module.uuid4(),
+                        journal_id,
+                        1,
+                        contra_uuid,
+                        amount,
+                        0,
+                        body.description,
+                    )
+                    line2 = (
+                        uuid_module.uuid4(),
+                        journal_id,
+                        2,
+                        bank_coa_id,
+                        0,
+                        amount,
+                        body.description,
+                    )
 
                 await conn.execute(
                     """

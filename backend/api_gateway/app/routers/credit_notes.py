@@ -42,30 +42,24 @@ from ..schemas.credit_notes import (
     CreditNoteListResponse,
     CreditNoteSummaryResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes (resolved dynamically via Law 27)
-AR_ACCOUNT_CODE = "1-10300"  # Piutang Usaha
+AR_ACCOUNT_CODE = "1-10400"  # Piutang Usaha
 SALES_RETURN_ACCOUNT_CODE = "4-10300"  # Retur Penjualan
 TAX_PAYABLE_ACCOUNT_CODE = "2-10300"  # PPN Keluaran
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -1093,6 +1087,58 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # ── Inventory restock for returned goods ──
+                cn_items = await conn.fetch(
+                    "SELECT * FROM credit_note_items WHERE credit_note_id = $1",
+                    credit_note_id,
+                )
+                for item in cn_items:
+                    if not item["item_id"]:
+                        continue
+                    # Check if product tracks inventory
+                    product = await conn.fetchrow(
+                        "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
+                        item["item_id"],
+                    )
+                    if not product or not product["track_inventory"]:
+                        continue
+
+                    # Get WAC for unit_cost
+                    avg_cost = await conn.fetchval(
+                        "SELECT get_weighted_average_cost($1, $2)",
+                        ctx["tenant_id"],
+                        product["id"],
+                    )
+                    unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
+
+                    # Resolve warehouse (CN has no warehouse_id, use tenant default)
+                    wh_id = await conn.fetchval(
+                        "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                        ctx["tenant_id"],
+                    )
+                    if not wh_id:
+                        continue
+
+                    # Use record_inventory_inbound from inventory_helpers
+                    from ..services.inventory_helpers import record_inventory_inbound
+
+                    await record_inventory_inbound(
+                        conn=conn,
+                        tenant_id=ctx["tenant_id"],
+                        product_id=product["id"],
+                        product_code=product["item_code"],
+                        product_name=product["nama_produk"],
+                        warehouse_id=wh_id,
+                        quantity=float(item["quantity"]),
+                        unit_cost=float(unit_cost_val),
+                        source_type="CREDIT_NOTE",
+                        source_id=credit_note_id,
+                        source_number=cn["credit_note_number"],
+                        user_id=ctx["user_id"],
+                        notes=f"Restock from Credit Note {cn['credit_note_number']}",
+                        movement_date=cn["credit_note_date"],
+                    )
 
                 # Wave 3: Write document_tax_lines (PPN reversal on CN)
                 if tax_amount > 0 and tax_jl_id:

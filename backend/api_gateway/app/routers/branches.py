@@ -23,7 +23,6 @@ from ..schemas.branches import (
     BranchDetailResponse,
     BranchTreeResponse,
     CreateBranchPermissionRequest,
-    UpdateBranchPermissionRequest,
     BranchPermissionListResponse,
     UserBranchesResponse,
     CreateBranchTransferRequest,
@@ -35,32 +34,22 @@ from ..schemas.branches import (
     BranchRankingResponse,
     BranchResponse,
 )
-from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -70,10 +59,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -110,7 +96,9 @@ async def list_branches(
             param_idx = 2
 
             if search:
-                conditions.append(f"(b.name ILIKE ${param_idx} OR b.code ILIKE ${param_idx} OR b.city ILIKE ${param_idx})")
+                conditions.append(
+                    f"(b.name ILIKE ${param_idx} OR b.code ILIKE ${param_idx} OR b.city ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -125,11 +113,14 @@ async def list_branches(
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
-            sort_column = {"name": "b.name", "code": "b.code", "created_at": "b.created_at"}[sort_by]
+            sort_column = {
+                "name": "b.name",
+                "code": "b.code",
+                "created_at": "b.created_at",
+            }[sort_by]
 
             total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM branches b WHERE {where_clause}",
-                *params
+                f"SELECT COUNT(*) FROM branches b WHERE {where_clause}", *params
             )
 
             query = f"""
@@ -153,7 +144,9 @@ async def list_branches(
                     "branch_level": row["branch_level"],
                     "is_headquarters": row["is_headquarters"],
                     "is_active": row["is_active"],
-                    "parent_branch_id": str(row["parent_branch_id"]) if row["parent_branch_id"] else None,
+                    "parent_branch_id": str(row["parent_branch_id"])
+                    if row["parent_branch_id"]
+                    else None,
                     "parent_branch_name": row["parent_branch_name"],
                     "transaction_count": row["tx_count"],
                     "created_at": row["created_at"],
@@ -181,19 +174,25 @@ async def create_branch(request: Request, body: CreateBranchRequest):
             # Check duplicate code
             exists = await conn.fetchval(
                 "SELECT 1 FROM branches WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Branch with code '{body.code}' already exists")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Branch with code '{body.code}' already exists",
+                )
 
             # If is_headquarters, ensure no other HQ exists
             if body.is_headquarters:
                 hq_exists = await conn.fetchval(
                     "SELECT 1 FROM branches WHERE tenant_id = $1 AND is_headquarters = true",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
                 if hq_exists:
-                    raise HTTPException(status_code=400, detail="A headquarters branch already exists")
+                    raise HTTPException(
+                        status_code=400, detail="A headquarters branch already exists"
+                    )
 
             # Insert branch
             branch_id = await conn.fetchval(
@@ -206,18 +205,31 @@ async def create_branch(request: Request, body: CreateBranchRequest):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                 RETURNING id
                 """,
-                ctx["tenant_id"], body.code, body.name, body.address, body.city,
-                body.province, body.postal_code, body.country, body.phone, body.email,
-                body.parent_branch_id, body.branch_level, body.is_headquarters,
-                body.has_own_sequence, body.default_warehouse_id,
-                body.default_bank_account_id, body.profit_center_id,
-                body.opened_date, ctx["user_id"]
+                ctx["tenant_id"],
+                body.code,
+                body.name,
+                body.address,
+                body.city,
+                body.province,
+                body.postal_code,
+                body.country,
+                body.phone,
+                body.email,
+                body.parent_branch_id,
+                body.branch_level,
+                body.is_headquarters,
+                body.has_own_sequence,
+                body.default_warehouse_id,
+                body.default_bank_account_id,
+                body.profit_center_id,
+                body.opened_date,
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Branch created successfully",
-                "data": {"id": str(branch_id)}
+                "data": {"id": str(branch_id)},
             }
 
     except HTTPException:
@@ -241,7 +253,7 @@ async def get_branch_tree(request: Request):
                 WHERE tenant_id = $1 AND is_active = true
                 ORDER BY branch_level, name
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             # Build tree
@@ -314,23 +326,31 @@ async def get_branch(request: Request, branch_id: UUID):
                     "country": row["country"],
                     "phone": row["phone"],
                     "email": row["email"],
-                    "parent_branch_id": str(row["parent_branch_id"]) if row["parent_branch_id"] else None,
+                    "parent_branch_id": str(row["parent_branch_id"])
+                    if row["parent_branch_id"]
+                    else None,
                     "parent_branch_name": row["parent_branch_name"],
                     "branch_level": row["branch_level"],
                     "is_headquarters": row["is_headquarters"],
                     "has_own_sequence": row["has_own_sequence"],
-                    "default_warehouse_id": str(row["default_warehouse_id"]) if row["default_warehouse_id"] else None,
+                    "default_warehouse_id": str(row["default_warehouse_id"])
+                    if row["default_warehouse_id"]
+                    else None,
                     "default_warehouse_name": row["warehouse_name"],
-                    "default_bank_account_id": str(row["default_bank_account_id"]) if row["default_bank_account_id"] else None,
+                    "default_bank_account_id": str(row["default_bank_account_id"])
+                    if row["default_bank_account_id"]
+                    else None,
                     "default_bank_account_name": row["bank_account_name"],
-                    "profit_center_id": str(row["profit_center_id"]) if row["profit_center_id"] else None,
+                    "profit_center_id": str(row["profit_center_id"])
+                    if row["profit_center_id"]
+                    else None,
                     "profit_center_name": row["cost_center_name"],
                     "is_active": row["is_active"],
                     "opened_date": row["opened_date"],
                     "closed_date": row["closed_date"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -350,7 +370,8 @@ async def update_branch(request: Request, branch_id: UUID, body: UpdateBranchReq
         async with pool.acquire() as conn:
             exists = await conn.fetchval(
                 "SELECT 1 FROM branches WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -400,7 +421,8 @@ async def close_branch(request: Request, branch_id: UUID):
                 SET is_active = false, closed_date = CURRENT_DATE, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2
                 """,
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if result == "UPDATE 0":
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -428,7 +450,8 @@ async def list_branch_permissions(request: Request, branch_id: UUID):
             # Verify branch
             branch = await conn.fetchrow(
                 "SELECT name FROM branches WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if not branch:
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -440,7 +463,8 @@ async def list_branch_permissions(request: Request, branch_id: UUID):
                 WHERE bp.tenant_id = $1 AND bp.branch_id = $2
                 ORDER BY bp.created_at
                 """,
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
 
             items = [
@@ -471,7 +495,9 @@ async def list_branch_permissions(request: Request, branch_id: UUID):
 
 
 @router.post("/{branch_id}/permissions", response_model=BranchResponse, status_code=201)
-async def grant_permission(request: Request, branch_id: UUID, body: CreateBranchPermissionRequest):
+async def grant_permission(
+    request: Request, branch_id: UUID, body: CreateBranchPermissionRequest
+):
     """Grant branch permission to user."""
     try:
         ctx = get_user_context(request)
@@ -481,7 +507,8 @@ async def grant_permission(request: Request, branch_id: UUID, body: CreateBranch
             # Verify branch
             exists = await conn.fetchval(
                 "SELECT 1 FROM branches WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -490,7 +517,8 @@ async def grant_permission(request: Request, branch_id: UUID, body: CreateBranch
             if body.is_default:
                 await conn.execute(
                     "UPDATE branch_permissions SET is_default = false WHERE tenant_id = $1 AND user_id = $2",
-                    ctx["tenant_id"], body.user_id
+                    ctx["tenant_id"],
+                    body.user_id,
                 )
 
             # Upsert permission
@@ -506,15 +534,22 @@ async def grant_permission(request: Request, branch_id: UUID, body: CreateBranch
                     can_delete = $7, can_approve = $8, is_default = $9
                 RETURNING id
                 """,
-                ctx["tenant_id"], body.user_id, branch_id, body.can_view,
-                body.can_create, body.can_edit, body.can_delete, body.can_approve,
-                body.is_default, ctx["user_id"]
+                ctx["tenant_id"],
+                body.user_id,
+                branch_id,
+                body.can_view,
+                body.can_create,
+                body.can_edit,
+                body.can_delete,
+                body.can_approve,
+                body.is_default,
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Permission granted",
-                "data": {"id": str(perm_id)}
+                "data": {"id": str(perm_id)},
             }
 
     except HTTPException:
@@ -534,7 +569,8 @@ async def revoke_permission(request: Request, permission_id: UUID):
         async with pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM branch_permissions WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], permission_id
+                ctx["tenant_id"],
+                permission_id,
             )
             if result == "DELETE 0":
                 raise HTTPException(status_code=404, detail="Permission not found")
@@ -567,7 +603,8 @@ async def get_user_branches(request: Request, user_id: UUID):
                 WHERE bp.tenant_id = $1 AND bp.user_id = $2 AND b.is_active = true
                 ORDER BY bp.is_default DESC, b.name
                 """,
-                ctx["tenant_id"], user_id
+                ctx["tenant_id"],
+                user_id,
             )
 
             items = [
@@ -648,7 +685,7 @@ async def list_branch_transfers(
 
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM branch_transfers bt WHERE {where_clause}",
-                *params
+                *params,
             )
 
             query = f"""
@@ -703,8 +740,7 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
             async with conn.transaction():
                 # Generate transfer number
                 tx_number = await conn.fetchval(
-                    "SELECT generate_branch_transfer_number($1)",
-                    ctx["tenant_id"]
+                    "SELECT generate_branch_transfer_number($1)", ctx["tenant_id"]
                 )
 
                 # Calculate total
@@ -714,7 +750,9 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
 
                 # Apply markup if specified
                 if body.pricing_method == "markup" and body.markup_percent:
-                    total_price = int(total_price * (1 + float(body.markup_percent) / 100))
+                    total_price = int(
+                        total_price * (1 + float(body.markup_percent) / 100)
+                    )
 
                 # Create transfer
                 transfer_id = await conn.fetchval(
@@ -726,9 +764,16 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     RETURNING id
                     """,
-                    ctx["tenant_id"], tx_number, body.transfer_date, body.from_branch_id,
-                    body.to_branch_id, total_price, body.pricing_method, body.markup_percent,
-                    body.notes, ctx["user_id"]
+                    ctx["tenant_id"],
+                    tx_number,
+                    body.transfer_date,
+                    body.from_branch_id,
+                    body.to_branch_id,
+                    total_price,
+                    body.pricing_method,
+                    body.markup_percent,
+                    body.notes,
+                    ctx["user_id"],
                 )
 
                 # Create lines
@@ -741,22 +786,34 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
                             unit_cost, line_total, batch_id, serial_ids, notes
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         """,
-                        transfer_id, line.product_id, line.quantity, line.unit,
-                        line.unit_cost, line_total, line.batch_id,
-                        line.serial_ids, line.notes
+                        transfer_id,
+                        line.product_id,
+                        line.quantity,
+                        line.unit,
+                        line.unit_cost,
+                        line_total,
+                        line.batch_id,
+                        line.serial_ids,
+                        line.notes,
                     )
 
                 # Create journal entry for from branch
                 # Dr. Branch Receivable (1-10950) / Cr. Inventory (1-10400)
                 from_journal_id = await create_from_branch_journal(
-                    conn, ctx["tenant_id"], transfer_id, tx_number,
-                    body, total_price, ctx["user_id"]
+                    conn,
+                    ctx["tenant_id"],
+                    transfer_id,
+                    tx_number,
+                    body,
+                    total_price,
+                    ctx["user_id"],
                 )
 
                 if from_journal_id:
                     await conn.execute(
                         "UPDATE branch_transfers SET from_journal_id = $1 WHERE id = $2",
-                        from_journal_id, transfer_id
+                        from_journal_id,
+                        transfer_id,
                     )
 
                 return {
@@ -765,8 +822,10 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
                     "data": {
                         "id": str(transfer_id),
                         "transfer_number": tx_number,
-                        "from_journal_id": str(from_journal_id) if from_journal_id else None
-                    }
+                        "from_journal_id": str(from_journal_id)
+                        if from_journal_id
+                        else None,
+                    },
                 }
 
     except HTTPException:
@@ -776,11 +835,13 @@ async def create_branch_transfer(request: Request, body: CreateBranchTransferReq
         raise HTTPException(status_code=500, detail="Failed to create branch transfer")
 
 
-async def create_from_branch_journal(conn, tenant_id, transfer_id, tx_number, body, amount, user_id):
+async def create_from_branch_journal(
+    conn, tenant_id, transfer_id, tx_number, body, amount, user_id
+):
     """Create journal entry for sending branch."""
     try:
-        branch_receivable = {"id": await resolve_account_id(conn, tenant_id, '1-10950')}
-        inventory = {"id": await resolve_account_id(conn, tenant_id, '1-10400')}
+        branch_receivable = {"id": await resolve_account_id(conn, tenant_id, "1-10950")}
+        inventory = {"id": await resolve_account_id(conn, tenant_id, "1-10400")}
 
         if not branch_receivable or not inventory:
             logger.warning(f"Branch accounts not found for tenant {tenant_id}")
@@ -795,9 +856,13 @@ async def create_from_branch_journal(conn, tenant_id, transfer_id, tx_number, bo
             ) VALUES ($1, $2, $3, $4, 'branch_transfer', $5, $6, 'posted', $7)
             RETURNING id
             """,
-            tenant_id, journal_number, body.transfer_date,
+            tenant_id,
+            journal_number,
+            body.transfer_date,
             f"Branch Transfer: {tx_number}",
-            transfer_id, body.from_branch_id, user_id
+            transfer_id,
+            body.from_branch_id,
+            user_id,
         )
 
         # Dr. Branch Receivable
@@ -806,8 +871,10 @@ async def create_from_branch_journal(conn, tenant_id, transfer_id, tx_number, bo
             INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
             VALUES ($1, $2, $3, 0, $4)
             """,
-            journal_id, branch_receivable["id"], amount,
-            f"Receivable from branch transfer {tx_number}"
+            journal_id,
+            branch_receivable["id"],
+            amount,
+            f"Receivable from branch transfer {tx_number}",
         )
 
         # Cr. Inventory
@@ -816,8 +883,10 @@ async def create_from_branch_journal(conn, tenant_id, transfer_id, tx_number, bo
             INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
             VALUES ($1, $2, 0, $3, $4)
             """,
-            journal_id, inventory["id"], amount,
-            f"Inventory transfer out {tx_number}"
+            journal_id,
+            inventory["id"],
+            amount,
+            f"Inventory transfer out {tx_number}",
         )
 
         return journal_id
@@ -858,7 +927,7 @@ async def get_branch_transfer(request: Request, transfer_id: UUID):
                 LEFT JOIN item_batches ib ON ib.id = btl.batch_id
                 WHERE btl.branch_transfer_id = $1
                 """,
-                transfer_id
+                transfer_id,
             )
 
             line_details = [
@@ -887,19 +956,27 @@ async def get_branch_transfer(request: Request, transfer_id: UUID):
                     "from_branch_name": row["from_branch_name"],
                     "to_branch_id": str(row["to_branch_id"]),
                     "to_branch_name": row["to_branch_name"],
-                    "stock_transfer_id": str(row["stock_transfer_id"]) if row["stock_transfer_id"] else None,
+                    "stock_transfer_id": str(row["stock_transfer_id"])
+                    if row["stock_transfer_id"]
+                    else None,
                     "transfer_price": row["transfer_price"],
                     "pricing_method": row["pricing_method"],
                     "markup_percent": row["markup_percent"],
                     "status": row["status"],
                     "settlement_date": row["settlement_date"],
-                    "settlement_journal_id": str(row["settlement_journal_id"]) if row["settlement_journal_id"] else None,
-                    "from_journal_id": str(row["from_journal_id"]) if row["from_journal_id"] else None,
-                    "to_journal_id": str(row["to_journal_id"]) if row["to_journal_id"] else None,
+                    "settlement_journal_id": str(row["settlement_journal_id"])
+                    if row["settlement_journal_id"]
+                    else None,
+                    "from_journal_id": str(row["from_journal_id"])
+                    if row["from_journal_id"]
+                    else None,
+                    "to_journal_id": str(row["to_journal_id"])
+                    if row["to_journal_id"]
+                    else None,
                     "notes": row["notes"],
                     "lines": line_details,
                     "created_at": row["created_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -923,10 +1000,14 @@ async def ship_transfer(request: Request, transfer_id: UUID):
                 SET status = 'in_transit', updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2 AND status = 'pending'
                 """,
-                ctx["tenant_id"], transfer_id
+                ctx["tenant_id"],
+                transfer_id,
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="Transfer not found or not in pending status")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Transfer not found or not in pending status",
+                )
 
             return {"success": True, "message": "Transfer shipped"}
 
@@ -952,13 +1033,17 @@ async def receive_transfer(request: Request, transfer_id: UUID):
                     SELECT * FROM branch_transfers
                     WHERE tenant_id = $1 AND id = $2
                     """,
-                    ctx["tenant_id"], transfer_id
+                    ctx["tenant_id"],
+                    transfer_id,
                 )
                 if not transfer:
                     raise HTTPException(status_code=404, detail="Transfer not found")
 
                 if transfer["status"] not in ("pending", "in_transit"):
-                    raise HTTPException(status_code=400, detail="Transfer cannot be received in current status")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Transfer cannot be received in current status",
+                    )
 
                 # Update status
                 await conn.execute(
@@ -967,7 +1052,7 @@ async def receive_transfer(request: Request, transfer_id: UUID):
                     SET status = 'received', updated_at = NOW()
                     WHERE id = $1
                     """,
-                    transfer_id
+                    transfer_id,
                 )
 
                 # Create journal entry for receiving branch
@@ -979,13 +1064,16 @@ async def receive_transfer(request: Request, transfer_id: UUID):
                 if to_journal_id:
                     await conn.execute(
                         "UPDATE branch_transfers SET to_journal_id = $1 WHERE id = $2",
-                        to_journal_id, transfer_id
+                        to_journal_id,
+                        transfer_id,
                     )
 
                 return {
                     "success": True,
                     "message": "Transfer received",
-                    "data": {"to_journal_id": str(to_journal_id) if to_journal_id else None}
+                    "data": {
+                        "to_journal_id": str(to_journal_id) if to_journal_id else None
+                    },
                 }
 
     except HTTPException:
@@ -998,8 +1086,8 @@ async def receive_transfer(request: Request, transfer_id: UUID):
 async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
     """Create journal entry for receiving branch."""
     try:
-        inventory = {"id": await resolve_account_id(conn, tenant_id, '1-10400')}
-        branch_payable = {"id": await resolve_account_id(conn, tenant_id, '2-10950')}
+        inventory = {"id": await resolve_account_id(conn, tenant_id, "1-10400")}
+        branch_payable = {"id": await resolve_account_id(conn, tenant_id, "2-10950")}
 
         if not inventory or not branch_payable:
             return None
@@ -1013,9 +1101,13 @@ async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
             ) VALUES ($1, $2, $3, $4, 'branch_transfer', $5, $6, 'posted', $7)
             RETURNING id
             """,
-            tenant_id, journal_number, date.today(),
+            tenant_id,
+            journal_number,
+            date.today(),
             f"Branch Transfer Receipt: {transfer['transfer_number']}",
-            transfer["id"], transfer["to_branch_id"], user_id
+            transfer["id"],
+            transfer["to_branch_id"],
+            user_id,
         )
 
         # Dr. Inventory
@@ -1024,8 +1116,10 @@ async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
             INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
             VALUES ($1, $2, $3, 0, $4)
             """,
-            journal_id, inventory["id"], transfer["transfer_price"],
-            f"Inventory transfer in {transfer['transfer_number']}"
+            journal_id,
+            inventory["id"],
+            transfer["transfer_price"],
+            f"Inventory transfer in {transfer['transfer_number']}",
         )
 
         # Cr. Branch Payable
@@ -1034,8 +1128,10 @@ async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
             INSERT INTO journal_lines (journal_id, account_id, debit, credit, description)
             VALUES ($1, $2, 0, $3, $4)
             """,
-            journal_id, branch_payable["id"], transfer["transfer_price"],
-            f"Payable for branch transfer {transfer['transfer_number']}"
+            journal_id,
+            branch_payable["id"],
+            transfer["transfer_price"],
+            f"Payable for branch transfer {transfer['transfer_number']}",
         )
 
         return journal_id
@@ -1059,10 +1155,14 @@ async def settle_transfer(request: Request, transfer_id: UUID):
                 SET status = 'settled', settlement_date = CURRENT_DATE, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2 AND status = 'received'
                 """,
-                ctx["tenant_id"], transfer_id
+                ctx["tenant_id"],
+                transfer_id,
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="Transfer not found or not in received status")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Transfer not found or not in received status",
+                )
 
             return {"success": True, "message": "Transfer settled"}
 
@@ -1091,7 +1191,8 @@ async def get_branch_summary(
         async with pool.acquire() as conn:
             branch = await conn.fetchrow(
                 "SELECT name FROM branches WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if not branch:
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -1111,7 +1212,10 @@ async def get_branch_summary(
                   AND je.entry_date BETWEEN $3 AND $4
                   AND je.status = 'posted'
                 """,
-                ctx["tenant_id"], branch_id, start_date, end_date
+                ctx["tenant_id"],
+                branch_id,
+                start_date,
+                end_date,
             )
 
             return {
@@ -1121,11 +1225,12 @@ async def get_branch_summary(
                     "branch_name": branch["name"],
                     "total_revenue": summary["revenue"] or 0,
                     "total_expenses": summary["expenses"] or 0,
-                    "net_income": (summary["revenue"] or 0) - (summary["expenses"] or 0),
+                    "net_income": (summary["revenue"] or 0)
+                    - (summary["expenses"] or 0),
                     "transaction_count": summary["tx_count"] or 0,
                     "period_start": start_date,
                     "period_end": end_date,
-                }
+                },
             }
 
     except HTTPException:
@@ -1149,7 +1254,8 @@ async def get_branch_trial_balance(
         async with pool.acquire() as conn:
             branch = await conn.fetchrow(
                 "SELECT name FROM branches WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], branch_id
+                ctx["tenant_id"],
+                branch_id,
             )
             if not branch:
                 raise HTTPException(status_code=404, detail="Branch not found")
@@ -1172,7 +1278,9 @@ async def get_branch_trial_balance(
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.code
                 """,
-                ctx["tenant_id"], branch_id, as_of_date
+                ctx["tenant_id"],
+                branch_id,
+                as_of_date,
             )
 
             tb_rows = [
@@ -1235,7 +1343,9 @@ async def compare_branches(
                 ORDER BY (COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) -
                          COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0)) DESC
                 """,
-                ctx["tenant_id"], start_date, end_date
+                ctx["tenant_id"],
+                start_date,
+                end_date,
             )
 
             items = []
@@ -1247,14 +1357,16 @@ async def compare_branches(
                 net_income = revenue - expenses
                 margin = round((net_income / revenue * 100) if revenue else 0, 2)
 
-                items.append({
-                    "branch_id": str(row["branch_id"]),
-                    "branch_name": row["branch_name"],
-                    "revenue": revenue,
-                    "expenses": expenses,
-                    "net_income": net_income,
-                    "margin_percent": margin,
-                })
+                items.append(
+                    {
+                        "branch_id": str(row["branch_id"]),
+                        "branch_name": row["branch_name"],
+                        "revenue": revenue,
+                        "expenses": expenses,
+                        "net_income": net_income,
+                        "margin_percent": margin,
+                    }
+                )
 
                 totals["revenue"] += revenue
                 totals["expenses"] += expenses
@@ -1303,7 +1415,9 @@ async def rank_branches(
                     GROUP BY b.id, b.name
                     ORDER BY value DESC
                     """,
-                    ctx["tenant_id"], start_date, end_date
+                    ctx["tenant_id"],
+                    start_date,
+                    end_date,
                 )
             else:
                 rows = await conn.fetch(
@@ -1328,7 +1442,10 @@ async def rank_branches(
                     GROUP BY b.id, b.name
                     ORDER BY value DESC
                     """,
-                    ctx["tenant_id"], start_date, end_date, ranking_by
+                    ctx["tenant_id"],
+                    start_date,
+                    end_date,
+                    ranking_by,
                 )
 
             total = sum(row["value"] or 0 for row in rows)
@@ -1336,13 +1453,17 @@ async def rank_branches(
 
             for rank, row in enumerate(rows, 1):
                 value = row["value"] or 0
-                items.append({
-                    "rank": rank,
-                    "branch_id": str(row["branch_id"]),
-                    "branch_name": row["branch_name"],
-                    "value": value,
-                    "percent_of_total": round((value / total * 100) if total else 0, 2),
-                })
+                items.append(
+                    {
+                        "rank": rank,
+                        "branch_id": str(row["branch_id"]),
+                        "branch_name": row["branch_name"],
+                        "value": value,
+                        "percent_of_total": round(
+                            (value / total * 100) if total else 0, 2
+                        ),
+                    }
+                )
 
             return {
                 "success": True,

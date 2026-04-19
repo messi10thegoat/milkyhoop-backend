@@ -21,24 +21,18 @@ from ..schemas.journals import (
     JournalListResponse,
     JournalSummary,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -81,7 +75,6 @@ async def get_next_journal_number(conn, tenant_id: str, prefix: str = "JV") -> s
     return f"{prefix}-{year_month_str}-{seq:04d}"
 
 
-
 # =============================================================================
 # GUARD: Block manual journal from touching derived-layer accounts (Law 31 Gate 4)
 # =============================================================================
@@ -90,7 +83,7 @@ async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
     Block manual journal from touching accounts that have derived layers.
     These accounts MUST be accessed via their proper modules to maintain
     dual-layer sync (Law 31 Gate 4).
-    
+
     - RECEIVABLE/PAYABLE -> use Payment/Settlement module
     - Persediaan/HPP -> use Stock Adjustment module
     - Bank CoA -> ALLOWED (not blocked here)
@@ -98,27 +91,32 @@ async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
     account_ids = [UUID(line.account_id) for line in lines]
 
     # Check RECEIVABLE and PAYABLE accounts
-    ar_ap_accounts = await conn.fetch("""
+    ar_ap_accounts = await conn.fetch(
+        """
         SELECT id, account_code, name, account_type
         FROM chart_of_accounts
         WHERE id = ANY($1) AND account_type IN ('RECEIVABLE', 'PAYABLE')
           AND tenant_id = $2
-    """, account_ids, tenant_id)
+    """,
+        account_ids,
+        tenant_id,
+    )
 
     if ar_ap_accounts:
-        names = ', '.join(f"{a['account_code']} {a['name']}" for a in ar_ap_accounts)
-        acct_type = ar_ap_accounts[0]['account_type']
+        names = ", ".join(f"{a['account_code']} {a['name']}" for a in ar_ap_accounts)
+        acct_type = ar_ap_accounts[0]["account_type"]
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Manual journal tidak boleh menyentuh akun {acct_type}. "
                 f"Akun: {names}. "
                 f"Gunakan modul Payment/Settlement untuk transaksi piutang/hutang."
-            )
+            ),
         )
 
     # Check inventory/COGS accounts (default + product-level overrides)
-    inventory_cogs_rows = await conn.fetch("""
+    inventory_cogs_rows = await conn.fetch(
+        """
         SELECT DISTINCT coa_id FROM (
             SELECT id AS coa_id FROM chart_of_accounts
             WHERE account_code IN ('1-10600', '5-10100') AND tenant_id = $1
@@ -129,24 +127,30 @@ async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
             SELECT cogs_account_id AS coa_id FROM products
             WHERE tenant_id = $1 AND cogs_account_id IS NOT NULL
         ) sub WHERE coa_id IS NOT NULL
-    """, tenant_id)
+    """,
+        tenant_id,
+    )
 
-    blocked_ids = {row['coa_id'] for row in inventory_cogs_rows}
+    blocked_ids = {row["coa_id"] for row in inventory_cogs_rows}
     blocked_lines = [aid for aid in account_ids if aid in blocked_ids]
 
     if blocked_lines:
-        blocked_accounts = await conn.fetch("""
+        blocked_accounts = await conn.fetch(
+            """
             SELECT account_code, name FROM chart_of_accounts
             WHERE id = ANY($1) AND tenant_id = $2
-        """, blocked_lines, tenant_id)
-        names = ', '.join(f"{a['account_code']} {a['name']}" for a in blocked_accounts)
+        """,
+            blocked_lines,
+            tenant_id,
+        )
+        names = ", ".join(f"{a['account_code']} {a['name']}" for a in blocked_accounts)
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Manual journal tidak boleh menyentuh akun Persediaan/HPP. "
                 f"Akun: {names}. "
                 f"Gunakan modul Stock Adjustment untuk transaksi inventory."
-            )
+            ),
         )
 
 
@@ -163,7 +167,10 @@ async def list_journals(
     source_type: Optional[str] = Query(None),
     account_id: Optional[UUID] = Query(None, description="Filter by account in lines"),
     search: Optional[str] = Query(None, description="Search description"),
-    sort_by: Optional[str] = Query(None, description="Sort field: created_at, journal_date, total_debit, description"),
+    sort_by: Optional[str] = Query(
+        None,
+        description="Sort field: created_at, journal_date, total_debit, description",
+    ),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -385,7 +392,9 @@ async def get_journal(request: Request, journal_id: UUID):
                     if je_row["created_by"]
                     else None,
                     created_at=je_row["created_at"],
-                    posted_at=je_row["updated_at"] if je_row["status"] == "POSTED" else None,
+                    posted_at=je_row["updated_at"]
+                    if je_row["status"] == "POSTED"
+                    else None,
                     posted_by=None,
                 ),
             }
@@ -449,14 +458,18 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                 # Law 13: Advisory lock on manual journal creation
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"MANUAL_CREATE:{ctx['tenant_id']}"
+                    f"MANUAL_CREATE:{ctx['tenant_id']}",
                 )
 
                 # Law 23: Generate journal number inside transaction
-                journal_number = await get_next_journal_number(conn, ctx["tenant_id"], "JV")
+                journal_number = await get_next_journal_number(
+                    conn, ctx["tenant_id"], "JV"
+                )
 
                 # Law 31 Gate 4: Block derived-layer accounts in manual journal
-                await validate_no_derived_layer_accounts(conn, ctx["tenant_id"], body.lines)
+                await validate_no_derived_layer_accounts(
+                    conn, ctx["tenant_id"], body.lines
+                )
 
                 # Law 20: Always INSERT as DRAFT first
                 journal_id = await conn.fetchval(
@@ -564,7 +577,7 @@ async def post_journal(request: Request, journal_id: UUID):
                 # Law 13: Advisory lock on journal posting
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"MANUAL_POST:{str(journal_id)}"
+                    f"MANUAL_POST:{str(journal_id)}",
                 )
 
                 # Post journal
@@ -658,7 +671,7 @@ async def reverse_journal(
                 # Law 13: Advisory lock on journal reversal
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"MANUAL_REVERSE:{str(journal_id)}"
+                    f"MANUAL_REVERSE:{str(journal_id)}",
                 )
 
                 # Law 23: Generate journal number inside transaction

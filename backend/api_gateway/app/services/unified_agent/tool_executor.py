@@ -35,6 +35,30 @@ def _to_amount(value) -> "Decimal":
         return Decimal("0")
 
 
+_ABSOLUTE_DATE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}"
+    r"|\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}"
+    r"|\d{1,2}\s+(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)"
+    r"|tertanggal|per\s+tanggal",
+    re.IGNORECASE,
+)
+
+
+def _user_gave_absolute_date(user_text: str) -> bool:
+    """Return True when user_text contains an explicit absolute date expression.
+
+    Used by enrichers to decide whether to trust an LLM-extracted date that
+    looks stale (>30d past / prior year). If the user explicitly typed a date,
+    we must honor backdated entries instead of overriding to today.
+    """
+    if not user_text:
+        return False
+    try:
+        return bool(_ABSOLUTE_DATE_RE.search(user_text))
+    except Exception:
+        return False
+
+
 def _safe_get_name(entity: dict, entity_type: str) -> str:
     """
     Safely extract vendor/customer name from bill/invoice entity.
@@ -235,7 +259,7 @@ MAX_TOOL_CALLS_PER_REQUEST = 12
 READ_TOOL_TIMEOUT = 5.0
 ACTION_TOOL_TIMEOUT = 10.0
 MAX_RESPONSE_SIZE = 8000
-MAX_LIST_ITEMS = 15
+MAX_LIST_ITEMS = 30
 MAX_STRING_LENGTH = 500
 MAX_AMOUNT = 999_999_999_999
 UUID_PATTERN = re.compile(
@@ -268,12 +292,21 @@ ACTION_CATEGORY_MAP = {
 # Maps action_type -> method name for enrichment.
 # None = no enrichment needed (master data, simple actions).
 ACTION_ENRICHMENT = {
+    # Keys MUST match DirectActionConfig.action_type_key in direct_action_registry.
     "CREATE_SALES_INVOICE": "_enrich_sales_invoice",
-    "CREATE_PURCHASE_INVOICE": "_enrich_purchase_invoice",
-    "CREATE_BILL": "_enrich_purchase_invoice",  # alias — registry uses CREATE_BILL
+    "CREATE_BILL": "_enrich_purchase_invoice",
     "CREATE_EXPENSE": "_enrich_expense",
-    "CREATE_PURCHASE_ORDER": "_enrich_purchase_order",
     "CREATE_CREDIT_NOTE": "_enrich_credit_note",
+    "CREATE_QUOTE": "_enrich_quote",
+    "CREATE_SALES_ORDER": "_enrich_sales_order",
+    "CREATE_RECEIVE_PAYMENT": "_enrich_receive_payment",
+    "CREATE_BILL_PAYMENT": "_enrich_make_payment",
+    "CREATE_VENDOR_CREDIT": "_enrich_vendor_credit",
+    "CREATE_BANK_TRANSFER": "_enrich_transfer",
+    "CREATE_JOURNAL_ENTRY": "_enrich_journal",
+    # Legacy aliases (kept for propose_action tool path which uses older names)
+    "CREATE_PURCHASE_INVOICE": "_enrich_purchase_invoice",
+    "CREATE_PURCHASE_ORDER": "_enrich_purchase_order",
     "RECEIVE_PAYMENT": "_enrich_receive_payment",
     "MAKE_PAYMENT": "_enrich_make_payment",
     "BANK_TRANSFER": "_enrich_transfer",
@@ -824,6 +857,12 @@ class ToolExecutor:
         # === GENERIC NORMALIZATION (replaces all manual if-blocks) ===
         payload = self._normalize_payload(action_key, payload)
 
+        # === ENRICHMENT (date defaults, field translation, CoA→bank lookup) ===
+        _enrich_action_type = (
+            action_key.replace("create_", "CREATE_").replace("void_", "VOID_").upper()
+        )
+        payload = await self._enrich_payload(_enrich_action_type, payload)
+
         # === POST-NORMALIZATION: domain-specific ID resolution ===
         # Auto-resolve vendor_id from bill_id when LLM sends non-UUID vendor_id
         if action_key == "create_bill_payment" and payload.get("bill_id"):
@@ -866,6 +905,121 @@ class ToolExecutor:
 
         # === RESOLVE ENTITY NAMES (for success/loading messages) ===
         await self._resolve_entity_names(action_key, payload)
+
+        # Auto-resolve account_id from account_name or description keywords (for create_expense)
+        if action_key == "create_expense" and not payload.get("account_id"):
+            acct_name = payload.get("account_name", "")
+            desc = payload.get("description", "")
+            try:
+                from .db_utils import get_session_db_pool
+
+                pool = await get_session_db_pool()
+                resolved = False
+
+                # Strategy 1: Direct name match (user said "beban pemeliharaan")
+                if acct_name:
+                    acct_rows = await pool.fetch(
+                        """SELECT id, name, account_code
+                           FROM chart_of_accounts
+                           WHERE tenant_id = $1 AND is_header = false AND is_active = true
+                             AND account_code LIKE '5-%'
+                             AND name ILIKE $2
+                           ORDER BY CASE WHEN LOWER(name) = LOWER($3) THEN 0 ELSE 1 END, name
+                           LIMIT 3""",
+                        self.context.tenant_id,
+                        "%" + acct_name + "%",
+                        acct_name.strip(),
+                    )
+                    if acct_rows:
+                        best = acct_rows[0]
+                        for r in acct_rows:
+                            if r["name"].lower().strip() == acct_name.lower().strip():
+                                best = r
+                                break
+                        payload["account_id"] = str(best["id"])
+                        payload["account_name"] = (
+                            best["name"] + " (" + best["account_code"] + ")"
+                        )
+                        resolved = True
+
+                # Strategy 2: Keyword inference from description
+                if not resolved and desc:
+                    _EXPENSE_KEYWORDS = {
+                        "listrik": "Beban Listrik",
+                        "air pdam": "Beban Air",
+                        "telepon": "Beban Telepon",
+                        "internet": "Beban Telepon & Internet",
+                        "wifi": "Beban Telepon & Internet",
+                        "sewa": "Beban Sewa",
+                        "kontrak": "Beban Sewa Kantor",
+                        "gaji": "Beban Gaji",
+                        "transport": "Beban Transportasi",
+                        "bensin": "Beban Transportasi",
+                        "parkir": "Beban Transportasi",
+                        "tol": "Beban Transportasi",
+                        "ojek": "Beban Transportasi",
+                        "grab": "Beban Transportasi",
+                        "gojek": "Beban Transportasi",
+                        "taxi": "Beban Transportasi",
+                        "servis": "Beban Pemeliharaan",
+                        "service": "Beban Pemeliharaan",
+                        "reparasi": "Beban Pemeliharaan",
+                        "perbaikan": "Beban Pemeliharaan",
+                        "maintenance": "Beban Pemeliharaan",
+                        "perawatan": "Beban Pemeliharaan",
+                        "makan": "Beban Makan & Minum",
+                        "minum": "Beban Makan & Minum",
+                        "snack": "Beban Makan & Minum",
+                        "catering": "Beban Makan & Minum",
+                        "konsumsi": "Beban Makan & Minum",
+                        "atk": "Beban Perlengkapan Kantor",
+                        "alat tulis": "Beban Perlengkapan Kantor",
+                        "kertas": "Beban Perlengkapan Kantor",
+                        "tinta": "Beban Perlengkapan Kantor",
+                        "printer": "Beban Perlengkapan Kantor",
+                        "asuransi": "Beban Asuransi",
+                        "pajak": "Beban Pajak",
+                        "admin bank": "Biaya Admin Bank",
+                        "transfer fee": "Biaya Admin Bank",
+                        "biaya bank": "Biaya Admin Bank",
+                    }
+                    desc_lower = desc.lower()
+                    matched_acct_name = None
+                    for kw, acct in _EXPENSE_KEYWORDS.items():
+                        if kw in desc_lower:
+                            matched_acct_name = acct
+                            break
+
+                    if not matched_acct_name:
+                        # Fallback: Beban Lain-lain
+                        matched_acct_name = "Beban Lain-lain"
+
+                    acct_rows = await pool.fetch(
+                        """SELECT id, name, account_code
+                           FROM chart_of_accounts
+                           WHERE tenant_id = $1 AND is_header = false AND is_active = true
+                             AND name ILIKE $2
+                           LIMIT 1""",
+                        self.context.tenant_id,
+                        "%" + matched_acct_name + "%",
+                    )
+                    if acct_rows:
+                        payload["account_id"] = str(acct_rows[0]["id"])
+                        payload["account_name"] = (
+                            acct_rows[0]["name"]
+                            + " ("
+                            + acct_rows[0]["account_code"]
+                            + ")"
+                        )
+                        resolved = True
+
+                if not resolved:
+                    logger.info(
+                        "[create_expense] Could not auto-resolve account_id for desc=%s",
+                        desc[:50],
+                    )
+            except Exception as e:
+                logger.warning(f"[create_expense] account_id resolve: {e}")
 
         # Validate required fields
         is_valid, missing = validate_payload(action_key, payload)
@@ -2968,9 +3122,40 @@ class ToolExecutor:
     # --- Per-action enrichment methods ---
 
     async def _enrich_sales_invoice(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Enrich CREATE_SALES_INVOICE: customer_name, due_date, item descriptions."""
+        """Enrich CREATE_SALES_INVOICE: customer lookup, date defaults, items normalization.
+
+        Mirrors _enrich_quote quality:
+          - Overrides stale/hallucinated invoice_date (>30 days past or prior year)
+          - Forces due_date recompute when invoice_date is overridden
+          - Parses stringified items JSON
+          - Scalar-fallback items builder when Stage 2 returns empty list
+          - Extracts top-level tax_rate from user_text regex
+          - Backfills item_id from top-level to items[0]
+          - Cleans up extraction artifacts (item_id, item_name, quantity, etc.)
+        """
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("invoice_date", today)
+
+        # Stale-date override (LLM hallucinates 2024 dates from training cutoff)
+        _id = payload.get("invoice_date")
+        _override = False
+        if not _id or _id in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["invoice_date"] = today
+            payload.pop("due_date", None)  # force recompute since base date changed
+
         self._add_due_date(payload)
 
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -2984,7 +3169,6 @@ class ToolExecutor:
             # BUG-02 fix: Reverse lookup — resolve customer_id from customer_name
             if not payload.get("customer_id") and payload.get("customer_name"):
                 cust_name = payload["customer_name"]
-                # Search customers by name via the list endpoint
                 search_resp = await self._fetch_entity(
                     client, f"/api/customers?search={cust_name}&limit=5"
                 )
@@ -2995,7 +3179,6 @@ class ToolExecutor:
                         else search_resp.get("items", [])
                     )
                     if items:
-                        # Exact match first (case-insensitive)
                         exact = next(
                             (
                                 c
@@ -3007,47 +3190,422 @@ class ToolExecutor:
                         )
                         resolved = exact or items[0]
                         payload["customer_id"] = resolved.get("id", "")
-                        # Also update customer_name to the canonical DB name
                         if resolved.get("name"):
                             payload["customer_name"] = resolved["name"]
                         logger.info(
                             f"BUG-02: Resolved customer_id={payload['customer_id']} from name={cust_name}"
                         )
 
+            # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
+            _raw_items = payload.get("items")
+            if isinstance(_raw_items, str):
+                try:
+                    _parsed = json.loads(_raw_items)
+                    payload["items"] = _parsed if isinstance(_parsed, list) else []
+                except (ValueError, TypeError):
+                    payload["items"] = []
+
+            # Scalar-fallback: build items[] from top-level fields if empty
+            if not payload.get("items"):
+                _it_id = payload.get("item_id")
+                _it_name = payload.get("item_name") or payload.get("name")
+                _qty = payload.get("quantity")
+                _price = payload.get("unit_price")
+                if _it_id or _it_name or _qty or _price:
+                    payload["items"] = [
+                        {
+                            "item_id": _it_id,
+                            "description": _it_name or "Item",
+                            "quantity": _qty or 1,
+                            "unit_price": _price or 0,
+                            "unit": payload.get("base_unit") or "pcs",
+                        }
+                    ]
+
+            # Parse top-level tax_rate from user_text if missing/zero
+            try:
+                _cur_tr = float(payload.get("tax_rate") or 0)
+            except (ValueError, TypeError):
+                _cur_tr = 0.0
+            if _cur_tr == 0.0 and getattr(self, "user_text", None):
+                _m = re.search(
+                    r"pajak\s*(\d+(?:[.,]\d+)?)\s*(?:%|persen)",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _m:
+                    try:
+                        _parsed_tr = float(_m.group(1).replace(",", "."))
+                        payload["tax_rate"] = _parsed_tr
+                        _cur_tr = _parsed_tr
+                    except (ValueError, TypeError):
+                        pass
+
+            # Backfill item_id from top-level into items[0]
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+
             # Item descriptions + backfill unit_price
             payload = await self._enrich_items(payload, client)
+
+            # Cleanup extraction artifacts (schema rejects them)
+            for _k in (
+                "item_id",
+                "item_name",
+                "name",
+                "quantity",
+                "unit_price",
+                "item_type",
+                "base_unit",
+                "date",
+            ):
+                payload.pop(_k, None)
+
+        return payload
+
+    async def _enrich_sales_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_SALES_ORDER: customer lookup, date defaults, items normalization.
+
+        Mirrors _enrich_sales_invoice/_enrich_quote quality. Schema (CreateSalesOrderRequest):
+        order_date (required), expected_ship_date (optional, defaults to order_date+7d),
+        customer_id + customer_name (both required), items[] with description + unit_price.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Stale-date override on order_date
+        _od = payload.get("order_date")
+        _override = False
+        if not _od or _od in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_od), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["order_date"] = today
+            payload.pop("expected_ship_date", None)  # force recompute
+
+        # Default expected_ship_date = order_date + 7 days
+        if not payload.get("expected_ship_date"):
+            try:
+                od = datetime.strptime(payload["order_date"], "%Y-%m-%d")
+                payload["expected_ship_date"] = (od + timedelta(days=7)).strftime(
+                    "%Y-%m-%d"
+                )
+            except (ValueError, TypeError):
+                payload["expected_ship_date"] = (
+                    datetime.now() + timedelta(days=7)
+                ).strftime("%Y-%m-%d")
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Customer name lookup
+            cid = payload.get("customer_id")
+            if cid and not payload.get("customer_name"):
+                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
+                if entity:
+                    payload["customer_name"] = entity.get("name", "")
+
+            # Reverse: resolve customer_id from customer_name
+            if not payload.get("customer_id") and payload.get("customer_name"):
+                cname = payload["customer_name"]
+                search_resp = await self._fetch_entity(
+                    client, f"/api/customers?search={cname}&limit=5"
+                )
+                if search_resp:
+                    items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if items:
+                        exact = next(
+                            (
+                                c
+                                for c in items
+                                if c.get("name", "").strip().lower()
+                                == cname.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or items[0]
+                        payload["customer_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["customer_name"] = resolved["name"]
+
+            # Parse items if stringified JSON
+            _raw_items = payload.get("items")
+            if isinstance(_raw_items, str):
+                try:
+                    _parsed = json.loads(_raw_items)
+                    payload["items"] = _parsed if isinstance(_parsed, list) else []
+                except (ValueError, TypeError):
+                    payload["items"] = []
+
+            # Scalar-fallback
+            if not payload.get("items"):
+                _it_id = payload.get("item_id")
+                _it_name = payload.get("item_name") or payload.get("name")
+                _qty = payload.get("quantity")
+                _price = payload.get("unit_price")
+                if _it_id or _it_name or _qty or _price:
+                    payload["items"] = [
+                        {
+                            "item_id": _it_id,
+                            "description": _it_name or "Item",
+                            "quantity": _qty or 1,
+                            "unit_price": _price or 0,
+                            "unit": payload.get("base_unit") or "pcs",
+                        }
+                    ]
+
+            # Top-level tax_rate from user_text
+            try:
+                _cur_tr = float(payload.get("tax_rate") or 0)
+            except (ValueError, TypeError):
+                _cur_tr = 0.0
+            if _cur_tr == 0.0 and getattr(self, "user_text", None):
+                _m = re.search(
+                    r"pajak\s*(\d+(?:[.,]\d+)?)\s*(?:%|persen)",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _m:
+                    try:
+                        _parsed_tr = float(_m.group(1).replace(",", "."))
+                        payload["tax_rate"] = _parsed_tr
+                        _cur_tr = _parsed_tr
+                    except (ValueError, TypeError):
+                        pass
+
+            # Backfill item_id + apply tax_rate per line
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+                    item_id = item.get("item_id")
+                    if item_id and not item.get("description"):
+                        detail = await self._fetch_entity(
+                            client, f"/api/items/{item_id}"
+                        )
+                        if detail:
+                            item["description"] = detail.get("name", "Item")
+                            if not item.get("unit_price"):
+                                item["unit_price"] = int(
+                                    detail.get("selling_price")
+                                    or detail.get("harga_jual")
+                                    or 0
+                                )
+                            if not item.get("unit"):
+                                item["unit"] = (
+                                    detail.get("base_unit")
+                                    or detail.get("unit")
+                                    or "pcs"
+                                )
+                    if not item.get("description"):
+                        item["description"] = item.get("name") or "Item"
+                    if _cur_tr and not item.get("tax_rate"):
+                        item["tax_rate"] = _cur_tr
+                    if item.get("unit_price") is not None:
+                        try:
+                            item["unit_price"] = int(float(item["unit_price"]))
+                        except (ValueError, TypeError):
+                            item["unit_price"] = 0
+                    if item.get("quantity") is not None:
+                        try:
+                            item["quantity"] = float(item["quantity"])
+                        except (ValueError, TypeError):
+                            item["quantity"] = 1.0
+
+            # Cleanup extraction artifacts
+            for _k in (
+                "item_id",
+                "item_name",
+                "name",
+                "quantity",
+                "unit_price",
+                "item_type",
+                "base_unit",
+                "date",
+            ):
+                payload.pop(_k, None)
 
         return payload
 
     async def _enrich_purchase_invoice(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Enrich CREATE_PURCHASE_INVOICE: vendor_name, due_date, item fields.
+        Enrich CREATE_PURCHASE_INVOICE / CREATE_BILL: vendor_name, dates, items normalization.
 
-        IMPORTANT: bills/v2 kernel API uses different field names than sales invoices:
-          - product_name (not description)
-          - qty (not quantity)
-          - price (not unit_price)
-        This method translates the LLM's generic field names to bills/v2 schema.
+        Mirrors _enrich_sales_invoice quality:
+          - Stale-date override for issue_date (>30d past or prior year)
+          - Parses stringified items JSON
+          - Scalar-fallback items builder when Stage 2 returns empty list
+          - Extracts top-level tax_rate from user_text regex
+          - Vendor reverse-lookup from vendor_name
+          - Translates generic field names → bills/v2 schema (product_id, product_name, qty, price)
+          - Cleans up extraction artifacts
         """
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("invoice_date", today)
-        self._add_due_date(payload)
+
+        # Stale-date override on issue_date (bills/v2 uses issue_date).
+        # Also accept invoice_date from LLM and migrate → issue_date.
+        _legacy_id = payload.pop("invoice_date", None)
+        _id = payload.get("issue_date") or _legacy_id
+        _override = False
+        if not _id or _id in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["issue_date"] = today
+            payload.pop("due_date", None)  # force recompute since base date changed
+        else:
+            payload["issue_date"] = _id
+
+        # Defer due_date computation to use issue_date (not invoice_date)
+        if "due_date" not in payload or not payload.get("due_date"):
+            try:
+                _base = datetime.strptime(payload["issue_date"], "%Y-%m-%d")
+                payload["due_date"] = (_base + timedelta(days=30)).strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime(
+                    "%Y-%m-%d"
+                )
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            # Vendor name lookup
+            # Guard: if vendor_id is not a UUID (LLM gave name), move to vendor_name
+            vid_raw = payload.get("vendor_id")
+            if vid_raw and not UUID_PATTERN.match(str(vid_raw)):
+                if not payload.get("vendor_name"):
+                    payload["vendor_name"] = str(vid_raw)
+                payload.pop("vendor_id", None)
+
+            # Vendor name lookup (forward)
             vid = payload.get("vendor_id")
             if vid and "vendor_name" not in payload:
                 entity = await self._fetch_entity(client, f"/api/vendors/{vid}")
                 if entity:
                     payload["vendor_name"] = entity.get("name", "")
 
-            # Enrich items + translate to bills/v2 field names
+            # Vendor reverse-lookup (resolve vendor_id from vendor_name)
+            if not payload.get("vendor_id") and payload.get("vendor_name"):
+                vname = payload["vendor_name"]
+                search_resp = await self._fetch_entity(
+                    client, f"/api/vendors?search={vname}&limit=5"
+                )
+                if search_resp:
+                    v_items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if v_items:
+                        exact = next(
+                            (
+                                v
+                                for v in v_items
+                                if v.get("name", "").strip().lower()
+                                == vname.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or v_items[0]
+                        payload["vendor_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["vendor_name"] = resolved["name"]
+                        logger.info(
+                            f"_enrich_purchase_invoice: Resolved vendor_id={payload['vendor_id']} from name={vname}"
+                        )
+
+            # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
+            _raw_items = payload.get("items")
+            if isinstance(_raw_items, str):
+                try:
+                    _parsed = json.loads(_raw_items)
+                    payload["items"] = _parsed if isinstance(_parsed, list) else []
+                except (ValueError, TypeError):
+                    payload["items"] = []
+
+            # Scalar-fallback: build items[] from top-level fields if empty
+            if not payload.get("items"):
+                _it_id = payload.get("item_id")
+                _it_name = payload.get("item_name") or payload.get("name")
+                _qty = payload.get("quantity")
+                _price = payload.get("unit_price")
+                if _it_id or _it_name or _qty or _price:
+                    payload["items"] = [
+                        {
+                            "item_id": _it_id,
+                            "description": _it_name or "Item",
+                            "quantity": _qty or 1,
+                            "unit_price": _price or 0,
+                            "unit": payload.get("base_unit") or "pcs",
+                        }
+                    ]
+
+            # Parse top-level tax_rate from user_text if missing/zero
+            try:
+                _cur_tr = float(payload.get("tax_rate") or 0)
+            except (ValueError, TypeError):
+                _cur_tr = 0.0
+            if _cur_tr == 0.0 and getattr(self, "user_text", None):
+                _m = re.search(
+                    r"pajak\s*(\d+(?:[.,]\d+)?)\s*(?:%|persen)",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _m:
+                    try:
+                        _parsed_tr = float(_m.group(1).replace(",", "."))
+                        payload["tax_rate"] = _parsed_tr
+                        _cur_tr = _parsed_tr
+                    except (ValueError, TypeError):
+                        pass
+
+            # Backfill item_id from top-level into items[0]
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+
+            # Enrich items + translate generic → bills/v2 field names
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    item_id = item.get("item_id")
+                    item_id = item.get("item_id") or item.get("product_id")
 
                     # Lookup item name if needed
                     if (
@@ -3066,18 +3624,59 @@ class ToolExecutor:
                                 )
 
                     # Translate generic field names → bills/v2 schema
-                    # description → product_name
                     if "description" in item and "product_name" not in item:
                         item["product_name"] = item.pop("description")
-                    # quantity → qty
+                    elif "description" in item:
+                        item.pop("description", None)
+                    if "name" in item and "product_name" not in item:
+                        item["product_name"] = item.pop("name")
                     if "quantity" in item and "qty" not in item:
                         item["qty"] = item.pop("quantity")
-                    # unit_price → price
+                    elif "quantity" in item:
+                        item.pop("quantity", None)
                     if "unit_price" in item and "price" not in item:
                         item["price"] = item.pop("unit_price")
-                    # item_id → product_id (bills/v2 uses product_id)
+                    elif "unit_price" in item:
+                        item.pop("unit_price", None)
                     if "item_id" in item and "product_id" not in item:
                         item["product_id"] = item.pop("item_id")
+                    elif "item_id" in item:
+                        item.pop("item_id", None)
+
+                    # Ensure product_name exists
+                    if not item.get("product_name"):
+                        item["product_name"] = "Item"
+
+                    # Coerce numeric types
+                    if item.get("qty") is not None:
+                        try:
+                            item["qty"] = int(float(item["qty"]))
+                            if item["qty"] <= 0:
+                                item["qty"] = 1
+                        except (ValueError, TypeError):
+                            item["qty"] = 1
+                    if item.get("price") is not None:
+                        try:
+                            item["price"] = float(item["price"])
+                        except (ValueError, TypeError):
+                            item["price"] = 0.0
+
+                    # Apply top-level tax_rate per line if line lacks it
+                    if _cur_tr and not item.get("tax_rate"):
+                        item["tax_rate"] = _cur_tr
+
+            # Cleanup top-level extraction artifacts (schema rejects them)
+            for _k in (
+                "item_id",
+                "item_name",
+                "name",
+                "quantity",
+                "unit_price",
+                "item_type",
+                "base_unit",
+                "date",
+            ):
+                payload.pop(_k, None)
 
         return payload
 
@@ -3105,11 +3704,206 @@ class ToolExecutor:
 
         return payload
 
+    async def _enrich_quote(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_QUOTE: default dates, item descriptions, apply top-level tax_rate per line.
+
+        Quote schema (schemas/quotes.py) requires items[] with description + unit_price,
+        and tax_rate lives at line level (not top-level). This enricher:
+          - Defaults quote_date = today
+          - Defaults expiry_date = quote_date + 14 days
+          - Looks up item descriptions via /api/items/{id}
+          - Applies top-level tax_rate to each line item if line has no tax_rate
+          - Strips top-level tax_rate before REST (schema rejects it)
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        _qd = payload.get("quote_date")
+        _override = False
+        if not _qd or _qd in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_qd), "%Y-%m-%d")
+                # LLM hallucinates stale training-cutoff dates — override if > 30 days in past or any future year mismatch
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["quote_date"] = today
+            payload.pop("expiry_date", None)  # force re-default since base date changed
+
+        if not payload.get("expiry_date"):
+            try:
+                qd = datetime.strptime(payload["quote_date"], "%Y-%m-%d")
+                payload["expiry_date"] = (qd + timedelta(days=14)).strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                payload["expiry_date"] = (datetime.now() + timedelta(days=14)).strftime(
+                    "%Y-%m-%d"
+                )
+
+        # Keep top-level tax_rate for build_review_card_payload; REST layer handles stripping
+        try:
+            top_tax_rate = float(payload.get("tax_rate") or 0) or None
+        except (ValueError, TypeError):
+            top_tax_rate = None
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Customer name lookup
+            cid = payload.get("customer_id")
+            if cid and not payload.get("customer_name"):
+                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
+                if entity:
+                    payload["customer_name"] = entity.get("name", "")
+
+            # Reverse: resolve customer_id from name
+            if not payload.get("customer_id") and payload.get("customer_name"):
+                cname = payload["customer_name"]
+                search_resp = await self._fetch_entity(
+                    client, f"/api/customers?search={cname}&limit=5"
+                )
+                if search_resp:
+                    items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if items:
+                        exact = next(
+                            (
+                                c
+                                for c in items
+                                if c.get("name", "").strip().lower()
+                                == cname.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or items[0]
+                        payload["customer_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["customer_name"] = resolved["name"]
+
+            # Parse items if string (Stage-2 extractor sometimes returns JSON-stringified)
+            _raw_items = payload.get("items")
+            if isinstance(_raw_items, str):
+                try:
+                    _parsed = json.loads(_raw_items)
+                    if isinstance(_parsed, list):
+                        payload["items"] = _parsed
+                    else:
+                        payload["items"] = []
+                except (ValueError, TypeError):
+                    payload["items"] = []
+
+            # Fallback: build items[] from top-level scalar fields if empty/missing
+            if not payload.get("items"):
+                _it_id = payload.get("item_id")
+                _it_name = payload.get("item_name") or payload.get("name")
+                _qty = payload.get("quantity")
+                _price = payload.get("unit_price")
+                if _it_id or _it_name or _qty or _price:
+                    payload["items"] = [
+                        {
+                            "item_id": _it_id,
+                            "description": _it_name or "Item",
+                            "quantity": _qty or 1,
+                            "unit_price": _price or 0,
+                            "unit": payload.get("base_unit") or "pcs",
+                        }
+                    ]
+
+            # Parse tax_rate from user_text if missing or 0
+            try:
+                _cur_tr = float(payload.get("tax_rate") or 0)
+            except (ValueError, TypeError):
+                _cur_tr = 0.0
+            if _cur_tr == 0.0 and getattr(self, "user_text", None):
+                _m = re.search(
+                    r"pajak\s*(\d+(?:[.,]\d+)?)\s*(?:%|persen)",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _m:
+                    try:
+                        _parsed_tr = float(_m.group(1).replace(",", "."))
+                        payload["tax_rate"] = _parsed_tr
+                        _cur_tr = _parsed_tr
+                        top_tax_rate = _parsed_tr
+                    except (ValueError, TypeError):
+                        pass
+
+            # Enrich items (description + unit_price lookup, inject item_id, apply tax_rate)
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+                    item_id = item.get("item_id")
+                    if item_id and not item.get("description"):
+                        detail = await self._fetch_entity(
+                            client, f"/api/items/{item_id}"
+                        )
+                        if detail:
+                            item["description"] = detail.get("name", "Item")
+                            if not item.get("unit_price"):
+                                item["unit_price"] = int(
+                                    detail.get("selling_price")
+                                    or detail.get("harga_jual")
+                                    or 0
+                                )
+                            if not item.get("unit"):
+                                item["unit"] = (
+                                    detail.get("base_unit")
+                                    or detail.get("unit")
+                                    or "pcs"
+                                )
+                    if not item.get("description"):
+                        item["description"] = item.get("name") or "Item"
+                    if _cur_tr and not item.get("tax_rate"):
+                        item["tax_rate"] = _cur_tr
+                    if item.get("unit_price") is not None:
+                        try:
+                            item["unit_price"] = int(float(item["unit_price"]))
+                        except (ValueError, TypeError):
+                            item["unit_price"] = 0
+                    if item.get("quantity") is not None:
+                        try:
+                            item["quantity"] = float(item["quantity"])
+                        except (ValueError, TypeError):
+                            item["quantity"] = 1.0
+
+            # Strip top-level scalar fields not in CreateQuoteRequest schema (keep tax_rate for review_card)
+            for _k in (
+                "item_id",
+                "item_name",
+                "name",
+                "quantity",
+                "unit_price",
+                "item_type",
+                "base_unit",
+                "date",
+            ):
+                payload.pop(_k, None)
+
+        return payload
+
     async def _enrich_expense(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_EXPENSE: field translation, CoA→bank_account lookup, date default."""
         today = datetime.now().strftime("%Y-%m-%d")
         # Fix: setdefault doesn't override empty/null values from document pipeline
-        if not payload.get("expense_date") or payload.get("expense_date") in ("null", "", "-", "None"):
+        if not payload.get("expense_date") or payload.get("expense_date") in (
+            "null",
+            "",
+            "-",
+            "None",
+        ):
             payload["expense_date"] = today
         # Translate LLM field names → kernel field names
         if "payment_account_id" in payload and "paid_through_id" not in payload:
@@ -3161,9 +3955,28 @@ class ToolExecutor:
         return payload
 
     async def _enrich_credit_note(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Enrich CREATE_CREDIT_NOTE: customer_name, date, item descriptions."""
+        """Enrich CREATE_CREDIT_NOTE: customer lookup (+reverse), stale-date override."""
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("credit_note_date", today)
+
+        # Stale-date override (mirrors _enrich_sales_invoice)
+        _cd = payload.get("credit_note_date")
+        _override = False
+        if not _cd or _cd in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_cd), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["credit_note_date"] = today
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             cid = payload.get("customer_id")
@@ -3171,6 +3984,33 @@ class ToolExecutor:
                 entity = await self._fetch_entity(client, f"/api/customers/{cid}")
                 if entity:
                     payload["customer_name"] = entity.get("name", "")
+
+            # Reverse: resolve customer_id from customer_name
+            if not payload.get("customer_id") and payload.get("customer_name"):
+                cust_name = payload["customer_name"]
+                search_resp = await self._fetch_entity(
+                    client, f"/api/customers?search={cust_name}&limit=5"
+                )
+                if search_resp:
+                    items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if items:
+                        exact = next(
+                            (
+                                c
+                                for c in items
+                                if c.get("name", "").strip().lower()
+                                == cust_name.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or items[0]
+                        payload["customer_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["customer_name"] = resolved["name"]
 
             payload = await self._enrich_items(payload, client)
 
@@ -3188,8 +4028,9 @@ class ToolExecutor:
         if "payment_account_id" in payload and "bank_account_id" not in payload:
             payload["bank_account_id"] = payload.pop("payment_account_id")
 
+        _perf_t0 = time.perf_counter()
         async with httpx.AsyncClient(timeout=5.0) as client:
-            # If invoice_id provided but no customer_id, look up from invoice
+            # Stage 0 (sequential, required): resolve customer_id from invoice_id if needed
             inv_id = payload.get("invoice_id")
             if inv_id and "customer_id" not in payload:
                 inv = await self._fetch_entity(client, f"/api/sales-invoices/{inv_id}")
@@ -3198,26 +4039,341 @@ class ToolExecutor:
                     if "customer_name" not in payload:
                         payload["customer_name"] = inv.get("customer_name", "")
 
-            # If customer_id provided, look up name
-            cid = payload.get("customer_id")
-            if cid and "customer_name" not in payload:
-                entity = await self._fetch_entity(client, f"/api/customers/{cid}")
-                if entity:
-                    payload["customer_name"] = entity.get("name", "")
+            _perf_t1 = time.perf_counter()
 
+            # Stage 1 (parallel): customer name lookup + unpaid-invoices fetch.
+            # Both are independent — both only need customer_id, which is now known.
+            cid = payload.get("customer_id")
+            need_name = bool(cid) and "customer_name" not in payload
+
+            allocs_existing = payload.get("allocations")
+            total_raw = payload.get("total_amount")
+            try:
+                total_f = float(total_raw) if total_raw is not None else 0.0
+            except Exception:
+                total_f = 0.0
+            need_allocs = (not allocs_existing) and bool(cid) and total_f > 0
+
+            stage1_tasks = []
+            stage1_keys = []
+            if need_name:
+                stage1_tasks.append(self._fetch_entity(client, f"/api/customers/{cid}"))
+                stage1_keys.append("cust")
+            if need_allocs:
+                stage1_tasks.append(
+                    self._fetch_entity(
+                        client,
+                        f"/api/sales-invoices?customer_id={cid}&status=unpaid,partial&sort=invoice_date&order=asc&limit=20",
+                    )
+                )
+                stage1_keys.append("invs")
+
+            stage1_results = {}
+            if stage1_tasks:
+                _results = await asyncio.gather(*stage1_tasks, return_exceptions=True)
+                for k, r in zip(stage1_keys, _results):
+                    stage1_results[k] = None if isinstance(r, Exception) else r
+
+            if "cust" in stage1_results and stage1_results["cust"]:
+                payload["customer_name"] = stage1_results["cust"].get("name", "")
+
+            # Auto-build allocations from oldest-first unpaid invoices when missing
+            try:
+                if need_allocs:
+                    if True:
+                        invs = stage1_results.get("invs")
+                        inv_list = []
+                        if isinstance(invs, dict):
+                            inv_list = invs.get("items") or invs.get("data") or []
+                        elif isinstance(invs, list):
+                            inv_list = invs
+                        remaining = total_f
+                        built = []
+                        inv_numbers = []
+                        for inv in inv_list:
+                            if remaining <= 0:
+                                break
+                            inv_id = inv.get("id") or inv.get("invoice_id")
+                            if not inv_id:
+                                continue
+                            try:
+                                outstanding = float(
+                                    inv.get("outstanding_amount")
+                                    or inv.get("balance_due")
+                                    or inv.get("amount_due")
+                                    or 0
+                                )
+                            except Exception:
+                                outstanding = 0.0
+                            if outstanding <= 0:
+                                continue
+                            apply_amt = min(outstanding, remaining)
+                            built.append(
+                                {
+                                    "invoice_id": inv_id,
+                                    "amount_applied": apply_amt,
+                                }
+                            )
+                            inv_num = inv.get("invoice_number") or inv.get("number")
+                            if inv_num:
+                                inv_numbers.append(str(inv_num))
+                            remaining -= apply_amt
+                        if built:
+                            payload["allocations"] = built
+                            if inv_numbers and "invoice_numbers" not in payload:
+                                payload["invoice_numbers"] = ", ".join(inv_numbers)
+            except Exception as e:
+                logger.warning(
+                    f"_enrich_receive_payment allocations auto-build failed: {e}"
+                )
+
+        _perf_t2 = time.perf_counter()
+        logger.info(
+            f"[ENRICH] rcv stage0={(_perf_t1-_perf_t0)*1000:.0f}ms stage1_parallel={(_perf_t2-_perf_t1)*1000:.0f}ms total={(_perf_t2-_perf_t0)*1000:.0f}ms tasks={len(stage1_tasks)}"
+        )
         return payload
 
     async def _enrich_make_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Enrich MAKE_PAYMENT: payment_date default, vendor_name."""
+        """Enrich CREATE_BILL_PAYMENT / MAKE_PAYMENT: vendor + bank lookup, auto-resolve bill_id.
+
+        Mirrors _enrich_receive_payment: auto-build bill_id (single-bill allocation)
+        from vendor's oldest outstanding bill when bill_id is missing.
+        """
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("payment_date", today)
+
+        # Stale-date override on payment_date
+        _pd = payload.get("payment_date")
+        _override = False
+        if not _pd or _pd in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_pd), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["payment_date"] = today
+
+        # Field translations (LLM → kernel)
+        if "deposit_account_id" in payload and "bank_account_id" not in payload:
+            payload["bank_account_id"] = payload.pop("deposit_account_id")
+        if "payment_account_id" in payload and "bank_account_id" not in payload:
+            payload["bank_account_id"] = payload.pop("payment_account_id")
+
+        _perf_t0 = time.perf_counter()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # If vendor_id is not a valid UUID (LLM gave the name), move it to vendor_name
+            vid_raw = payload.get("vendor_id")
+            if vid_raw and not UUID_PATTERN.match(str(vid_raw)):
+                if not payload.get("vendor_name"):
+                    payload["vendor_name"] = str(vid_raw)
+                payload.pop("vendor_id", None)
+
+            # Stage 1 (parallel): vendor resolve (forward OR reverse) + bank forward lookup
+            stage1_tasks = []
+            stage1_keys = []
+
+            vid = payload.get("vendor_id")
+            vname_payload = payload.get("vendor_name")
+            if vid and "vendor_name" not in payload:
+                # vendor forward lookup
+                stage1_tasks.append(self._fetch_entity(client, f"/api/vendors/{vid}"))
+                stage1_keys.append("vendor_fwd")
+            elif (not vid) and vname_payload:
+                # vendor reverse lookup
+                stage1_tasks.append(
+                    self._fetch_entity(
+                        client, f"/api/vendors?search={vname_payload}&limit=5"
+                    )
+                )
+                stage1_keys.append("vendor_rev")
+
+            bid = payload.get("bank_account_id")
+            if (
+                bid
+                and UUID_PATTERN.match(str(bid))
+                and "bank_account_name" not in payload
+            ):
+                stage1_tasks.append(
+                    self._fetch_entity(client, f"/api/bank-accounts/{bid}")
+                )
+                stage1_keys.append("bank")
+
+            stage1_results = {}
+            if stage1_tasks:
+                _results = await asyncio.gather(*stage1_tasks, return_exceptions=True)
+                for k, r in zip(stage1_keys, _results):
+                    stage1_results[k] = None if isinstance(r, Exception) else r
+
+            # Process vendor forward result
+            if "vendor_fwd" in stage1_results and stage1_results["vendor_fwd"]:
+                payload["vendor_name"] = stage1_results["vendor_fwd"].get("name", "")
+
+            # Process vendor reverse result
+            if "vendor_rev" in stage1_results:
+                search_resp = stage1_results["vendor_rev"]
+                if search_resp:
+                    v_items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if v_items:
+                        vname = vname_payload
+                        exact = next(
+                            (
+                                v
+                                for v in v_items
+                                if v.get("name", "").strip().lower()
+                                == vname.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or v_items[0]
+                        payload["vendor_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["vendor_name"] = resolved["name"]
+
+            # Process bank result
+            if "bank" in stage1_results and stage1_results["bank"]:
+                b = stage1_results["bank"]
+                payload["bank_account_name"] = (
+                    b.get("name") or b.get("account_name") or ""
+                )
+
+            _perf_t1 = time.perf_counter()
+
+            # Stage 2 (sequential, needs vendor_id): auto-resolve bill_id from oldest outstanding
+            try:
+                cur_bill_id = payload.get("bill_id")
+                vid2 = payload.get("vendor_id")
+                total = payload.get("total_amount") or payload.get("amount")
+                if (not cur_bill_id) and vid2:
+                    bills_resp = await self._fetch_entity(
+                        client,
+                        f"/api/bills?vendor_id={vid2}&status=active&sort=date:asc&limit=20",
+                    )
+                    bill_list = []
+                    if isinstance(bills_resp, dict):
+                        bill_list = (
+                            bills_resp.get("items") or bills_resp.get("data") or []
+                        )
+                    elif isinstance(bills_resp, list):
+                        bill_list = bills_resp
+                    # Filter outstanding (amount_due > 0), oldest first (already sorted)
+                    try:
+                        total_f = float(total or 0)
+                    except Exception:
+                        total_f = 0.0
+                    for b in bill_list:
+                        try:
+                            due = float(b.get("amount_due") or 0)
+                        except Exception:
+                            due = 0.0
+                        if due <= 0:
+                            continue
+                        payload["bill_id"] = b.get("id") or b.get("bill_id")
+                        if "bill_number" not in payload:
+                            payload["bill_number"] = (
+                                b.get("invoice_number") or b.get("number") or ""
+                            )
+                        if "bill_amount" not in payload:
+                            try:
+                                payload["bill_amount"] = float(b.get("amount") or 0)
+                            except Exception:
+                                pass
+                        if "amount_due" not in payload:
+                            payload["amount_due"] = due
+                        # If total_amount missing, pay oldest due exactly
+                        if total_f <= 0:
+                            payload["total_amount"] = due
+                        logger.info(
+                            f"_enrich_make_payment: Auto-resolved bill_id={payload['bill_id']} for vendor={vid2}"
+                        )
+                        break
+            except Exception as e:
+                logger.warning(f"_enrich_make_payment bill auto-resolve failed: {e}")
+
+            # Cleanup extraction artifacts
+            for _k in ("date", "invoice_date", "amount"):
+                payload.pop(_k, None) if _k == "date" or _k == "invoice_date" else None
+
+        _perf_t2 = time.perf_counter()
+        logger.info(
+            f"[ENRICH] pay stage1_parallel={(_perf_t1-_perf_t0)*1000:.0f}ms stage2_bills={(_perf_t2-_perf_t1)*1000:.0f}ms total={(_perf_t2-_perf_t0)*1000:.0f}ms tasks={len(stage1_tasks)}"
+        )
+        return payload
+
+    async def _enrich_vendor_credit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich CREATE_VENDOR_CREDIT: vendor reverse-lookup, stale-date override."""
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        _vcd = payload.get("vendor_credit_date")
+        _override = False
+        if not _vcd or _vcd in ("null", "", "-", "None"):
+            _override = True
+        else:
+            try:
+                _parsed = datetime.strptime(str(_vcd), "%Y-%m-%d")
+                _now = datetime.now()
+                if (
+                    (_now - _parsed).days > 30 or _parsed.year < _now.year
+                ) and not _user_gave_absolute_date(
+                    getattr(self, "user_text", "") or ""
+                ):
+                    _override = True
+            except (ValueError, TypeError):
+                _override = True
+        if _override:
+            payload["vendor_credit_date"] = today
 
         async with httpx.AsyncClient(timeout=5.0) as client:
+            # Guard: non-UUID vendor_id → treat as name
+            vid_raw = payload.get("vendor_id")
+            if vid_raw and not UUID_PATTERN.match(str(vid_raw)):
+                if not payload.get("vendor_name"):
+                    payload["vendor_name"] = str(vid_raw)
+                payload.pop("vendor_id", None)
+
             vid = payload.get("vendor_id")
             if vid and "vendor_name" not in payload:
                 entity = await self._fetch_entity(client, f"/api/vendors/{vid}")
                 if entity:
                     payload["vendor_name"] = entity.get("name", "")
+
+            # Reverse lookup
+            if not payload.get("vendor_id") and payload.get("vendor_name"):
+                vname = payload["vendor_name"]
+                search_resp = await self._fetch_entity(
+                    client, f"/api/vendors?search={vname}&limit=5"
+                )
+                if search_resp:
+                    v_items = (
+                        search_resp
+                        if isinstance(search_resp, list)
+                        else search_resp.get("items", [])
+                    )
+                    if v_items:
+                        exact = next(
+                            (
+                                v
+                                for v in v_items
+                                if v.get("name", "").strip().lower()
+                                == vname.strip().lower()
+                            ),
+                            None,
+                        )
+                        resolved = exact or v_items[0]
+                        payload["vendor_id"] = resolved.get("id", "")
+                        if resolved.get("name"):
+                            payload["vendor_name"] = resolved["name"]
 
         return payload
 

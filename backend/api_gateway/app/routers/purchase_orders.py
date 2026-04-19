@@ -39,7 +39,6 @@ import logging
 import asyncpg
 from datetime import date
 from decimal import Decimal
-import uuid as uuid_module
 
 from ..schemas.purchase_orders import (
     CreatePurchaseOrderRequest,
@@ -52,32 +51,23 @@ from ..schemas.purchase_orders import (
     PurchaseOrderListResponse,
     PurchaseOrderSummaryResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -87,19 +77,16 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
-    quantity = Decimal(str(item.get('quantity', 0)))
-    unit_price = Decimal(str(item.get('unit_price', 0)))
-    discount_percent = Decimal(str(item.get('discount_percent', 0)))
-    discount_amount = Decimal(str(item.get('discount_amount', 0)))
-    tax_rate = Decimal(str(item.get('tax_rate', 0)))
+    quantity = Decimal(str(item.get("quantity", 0)))
+    unit_price = Decimal(str(item.get("unit_price", 0)))
+    discount_percent = Decimal(str(item.get("discount_percent", 0)))
+    discount_amount = Decimal(str(item.get("discount_amount", 0)))
+    tax_rate = Decimal(str(item.get("tax_rate", 0)))
 
     subtotal = quantity * unit_price
 
@@ -118,10 +105,10 @@ def calculate_item_totals(item: dict) -> dict:
 
     return {
         **item,
-        'subtotal': int(subtotal),
-        'discount_amount': int(discount),
-        'tax_amount': int(tax_amount),
-        'total': int(total)
+        "subtotal": int(subtotal),
+        "discount_amount": int(discount),
+        "tax_amount": int(tax_amount),
+        "total": int(total),
     }
 
 
@@ -129,18 +116,34 @@ def calculate_item_totals(item: dict) -> dict:
 # LIST PURCHASE ORDERS
 # =============================================================================
 
+
 @router.get("", response_model=PurchaseOrderListResponse)
 async def list_purchase_orders(
     request: Request,
-    status: Optional[Literal["all", "draft", "sent", "partial_received", "received",
-                             "partial_billed", "billed", "closed", "cancelled"]] = Query("all"),
+    status: Optional[
+        Literal[
+            "all",
+            "draft",
+            "sent",
+            "partial_received",
+            "received",
+            "partial_billed",
+            "billed",
+            "closed",
+            "cancelled",
+        ]
+    ] = Query("all"),
     vendor_id: Optional[str] = Query(None),
-    search: Optional[str] = Query(None, description="Search by PO number or vendor name"),
+    search: Optional[str] = Query(
+        None, description="Search by PO number or vendor name"
+    ),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    sort_by: Literal["po_date", "po_number", "total_amount", "created_at"] = Query("created_at"),
+    sort_by: Literal["po_date", "po_number", "total_amount", "created_at"] = Query(
+        "created_at"
+    ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List purchase orders with filters and pagination."""
@@ -202,7 +205,7 @@ async def list_purchase_orders(
                 "po_date": "po_date",
                 "po_number": "po_number",
                 "total_amount": "total_amount",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -232,7 +235,9 @@ async def list_purchase_orders(
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
                     "po_date": row["po_date"].isoformat(),
-                    "expected_date": row["expected_date"].isoformat() if row["expected_date"] else None,
+                    "expected_date": row["expected_date"].isoformat()
+                    if row["expected_date"]
+                    else None,
                     "total_amount": row["total_amount"],
                     "amount_received": row["amount_received"] or 0,
                     "amount_billed": row["amount_billed"] or 0,
@@ -243,11 +248,7 @@ async def list_purchase_orders(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -259,6 +260,7 @@ async def list_purchase_orders(
 # =============================================================================
 # PENDING PURCHASE ORDERS
 # =============================================================================
+
 
 @router.get("/pending", response_model=PurchaseOrderListResponse)
 async def list_pending_purchase_orders(
@@ -277,7 +279,7 @@ async def list_pending_purchase_orders(
 
             conditions = [
                 "tenant_id = $1",
-                "status IN ('sent', 'partial_received', 'received', 'partial_billed')"
+                "status IN ('sent', 'partial_received', 'received', 'partial_billed')",
             ]
             params = [ctx["tenant_id"]]
             param_idx = 2
@@ -312,7 +314,9 @@ async def list_pending_purchase_orders(
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
                     "po_date": row["po_date"].isoformat(),
-                    "expected_date": row["expected_date"].isoformat() if row["expected_date"] else None,
+                    "expected_date": row["expected_date"].isoformat()
+                    if row["expected_date"]
+                    else None,
                     "total_amount": row["total_amount"],
                     "amount_received": row["amount_received"] or 0,
                     "amount_billed": row["amount_billed"] or 0,
@@ -323,22 +327,21 @@ async def list_pending_purchase_orders(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing pending purchase orders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list pending purchase orders")
+        raise HTTPException(
+            status_code=500, detail="Failed to list pending purchase orders"
+        )
 
 
 # =============================================================================
 # SUMMARY
 # =============================================================================
+
 
 @router.get("/summary", response_model=PurchaseOrderSummaryResponse)
 async def get_purchase_orders_summary(request: Request):
@@ -381,7 +384,7 @@ async def get_purchase_orders_summary(request: Request):
                     "total_received": int(row["total_received"] or 0),
                     "total_billed": int(row["total_billed"] or 0),
                     "pending_amount": int(row["pending_amount"] or 0),
-                }
+                },
             }
 
     except HTTPException:
@@ -395,6 +398,7 @@ async def get_purchase_orders_summary(request: Request):
 # GET PURCHASE ORDER DETAIL
 # =============================================================================
 
+
 @router.get("/{po_id}", response_model=PurchaseOrderDetailResponse)
 async def get_purchase_order(request: Request, po_id: UUID):
     """Get detailed information for a purchase order."""
@@ -406,28 +410,38 @@ async def get_purchase_order(request: Request, po_id: UUID):
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
             # Get PO
-            po = await conn.fetchrow("""
+            po = await conn.fetchrow(
+                """
                 SELECT * FROM purchase_orders
                 WHERE id = $1 AND tenant_id = $2
-            """, po_id, ctx["tenant_id"])
+            """,
+                po_id,
+                ctx["tenant_id"],
+            )
 
             if not po:
                 raise HTTPException(status_code=404, detail="Purchase order not found")
 
             # Get items
-            items = await conn.fetch("""
+            items = await conn.fetch(
+                """
                 SELECT * FROM purchase_order_items
                 WHERE po_id = $1
                 ORDER BY line_number
-            """, po_id)
+            """,
+                po_id,
+            )
 
             # Get linked bills
-            bills = await conn.fetch("""
+            bills = await conn.fetch(
+                """
                 SELECT id, invoice_number, bill_date, grand_total, status_v2 as status
                 FROM bills
                 WHERE purchase_order_id = $1
                 ORDER BY bill_date
-            """, po_id)
+            """,
+                po_id,
+            )
 
             return {
                 "success": True,
@@ -446,14 +460,18 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "amount_billed": po["amount_billed"] or 0,
                     "status": po["status"],
                     "po_date": po["po_date"].isoformat(),
-                    "expected_date": po["expected_date"].isoformat() if po["expected_date"] else None,
+                    "expected_date": po["expected_date"].isoformat()
+                    if po["expected_date"]
+                    else None,
                     "ship_to_address": po["ship_to_address"],
                     "ref_no": po["ref_no"],
                     "notes": po["notes"],
                     "items": [
                         {
                             "id": str(item["id"]),
-                            "item_id": str(item["item_id"]) if item["item_id"] else None,
+                            "item_id": str(item["item_id"])
+                            if item["item_id"]
+                            else None,
                             "item_code": item["item_code"],
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
@@ -476,7 +494,9 @@ async def get_purchase_order(request: Request, po_id: UUID):
                         {
                             "id": str(bill["id"]),
                             "invoice_number": bill["invoice_number"],
-                            "bill_date": bill["bill_date"].isoformat() if bill["bill_date"] else None,
+                            "bill_date": bill["bill_date"].isoformat()
+                            if bill["bill_date"]
+                            else None,
                             "grand_total": bill["grand_total"],
                             "status": bill["status"],
                         }
@@ -484,15 +504,21 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     ],
                     "sent_at": po["sent_at"].isoformat() if po["sent_at"] else None,
                     "sent_by": str(po["sent_by"]) if po["sent_by"] else None,
-                    "cancelled_at": po["cancelled_at"].isoformat() if po["cancelled_at"] else None,
-                    "cancelled_by": str(po["cancelled_by"]) if po["cancelled_by"] else None,
+                    "cancelled_at": po["cancelled_at"].isoformat()
+                    if po["cancelled_at"]
+                    else None,
+                    "cancelled_by": str(po["cancelled_by"])
+                    if po["cancelled_by"]
+                    else None,
                     "cancelled_reason": po["cancelled_reason"],
-                    "closed_at": po["closed_at"].isoformat() if po["closed_at"] else None,
+                    "closed_at": po["closed_at"].isoformat()
+                    if po["closed_at"]
+                    else None,
                     "closed_by": str(po["closed_by"]) if po["closed_by"] else None,
                     "created_at": po["created_at"].isoformat(),
                     "updated_at": po["updated_at"].isoformat(),
                     "created_by": str(po["created_by"]) if po["created_by"] else None,
-                }
+                },
             }
 
     except HTTPException:
@@ -505,6 +531,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
 # =============================================================================
 # CREATE PURCHASE ORDER (DRAFT)
 # =============================================================================
+
 
 @router.post("", response_model=PurchaseOrderResponse, status_code=201)
 async def create_purchase_order(request: Request, body: CreatePurchaseOrderRequest):
@@ -527,32 +554,38 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
                 # Generate PO number
                 po_number = await conn.fetchval(
-                    "SELECT generate_purchase_order_number($1, 'PO')",
-                    ctx["tenant_id"]
+                    "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
                 )
 
                 # Calculate items and totals
-                calculated_items = [calculate_item_totals(item.model_dump()) for item in body.items]
-                subtotal = sum(item['subtotal'] for item in calculated_items)
-                total_tax = sum(item['tax_amount'] for item in calculated_items)
+                calculated_items = [
+                    calculate_item_totals(item.model_dump()) for item in body.items
+                ]
+                subtotal = sum(item["subtotal"] for item in calculated_items)
+                total_tax = sum(item["tax_amount"] for item in calculated_items)
 
                 # Apply overall discount
                 if body.discount_percent > 0:
-                    overall_discount = int(subtotal * Decimal(str(body.discount_percent)) / 100)
+                    overall_discount = int(
+                        subtotal * Decimal(str(body.discount_percent)) / 100
+                    )
                 else:
                     overall_discount = body.discount_amount
 
                 # Apply overall tax if specified
                 after_discount = subtotal - overall_discount
                 if body.tax_rate > 0:
-                    overall_tax = int(after_discount * Decimal(str(body.tax_rate)) / 100)
+                    overall_tax = int(
+                        after_discount * Decimal(str(body.tax_rate)) / 100
+                    )
                 else:
                     overall_tax = total_tax
 
                 total_amount = after_discount + overall_tax
 
                 # Insert PO
-                po_id = await conn.fetchval("""
+                po_id = await conn.fetchval(
+                    """
                     INSERT INTO purchase_orders (
                         tenant_id, po_number, vendor_id, vendor_name,
                         subtotal, discount_percent, discount_amount,
@@ -578,12 +611,13 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     body.ship_to_address,
                     body.ref_no,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Insert items
                 for idx, item in enumerate(calculated_items, 1):
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO purchase_order_items (
                             po_id, item_id, item_code, description,
                             quantity, unit, unit_price,
@@ -593,20 +627,20 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         po_id,
-                        UUID(item['item_id']) if item.get('item_id') else None,
-                        item.get('item_code'),
-                        item['description'],
-                        item['quantity'],
-                        item.get('unit'),
-                        item['unit_price'],
-                        item.get('discount_percent', 0),
-                        item.get('discount_amount', 0),
-                        item.get('tax_code'),
-                        item.get('tax_rate', 0),
-                        item.get('tax_amount', 0),
-                        item['subtotal'],
-                        item['total'],
-                        idx
+                        UUID(item["item_id"]) if item.get("item_id") else None,
+                        item.get("item_code"),
+                        item["description"],
+                        item["quantity"],
+                        item.get("unit"),
+                        item["unit_price"],
+                        item.get("discount_percent", 0),
+                        item.get("discount_amount", 0),
+                        item.get("tax_code"),
+                        item.get("tax_rate", 0),
+                        item.get("tax_amount", 0),
+                        item["subtotal"],
+                        item["total"],
+                        idx,
                     )
 
                 logger.info(f"Purchase order created: {po_id}, number={po_number}")
@@ -618,8 +652,8 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         "id": str(po_id),
                         "po_number": po_number,
                         "total_amount": total_amount,
-                        "status": "draft"
-                    }
+                        "status": "draft",
+                    },
                 }
 
     except HTTPException:
@@ -633,8 +667,11 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 # UPDATE PURCHASE ORDER (DRAFT/SENT ONLY)
 # =============================================================================
 
+
 @router.patch("/{po_id}", response_model=PurchaseOrderResponse)
-async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest):
+async def update_purchase_order(
+    request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest
+):
     """
     Update a purchase order.
 
@@ -649,18 +686,24 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
                 # Check status
-                po = await conn.fetchrow("""
+                po = await conn.fetchrow(
+                    """
                     SELECT id, status FROM purchase_orders
                     WHERE id = $1 AND tenant_id = $2
-                """, po_id, ctx["tenant_id"])
+                """,
+                    po_id,
+                    ctx["tenant_id"],
+                )
 
                 if not po:
-                    raise HTTPException(status_code=404, detail="Purchase order not found")
+                    raise HTTPException(
+                        status_code=404, detail="Purchase order not found"
+                    )
 
                 if po["status"] not in ("draft", "sent"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot update PO with status '{po['status']}'"
+                        detail=f"Cannot update PO with status '{po['status']}'",
                     )
 
                 # Build update data
@@ -670,33 +713,33 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
                     return {
                         "success": True,
                         "message": "No changes provided",
-                        "data": {"id": str(po_id)}
+                        "data": {"id": str(po_id)},
                     }
 
                 # Handle items if provided
                 if "items" in update_data and update_data["items"]:
                     # Delete existing items
                     await conn.execute(
-                        "DELETE FROM purchase_order_items WHERE po_id = $1",
-                        po_id
+                        "DELETE FROM purchase_order_items WHERE po_id = $1", po_id
                     )
 
                     # Calculate and insert new items
                     calculated_items = [
-                        calculate_item_totals(item.model_dump())
-                        for item in body.items
+                        calculate_item_totals(item.model_dump()) for item in body.items
                     ]
 
-                    subtotal = sum(item['subtotal'] for item in calculated_items)
-                    total_tax = sum(item['tax_amount'] for item in calculated_items)
+                    subtotal = sum(item["subtotal"] for item in calculated_items)
+                    total_tax = sum(item["tax_amount"] for item in calculated_items)
 
                     # Recalculate totals
-                    discount_percent = update_data.get('discount_percent', 0)
-                    discount_amount = update_data.get('discount_amount', 0)
-                    tax_rate = update_data.get('tax_rate', 0)
+                    discount_percent = update_data.get("discount_percent", 0)
+                    discount_amount = update_data.get("discount_amount", 0)
+                    tax_rate = update_data.get("tax_rate", 0)
 
                     if discount_percent > 0:
-                        overall_discount = int(subtotal * Decimal(str(discount_percent)) / 100)
+                        overall_discount = int(
+                            subtotal * Decimal(str(discount_percent)) / 100
+                        )
                     else:
                         overall_discount = discount_amount
 
@@ -710,15 +753,23 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
                     total_amount = after_discount + overall_tax
 
                     # Update totals
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE purchase_orders
                         SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5
                         WHERE id = $1
-                    """, po_id, subtotal, overall_discount, overall_tax, total_amount)
+                    """,
+                        po_id,
+                        subtotal,
+                        overall_discount,
+                        overall_tax,
+                        total_amount,
+                    )
 
                     # Insert new items
                     for idx, item in enumerate(calculated_items, 1):
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO purchase_order_items (
                                 po_id, item_id, item_code, description,
                                 quantity, unit, unit_price,
@@ -728,20 +779,20 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         """,
                             po_id,
-                            UUID(item['item_id']) if item.get('item_id') else None,
-                            item.get('item_code'),
-                            item['description'],
-                            item['quantity'],
-                            item.get('unit'),
-                            item['unit_price'],
-                            item.get('discount_percent', 0),
-                            item.get('discount_amount', 0),
-                            item.get('tax_code'),
-                            item.get('tax_rate', 0),
-                            item.get('tax_amount', 0),
-                            item['subtotal'],
-                            item['total'],
-                            idx
+                            UUID(item["item_id"]) if item.get("item_id") else None,
+                            item.get("item_code"),
+                            item["description"],
+                            item["quantity"],
+                            item.get("unit"),
+                            item["unit_price"],
+                            item.get("discount_percent", 0),
+                            item.get("discount_amount", 0),
+                            item.get("tax_code"),
+                            item.get("tax_rate", 0),
+                            item.get("tax_amount", 0),
+                            item["subtotal"],
+                            item["total"],
+                            idx,
                         )
 
                     del update_data["items"]
@@ -777,7 +828,7 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
                 return {
                     "success": True,
                     "message": "Purchase order updated successfully",
-                    "data": {"id": str(po_id)}
+                    "data": {"id": str(po_id)},
                 }
 
     except HTTPException:
@@ -790,6 +841,7 @@ async def update_purchase_order(request: Request, po_id: UUID, body: UpdatePurch
 # =============================================================================
 # DELETE PURCHASE ORDER (DRAFT ONLY)
 # =============================================================================
+
 
 @router.delete("/{po_id}", response_model=PurchaseOrderResponse)
 async def delete_purchase_order(request: Request, po_id: UUID):
@@ -806,10 +858,14 @@ async def delete_purchase_order(request: Request, po_id: UUID):
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check status
-            po = await conn.fetchrow("""
+            po = await conn.fetchrow(
+                """
                 SELECT id, status, po_number FROM purchase_orders
                 WHERE id = $1 AND tenant_id = $2
-            """, po_id, ctx["tenant_id"])
+            """,
+                po_id,
+                ctx["tenant_id"],
+            )
 
             if not po:
                 raise HTTPException(status_code=404, detail="Purchase order not found")
@@ -817,24 +873,18 @@ async def delete_purchase_order(request: Request, po_id: UUID):
             if po["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft POs can be deleted. Use cancel for sent POs."
+                    detail="Only draft POs can be deleted. Use cancel for sent POs.",
                 )
 
             # Delete (cascade will delete items)
-            await conn.execute(
-                "DELETE FROM purchase_orders WHERE id = $1",
-                po_id
-            )
+            await conn.execute("DELETE FROM purchase_orders WHERE id = $1", po_id)
 
             logger.info(f"Purchase order deleted: {po_id}")
 
             return {
                 "success": True,
                 "message": "Purchase order deleted successfully",
-                "data": {
-                    "id": str(po_id),
-                    "po_number": po["po_number"]
-                }
+                "data": {"id": str(po_id), "po_number": po["po_number"]},
             }
 
     except HTTPException:
@@ -847,6 +897,7 @@ async def delete_purchase_order(request: Request, po_id: UUID):
 # =============================================================================
 # SEND PURCHASE ORDER
 # =============================================================================
+
 
 @router.post("/{po_id}/send", response_model=PurchaseOrderResponse)
 async def send_purchase_order(request: Request, po_id: UUID):
@@ -866,10 +917,14 @@ async def send_purchase_order(request: Request, po_id: UUID):
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check status
-            po = await conn.fetchrow("""
+            po = await conn.fetchrow(
+                """
                 SELECT id, status, po_number FROM purchase_orders
                 WHERE id = $1 AND tenant_id = $2
-            """, po_id, ctx["tenant_id"])
+            """,
+                po_id,
+                ctx["tenant_id"],
+            )
 
             if not po:
                 raise HTTPException(status_code=404, detail="Purchase order not found")
@@ -877,15 +932,19 @@ async def send_purchase_order(request: Request, po_id: UUID):
             if po["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot send PO with status '{po['status']}'"
+                    detail=f"Cannot send PO with status '{po['status']}'",
                 )
 
             # Update status
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE purchase_orders
                 SET status = 'sent', sent_at = NOW(), sent_by = $2, updated_at = NOW()
                 WHERE id = $1
-            """, po_id, ctx["user_id"])
+            """,
+                po_id,
+                ctx["user_id"],
+            )
 
             logger.info(f"Purchase order sent: {po_id}")
 
@@ -895,8 +954,8 @@ async def send_purchase_order(request: Request, po_id: UUID):
                 "data": {
                     "id": str(po_id),
                     "po_number": po["po_number"],
-                    "status": "sent"
-                }
+                    "status": "sent",
+                },
             }
 
     except HTTPException:
@@ -909,6 +968,7 @@ async def send_purchase_order(request: Request, po_id: UUID):
 # =============================================================================
 # RECEIVE GOODS
 # =============================================================================
+
 
 @router.post("/{po_id}/receive", response_model=PurchaseOrderResponse)
 async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest):
@@ -930,72 +990,99 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
                 # Get PO
-                po = await conn.fetchrow("""
+                po = await conn.fetchrow(
+                    """
                     SELECT * FROM purchase_orders
                     WHERE id = $1 AND tenant_id = $2
-                """, po_id, ctx["tenant_id"])
+                """,
+                    po_id,
+                    ctx["tenant_id"],
+                )
 
                 if not po:
-                    raise HTTPException(status_code=404, detail="Purchase order not found")
+                    raise HTTPException(
+                        status_code=404, detail="Purchase order not found"
+                    )
 
                 if po["status"] not in ("sent", "partial_received"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot receive goods for PO with status '{po['status']}'"
+                        detail=f"Cannot receive goods for PO with status '{po['status']}'",
                     )
 
                 items_received = []
 
                 for recv_item in body.items:
                     # Get PO item
-                    po_item = await conn.fetchrow("""
+                    po_item = await conn.fetchrow(
+                        """
                         SELECT * FROM purchase_order_items
                         WHERE id = $1 AND po_id = $2
-                    """, UUID(recv_item.po_item_id), po_id)
+                    """,
+                        UUID(recv_item.po_item_id),
+                        po_id,
+                    )
 
                     if not po_item:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"PO item {recv_item.po_item_id} not found"
+                            detail=f"PO item {recv_item.po_item_id} not found",
                         )
 
                     # Check quantity
-                    remaining = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_received"] or 0)
+                    remaining = Decimal(po_item["quantity"]) - Decimal(
+                        po_item["quantity_received"] or 0
+                    )
                     if recv_item.quantity_received > remaining:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Receive quantity ({recv_item.quantity_received}) exceeds remaining ({remaining})"
+                            detail=f"Receive quantity ({recv_item.quantity_received}) exceeds remaining ({remaining})",
                         )
 
                     # Update quantity_received
-                    new_qty_received = Decimal(po_item["quantity_received"] or 0) + recv_item.quantity_received
+                    new_qty_received = (
+                        Decimal(po_item["quantity_received"] or 0)
+                        + recv_item.quantity_received
+                    )
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE purchase_order_items
                         SET quantity_received = $2
                         WHERE id = $1
-                    """, UUID(recv_item.po_item_id), new_qty_received)
+                    """,
+                        UUID(recv_item.po_item_id),
+                        new_qty_received,
+                    )
 
-                    items_received.append({
-                        "po_item_id": recv_item.po_item_id,
-                        "quantity_received": recv_item.quantity_received,
-                        "total_received": new_qty_received
-                    })
+                    items_received.append(
+                        {
+                            "po_item_id": recv_item.po_item_id,
+                            "quantity_received": recv_item.quantity_received,
+                            "total_received": new_qty_received,
+                        }
+                    )
 
                 # Calculate total received value and update PO
-                total_received = await conn.fetchval("""
+                total_received = await conn.fetchval(
+                    """
                     SELECT COALESCE(SUM(
                         (quantity_received / quantity) * total
                     ), 0)::BIGINT
                     FROM purchase_order_items
                     WHERE po_id = $1
-                """, po_id)
+                """,
+                    po_id,
+                )
 
                 # Determine new status
-                all_items = await conn.fetch("""
+                all_items = await conn.fetch(
+                    """
                     SELECT quantity, quantity_received FROM purchase_order_items
                     WHERE po_id = $1
-                """, po_id)
+                """,
+                    po_id,
+                )
 
                 all_received = all(
                     Decimal(item["quantity_received"] or 0) >= Decimal(item["quantity"])
@@ -1004,13 +1091,20 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 
                 new_status = "received" if all_received else "partial_received"
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE purchase_orders
                     SET amount_received = $2, status = $3, updated_at = NOW()
                     WHERE id = $1
-                """, po_id, total_received, new_status)
+                """,
+                    po_id,
+                    total_received,
+                    new_status,
+                )
 
-                logger.info(f"Goods received for PO: {po_id}, items={len(items_received)}")
+                logger.info(
+                    f"Goods received for PO: {po_id}, items={len(items_received)}"
+                )
 
                 return {
                     "success": True,
@@ -1019,8 +1113,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         "id": str(po_id),
                         "items_received": items_received,
                         "total_received": total_received,
-                        "status": new_status
-                    }
+                        "status": new_status,
+                    },
                 }
 
     except HTTPException:
@@ -1033,6 +1127,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 # =============================================================================
 # CONVERT TO BILL
 # =============================================================================
+
 
 @router.post("/{po_id}/to-bill", response_model=PurchaseOrderResponse)
 async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequest):
@@ -1054,19 +1149,30 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
                 # Get PO
-                po = await conn.fetchrow("""
+                po = await conn.fetchrow(
+                    """
                     SELECT * FROM purchase_orders
                     WHERE id = $1 AND tenant_id = $2
-                """, po_id, ctx["tenant_id"])
+                """,
+                    po_id,
+                    ctx["tenant_id"],
+                )
 
                 if not po:
-                    raise HTTPException(status_code=404, detail="Purchase order not found")
+                    raise HTTPException(
+                        status_code=404, detail="Purchase order not found"
+                    )
 
-                billable_statuses = ("sent", "partial_received", "received", "partial_billed")
+                billable_statuses = (
+                    "sent",
+                    "partial_received",
+                    "received",
+                    "partial_billed",
+                )
                 if po["status"] not in billable_statuses:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot create bill from PO with status '{po['status']}'"
+                        detail=f"Cannot create bill from PO with status '{po['status']}'",
                     )
 
                 # Get items to bill
@@ -1074,56 +1180,63 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     # Specific items
                     items_to_bill = []
                     for bill_item in body.items:
-                        po_item = await conn.fetchrow("""
+                        po_item = await conn.fetchrow(
+                            """
                             SELECT * FROM purchase_order_items
                             WHERE id = $1 AND po_id = $2
-                        """, UUID(bill_item.po_item_id), po_id)
+                        """,
+                            UUID(bill_item.po_item_id),
+                            po_id,
+                        )
 
                         if not po_item:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"PO item {bill_item.po_item_id} not found"
+                                detail=f"PO item {bill_item.po_item_id} not found",
                             )
 
-                        unbilled = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_billed"] or 0)
+                        unbilled = Decimal(po_item["quantity"]) - Decimal(
+                            po_item["quantity_billed"] or 0
+                        )
                         qty_to_bill = bill_item.quantity_to_bill or unbilled
 
                         if qty_to_bill > unbilled:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"Bill quantity ({qty_to_bill}) exceeds unbilled ({unbilled})"
+                                detail=f"Bill quantity ({qty_to_bill}) exceeds unbilled ({unbilled})",
                             )
 
-                        items_to_bill.append({
-                            "po_item": po_item,
-                            "quantity": qty_to_bill
-                        })
+                        items_to_bill.append(
+                            {"po_item": po_item, "quantity": qty_to_bill}
+                        )
                 else:
                     # All unbilled items
-                    po_items = await conn.fetch("""
+                    po_items = await conn.fetch(
+                        """
                         SELECT * FROM purchase_order_items
                         WHERE po_id = $1 AND quantity > COALESCE(quantity_billed, 0)
                         ORDER BY line_number
-                    """, po_id)
+                    """,
+                        po_id,
+                    )
 
                     items_to_bill = [
                         {
                             "po_item": item,
-                            "quantity": Decimal(item["quantity"]) - Decimal(item["quantity_billed"] or 0)
+                            "quantity": Decimal(item["quantity"])
+                            - Decimal(item["quantity_billed"] or 0),
                         }
                         for item in po_items
                     ]
 
                 if not items_to_bill:
                     raise HTTPException(
-                        status_code=400,
-                        detail="No unbilled items to bill"
+                        status_code=400, detail="No unbilled items to bill"
                     )
 
                 # Generate bill number
                 bill_number = await conn.fetchval(
-                    "SELECT generate_bill_number($1, 'BILL')",
-                    ctx["tenant_id"]
+                    "SELECT generate_bill_number($1, 'BILL')", ctx["tenant_id"]
                 )
 
                 if not bill_number:
@@ -1143,9 +1256,15 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 
                     # Apply discount
                     if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(item_subtotal * Decimal(po_item["discount_percent"]) / 100)
+                        discount = int(
+                            item_subtotal * Decimal(po_item["discount_percent"]) / 100
+                        )
                     else:
-                        discount = int((po_item["discount_amount"] or 0) * qty / Decimal(po_item["quantity"]))
+                        discount = int(
+                            (po_item["discount_amount"] or 0)
+                            * qty
+                            / Decimal(po_item["quantity"])
+                        )
 
                     after_discount = item_subtotal - discount
 
@@ -1158,10 +1277,13 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     bill_subtotal += item_subtotal
                     bill_tax += tax
 
-                bill_total = bill_subtotal - 0 + bill_tax  # No overall discount for bill from PO
+                bill_total = (
+                    bill_subtotal - 0 + bill_tax
+                )  # No overall discount for bill from PO
 
                 # Create Bill
-                bill_id = await conn.fetchval("""
+                bill_id = await conn.fetchval(
+                    """
                     INSERT INTO bills (
                         tenant_id, invoice_number, vendor_id, vendor_name,
                         bill_date, due_date, amount, grand_total,
@@ -1179,7 +1301,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     bill_total,
                     po_id,
                     body.notes or f"From PO {po['po_number']}",
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Create bill items and update PO items
@@ -1192,9 +1314,15 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     item_subtotal = int(qty * unit_price)
 
                     if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(item_subtotal * Decimal(po_item["discount_percent"]) / 100)
+                        discount = int(
+                            item_subtotal * Decimal(po_item["discount_percent"]) / 100
+                        )
                     else:
-                        discount = int((po_item["discount_amount"] or 0) * qty / Decimal(po_item["quantity"]))
+                        discount = int(
+                            (po_item["discount_amount"] or 0)
+                            * qty
+                            / Decimal(po_item["quantity"])
+                        )
 
                     after_discount = item_subtotal - discount
 
@@ -1206,7 +1334,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     item_total = after_discount + tax
 
                     # Insert bill item
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO bill_items (
                             bill_id, item_id, item_code, description,
                             quantity, unit, unit_price,
@@ -1229,31 +1358,41 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         tax,
                         item_subtotal,
                         item_total,
-                        idx
+                        idx,
                     )
 
                     # Update PO item quantity_billed
                     new_qty_billed = Decimal(po_item["quantity_billed"] or 0) + qty
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE purchase_order_items
                         SET quantity_billed = $2
                         WHERE id = $1
-                    """, po_item["id"], new_qty_billed)
+                    """,
+                        po_item["id"],
+                        new_qty_billed,
+                    )
 
                 # Update PO amount_billed and status
-                total_billed = await conn.fetchval("""
+                total_billed = await conn.fetchval(
+                    """
                     SELECT COALESCE(SUM(
                         (quantity_billed / quantity) * total
                     ), 0)::BIGINT
                     FROM purchase_order_items
                     WHERE po_id = $1
-                """, po_id)
+                """,
+                    po_id,
+                )
 
                 # Determine new status
-                all_items = await conn.fetch("""
+                all_items = await conn.fetch(
+                    """
                     SELECT quantity, quantity_billed FROM purchase_order_items
                     WHERE po_id = $1
-                """, po_id)
+                """,
+                    po_id,
+                )
 
                 all_billed = all(
                     Decimal(item["quantity_billed"] or 0) >= Decimal(item["quantity"])
@@ -1262,11 +1401,16 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 
                 new_status = "billed" if all_billed else "partial_billed"
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE purchase_orders
                     SET amount_billed = $2, status = $3, updated_at = NOW()
                     WHERE id = $1
-                """, po_id, total_billed, new_status)
+                """,
+                    po_id,
+                    total_billed,
+                    new_status,
+                )
 
                 logger.info(f"Bill created from PO: {po_id}, bill={bill_id}")
 
@@ -1278,8 +1422,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         "bill_id": str(bill_id),
                         "bill_number": bill_number,
                         "bill_total": bill_total,
-                        "po_status": new_status
-                    }
+                        "po_status": new_status,
+                    },
                 }
 
     except HTTPException:
@@ -1293,8 +1437,11 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 # CANCEL PURCHASE ORDER
 # =============================================================================
 
+
 @router.post("/{po_id}/cancel", response_model=PurchaseOrderResponse)
-async def cancel_purchase_order(request: Request, po_id: UUID, body: CancelPurchaseOrderRequest):
+async def cancel_purchase_order(
+    request: Request, po_id: UUID, body: CancelPurchaseOrderRequest
+):
     """
     Cancel a purchase order.
 
@@ -1311,10 +1458,14 @@ async def cancel_purchase_order(request: Request, po_id: UUID, body: CancelPurch
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
             # Get PO
-            po = await conn.fetchrow("""
+            po = await conn.fetchrow(
+                """
                 SELECT * FROM purchase_orders
                 WHERE id = $1 AND tenant_id = $2
-            """, po_id, ctx["tenant_id"])
+            """,
+                po_id,
+                ctx["tenant_id"],
+            )
 
             if not po:
                 raise HTTPException(status_code=404, detail="Purchase order not found")
@@ -1322,40 +1473,40 @@ async def cancel_purchase_order(request: Request, po_id: UUID, body: CancelPurch
             if po["status"] in ("cancelled", "closed"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot cancel PO with status '{po['status']}'"
+                    detail=f"Cannot cancel PO with status '{po['status']}'",
                 )
 
             # Check for received goods
             if (po["amount_received"] or 0) > 0:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Cannot cancel PO with received goods"
+                    status_code=400, detail="Cannot cancel PO with received goods"
                 )
 
             # Check for bills
             if (po["amount_billed"] or 0) > 0:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Cannot cancel PO with bills"
+                    status_code=400, detail="Cannot cancel PO with bills"
                 )
 
             # Update status
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE purchase_orders
                 SET status = 'cancelled', cancelled_at = NOW(),
                     cancelled_by = $2, cancelled_reason = $3, updated_at = NOW()
                 WHERE id = $1
-            """, po_id, ctx["user_id"], body.reason)
+            """,
+                po_id,
+                ctx["user_id"],
+                body.reason,
+            )
 
             logger.info(f"Purchase order cancelled: {po_id}")
 
             return {
                 "success": True,
                 "message": "Purchase order cancelled",
-                "data": {
-                    "id": str(po_id),
-                    "status": "cancelled"
-                }
+                "data": {"id": str(po_id), "status": "cancelled"},
             }
 
     except HTTPException:
@@ -1368,6 +1519,7 @@ async def cancel_purchase_order(request: Request, po_id: UUID, body: CancelPurch
 # =============================================================================
 # CLOSE PURCHASE ORDER
 # =============================================================================
+
 
 @router.post("/{po_id}/close", response_model=PurchaseOrderResponse)
 async def close_purchase_order(request: Request, po_id: UUID):
@@ -1387,10 +1539,14 @@ async def close_purchase_order(request: Request, po_id: UUID):
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
             # Get PO
-            po = await conn.fetchrow("""
+            po = await conn.fetchrow(
+                """
                 SELECT * FROM purchase_orders
                 WHERE id = $1 AND tenant_id = $2
-            """, po_id, ctx["tenant_id"])
+            """,
+                po_id,
+                ctx["tenant_id"],
+            )
 
             if not po:
                 raise HTTPException(status_code=404, detail="Purchase order not found")
@@ -1398,26 +1554,27 @@ async def close_purchase_order(request: Request, po_id: UUID):
             if po["status"] in ("draft", "cancelled", "closed"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot close PO with status '{po['status']}'"
+                    detail=f"Cannot close PO with status '{po['status']}'",
                 )
 
             # Update status
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE purchase_orders
                 SET status = 'closed', closed_at = NOW(),
                     closed_by = $2, updated_at = NOW()
                 WHERE id = $1
-            """, po_id, ctx["user_id"])
+            """,
+                po_id,
+                ctx["user_id"],
+            )
 
             logger.info(f"Purchase order closed: {po_id}")
 
             return {
                 "success": True,
                 "message": "Purchase order closed",
-                "data": {
-                    "id": str(po_id),
-                    "status": "closed"
-                }
+                "data": {"id": str(po_id), "status": "closed"},
             }
 
     except HTTPException:
@@ -1430,6 +1587,7 @@ async def close_purchase_order(request: Request, po_id: UUID):
 # =============================================================================
 # LIST PURCHASE ORDERS FOR VENDOR
 # =============================================================================
+
 
 @router.get("/vendor/{vendor_id}", response_model=PurchaseOrderListResponse)
 async def list_purchase_orders_by_vendor(
@@ -1481,7 +1639,9 @@ async def list_purchase_orders_by_vendor(
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
                     "po_date": row["po_date"].isoformat(),
-                    "expected_date": row["expected_date"].isoformat() if row["expected_date"] else None,
+                    "expected_date": row["expected_date"].isoformat()
+                    if row["expected_date"]
+                    else None,
                     "total_amount": row["total_amount"],
                     "amount_received": row["amount_received"] or 0,
                     "amount_billed": row["amount_billed"] or 0,
@@ -1492,11 +1652,7 @@ async def list_purchase_orders_by_vendor(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise

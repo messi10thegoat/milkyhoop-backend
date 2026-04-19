@@ -3,7 +3,7 @@ Storage Locations Router - Lokasi Penyimpanan Management
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional, Literal
+from typing import Optional
 from uuid import UUID
 import logging
 import asyncpg
@@ -17,30 +17,29 @@ from ..schemas.storage_locations import (
     StorageLocationTreeResponse,
     StorageLocationDropdownResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10, command_timeout=30)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
-    return {"tenant_id": tenant_id, "user_id": UUID(user.get("user_id")) if user.get("user_id") else None}
+    return {
+        "tenant_id": tenant_id,
+        "user_id": UUID(user.get("user_id")) if user.get("user_id") else None,
+    }
 
 
 def build_tree(locations: list, parent_id=None) -> list:
@@ -48,11 +47,16 @@ def build_tree(locations: list, parent_id=None) -> list:
     for loc in locations:
         if loc.get("parent_id") == parent_id:
             children = build_tree(locations, loc["id"])
-            tree.append({
-                "id": loc["id"], "code": loc["code"], "name": loc["name"],
-                "location_type": loc["location_type"], "is_active": loc["is_active"],
-                "children": children
-            })
+            tree.append(
+                {
+                    "id": loc["id"],
+                    "code": loc["code"],
+                    "name": loc["name"],
+                    "location_type": loc["location_type"],
+                    "is_active": loc["is_active"],
+                    "children": children,
+                }
+            )
     return tree
 
 
@@ -74,8 +78,18 @@ async def get_dropdown(request: Request, location_type: Optional[str] = None):
                 params.append(location_type)
             query = f"SELECT id, code, name, location_type FROM storage_locations WHERE {' AND '.join(conditions)} ORDER BY code"
             rows = await conn.fetch(query, *params)
-            return {"items": [{"id": str(r["id"]), "code": r["code"], "name": r["name"],
-                             "location_type": r["location_type"], "full_name": f"{r['code']} - {r['name']}"} for r in rows]}
+            return {
+                "items": [
+                    {
+                        "id": str(r["id"]),
+                        "code": r["code"],
+                        "name": r["name"],
+                        "location_type": r["location_type"],
+                        "full_name": f"{r['code']} - {r['name']}",
+                    }
+                    for r in rows
+                ]
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -91,11 +105,19 @@ async def get_tree(request: Request):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, code, name, location_type, parent_id, is_active FROM storage_locations WHERE tenant_id = $1 ORDER BY code",
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
-            locations = [{"id": str(r["id"]), "code": r["code"], "name": r["name"],
-                         "location_type": r["location_type"], "parent_id": str(r["parent_id"]) if r["parent_id"] else None,
-                         "is_active": r["is_active"]} for r in rows]
+            locations = [
+                {
+                    "id": str(r["id"]),
+                    "code": r["code"],
+                    "name": r["name"],
+                    "location_type": r["location_type"],
+                    "parent_id": str(r["parent_id"]) if r["parent_id"] else None,
+                    "is_active": r["is_active"],
+                }
+                for r in rows
+            ]
             return {"items": build_tree(locations)}
     except HTTPException:
         raise
@@ -111,7 +133,7 @@ async def list_locations(
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = None,
     location_type: Optional[str] = None,
-    is_active: Optional[bool] = None
+    is_active: Optional[bool] = None,
 ):
     try:
         ctx = get_user_context(request)
@@ -133,16 +155,33 @@ async def list_locations(
                 params.append(is_active)
                 idx += 1
             where = " AND ".join(conditions)
-            total = await conn.fetchval(f"SELECT COUNT(*) FROM storage_locations WHERE {where}", *params)
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM storage_locations WHERE {where}", *params
+            )
             params.extend([limit, skip])
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT id, code, name, location_type, parent_id, is_active, is_default
                 FROM storage_locations WHERE {where} ORDER BY code LIMIT ${idx} OFFSET ${idx+1}
-            """, *params)
-            return {"items": [{"id": str(r["id"]), "code": r["code"], "name": r["name"],
-                             "location_type": r["location_type"], "parent_id": str(r["parent_id"]) if r["parent_id"] else None,
-                             "is_active": r["is_active"], "is_default": r["is_default"]} for r in rows],
-                    "total": total, "has_more": skip + limit < total}
+            """,
+                *params,
+            )
+            return {
+                "items": [
+                    {
+                        "id": str(r["id"]),
+                        "code": r["code"],
+                        "name": r["name"],
+                        "location_type": r["location_type"],
+                        "parent_id": str(r["parent_id"]) if r["parent_id"] else None,
+                        "is_active": r["is_active"],
+                        "is_default": r["is_default"],
+                    }
+                    for r in rows
+                ],
+                "total": total,
+                "has_more": skip + limit < total,
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -156,24 +195,36 @@ async def get_location(request: Request, location_id: UUID):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT l.*, p.name as parent_name FROM storage_locations l
                 LEFT JOIN storage_locations p ON l.parent_id = p.id
                 WHERE l.id = $1 AND l.tenant_id = $2
-            """, location_id, ctx["tenant_id"])
+            """,
+                location_id,
+                ctx["tenant_id"],
+            )
             if not row:
                 raise HTTPException(status_code=404, detail="Location not found")
-            return {"success": True, "data": {
-                "id": str(row["id"]), "code": row["code"], "name": row["name"],
-                "location_type": row["location_type"],
-                "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
-                "parent_name": row["parent_name"], "address": row["address"],
-                "capacity_info": row["capacity_info"], "temperature_range": row["temperature_range"],
-                "description": row["description"], "is_active": row["is_active"],
-                "is_default": row["is_default"],
-                "created_at": row["created_at"].isoformat(),
-                "updated_at": row["updated_at"].isoformat()
-            }}
+            return {
+                "success": True,
+                "data": {
+                    "id": str(row["id"]),
+                    "code": row["code"],
+                    "name": row["name"],
+                    "location_type": row["location_type"],
+                    "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "parent_name": row["parent_name"],
+                    "address": row["address"],
+                    "capacity_info": row["capacity_info"],
+                    "temperature_range": row["temperature_range"],
+                    "description": row["description"],
+                    "is_active": row["is_active"],
+                    "is_default": row["is_default"],
+                    "created_at": row["created_at"].isoformat(),
+                    "updated_at": row["updated_at"].isoformat(),
+                },
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -189,19 +240,37 @@ async def create_location(request: Request, body: CreateStorageLocationRequest):
         async with pool.acquire() as conn:
             existing = await conn.fetchval(
                 "SELECT id FROM storage_locations WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if existing:
-                raise HTTPException(status_code=400, detail=f"Code '{body.code}' already exists")
+                raise HTTPException(
+                    status_code=400, detail=f"Code '{body.code}' already exists"
+                )
             parent_uuid = UUID(body.parent_id) if body.parent_id else None
-            loc_id = await conn.fetchval("""
+            loc_id = await conn.fetchval(
+                """
                 INSERT INTO storage_locations (tenant_id, code, name, parent_id, location_type,
                     address, capacity_info, temperature_range, description, is_default, created_by)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id
-            """, ctx["tenant_id"], body.code, body.name, parent_uuid, body.location_type,
-                body.address, body.capacity_info, body.temperature_range, body.description,
-                body.is_default, ctx["user_id"])
-            return {"success": True, "message": "Location created", "data": {"id": str(loc_id), "code": body.code}}
+            """,
+                ctx["tenant_id"],
+                body.code,
+                body.name,
+                parent_uuid,
+                body.location_type,
+                body.address,
+                body.capacity_info,
+                body.temperature_range,
+                body.description,
+                body.is_default,
+                ctx["user_id"],
+            )
+            return {
+                "success": True,
+                "message": "Location created",
+                "data": {"id": str(loc_id), "code": body.code},
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -210,22 +279,31 @@ async def create_location(request: Request, body: CreateStorageLocationRequest):
 
 
 @router.patch("/{location_id}", response_model=StorageLocationResponse)
-async def update_location(request: Request, location_id: UUID, body: UpdateStorageLocationRequest):
+async def update_location(
+    request: Request, location_id: UUID, body: UpdateStorageLocationRequest
+):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
             existing = await conn.fetchrow(
                 "SELECT id, code FROM storage_locations WHERE id = $1 AND tenant_id = $2",
-                location_id, ctx["tenant_id"]
+                location_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Location not found")
             update_data = body.model_dump(exclude_unset=True)
             if not update_data:
-                return {"success": True, "message": "No changes", "data": {"id": str(location_id)}}
+                return {
+                    "success": True,
+                    "message": "No changes",
+                    "data": {"id": str(location_id)},
+                }
             if "parent_id" in update_data:
-                update_data["parent_id"] = UUID(update_data["parent_id"]) if update_data["parent_id"] else None
+                update_data["parent_id"] = (
+                    UUID(update_data["parent_id"]) if update_data["parent_id"] else None
+                )
             updates, params, idx = [], [], 1
             for field, value in update_data.items():
                 updates.append(f"{field} = ${idx}")
@@ -233,8 +311,15 @@ async def update_location(request: Request, location_id: UUID, body: UpdateStora
                 idx += 1
             updates.append("updated_at = NOW()")
             params.extend([location_id, ctx["tenant_id"]])
-            await conn.execute(f"UPDATE storage_locations SET {', '.join(updates)} WHERE id = ${idx} AND tenant_id = ${idx+1}", *params)
-            return {"success": True, "message": "Location updated", "data": {"id": str(location_id)}}
+            await conn.execute(
+                f"UPDATE storage_locations SET {', '.join(updates)} WHERE id = ${idx} AND tenant_id = ${idx+1}",
+                *params,
+            )
+            return {
+                "success": True,
+                "message": "Location updated",
+                "data": {"id": str(location_id)},
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -250,19 +335,28 @@ async def delete_location(request: Request, location_id: UUID):
         async with pool.acquire() as conn:
             existing = await conn.fetchrow(
                 "SELECT id, code FROM storage_locations WHERE id = $1 AND tenant_id = $2",
-                location_id, ctx["tenant_id"]
+                location_id,
+                ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Location not found")
             has_children = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM storage_locations WHERE parent_id = $1)", location_id)
+                "SELECT EXISTS(SELECT 1 FROM storage_locations WHERE parent_id = $1)",
+                location_id,
+            )
             if has_children:
-                raise HTTPException(status_code=400, detail="Cannot delete location with children")
+                raise HTTPException(
+                    status_code=400, detail="Cannot delete location with children"
+                )
             await conn.execute(
                 "UPDATE storage_locations SET is_active = false, updated_at = NOW() WHERE id = $1",
-                location_id
+                location_id,
             )
-            return {"success": True, "message": "Location deleted", "data": {"id": str(location_id)}}
+            return {
+                "success": True,
+                "message": "Location deleted",
+                "data": {"id": str(location_id)},
+            }
     except HTTPException:
         raise
     except Exception as e:

@@ -27,26 +27,13 @@ _ACCESS_ACTIONS = {
 
 
 # === DATABASE POOL ===
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create database connection pool"""
-    global _pool
-    if _pool is None:
-        logger.info("Creating team_members database connection pool...")
-        _pool = await asyncpg.create_pool(
-            host="postgres",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="milkydb",
-            min_size=2,
-            max_size=10,
-            command_timeout=30,
-        )
-        logger.info("Team members database connection pool created")
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 # === SCHEMAS ===

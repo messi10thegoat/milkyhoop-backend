@@ -28,25 +28,19 @@ from ..schemas.expenses import (
     CalculateExpenseResponse,
     ExpenseAutocompleteResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -1461,7 +1455,7 @@ async def create_expense_journal(
 
     # CREDIT: Hutang PPh (if pph withheld)
     if pph_amount > 0:
-        hutang_pph_id = await resolve_account_id(conn, tenant_id, "2-10500")
+        hutang_pph_id = await resolve_account_id(conn, tenant_id, "2-10300")
 
         if hutang_pph_id:
             await conn.execute(
@@ -1864,7 +1858,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                     gen_random_uuid(), $1, $2, CURRENT_DATE,
                                     $3, $4, $5,
                                     'expense', $6, $7,
-                                    'posted', 'system', 'expense',
+                                    'POSTED', 'system', 'expense',
                                     $8, NOW()
                                 )
                                 """,
@@ -1878,7 +1872,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 ctx.get("user_id"),
                             )
                             await conn.execute(
-                                "UPDATE bank_transactions SET status = 'void', voided_at = NOW() WHERE id = $1",
+                                "UPDATE bank_transactions SET status = 'VOIDED', voided_at = NOW() WHERE id = $1",
                                 original_btxn["id"],
                             )
 

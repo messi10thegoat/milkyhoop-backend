@@ -1,0 +1,234 @@
+{
+  "summary": {
+    "pass": 27,
+    "fail": 0,
+    "warn": 1,
+    "total": 28
+  },
+  "results": [
+    {
+      "group": "G01_ar_flow",
+      "turn": 1,
+      "query": "berapa total piutang saya?",
+      "status": "PASS",
+      "latency_ms": 3648,
+      "response_preview": "Oke, ini dia daftar piutang kamu:\n\n*   INV-2604-0033 - Sintia Runtuwene: Rp 28.560.000 (Belum dibayar)\n*   INV-2604-0029 - Sintia: Rp 125.000 (Terbayar Rp 100.000)\n*   INV-2604-0028 - Sintia: Rp 125.0"
+    },
+    {
+      "group": "G01_ar_flow",
+      "turn": 2,
+      "query": "dari pelanggan siapa aja?",
+      "status": "PASS",
+      "latency_ms": 3033,
+      "response_preview": "Oke, ini dia daftar pelanggan yang bertransaksi:\n\n*   Sintia Runtuwene\n*   Sintia\n\nAda 2 pelanggan unik yang tercatat dalam data ini."
+    },
+    {
+      "group": "G01_ar_flow",
+      "turn": 3,
+      "query": "yang paling besar siapa?",
+      "status": "PASS",
+      "latency_ms": 2916,
+      "response_preview": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 28.710.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+    },
+    {
+      "group": "G01_ar_flow",
+      "turn": 4,
+      "query": "tampilkan dalam tabel",
+      "status": "PASS",
+      "latency_ms": 4917,
+      "response_preview": "Tentu, ini tabel markdown yang diformat ulang:\n\n```markdown\n| No | Nama             | Harga         |\n|---:|------------------|---------------|\n| 1  | Sintia Runtuwene | Rp 28.710.000 |\n| 2  | PT Maju"
+    },
+    {
+      "group": "G01_ar_flow",
+      "turn": 5,
+      "query": "oke terima kasih",
+      "status": "PASS",
+      "latency_ms": 1055,
+      "response_preview": "Sama-sama! Ada lagi yang bisa saya bantu?"
+    },
+    {
+      "group": "G02_ap_flow",
+      "turn": 1,
+      "query": "hutang kita total berapa?",
+      "status": "PASS",
+      "latency_ms": 3777,
+      "response_preview": "Oke, siap! Ini dia rincian hutang kita:\n\n*   **Total Hutang:** Rp 6.332.000\n*   **Hutang Belum Dibayar:**\n    *   Knitto Textile Holis (PB-2604-0039): Rp 5.600.000\n    *   Knitto Textile Holis (BILL-2"
+    },
+    {
+      "group": "G02_ap_flow",
+      "turn": 2,
+      "query": "ke vendor siapa aja?",
+      "status": "PASS",
+      "latency_ms": 3873,
+      "response_preview": "Ada 2 vendor yang tercatat:\n\n*   Knitto Textile Holis\n*   Knitto\n\nTotal ada 9 transaksi dengan vendor-vendor ini."
+    },
+    {
+      "group": "G02_ap_flow",
+      "turn": 3,
+      "query": "yang paling besar ke siapa?",
+      "status": "PASS",
+      "latency_ms": 2333,
+      "response_preview": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 8)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 7.082.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT VerifyPembelianConfirm | "
+    },
+    {
+      "group": "G02_ap_flow",
+      "turn": 4,
+      "query": "bayar yang paling besar",
+      "status": "PASS",
+      "latency_ms": 4090,
+      "response_preview": "Siap, saya akan daftarkan pembayaran faktur pembelian untuk Knitto Textile Holis. Boleh tahu nomor rekening bank yang digunakan, jumlah yang dibayarkan, dan tanggal pembayarannya?"
+    },
+    {
+      "group": "G02_ap_flow",
+      "turn": 5,
+      "query": "oke terima kasih",
+      "status": "PASS",
+      "latency_ms": 1402,
+      "response_preview": "Sama-sama! Ada lagi yang bisa saya bantu?"
+    },
+    {
+      "group": "G03_items_natural",
+      "turn": 1,
+      "query": "ada stok barang apa saja?",
+      "status": "PASS",
+      "latency_ms": 2725,
+      "response_preview": "Oke, aku cek stok barang yang ada ya.\n\nSaat ini ada beberapa barang yang stoknya sudah habis:\n*   Jaket Bomber (pcs)\n*   Karet Elastis Rib (kilogram)\n*   Resleting (pcs)\n*   Bur Dakron (meter)\n\nSemua "
+    },
+    {
+      "group": "G03_items_natural",
+      "turn": 2,
+      "query": "yang paling mahal apa?",
+      "status": "PASS",
+      "latency_ms": 2089,
+      "response_preview": "**Item Berdasarkan Harga Jual (Termahal)** (Top 3)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Kain Taslan | Rp 280.000 |\n| 2 | Jaket Bomber | Rp 255.000 |\n| 3 | Poloshirt Hitam + Bordir | Rp 1"
+    },
+    {
+      "group": "G03_items_natural",
+      "turn": 3,
+      "query": "rata-rata harga jualnya berapa?",
+      "status": "PASS",
+      "latency_ms": 2845,
+      "response_preview": "**Rata-rata Harga Jual Item Aktif**: Rp 230.000\n(Berdasarkan 3 data)"
+    },
+    {
+      "group": "G03_items_natural",
+      "turn": 4,
+      "query": "ada yang stoknya habis?",
+      "status": "PASS",
+      "latency_ms": 4751,
+      "response_preview": "Ada beberapa item yang stoknya habis nih. Ini daftarnya:\n\n*   Furing (meter)\n*   Kain Taslan (meter)\n*   Benang Jahit Hitam 1 Lusin (pcs)\n*   E2E Test Item 1775404961 EDITED (Copy) (pcs)\n*   Kerah Hit"
+    },
+    {
+      "group": "G04_crud_vendor",
+      "turn": 1,
+      "query": "daftarkan vendor baru PT Sukses Mandiri",
+      "status": "PASS",
+      "latency_ms": 5288,
+      "response_preview": "### Buat Vendor/Supplier\n\n| Field | Value |\n|-------|-------|\n| Nama Vendor | PT Sukses Mandiri |"
+    },
+    {
+      "group": "G04_crud_vendor",
+      "turn": 2,
+      "query": "daftar semua vendor",
+      "status": "PASS",
+      "latency_ms": 4077,
+      "response_preview": "Ini dia daftar vendor kita:\n\n*   PT VerifyPembelianConfirm\n*   Toko Doa Ibu Textil\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Nonen"
+    },
+    {
+      "group": "G05_domain_switch",
+      "turn": 1,
+      "query": "piutang berapa?",
+      "status": "PASS",
+      "latency_ms": 3786,
+      "response_preview": "Total piutang kamu saat ini Rp 28.935.000. Ini rinciannya:\n\n*   INV-2604-0033 untuk Sintia Runtuwene: Rp 28.560.000 (belum dibayar)\n*   INV-2604-0029 untuk Sintia: Rp 125.000 (sudah dibayar Rp 100.000"
+    },
+    {
+      "group": "G05_domain_switch",
+      "turn": 2,
+      "query": "kalau hutang?",
+      "status": "PASS",
+      "latency_ms": 4527,
+      "response_preview": "Oke, ini dia daftar hutang yang perlu diperhatikan ya:\n\n*   **PB-2604-0039** dari Knitto Textile Holis: Rp 5.600.000 (belum dibayar, jatuh tempo 15 Mei 2026)\n*   **BILL-2604-0037** dari Knitto: Rp 100"
+    },
+    {
+      "group": "G05_domain_switch",
+      "turn": 3,
+      "query": "daftar barang dong",
+      "status": "PASS",
+      "latency_ms": 3913,
+      "response_preview": "Oke, ini daftar barangnya ya:\n\n*   Jaket Bomber (Produk Jadi) - Rp 255.000/pcs\n*   Karet Elastis Rib (Perlengkapan Jahit) - Rp 75.000/kg\n*   Resleting (Perlengkapan Jahit) - Rp 8.000/pcs\n*   Bur Dakro"
+    },
+    {
+      "group": "G06_natural_keuangan",
+      "turn": 1,
+      "query": "eh, uang kita masih berapa ya?",
+      "status": "PASS",
+      "latency_ms": 4545,
+      "response_preview": "Uang kita totalnya ada Rp 11.321.660. Ini dari saldo bank ya, karena saldo kas kita lagi Rp 0.\n\n**Insight:**\n\u26a0\ufe0f Saldo kas kita lagi kosong nih, tapi total saldo kita masih cukup banget buat operasiona"
+    },
+    {
+      "group": "G06_natural_keuangan",
+      "turn": 2,
+      "query": "ok, kalau piutang gimana?",
+      "status": "PASS",
+      "latency_ms": 3728,
+      "response_preview": "Oke, ini dia daftar piutang kita:\n\n*   **INV-2604-0033** - Pelanggan: Sintia Runtuwene, Jatuh tempo: 15 Mei 2026, Belum dibayar: Rp 28.560.000\n*   **INV-2604-0029** - Pelanggan: Sintia, Jatuh tempo: 1"
+    },
+    {
+      "group": "G06_natural_keuangan",
+      "turn": 3,
+      "query": "terus hutang gw berapa?",
+      "status": "PASS",
+      "latency_ms": 4865,
+      "response_preview": "Oke, ini rincian hutang kamu ya:\n\n*   **Knitto Textile Holis** (PB-2604-0039): Rp 5.600.000 (belum dibayar)\n*   **Knitto** (BILL-2604-0037): Rp 100.000 (sudah dibayar sebagian)\n*   **Knitto Textile Ho"
+    },
+    {
+      "group": "G07_pronoun_chain",
+      "turn": 1,
+      "query": "hutang saya berapa?",
+      "status": "PASS",
+      "latency_ms": 4320,
+      "response_preview": "Oke, ini rincian hutang kamu ya:\n\n*   **Knitto Textile Holis** (PB-2604-0039): Rp 5.600.000 (belum dibayar)\n*   **Knitto** (BILL-2604-0037): Rp 100.000 (sudah dibayar sebagian)\n*   **Knitto Textile Ho"
+    },
+    {
+      "group": "G07_pronoun_chain",
+      "turn": 2,
+      "query": "ke siapa aja?",
+      "status": "SLOW(10609ms>8000ms)",
+      "latency_ms": 10609,
+      "response_preview": "Berikut adalah daftar vendor yang terlibat dalam transaksi:\n\n- **Knitto Textile Holis (KT)**\n  - No. Faktur: PB-2604-0039\n    - Jumlah: Rp 5.600.000\n    - Status: Unpaid\n  - No. Faktur: BILL-2604-0036"
+    },
+    {
+      "group": "G07_pronoun_chain",
+      "turn": 3,
+      "query": "yang paling besar?",
+      "status": "PASS",
+      "latency_ms": 3098,
+      "response_preview": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 8)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 7.082.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT VerifyPembelianConfirm | "
+    },
+    {
+      "group": "G08_calc",
+      "turn": 1,
+      "query": "berapa barang yang aktif?",
+      "status": "PASS",
+      "latency_ms": 2179,
+      "response_preview": "**Jumlah Item Aktif**: 12\n(Berdasarkan 12 data)"
+    },
+    {
+      "group": "G08_calc",
+      "turn": 2,
+      "query": "total penjualan bulan ini berapa?",
+      "status": "PASS",
+      "latency_ms": 2699,
+      "response_preview": "**Total Penjualan Outstanding Bulan Ini**: Rp 28.710.000\n(Berdasarkan 1 data)"
+    },
+    {
+      "group": "G08_calc",
+      "turn": 3,
+      "query": "vendor mana yang hutangnya terbesar?",
+      "status": "PASS",
+      "latency_ms": 2777,
+      "response_preview": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 8)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 7.082.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT VerifyPembelianConfirm | "
+    }
+  ]
+}

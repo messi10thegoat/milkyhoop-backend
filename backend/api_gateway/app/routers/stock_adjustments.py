@@ -38,49 +38,46 @@ from ..schemas.stock_adjustments import (
     StockAdjustmentListResponse,
     StockAdjustmentSummaryResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes resolved at runtime via resolve_account_id (Law 27)
-INVENTORY_ACCOUNT_CODE = "1-10600"           # Persediaan Barang Dagang
+INVENTORY_ACCOUNT_CODE = "1-10600"  # Persediaan Barang Dagang
 ADJUSTMENT_EXPENSE_ACCOUNT_CODE = "5-50100"  # Penyesuaian Persediaan
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 async def check_period_is_open(conn, tenant_id: str, journal_date):
     """Law 5: Validate that the fiscal period for the given date is open."""
-    period = await conn.fetchrow("""
+    period = await conn.fetchrow(
+        """
         SELECT id, status FROM fiscal_periods
         WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
-    """, tenant_id, journal_date)
+    """,
+        tenant_id,
+        journal_date,
+    )
     if not period:
-        raise HTTPException(status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini")
+        raise HTTPException(
+            status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini"
+        )
     if period["status"] != "OPEN":
         raise HTTPException(status_code=400, detail="Periode akuntansi sudah ditutup")
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -90,10 +87,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[dict]:
@@ -103,41 +97,56 @@ async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[d
     NOT from the legacy 'persediaan' table.
     """
     # Try products table first
-    product = await conn.fetchrow("""
+    product = await conn.fetchrow(
+        """
         SELECT p.id, p.nama_produk as name, p.satuan as unit, p.barcode as code,
                COALESCE(p.purchase_price, 0) as purchase_price
         FROM products p
         WHERE p.id = $1 AND p.tenant_id = $2
-    """, product_id, tenant_id)
+    """,
+        product_id,
+        tenant_id,
+    )
 
     if not product:
         return None
 
     # Get current stock from inventory_ledger (Law 16 compliant)
-    current_stock = await conn.fetchval("""
+    current_stock = (
+        await conn.fetchval(
+            """
         SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0)
         FROM inventory_ledger
         WHERE product_id = $1 AND tenant_id = $2
-    """, product_id, tenant_id) or 0
+    """,
+            product_id,
+            tenant_id,
+        )
+        or 0
+    )
 
     # Get weighted average cost from inventory_ledger
-    avg_cost = await conn.fetchval("""
+    avg_cost = await conn.fetchval(
+        """
         SELECT average_cost FROM inventory_ledger
         WHERE tenant_id = $1 AND product_id = $2
         ORDER BY created_at DESC LIMIT 1
-    """, tenant_id, product_id)
+    """,
+        tenant_id,
+        product_id,
+    )
 
     # Fall back to purchase_price if no ledger history
     if avg_cost is None or avg_cost == 0:
-        avg_cost = product['purchase_price'] or 0
+        avg_cost = product["purchase_price"] or 0
 
     return {
-        "id": product['id'],
-        "name": product['name'],
-        "code": product['code'],
-        "unit": product['unit'],
+        "id": product["id"],
+        "name": product["name"],
+        "code": product["code"],
+        "unit": product["unit"],
         "current_stock": int(current_stock),  # Law 25: read path
-        "unit_cost": int(avg_cost) if avg_cost else 0  # Law 25: read path
+        "unit_cost": int(avg_cost) if avg_cost else 0,  # Law 25: read path
     }
 
 
@@ -145,17 +154,22 @@ async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[d
 # LIST STOCK ADJUSTMENTS
 # =============================================================================
 
+
 @router.get("", response_model=StockAdjustmentListResponse)
 async def list_stock_adjustments(
     request: Request,
     status: Optional[Literal["all", "draft", "posted", "void"]] = Query("all"),
-    adjustment_type: Optional[Literal["increase", "decrease", "recount", "damaged", "expired"]] = Query(None),
+    adjustment_type: Optional[
+        Literal["increase", "decrease", "recount", "damaged", "expired"]
+    ] = Query(None),
     search: Optional[str] = Query(None, description="Search by number"),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    sort_by: Literal["adjustment_date", "adjustment_number", "total_value", "created_at"] = Query("created_at"),
+    sort_by: Literal[
+        "adjustment_date", "adjustment_number", "total_value", "created_at"
+    ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List stock adjustments with filters and pagination."""
@@ -209,7 +223,7 @@ async def list_stock_adjustments(
                 "adjustment_date": "adjustment_date",
                 "adjustment_number": "adjustment_number",
                 "total_value": "total_value",
-                "created_at": "created_at"
+                "created_at": "created_at",
             }
             sort_field = valid_sorts.get(sort_by, "created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -246,11 +260,7 @@ async def list_stock_adjustments(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -262,6 +272,7 @@ async def list_stock_adjustments(
 # =============================================================================
 # SUMMARY
 # =============================================================================
+
 
 @router.get("/summary", response_model=StockAdjustmentSummaryResponse)
 async def get_stock_adjustments_summary(request: Request):
@@ -303,7 +314,7 @@ async def get_stock_adjustments_summary(request: Request):
                         "expired": row["expired_count"] or 0,
                     },
                     "total_value": int(row["total_value"] or 0),  # Law 25: read path
-                }
+                },
             }
 
     except HTTPException:
@@ -317,6 +328,7 @@ async def get_stock_adjustments_summary(request: Request):
 # GET STOCK ADJUSTMENT DETAIL
 # =============================================================================
 
+
 @router.get("/{adjustment_id}", response_model=StockAdjustmentDetailResponse)
 async def get_stock_adjustment(request: Request, adjustment_id: UUID):
     """Get detailed information for a stock adjustment."""
@@ -325,21 +337,30 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            sa = await conn.fetchrow("""
+            sa = await conn.fetchrow(
+                """
                 SELECT sa.*, je.journal_number
                 FROM stock_adjustments sa
                 LEFT JOIN journal_entries je ON sa.journal_id = je.id
                 WHERE sa.id = $1 AND sa.tenant_id = $2
-            """, adjustment_id, ctx["tenant_id"])
+            """,
+                adjustment_id,
+                ctx["tenant_id"],
+            )
 
             if not sa:
-                raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                raise HTTPException(
+                    status_code=404, detail="Stock adjustment not found"
+                )
 
-            items = await conn.fetch("""
+            items = await conn.fetch(
+                """
                 SELECT * FROM stock_adjustment_items
                 WHERE stock_adjustment_id = $1
                 ORDER BY line_number
-            """, adjustment_id)
+            """,
+                adjustment_id,
+            )
 
             return {
                 "success": True,
@@ -348,7 +369,9 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                     "adjustment_number": sa["adjustment_number"],
                     "adjustment_date": sa["adjustment_date"].isoformat(),
                     "adjustment_type": sa["adjustment_type"],
-                    "storage_location_id": str(sa["storage_location_id"]) if sa["storage_location_id"] else None,
+                    "storage_location_id": str(sa["storage_location_id"])
+                    if sa["storage_location_id"]
+                    else None,
                     "storage_location_name": sa["storage_location_name"],
                     "reference_no": sa["reference_no"],
                     "notes": sa["notes"],
@@ -363,39 +386,56 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             "product_id": str(item["product_id"]),
                             "product_code": item["product_code"],
                             "product_name": item["product_name"],
-                            "quantity_before": int(item["quantity_before"]),  # Law 25: read path
-                            "quantity_adjustment": int(item["quantity_adjustment"]),  # Law 25: read path
-                            "quantity_after": int(item["quantity_after"]),  # Law 25: read path
+                            "quantity_before": int(
+                                item["quantity_before"]
+                            ),  # Law 25: read path
+                            "quantity_adjustment": int(
+                                item["quantity_adjustment"]
+                            ),  # Law 25: read path
+                            "quantity_after": int(
+                                item["quantity_after"]
+                            ),  # Law 25: read path
                             "unit": item["unit"],
                             "unit_cost": item["unit_cost"],
                             "total_value": item["total_value"],
                             "reason_detail": item["reason_detail"],
-                            "system_quantity": int(item["system_quantity"]) if item["system_quantity"] else None,  # Law 25: read path
-                            "physical_quantity": int(item["physical_quantity"]) if item["physical_quantity"] else None,  # Law 25: read path
+                            "system_quantity": int(item["system_quantity"])
+                            if item["system_quantity"]
+                            else None,  # Law 25: read path
+                            "physical_quantity": int(item["physical_quantity"])
+                            if item["physical_quantity"]
+                            else None,  # Law 25: read path
                             "line_number": item["line_number"],
                         }
                         for item in items
                     ],
-                    "posted_at": sa["posted_at"].isoformat() if sa["posted_at"] else None,
+                    "posted_at": sa["posted_at"].isoformat()
+                    if sa["posted_at"]
+                    else None,
                     "posted_by": str(sa["posted_by"]) if sa["posted_by"] else None,
-                    "voided_at": sa["voided_at"].isoformat() if sa["voided_at"] else None,
+                    "voided_at": sa["voided_at"].isoformat()
+                    if sa["voided_at"]
+                    else None,
                     "voided_reason": sa["voided_reason"],
                     "created_at": sa["created_at"].isoformat(),
                     "updated_at": sa["updated_at"].isoformat(),
                     "created_by": str(sa["created_by"]) if sa["created_by"] else None,
-                }
+                },
             }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting stock adjustment {adjustment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting stock adjustment {adjustment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get stock adjustment")
 
 
 # =============================================================================
 # CREATE STOCK ADJUSTMENT
 # =============================================================================
+
 
 @router.post("", response_model=StockAdjustmentResponse, status_code=201)
 async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentRequest):
@@ -411,21 +451,23 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
             async with conn.transaction():
                 sa_number = await conn.fetchval(
                     "SELECT generate_stock_adjustment_number($1, 'SA')",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 storage_location_name = None
                 if body.storage_location_id:
                     loc = await conn.fetchrow(
                         "SELECT name FROM storage_locations WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.storage_location_id), ctx["tenant_id"]
+                        UUID(body.storage_location_id),
+                        ctx["tenant_id"],
                     )
                     if loc:
                         storage_location_name = loc["name"]
 
                 sa_id = uuid_module.uuid4()
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO stock_adjustments (
                         id, tenant_id, adjustment_number, adjustment_date, adjustment_type,
                         storage_location_id, storage_location_name,
@@ -437,35 +479,50 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                     sa_number,
                     body.adjustment_date,
                     body.adjustment_type,
-                    UUID(body.storage_location_id) if body.storage_location_id else None,
+                    UUID(body.storage_location_id)
+                    if body.storage_location_id
+                    else None,
                     storage_location_name,
                     body.reference_no,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 total_value = 0
                 for idx, item in enumerate(body.items, 1):
-                    product = await get_product_info(conn, ctx["tenant_id"], UUID(item.product_id))
+                    product = await get_product_info(
+                        conn, ctx["tenant_id"], UUID(item.product_id)
+                    )
                     if not product:
-                        raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Product {item.product_id} not found",
+                        )
 
                     quantity_before = Decimal(str(product["current_stock"]))
                     quantity_adjustment = Decimal(str(item.quantity_adjustment))
                     quantity_after = quantity_before + quantity_adjustment
                     unit_cost = product["unit_cost"]
-                    item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
+                    item_total_value = (
+                        abs(quantity_adjustment) * Decimal(str(unit_cost))
+                    ).quantize(Decimal("1"))
 
                     system_quantity = None
                     physical_quantity = None
-                    if body.adjustment_type == "recount" and item.physical_quantity is not None:
+                    if (
+                        body.adjustment_type == "recount"
+                        and item.physical_quantity is not None
+                    ):
                         physical_quantity = Decimal(str(item.physical_quantity))
                         system_quantity = quantity_before
                         quantity_adjustment = physical_quantity - system_quantity
                         quantity_after = physical_quantity
-                        item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
+                        item_total_value = (
+                            abs(quantity_adjustment) * Decimal(str(unit_cost))
+                        ).quantize(Decimal("1"))
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO stock_adjustment_items (
                             id, stock_adjustment_id, product_id, product_code, product_name,
                             quantity_before, quantity_adjustment, quantity_after, unit,
@@ -487,7 +544,7 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                         item.reason_detail,
                         system_quantity,  # Law 25: already Decimal or None
                         physical_quantity,
-                        idx
+                        idx,
                     )
 
                     total_value += item_total_value
@@ -501,8 +558,8 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                         "id": str(sa_id),
                         "adjustment_number": sa_number,
                         "total_value": total_value,
-                        "status": "draft"
-                    }
+                        "status": "draft",
+                    },
                 }
 
     except HTTPException:
@@ -516,8 +573,11 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
 # UPDATE STOCK ADJUSTMENT
 # =============================================================================
 
+
 @router.patch("/{adjustment_id}", response_model=StockAdjustmentResponse)
-async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: UpdateStockAdjustmentRequest):
+async def update_stock_adjustment(
+    request: Request, adjustment_id: UUID, body: UpdateStockAdjustmentRequest
+):
     """Update a draft stock adjustment."""
     try:
         ctx = get_user_context(request)
@@ -525,18 +585,23 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                sa = await conn.fetchrow("""
+                sa = await conn.fetchrow(
+                    """
                     SELECT * FROM stock_adjustments
                     WHERE id = $1 AND tenant_id = $2
-                """, adjustment_id, ctx["tenant_id"])
+                """,
+                    adjustment_id,
+                    ctx["tenant_id"],
+                )
 
                 if not sa:
-                    raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                    raise HTTPException(
+                        status_code=404, detail="Stock adjustment not found"
+                    )
 
                 if sa["status"] != "draft":
                     raise HTTPException(
-                        status_code=400,
-                        detail="Only draft adjustments can be updated"
+                        status_code=400, detail="Only draft adjustments can be updated"
                     )
 
                 updates = []
@@ -568,12 +633,16 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                     if body.storage_location_id:
                         loc = await conn.fetchrow(
                             "SELECT name FROM storage_locations WHERE id = $1",
-                            UUID(body.storage_location_id)
+                            UUID(body.storage_location_id),
                         )
                         if loc:
                             storage_location_name = loc["name"]
                     updates.append(f"storage_location_id = ${param_idx}")
-                    params.append(UUID(body.storage_location_id) if body.storage_location_id else None)
+                    params.append(
+                        UUID(body.storage_location_id)
+                        if body.storage_location_id
+                        else None
+                    )
                     param_idx += 1
                     updates.append(f"storage_location_name = ${param_idx}")
                     params.append(storage_location_name)
@@ -594,22 +663,29 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                 if body.items is not None:
                     await conn.execute(
                         "DELETE FROM stock_adjustment_items WHERE stock_adjustment_id = $1",
-                        adjustment_id
+                        adjustment_id,
                     )
 
                     adj_type = body.adjustment_type or sa["adjustment_type"]
                     total_value = 0
 
                     for idx, item in enumerate(body.items, 1):
-                        product = await get_product_info(conn, ctx["tenant_id"], UUID(item.product_id))
+                        product = await get_product_info(
+                            conn, ctx["tenant_id"], UUID(item.product_id)
+                        )
                         if not product:
-                            raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Product {item.product_id} not found",
+                            )
 
                         quantity_before = Decimal(str(product["current_stock"]))
                         quantity_adjustment = Decimal(str(item.quantity_adjustment))
                         quantity_after = quantity_before + quantity_adjustment
                         unit_cost = product["unit_cost"]
-                        item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
+                        item_total_value = (
+                            abs(quantity_adjustment) * Decimal(str(unit_cost))
+                        ).quantize(Decimal("1"))
 
                         system_quantity = None
                         physical_quantity = None
@@ -618,9 +694,12 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                             system_quantity = quantity_before
                             quantity_adjustment = physical_quantity - system_quantity
                             quantity_after = physical_quantity
-                            item_total_value = (abs(quantity_adjustment) * Decimal(str(unit_cost))).quantize(Decimal("1"))
+                            item_total_value = (
+                                abs(quantity_adjustment) * Decimal(str(unit_cost))
+                            ).quantize(Decimal("1"))
 
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO stock_adjustment_items (
                                 id, stock_adjustment_id, product_id, product_code, product_name,
                                 quantity_before, quantity_adjustment, quantity_after, unit,
@@ -642,29 +721,45 @@ async def update_stock_adjustment(request: Request, adjustment_id: UUID, body: U
                             item.reason_detail,
                             system_quantity,  # Law 25: pass Decimal directly (was float())
                             physical_quantity,  # Law 25: pass Decimal directly (was float())
-                            idx
+                            idx,
                         )
 
                         total_value += item_total_value
+
+                    # Sync parent aggregate columns (list GET reads stored cols)
+                    await conn.execute(
+                        """
+                        UPDATE stock_adjustments
+                        SET total_value = $1, item_count = $2, updated_at = NOW()
+                        WHERE id = $3 AND tenant_id = $4
+                        """,
+                        total_value,
+                        len(body.items),
+                        adjustment_id,
+                        ctx["tenant_id"],
+                    )
 
                 logger.info(f"Stock adjustment updated: {adjustment_id}")
 
                 return {
                     "success": True,
                     "message": "Stock adjustment updated successfully",
-                    "data": {"id": str(adjustment_id)}
+                    "data": {"id": str(adjustment_id)},
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating stock adjustment {adjustment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error updating stock adjustment {adjustment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to update stock adjustment")
 
 
 # =============================================================================
 # DELETE STOCK ADJUSTMENT
 # =============================================================================
+
 
 @router.delete("/{adjustment_id}", response_model=StockAdjustmentResponse)
 async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
@@ -674,23 +769,28 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            sa = await conn.fetchrow("""
+            sa = await conn.fetchrow(
+                """
                 SELECT id, adjustment_number, status FROM stock_adjustments
                 WHERE id = $1 AND tenant_id = $2
-            """, adjustment_id, ctx["tenant_id"])
+            """,
+                adjustment_id,
+                ctx["tenant_id"],
+            )
 
             if not sa:
-                raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                raise HTTPException(
+                    status_code=404, detail="Stock adjustment not found"
+                )
 
             if sa["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft adjustments can be deleted. Use void for posted."
+                    detail="Only draft adjustments can be deleted. Use void for posted.",
                 )
 
             await conn.execute(
-                "DELETE FROM stock_adjustments WHERE id = $1",
-                adjustment_id
+                "DELETE FROM stock_adjustments WHERE id = $1", adjustment_id
             )
 
             logger.info(f"Stock adjustment deleted: {adjustment_id}")
@@ -700,20 +800,23 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
                 "message": "Stock adjustment deleted",
                 "data": {
                     "id": str(adjustment_id),
-                    "adjustment_number": sa["adjustment_number"]
-                }
+                    "adjustment_number": sa["adjustment_number"],
+                },
             }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting stock adjustment {adjustment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error deleting stock adjustment {adjustment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to delete stock adjustment")
 
 
 # =============================================================================
 # POST STOCK ADJUSTMENT
 # =============================================================================
+
 
 @router.post("/{adjustment_id}/post", response_model=StockAdjustmentResponse)
 async def post_stock_adjustment(request: Request, adjustment_id: UUID):
@@ -733,30 +836,44 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock to prevent concurrent posting
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ:{adjustment_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"STOCK_ADJ:{adjustment_id}",
+                )
 
-                sa = await conn.fetchrow("""
+                sa = await conn.fetchrow(
+                    """
                     SELECT * FROM stock_adjustments
                     WHERE id = $1 AND tenant_id = $2
-                """, adjustment_id, ctx["tenant_id"])
+                """,
+                    adjustment_id,
+                    ctx["tenant_id"],
+                )
 
                 if not sa:
-                    raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                    raise HTTPException(
+                        status_code=404, detail="Stock adjustment not found"
+                    )
 
                 if sa["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot post adjustment with status '{sa['status']}'"
+                        detail=f"Cannot post adjustment with status '{sa['status']}'",
                     )
 
                 # Law 5: Check fiscal period is open
-                await check_period_is_open(conn, ctx["tenant_id"], sa["adjustment_date"])
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], sa["adjustment_date"]
+                )
 
-                items = await conn.fetch("""
+                items = await conn.fetch(
+                    """
                     SELECT * FROM stock_adjustment_items
                     WHERE stock_adjustment_id = $1
                     ORDER BY line_number
-                """, adjustment_id)
+                """,
+                    adjustment_id,
+                )
 
                 if not items:
                     raise HTTPException(status_code=400, detail="No items to post")
@@ -764,6 +881,12 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                 # Calculate totals
                 total_increase = 0
                 total_decrease = 0
+
+                # Get default warehouse for inventory_ledger
+                default_warehouse_id = await conn.fetchval(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                    ctx["tenant_id"],
+                )
 
                 for item in items:
                     adj_qty = Decimal(str(item["quantity_adjustment"]))
@@ -783,8 +906,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
 
                 if not inventory_account_id or not adjustment_account_id:
                     raise HTTPException(
-                        status_code=500,
-                        detail="Required accounts not found in CoA"
+                        status_code=500, detail="Required accounts not found in CoA"
                     )
 
                 # Law 20: Create journal entry as DRAFT first
@@ -794,12 +916,13 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                 total_value = total_increase + total_decrease
 
                 # Step 1: INSERT as DRAFT (Law 20)
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
-                        memo, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by, updated_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9, $9)
+                        description, source_type, source_id, trace_id,
+                        status, total_debit, total_credit, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9)
                 """,
                     journal_id,
                     ctx["tenant_id"],
@@ -809,7 +932,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                     adjustment_id,
                     str(trace_id),
                     total_value,  # Law 25: pass Decimal directly
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Step 2: INSERT journal_lines
@@ -817,69 +940,102 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
 
                 if total_increase > 0:
                     # Dr. Inventory
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        inventory_account_id, total_increase,  # Law 25
-                        f"Penambahan Persediaan - {sa['adjustment_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        inventory_account_id,
+                        total_increase,  # Law 25
+                        f"Penambahan Persediaan - {sa['adjustment_number']}",
                     )
                     line_number += 1
 
                     # Cr. Adjustment Expense
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        adjustment_account_id, total_increase,  # Law 25
-                        f"Koreksi Persediaan - {sa['adjustment_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        adjustment_account_id,
+                        total_increase,  # Law 25
+                        f"Koreksi Persediaan - {sa['adjustment_number']}",
                     )
                     line_number += 1
 
                 if total_decrease > 0:
                     # Dr. Adjustment Expense
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        adjustment_account_id, total_decrease,  # Law 25
-                        f"Penyesuaian Persediaan - {sa['adjustment_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        adjustment_account_id,
+                        total_decrease,  # Law 25
+                        f"Penyesuaian Persediaan - {sa['adjustment_number']}",
                     )
                     line_number += 1
 
                     # Cr. Inventory
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        inventory_account_id, total_decrease,  # Law 25
-                        f"Pengurangan Persediaan - {sa['adjustment_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        inventory_account_id,
+                        total_decrease,  # Law 25
+                        f"Pengurangan Persediaan - {sa['adjustment_number']}",
                     )
 
                 # Step 3: UPDATE to POSTED (Law 20)
-                await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    journal_id,
+                )
 
                 # Update inventory_ledger for each item (Law 16 compliant)
                 # NOTE: persediaan table writes removed - inventory_ledger is source of truth
+                # Get default warehouse for inventory_ledger
+                default_warehouse_id = await conn.fetchval(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                    ctx["tenant_id"],
+                )
+
                 for item in items:
                     adj_qty = Decimal(str(item["quantity_adjustment"]))
 
                     # INSERT inventory_ledger entry (Law 16 compliant)
                     # Check if product is goods + track_inventory
-                    product_row = await conn.fetchrow("""
+                    product_row = await conn.fetchrow(
+                        """
                         SELECT id, nama_produk, item_code, track_inventory, item_type
                         FROM products WHERE id = $1 AND tenant_id = $2
-                    """, item["product_id"], ctx["tenant_id"])
+                    """,
+                        item["product_id"],
+                        ctx["tenant_id"],
+                    )
 
-                    if product_row and product_row["item_type"] == "goods" and product_row.get("track_inventory", True):
+                    if (
+                        product_row
+                        and product_row["item_type"] == "goods"
+                        and product_row.get("track_inventory", True)
+                    ):
                         quantity = Decimal(str(item["quantity_adjustment"]))
                         unit_cost = Decimal(str(item["unit_cost"]))
 
@@ -894,28 +1050,46 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         total_cost = unit_cost * abs(quantity)
 
                         # Get current running balance from inventory_ledger
-                        balance_row = await conn.fetchrow("""
+                        balance_row = await conn.fetchrow(
+                            """
                             SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
-                        """, ctx["tenant_id"], item["product_id"])
-                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                        )
+                        current_balance = (
+                            Decimal(str(balance_row["balance"]))
+                            if balance_row
+                            else Decimal("0")
+                        )
                         new_balance = current_balance + quantity
 
                         # Calculate weighted average cost
-                        avg_cost_row = await conn.fetchrow("""
+                        avg_cost_row = await conn.fetchrow(
+                            """
                             SELECT
                                 COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
                                 COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
-                        """, ctx["tenant_id"], item["product_id"])
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                        )
 
-                        if quantity > 0 and avg_cost_row and avg_cost_row["total_qty"] > 0:
+                        if (
+                            quantity > 0
+                            and avg_cost_row
+                            and avg_cost_row["total_qty"] > 0
+                        ):
                             # Incoming: recalculate weighted average
                             old_value = Decimal(str(avg_cost_row["total_value"]))
                             old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                            new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
+                            new_avg_cost = (old_value + total_cost) / (
+                                old_qty + quantity
+                            )
                         elif avg_cost_row and avg_cost_row["total_qty"] > 0:
                             # Outgoing: average cost stays the same
                             old_value = Decimal(str(avg_cost_row["total_value"]))
@@ -925,19 +1099,20 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                             new_avg_cost = unit_cost
 
                         # INSERT into inventory_ledger
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO inventory_ledger (
                                 tenant_id, product_id, product_code, product_name,
                                 movement_type, movement_date, source_type, source_id, source_number,
                                 quantity_in, quantity_out, quantity_balance,
                                 unit_cost, total_cost, average_cost,
-                                storage_location_id, journal_id, created_by, notes
+                                warehouse_id, storage_location_id, journal_id, created_by, notes
                             ) VALUES (
                                 $1, $2, $3, $4,
                                 'STOCK_ADJUSTMENT', $5, 'STOCK_ADJUSTMENT', $6, $7,
                                 $8, $9, $10,
                                 $11, $12, $13,
-                                $14, $15, $16, $17
+                                $14, $15, $16, $17, $18
                             )
                         """,
                             ctx["tenant_id"],
@@ -953,10 +1128,11 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                             unit_cost,
                             total_cost,
                             new_avg_cost,
+                            sa.get("warehouse_id") or default_warehouse_id,
                             sa["storage_location_id"],
                             journal_id,
                             ctx["user_id"],
-                            f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}"
+                            f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
                         )
 
                         logger.info(
@@ -965,14 +1141,21 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         )
 
                 # Update stock adjustment status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE stock_adjustments
                     SET status = 'posted', journal_id = $2,
                         posted_at = NOW(), posted_by = $3, updated_at = NOW()
                     WHERE id = $1
-                """, adjustment_id, journal_id, ctx["user_id"])
+                """,
+                    adjustment_id,
+                    journal_id,
+                    ctx["user_id"],
+                )
 
-                logger.info(f"Stock adjustment posted: {adjustment_id}, journal={journal_id}")
+                logger.info(
+                    f"Stock adjustment posted: {adjustment_id}, journal={journal_id}"
+                )
 
                 return {
                     "success": True,
@@ -981,14 +1164,16 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                         "id": str(adjustment_id),
                         "journal_id": str(journal_id),
                         "journal_number": journal_number,
-                        "status": "posted"
-                    }
+                        "status": "posted",
+                    },
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error posting stock adjustment {adjustment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error posting stock adjustment {adjustment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to post stock adjustment")
 
 
@@ -996,8 +1181,11 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
 # VOID STOCK ADJUSTMENT
 # =============================================================================
 
+
 @router.post("/{adjustment_id}/void", response_model=StockAdjustmentResponse)
-async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: VoidStockAdjustmentRequest):
+async def void_stock_adjustment(
+    request: Request, adjustment_id: UUID, body: VoidStockAdjustmentRequest
+):
     """Void a stock adjustment with reversal."""
     try:
         ctx = get_user_context(request)
@@ -1009,28 +1197,38 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock to prevent concurrent voiding
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ_VOID:{adjustment_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"STOCK_ADJ_VOID:{adjustment_id}",
+                )
 
-                sa = await conn.fetchrow("""
+                sa = await conn.fetchrow(
+                    """
                     SELECT * FROM stock_adjustments
                     WHERE id = $1 AND tenant_id = $2
-                """, adjustment_id, ctx["tenant_id"])
+                """,
+                    adjustment_id,
+                    ctx["tenant_id"],
+                )
 
                 if not sa:
-                    raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                    raise HTTPException(
+                        status_code=404, detail="Stock adjustment not found"
+                    )
 
                 if sa["status"] == "void":
-                    raise HTTPException(status_code=400, detail="Stock adjustment already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Stock adjustment already voided"
+                    )
 
                 if sa["status"] == "draft":
                     await conn.execute(
-                        "DELETE FROM stock_adjustments WHERE id = $1",
-                        adjustment_id
+                        "DELETE FROM stock_adjustments WHERE id = $1", adjustment_id
                     )
                     return {
                         "success": True,
                         "message": "Draft stock adjustment deleted",
-                        "data": {"id": str(adjustment_id)}
+                        "data": {"id": str(adjustment_id)},
                     }
 
                 # Law 5: Check fiscal period is open for reversal date
@@ -1041,18 +1239,22 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                 if sa["journal_id"]:
                     reversal_journal_id = uuid_module.uuid4()
 
-                    original_lines = await conn.fetch("""
+                    original_lines = await conn.fetch(
+                        """
                         SELECT * FROM journal_lines WHERE journal_id = $1
-                    """, sa["journal_id"])
+                    """,
+                        sa["journal_id"],
+                    )
 
                     reversal_number = f"RV-{sa['adjustment_number']}"
 
                     # Step 1: INSERT reversal as DRAFT (Law 20)
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
-                            memo, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by, updated_by
+                            description, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by
                         ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'DRAFT', $7, $7, $8, $8)
                     """,
                         reversal_journal_id,
@@ -1062,12 +1264,13 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         adjustment_id,
                         sa["journal_id"],
                         sa["total_value"],  # Law 25: pass Decimal directly
-                        ctx["user_id"]
+                        ctx["user_id"],
                     )
 
                     # Step 2: INSERT reversal journal_lines
                     for idx, line in enumerate(original_lines, 1):
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO journal_lines (
                                 id, journal_id, line_number, account_id, debit, credit, memo
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1078,34 +1281,52 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                             line["account_id"],
                             line["credit"],
                             line["debit"],
-                            f"Reversal - {line['memo'] or ''}"
+                            f"Reversal - {line['memo'] or ''}",
                         )
 
                     # Step 3: UPDATE reversal to POSTED (Law 20)
-                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        reversal_journal_id,
+                    )
 
                     # Law 26: Link reversal - set reversed_by_id on original, mark as VOID
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE journal_entries
                         SET reversed_by_id = $2, status = 'VOID'
                         WHERE id = $1
-                    """, sa["journal_id"], reversal_journal_id)
+                    """,
+                        sa["journal_id"],
+                        reversal_journal_id,
+                    )
 
                 # Reverse inventory changes
-                items = await conn.fetch("""
+                items = await conn.fetch(
+                    """
                     SELECT * FROM stock_adjustment_items
                     WHERE stock_adjustment_id = $1
-                """, adjustment_id)
+                """,
+                    adjustment_id,
+                )
 
                 # NOTE: persediaan table writes removed - inventory_ledger is source of truth (Law 16)
                 for item in items:
                     # Reverse inventory_ledger entries (Law 16 compliant)
-                    product_row = await conn.fetchrow("""
+                    product_row = await conn.fetchrow(
+                        """
                         SELECT id, nama_produk, item_code, track_inventory, item_type
                         FROM products WHERE id = $1 AND tenant_id = $2
-                    """, item["product_id"], ctx["tenant_id"])
+                    """,
+                        item["product_id"],
+                        ctx["tenant_id"],
+                    )
 
-                    if product_row and product_row["item_type"] == "goods" and product_row.get("track_inventory", True):
+                    if (
+                        product_row
+                        and product_row["item_type"] == "goods"
+                        and product_row.get("track_inventory", True)
+                    ):
                         orig_qty = Decimal(str(item["quantity_adjustment"]))
                         unit_cost = Decimal(str(item["unit_cost"]))
 
@@ -1121,49 +1342,64 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         total_cost = unit_cost * abs(orig_qty)
 
                         # Get current running balance
-                        balance_row = await conn.fetchrow("""
+                        balance_row = await conn.fetchrow(
+                            """
                             SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
-                        """, ctx["tenant_id"], item["product_id"])
-                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                        )
+                        current_balance = (
+                            Decimal(str(balance_row["balance"]))
+                            if balance_row
+                            else Decimal("0")
+                        )
                         # Reverse: subtract original qty
                         new_balance = current_balance - orig_qty
 
                         # Recalculate weighted average cost
-                        avg_cost_row = await conn.fetchrow("""
+                        avg_cost_row = await conn.fetchrow(
+                            """
                             SELECT
                                 COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
                                 COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
                             FROM inventory_ledger
                             WHERE tenant_id = $1 AND product_id = $2
-                        """, ctx["tenant_id"], item["product_id"])
+                        """,
+                            ctx["tenant_id"],
+                            item["product_id"],
+                        )
 
                         if avg_cost_row and avg_cost_row["total_qty"] > 0:
                             old_value = Decimal(str(avg_cost_row["total_value"]))
                             old_qty = Decimal(str(avg_cost_row["total_qty"]))
                             # After this reversal entry, recalculate
                             if qty_in > 0:
-                                new_avg_cost = (old_value + total_cost) / (old_qty + qty_in)
+                                new_avg_cost = (old_value + total_cost) / (
+                                    old_qty + qty_in
+                                )
                             else:
                                 new_avg_cost = old_value / old_qty
                         else:
                             new_avg_cost = unit_cost
 
                         # INSERT reversal into inventory_ledger
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO inventory_ledger (
                                 tenant_id, product_id, product_code, product_name,
                                 movement_type, movement_date, source_type, source_id, source_number,
                                 quantity_in, quantity_out, quantity_balance,
                                 unit_cost, total_cost, average_cost,
-                                storage_location_id, journal_id, created_by, notes
+                                warehouse_id, storage_location_id, journal_id, created_by, notes
                             ) VALUES (
                                 $1, $2, $3, $4,
                                 'STOCK_ADJUSTMENT', CURRENT_DATE, 'STOCK_ADJUSTMENT', $5, $6,
                                 $7, $8, $9,
                                 $10, $11, $12,
-                                $13, $14, $15, $16
+                                $13, $14, $15, $16, $17
                             )
                         """,
                             ctx["tenant_id"],
@@ -1178,10 +1414,13 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                             unit_cost,
                             total_cost,
                             new_avg_cost,
+                            sa.get("warehouse_id")
+                            or sa.get("storage_location_id")
+                            or default_warehouse_id,
                             sa["storage_location_id"],
                             reversal_journal_id,
                             ctx["user_id"],
-                            f"Void Stock Adjustment {sa['adjustment_number']} - Reversal"
+                            f"Void Stock Adjustment {sa['adjustment_number']} - Reversal",
                         )
 
                         logger.info(
@@ -1190,12 +1429,17 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                         )
 
                 # Update status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE stock_adjustments
                     SET status = 'void', voided_at = NOW(),
                         voided_by = $2, voided_reason = $3, updated_at = NOW()
                     WHERE id = $1
-                """, adjustment_id, ctx["user_id"], body.reason)
+                """,
+                    adjustment_id,
+                    ctx["user_id"],
+                    body.reason,
+                )
 
                 logger.info(f"Stock adjustment voided: {adjustment_id}")
 
@@ -1205,16 +1449,19 @@ async def void_stock_adjustment(request: Request, adjustment_id: UUID, body: Voi
                     "data": {
                         "id": str(adjustment_id),
                         "status": "void",
-                        "reversal_journal_id": str(reversal_journal_id) if reversal_journal_id else None
-                    }
+                        "reversal_journal_id": str(reversal_journal_id)
+                        if reversal_journal_id
+                        else None,
+                    },
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error voiding stock adjustment {adjustment_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error voiding stock adjustment {adjustment_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to void stock adjustment")
-
 
 
 @router.get("/{adjustment_id}/journal-entries")
@@ -1239,11 +1486,14 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                 FROM stock_adjustments
                 WHERE id = $1::uuid AND tenant_id = $2
                 """,
-                adjustment_id, ctx["tenant_id"]
+                adjustment_id,
+                ctx["tenant_id"],
             )
 
             if not sa:
-                raise HTTPException(status_code=404, detail="Stock adjustment not found")
+                raise HTTPException(
+                    status_code=404, detail="Stock adjustment not found"
+                )
 
             journal_ids = []
             if sa["journal_id"]:
@@ -1253,7 +1503,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                     SELECT reversed_by_id FROM journal_entries
                     WHERE id = $1 AND reversed_by_id IS NOT NULL
                     """,
-                    sa["journal_id"]
+                    sa["journal_id"],
                 )
                 if reversal and reversal["reversed_by_id"]:
                     journal_ids.append(reversal["reversed_by_id"])
@@ -1263,7 +1513,11 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                     "success": True,
                     "data": [],
                     "total": 0,
-                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True,
+                    },
                 }
 
             journals = await conn.fetch(
@@ -1274,7 +1528,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                journal_ids
+                journal_ids,
             )
 
             journal_data = []
@@ -1291,7 +1545,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -1303,7 +1557,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                         "account_name": line["account_name"],
                         "debit": int(line["debit"] or 0),  # Law 25: read path
                         "credit": int(line["credit"] or 0),  # Law 25: read path
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -1313,18 +1567,22 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": journal_debit,
-                    "total_credit": journal_credit,
-                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": journal_debit,
+                        "total_credit": journal_credit,
+                        "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -1333,11 +1591,13 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
                 "summary": {
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "is_balanced": abs(total_debit - total_credit) < 0.01
-                }
+                    "is_balanced": abs(total_debit - total_credit) < 0.01,
+                },
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting stock adjustment journal entries: {e}", exc_info=True)
+        logger.error(
+            f"Error getting stock adjustment journal entries: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get journal entries")

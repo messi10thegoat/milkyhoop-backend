@@ -3,14 +3,12 @@ Documents Router
 ================
 File attachment management with S3/MinIO storage.
 """
-from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
-from ..config import settings
 from ..schemas.documents import (
     AttachDocumentRequest,
     AttachDocumentResponse,
@@ -36,28 +34,32 @@ from ..schemas.documents import (
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
 
 # File size limits
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_CONTENT_TYPES = {
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "text/plain", "text/csv",
-    "application/zip", "application/x-rar-compressed",
+    "text/plain",
+    "text/csv",
+    "application/zip",
+    "application/x-rar-compressed",
 }
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -85,6 +87,7 @@ def format_file_size(size_bytes: int) -> str:
 # ENDPOINTS
 # ============================================================================
 
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
     request: Request,
@@ -98,7 +101,9 @@ async def list_documents(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["d.tenant_id = $1", "d.deleted_at IS NULL"]
         params = [ctx["tenant_id"]]
@@ -110,15 +115,16 @@ async def list_documents(
             param_idx += 1
 
         if search:
-            where_clauses.append(f"(d.file_name ILIKE ${param_idx} OR d.title ILIKE ${param_idx})")
+            where_clauses.append(
+                f"(d.file_name ILIKE ${param_idx} OR d.title ILIKE ${param_idx})"
+            )
             params.append(f"%{search}%")
             param_idx += 1
 
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM documents d WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM documents d WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -130,16 +136,22 @@ async def list_documents(
             ORDER BY d.uploaded_at DESC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         data = []
         for row in rows:
             doc = dict(row)
-            doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc["file_size"] else None
+            doc["file_size_formatted"] = (
+                format_file_size(doc["file_size"]) if doc["file_size"] else None
+            )
             data.append(DocumentData(**doc))
 
-        return DocumentListResponse(data=data, total=total, has_more=(skip + limit) < total)
+        return DocumentListResponse(
+            data=data, total=total, has_more=(skip + limit) < total
+        )
 
 
 @router.get("/recent", response_model=RecentDocumentsResponse)
@@ -152,7 +164,9 @@ async def get_recent_documents(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             """
@@ -163,13 +177,16 @@ async def get_recent_documents(
             ORDER BY d.uploaded_at DESC
             LIMIT $2
             """,
-            ctx["tenant_id"], limit
+            ctx["tenant_id"],
+            limit,
         )
 
         data = []
         for row in rows:
             doc = dict(row)
-            doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc["file_size"] else None
+            doc["file_size_formatted"] = (
+                format_file_size(doc["file_size"]) if doc["file_size"] else None
+            )
             data.append(DocumentData(**doc))
 
         return RecentDocumentsResponse(data=data, total=len(data))
@@ -189,17 +206,26 @@ async def search_documents(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM search_documents($1, $2, $3, $4, $5, $6)",
-            ctx["tenant_id"], query, category, tags, limit, offset
+            ctx["tenant_id"],
+            query,
+            category,
+            tags,
+            limit,
+            offset,
         )
 
         data = []
         for row in rows:
             doc = dict(row)
-            doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc.get("file_size") else None
+            doc["file_size_formatted"] = (
+                format_file_size(doc["file_size"]) if doc.get("file_size") else None
+            )
             data.append(DocumentData(**doc))
 
         return SearchDocumentsResponse(
@@ -208,7 +234,7 @@ async def search_documents(
             tags=tags,
             data=data,
             total=len(data),
-            has_more=len(data) >= limit
+            has_more=len(data) >= limit,
         )
 
 
@@ -219,24 +245,32 @@ async def get_storage_usage(request: Request):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
-            "SELECT * FROM get_tenant_storage_usage($1)",
-            ctx["tenant_id"]
+            "SELECT * FROM get_tenant_storage_usage($1)", ctx["tenant_id"]
         )
 
         by_category = []
         if row["by_category"]:
             import json
-            cat_data = row["by_category"] if isinstance(row["by_category"], dict) else json.loads(row["by_category"])
+
+            cat_data = (
+                row["by_category"]
+                if isinstance(row["by_category"], dict)
+                else json.loads(row["by_category"])
+            )
             for cat, info in cat_data.items():
-                by_category.append(StorageUsageByCategory(
-                    category=cat,
-                    count=info["count"],
-                    size_bytes=info["size_bytes"],
-                    size_formatted=format_file_size(info["size_bytes"])
-                ))
+                by_category.append(
+                    StorageUsageByCategory(
+                        category=cat,
+                        count=info["count"],
+                        size_bytes=info["size_bytes"],
+                        size_formatted=format_file_size(info["size_bytes"]),
+                    )
+                )
 
         return StorageUsageResponse(
             data=StorageUsageData(
@@ -244,7 +278,7 @@ async def get_storage_usage(request: Request):
                 total_size_bytes=row["total_size_bytes"],
                 total_size_mb=float(row["total_size_mb"]),
                 total_size_formatted=format_file_size(row["total_size_bytes"]),
-                by_category=by_category
+                by_category=by_category,
             )
         )
 
@@ -256,7 +290,9 @@ async def get_document(request: Request, document_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -265,23 +301,24 @@ async def get_document(request: Request, document_id: UUID):
             FROM documents d
             WHERE d.id = $1 AND d.tenant_id = $2 AND d.deleted_at IS NULL
             """,
-            document_id, ctx["tenant_id"]
+            document_id,
+            ctx["tenant_id"],
         )
 
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
 
         attachments = await conn.fetch(
-            "SELECT * FROM document_attachments WHERE document_id = $1",
-            document_id
+            "SELECT * FROM document_attachments WHERE document_id = $1", document_id
         )
 
         doc = dict(row)
-        doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc["file_size"] else None
+        doc["file_size_formatted"] = (
+            format_file_size(doc["file_size"]) if doc["file_size"] else None
+        )
 
         data = DocumentWithAttachments(
-            **doc,
-            attachments=[DocumentAttachmentData(**dict(a)) for a in attachments]
+            **doc, attachments=[DocumentAttachmentData(**dict(a)) for a in attachments]
         )
 
         return DocumentDetailResponse(data=data)
@@ -302,14 +339,19 @@ async def upload_document(
 
     # Validate file
     if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+        raise HTTPException(
+            status_code=400, detail=f"File type {file.content_type} not allowed"
+        )
 
     # Read file content
     content = await file.read()
     file_size = len(content)
 
     if file_size > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB")
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB",
+        )
 
     # Parse tags
     tag_list = None
@@ -317,12 +359,16 @@ async def upload_document(
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Generate file path
         file_path = await conn.fetchval(
             "SELECT generate_document_key($1, $2, $3)",
-            ctx["tenant_id"], category or "other", file.filename
+            ctx["tenant_id"],
+            category or "other",
+            file.filename,
         )
 
         # In production: Upload to S3/MinIO here
@@ -330,6 +376,7 @@ async def upload_document(
 
         # Calculate checksum
         import hashlib
+
         md5 = hashlib.md5(content).hexdigest()
 
         row = await conn.fetchrow(
@@ -341,9 +388,18 @@ async def upload_document(
             ) VALUES ($1, $2, $3, $4, $5, 's3', $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             """,
-            ctx["tenant_id"], file.filename, file.filename, file.content_type,
-            file_size, file_path, category, title, description, tag_list, md5,
-            ctx.get("user_id")
+            ctx["tenant_id"],
+            file.filename,
+            file.filename,
+            file.content_type,
+            file_size,
+            file_path,
+            category,
+            title,
+            description,
+            tag_list,
+            md5,
+            ctx.get("user_id"),
         )
 
         doc = dict(row)
@@ -354,17 +410,22 @@ async def upload_document(
 
 
 @router.patch("/{document_id}", response_model=UpdateDocumentResponse)
-async def update_document(request: Request, document_id: UUID, body: UpdateDocumentRequest):
+async def update_document(
+    request: Request, document_id: UUID, body: UpdateDocumentRequest
+):
     """Update document metadata"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            document_id, ctx["tenant_id"]
+            document_id,
+            ctx["tenant_id"],
         )
 
         if not existing:
@@ -383,7 +444,9 @@ async def update_document(request: Request, document_id: UUID, body: UpdateDocum
 
         if not updates:
             doc = dict(existing)
-            doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc["file_size"] else None
+            doc["file_size_formatted"] = (
+                format_file_size(doc["file_size"]) if doc["file_size"] else None
+            )
             doc["attachment_count"] = 0
             return UpdateDocumentResponse(data=DocumentData(**doc))
 
@@ -395,14 +458,16 @@ async def update_document(request: Request, document_id: UUID, body: UpdateDocum
             WHERE id = ${param_idx}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
         doc = dict(row)
-        doc["file_size_formatted"] = format_file_size(doc["file_size"]) if doc["file_size"] else None
+        doc["file_size_formatted"] = (
+            format_file_size(doc["file_size"]) if doc["file_size"] else None
+        )
         doc["attachment_count"] = await conn.fetchval(
             "SELECT COUNT(*) FROM document_attachments WHERE document_id = $1",
-            document_id
+            document_id,
         )
 
         return UpdateDocumentResponse(data=DocumentData(**doc))
@@ -415,19 +480,21 @@ async def delete_document(request: Request, document_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            document_id, ctx["tenant_id"]
+            document_id,
+            ctx["tenant_id"],
         )
 
         if not existing:
             raise HTTPException(status_code=404, detail="Document not found")
 
         await conn.execute(
-            "UPDATE documents SET deleted_at = NOW() WHERE id = $1",
-            document_id
+            "UPDATE documents SET deleted_at = NOW() WHERE id = $1", document_id
         )
 
         # In production: Delete from S3 or schedule cleanup
@@ -436,18 +503,23 @@ async def delete_document(request: Request, document_id: UUID):
 
 
 @router.post("/{document_id}/attach", response_model=AttachDocumentResponse)
-async def attach_document(request: Request, document_id: UUID, body: AttachDocumentRequest):
+async def attach_document(
+    request: Request, document_id: UUID, body: AttachDocumentRequest
+):
     """Attach document to an entity"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Verify document exists
         doc = await conn.fetchval(
             "SELECT id FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            document_id, ctx["tenant_id"]
+            document_id,
+            ctx["tenant_id"],
         )
 
         if not doc:
@@ -459,11 +531,15 @@ async def attach_document(request: Request, document_id: UUID, body: AttachDocum
             SELECT id FROM document_attachments
             WHERE document_id = $1 AND entity_type = $2 AND entity_id = $3
             """,
-            document_id, body.entity_type, body.entity_id
+            document_id,
+            body.entity_type,
+            body.entity_id,
         )
 
         if existing:
-            raise HTTPException(status_code=400, detail="Document already attached to this entity")
+            raise HTTPException(
+                status_code=400, detail="Document already attached to this entity"
+            )
 
         row = await conn.fetchrow(
             """
@@ -472,21 +548,30 @@ async def attach_document(request: Request, document_id: UUID, body: AttachDocum
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             """,
-            ctx["tenant_id"], document_id, body.entity_type, body.entity_id,
-            body.attachment_type, body.display_order, ctx.get("user_id")
+            ctx["tenant_id"],
+            document_id,
+            body.entity_type,
+            body.entity_id,
+            body.attachment_type,
+            body.display_order,
+            ctx.get("user_id"),
         )
 
         return AttachDocumentResponse(attachment=DocumentAttachmentData(**dict(row)))
 
 
 @router.delete("/{document_id}/detach", response_model=DetachDocumentResponse)
-async def detach_document(request: Request, document_id: UUID, body: DetachDocumentRequest):
+async def detach_document(
+    request: Request, document_id: UUID, body: DetachDocumentRequest
+):
     """Detach document from an entity"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         deleted = await conn.fetchval(
             """
@@ -494,7 +579,10 @@ async def detach_document(request: Request, document_id: UUID, body: DetachDocum
             WHERE document_id = $1 AND entity_type = $2 AND entity_id = $3 AND tenant_id = $4
             RETURNING id
             """,
-            document_id, body.entity_type, body.entity_id, ctx["tenant_id"]
+            document_id,
+            body.entity_type,
+            body.entity_id,
+            ctx["tenant_id"],
         )
 
         if not deleted:
@@ -503,7 +591,9 @@ async def detach_document(request: Request, document_id: UUID, body: DetachDocum
         return DetachDocumentResponse()
 
 
-@router.get("/{entity_type}/{entity_id}/documents", response_model=EntityDocumentsResponse)
+@router.get(
+    "/{entity_type}/{entity_id}/documents", response_model=EntityDocumentsResponse
+)
 async def get_entity_documents(
     request: Request,
     entity_type: str,
@@ -514,16 +604,20 @@ async def get_entity_documents(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_entity_documents($1, $2, $3)",
-            ctx["tenant_id"], entity_type, entity_id
+            ctx["tenant_id"],
+            entity_type,
+            entity_id,
         )
 
         return EntityDocumentsResponse(
             entity_type=entity_type,
             entity_id=entity_id,
             data=[EntityDocument(**dict(row)) for row in rows],
-            total=len(rows)
+            total=len(rows),
         )

@@ -6,34 +6,30 @@ current_number tracks last assigned number; generate_efaktur_number() handles as
 """
 
 from fastapi import APIRouter, HTTPException, Request
-from typing import Optional
 import logging
 import asyncpg
 
 from ..schemas.nsfp import (
-    NSFPRangeCreate, NSFPRangeUpdate, NSFPRangeResponse,
-    NSFPRangeListResponse, NSFPUsageResponse,
+    NSFPRangeCreate,
+    NSFPRangeUpdate,
+    NSFPRangeResponse,
+    NSFPRangeListResponse,
+    NSFPUsageResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     if not user.get("tenant_id"):
@@ -69,7 +65,7 @@ async def list_nsfp_ranges(request: Request):
                FROM efaktur_sequences
                WHERE tenant_id = $1
                ORDER BY created_at DESC""",
-            ctx["tenant_id"]
+            ctx["tenant_id"],
         )
 
         data = [enrich_range(r) for r in rows]
@@ -141,7 +137,7 @@ async def get_nsfp_usage(request: Request):
                  COUNT(*) FILTER (WHERE is_active = false AND exhausted_at IS NOT NULL) AS exhausted_ranges
                FROM efaktur_sequences
                WHERE tenant_id = $1""",
-            ctx["tenant_id"]
+            ctx["tenant_id"],
         )
 
         total_allocated = int(row["total_allocated"])

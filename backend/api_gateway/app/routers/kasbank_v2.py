@@ -26,7 +26,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from pydantic import BaseModel
 from uuid import UUID
-from datetime import date, datetime
+from datetime import date
 import logging
 import asyncpg
 import uuid as uuid_module
@@ -36,47 +36,35 @@ from ..schemas.kasbank_v2 import (
     VoidTransactionRequest,
     CreateTransferRequest,
     VoidTransferRequest,
-    BankAccountListItem,
-    BankAccountDetailResponse,
-    BankTransactionItem,
-    TransactionListResponse,
-    TransferItem,
-    GenericResponse,
 )
-from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
 
 
 class PostTransactionRequest(BaseModel):
     recon_session_id: Optional[str] = None
     statement_line_id: Optional[str] = None
 
+
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
 
+
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -86,10 +74,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
@@ -113,6 +98,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
 async def generate_transaction_number(conn, tenant_id: str) -> str:
     """Generate a unique transaction number: BT-YYMM-NNNN."""
     from datetime import datetime as dt
+
     now = dt.now()
     prefix = f"BT-{now.strftime('%y%m')}-"
 
@@ -146,7 +132,9 @@ def _serialize_tx(row) -> dict:
     return {
         "id": str(row["id"]),
         "transaction_number": row["transaction_number"],
-        "transaction_date": row["transaction_date"].isoformat() if row["transaction_date"] else None,
+        "transaction_date": row["transaction_date"].isoformat()
+        if row["transaction_date"]
+        else None,
         "transaction_type": row["transaction_type"],
         "amount": int(amount),
         "running_balance": int(row["running_balance"]),
@@ -185,12 +173,12 @@ TX_TYPE_MAP = {
 # These are HINTS resolved at runtime from chart_of_accounts (Law 27)
 TRANSACTION_TYPE_CONTRA_DEFAULTS: dict[str, str] = {
     # Law 27: Account codes resolved at runtime via resolve_account_id
-    'other_income':       '4-90200',  # Pendapatan Lainnya
-    'interest_income':    '4-90100',  # Pendapatan Bunga
-    'owner_contribution': '3-10100',  # Modal Pemilik
-    'owner_drawing':      '3-40000',  # Prive
-    'bank_admin_fee':     '5-20800',  # Biaya Admin Bank
-    'card_payment':       '2-10700',  # Utang Kartu Kredit
+    "other_income": "4-90200",  # Pendapatan Lainnya
+    "interest_income": "4-90100",  # Pendapatan Bunga
+    "owner_contribution": "3-10100",  # Modal Pemilik
+    "owner_drawing": "3-40000",  # Prive
+    "bank_admin_fee": "5-20800",  # Biaya Admin Bank
+    "card_payment": "2-10700",  # Utang Kartu Kredit
 }
 
 
@@ -205,7 +193,8 @@ async def resolve_contra_account(
     if contra_account_id:
         account = await conn.fetchrow(
             "SELECT id FROM chart_of_accounts WHERE id = $1::uuid AND tenant_id = $2 AND is_active = true",
-            contra_account_id, tenant_id
+            contra_account_id,
+            tenant_id,
         )
         if not account:
             raise HTTPException(400, "Akun lawan tidak ditemukan atau tidak aktif.")
@@ -216,25 +205,26 @@ async def resolve_contra_account(
     if default_code:
         account_id = await conn.fetchval(
             "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
-            tenant_id, default_code
+            tenant_id,
+            default_code,
         )
         if account_id:
             return str(account_id)
         # Default account not found - informative error
-        raise HTTPException(400,
+        raise HTTPException(
+            400,
             f"Akun default '{default_code}' tidak ditemukan untuk tipe '{transaction_type}'. "
-            f"Pastikan akun ini aktif di Daftar Akun."
+            f"Pastikan akun ini aktif di Daftar Akun.",
         )
 
     # 3. Types that REQUIRE explicit contra account (expense, other_income)
     raise HTTPException(400, "Akun lawan wajib dipilih untuk tipe transaksi ini.")
 
 
-
-
 # =============================================================================
 # HEALTH CHECK
 # =============================================================================
+
 
 @router.get("/kasbank-v2/health")
 async def health_check():
@@ -244,6 +234,7 @@ async def health_check():
 # =============================================================================
 # BANK ACCOUNTS
 # =============================================================================
+
 
 @router.get("/bank-accounts", tags=["kasbank-v2"])
 async def list_accounts(request: Request, include_inactive: bool = Query(False)):
@@ -301,8 +292,12 @@ async def list_accounts(request: Request, include_inactive: bool = Query(False))
                     "opening_balance": int(row["opening_balance"] or 0),
                     "current_balance": int(row["current_balance"]),
                     "transaction_count": int(row["transaction_count"]),
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "updated_at": row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else None,
                 }
                 for row in rows
             ]
@@ -376,14 +371,19 @@ async def get_account_detail(request: Request, account_id: UUID):
 # BANK TRANSACTIONS - LIST & DETAIL
 # =============================================================================
 
+
 @router.get("/bank-accounts/{account_id}/transactions", tags=["kasbank-v2"])
 async def list_transactions(
     request: Request,
     account_id: UUID,
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
-    direction: Optional[Literal["masuk", "keluar"]] = Query(None, description="Filter by direction: masuk (in) / keluar (out)"),
-    source: Optional[Literal["manual", "expense", "invoice_payment", "bill_payment", "transfer"]] = Query(None, description="Filter by source module"),
+    direction: Optional[Literal["masuk", "keluar"]] = Query(
+        None, description="Filter by direction: masuk (in) / keluar (out)"
+    ),
+    source: Optional[
+        Literal["manual", "expense", "invoice_payment", "bill_payment", "transfer"]
+    ] = Query(None, description="Filter by source module"),
     status: Optional[Literal["DRAFT", "POSTED", "VOIDED"]] = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -400,7 +400,8 @@ async def list_transactions(
             # Validate account exists and belongs to tenant
             acct = await conn.fetchrow(
                 "SELECT id FROM bank_accounts WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-                account_id, ctx["tenant_id"],
+                account_id,
+                ctx["tenant_id"],
             )
             if not acct:
                 raise HTTPException(status_code=404, detail="Bank account not found")
@@ -474,7 +475,8 @@ async def list_transactions(
                 ORDER BY bt.transaction_date DESC, bt.created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
                 """,
-                *params, acct_coa,
+                *params,
+                acct_coa,
             )
 
             items = [_serialize_tx(row) for row in rows]
@@ -508,10 +510,13 @@ async def get_transaction_detail(request: Request, transaction_id: UUID):
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM bank_transactions WHERE id = $1 AND tenant_id = $2",
-                transaction_id, ctx["tenant_id"],
+                transaction_id,
+                ctx["tenant_id"],
             )
             if not row:
-                raise HTTPException(status_code=404, detail="Bank transaction not found")
+                raise HTTPException(
+                    status_code=404, detail="Bank transaction not found"
+                )
 
             return {"success": True, "data": _serialize_tx(row)}
 
@@ -525,6 +530,7 @@ async def get_transaction_detail(request: Request, transaction_id: UUID):
 # =============================================================================
 # MANUAL TRANSACTIONS - CREATE / POST / VOID
 # =============================================================================
+
 
 @router.post("/bank-accounts/{account_id}/transactions", tags=["kasbank-v2"])
 async def create_manual_transaction(
@@ -564,16 +570,24 @@ async def create_manual_transaction(
                     FROM bank_accounts
                     WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
                     """,
-                    account_id, ctx["tenant_id"],
+                    account_id,
+                    ctx["tenant_id"],
                 )
                 if not bank:
-                    raise HTTPException(status_code=404, detail="Bank account not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank account not found"
+                    )
                 if not bank["is_active"]:
-                    raise HTTPException(status_code=400, detail="Bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Bank account is inactive"
+                    )
 
                 # Resolve contra account (auto-resolve for fixed types, Law 27)
                 resolved_contra_id = await resolve_contra_account(
-                    conn, ctx["tenant_id"], body.transaction_type, body.contra_account_id
+                    conn,
+                    ctx["tenant_id"],
+                    body.transaction_type,
+                    body.contra_account_id,
                 )
 
                 # Map transaction type
@@ -652,7 +666,9 @@ async def create_manual_transaction(
                 )
 
                 # Check period is open
-                await check_period_is_open(conn, ctx["tenant_id"], body.transaction_date)
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], body.transaction_date
+                )
 
                 # Contra already resolved above via resolve_contra_account
                 # No need to re-validate here
@@ -692,7 +708,10 @@ async def create_manual_transaction(
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Deposit - {body.description or tx_number}",
                     )
                     await conn.execute(
@@ -700,7 +719,10 @@ async def create_manual_transaction(
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, UUID(resolved_contra_id), abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        UUID(resolved_contra_id),
+                        abs_amount,
                         f"Deposit - {body.description or tx_number}",
                     )
                 else:
@@ -710,7 +732,10 @@ async def create_manual_transaction(
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, UUID(resolved_contra_id), abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        UUID(resolved_contra_id),
+                        abs_amount,
                         f"Withdrawal - {body.description or tx_number}",
                     )
                     await conn.execute(
@@ -718,7 +743,10 @@ async def create_manual_transaction(
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Withdrawal - {body.description or tx_number}",
                     )
 
@@ -728,7 +756,7 @@ async def create_manual_transaction(
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
                 # Law 21: running_balance from journal, not current_balance cache
                 new_balance_row = await conn.fetchrow(
@@ -750,7 +778,10 @@ async def create_manual_transaction(
                         posted_at = NOW()
                     WHERE id = $1
                     """,
-                    tx_id, journal_id, new_balance, ctx["user_id"],
+                    tx_id,
+                    journal_id,
+                    new_balance,
+                    ctx["user_id"],
                 )
 
                 # Auto-match with reconciliation if context provided
@@ -762,12 +793,14 @@ async def create_manual_transaction(
 
                         recon_session = await conn.fetchrow(
                             "SELECT status FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
-                            recon_session_id, ctx["tenant_id"],
+                            recon_session_id,
+                            ctx["tenant_id"],
                         )
                         if recon_session and recon_session["status"] == "in_progress":
                             stmt_line = await conn.fetchrow(
                                 "SELECT id, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
-                                recon_line_id, recon_session_id,
+                                recon_line_id,
+                                recon_session_id,
                             )
                             if stmt_line and stmt_line["match_status"] != "matched":
                                 match_id = uuid_module.uuid4()
@@ -778,8 +811,12 @@ async def create_manual_transaction(
                                         match_type, confidence, created_by, created_at
                                     ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'manual', $6, NOW())
                                     """,
-                                    match_id, ctx["tenant_id"], recon_session_id,
-                                    recon_line_id, tx_id, ctx["user_id"],
+                                    match_id,
+                                    ctx["tenant_id"],
+                                    recon_session_id,
+                                    recon_line_id,
+                                    tx_id,
+                                    ctx["user_id"],
                                 )
                                 await conn.execute(
                                     """
@@ -787,7 +824,8 @@ async def create_manual_transaction(
                                     SET is_cleared = true, cleared_at = NOW(), matched_statement_line_id = $2
                                     WHERE id = $1
                                     """,
-                                    tx_id, recon_line_id,
+                                    tx_id,
+                                    recon_line_id,
                                 )
                                 await conn.execute(
                                     """
@@ -798,13 +836,22 @@ async def create_manual_transaction(
                                     recon_line_id,
                                 )
 
-                                from .bank_reconciliation import update_reconciliation_session_stats
-                                await update_reconciliation_session_stats(conn, recon_session_id)
+                                from .bank_reconciliation import (
+                                    update_reconciliation_session_stats,
+                                )
+
+                                await update_reconciliation_session_stats(
+                                    conn, recon_session_id
+                                )
 
                                 recon_matched = True
-                                logger.info(f"Auto-matched tx {tx_id} with statement line {recon_line_id}")
+                                logger.info(
+                                    f"Auto-matched tx {tx_id} with statement line {recon_line_id}"
+                                )
                     except Exception as recon_err:
-                        logger.warning(f"Auto-match failed (within atomic txn): {recon_err}")
+                        logger.warning(
+                            f"Auto-match failed (within atomic txn): {recon_err}"
+                        )
                         # Don't fail the whole transaction for recon match failure
 
                 row = await conn.fetchrow(
@@ -829,13 +876,15 @@ async def create_manual_transaction(
         if "header/parent account" in err_str:
             raise HTTPException(
                 status_code=400,
-                detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi."
+                detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi.",
             )
         raise HTTPException(status_code=500, detail="Failed to create transaction")
 
 
 @router.post("/bank-transactions/{transaction_id}/post", tags=["kasbank-v2"])
-async def post_transaction(request: Request, transaction_id: UUID, body: PostTransactionRequest = None):
+async def post_transaction(
+    request: Request, transaction_id: UUID, body: PostTransactionRequest = None
+):
     """
     Post a DRAFT manual bank transaction.
 
@@ -854,7 +903,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock prevents concurrent duplicate
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TX:{transaction_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TX:{transaction_id}",
+                )
                 # Lock the transaction row
                 tx = await conn.fetchrow(
                     """
@@ -864,7 +916,8 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                     WHERE bt.id = $1 AND bt.tenant_id = $2
                     FOR UPDATE OF bt
                     """,
-                    transaction_id, ctx["tenant_id"],
+                    transaction_id,
+                    ctx["tenant_id"],
                 )
                 if not tx:
                     raise HTTPException(status_code=404, detail="Transaction not found")
@@ -872,17 +925,19 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                 if tx["status"] != "DRAFT":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot post transaction with status '{tx['status']}'"
+                        detail=f"Cannot post transaction with status '{tx['status']}'",
                     )
 
                 if tx["origin_type"] != "MANUAL":
                     raise HTTPException(
                         status_code=400,
-                        detail="Only manual transactions can be posted from this endpoint"
+                        detail="Only manual transactions can be posted from this endpoint",
                     )
 
                 # Check period is open
-                await check_period_is_open(conn, ctx["tenant_id"], tx["transaction_date"])
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], tx["transaction_date"]
+                )
 
                 # Retrieve contra_account_id from reference_id
                 # (stored during create with reference_type='manual_contra')
@@ -890,16 +945,19 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                 if not contra_account_id:
                     raise HTTPException(
                         status_code=400,
-                        detail="Transaction missing contra account. Please void and recreate."
+                        detail="Transaction missing contra account. Please void and recreate.",
                     )
 
                 # Validate contra account still exists
                 contra = await conn.fetchrow(
                     "SELECT id, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                    contra_account_id, ctx["tenant_id"],
+                    contra_account_id,
+                    ctx["tenant_id"],
                 )
                 if not contra:
-                    raise HTTPException(status_code=400, detail="Contra account no longer exists")
+                    raise HTTPException(
+                        status_code=400, detail="Contra account no longer exists"
+                    )
 
                 abs_amount = abs(int(tx["amount"]))
                 bank_coa_id = tx["bank_coa_id"]
@@ -922,7 +980,8 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                     ctx["tenant_id"],
                     journal_number,
                     tx["transaction_date"],
-                    tx["description"] or f"Manual transaction {tx['transaction_number']}",
+                    tx["description"]
+                    or f"Manual transaction {tx['transaction_number']}",
                     transaction_id,
                     str(trace_id),
                     abs_amount,
@@ -936,7 +995,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Deposit - {tx['description'] or tx['transaction_number']}",
                     )
                     await conn.execute(
@@ -944,7 +1006,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, contra_account_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        contra_account_id,
+                        abs_amount,
                         f"Deposit - {tx['description'] or tx['transaction_number']}",
                     )
                 else:
@@ -954,7 +1019,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, contra_account_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        contra_account_id,
+                        abs_amount,
                         f"Withdrawal - {tx['description'] or tx['transaction_number']}",
                     )
                     await conn.execute(
@@ -962,7 +1030,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Withdrawal - {tx['description'] or tx['transaction_number']}",
                     )
 
@@ -972,7 +1043,7 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
                 signed_amount = int(tx["amount"])
                 # Law 21: current_balance cache deprecated (v3.5). Balance derived from journal.
@@ -1005,7 +1076,10 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         posted_at = NOW()
                     WHERE id = $1
                     """,
-                    transaction_id, journal_id, new_balance, ctx["user_id"],
+                    transaction_id,
+                    journal_id,
+                    new_balance,
+                    ctx["user_id"],
                 )
 
                 # Fetch updated record
@@ -1013,7 +1087,9 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                     "SELECT * FROM bank_transactions WHERE id = $1", transaction_id
                 )
 
-                logger.info(f"Manual transaction posted: {transaction_id}, journal={journal_id}")
+                logger.info(
+                    f"Manual transaction posted: {transaction_id}, journal={journal_id}"
+                )
 
                 posted_data = _serialize_tx(row)
 
@@ -1029,13 +1105,15 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                         # Verify session is in_progress
                         recon_session = await conn.fetchrow(
                             "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
-                            recon_session_id, ctx["tenant_id"],
+                            recon_session_id,
+                            ctx["tenant_id"],
                         )
                         if recon_session and recon_session["status"] == "in_progress":
                             # Verify statement line is unmatched
                             stmt_line = await conn.fetchrow(
                                 "SELECT id, match_status FROM bank_statement_lines_v2 WHERE id = $1 AND session_id = $2",
-                                recon_line_id, recon_session_id,
+                                recon_line_id,
+                                recon_session_id,
                             )
                             if stmt_line and stmt_line["match_status"] != "matched":
                                 import uuid as uuid_std
@@ -1049,8 +1127,12 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                                         match_type, confidence, created_by, created_at
                                     ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'manual', $6, NOW())
                                     """,
-                                    match_id, ctx["tenant_id"], recon_session_id,
-                                    recon_line_id, transaction_id, ctx["user_id"],
+                                    match_id,
+                                    ctx["tenant_id"],
+                                    recon_session_id,
+                                    recon_line_id,
+                                    transaction_id,
+                                    ctx["user_id"],
                                 )
 
                                 # 2. Update bank_transactions: is_cleared
@@ -1060,7 +1142,8 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                                     SET is_cleared = true, cleared_at = NOW(), matched_statement_line_id = $2
                                     WHERE id = $1
                                     """,
-                                    transaction_id, recon_line_id,
+                                    transaction_id,
+                                    recon_line_id,
                                 )
 
                                 # 3. Update statement line: match_status
@@ -1074,12 +1157,20 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                                 )
 
                                 # 4. Update session stats
-                                from .bank_reconciliation import update_reconciliation_session_stats
-                                await update_reconciliation_session_stats(conn, recon_session_id)
+                                from .bank_reconciliation import (
+                                    update_reconciliation_session_stats,
+                                )
+
+                                await update_reconciliation_session_stats(
+                                    conn, recon_session_id
+                                )
 
                                 # 5. Record match history (non-critical)
                                 try:
-                                    from .bank_reconciliation import record_match_history
+                                    from .bank_reconciliation import (
+                                        record_match_history,
+                                    )
+
                                     await record_match_history(
                                         conn=conn,
                                         tenant_id=ctx["tenant_id"],
@@ -1091,10 +1182,14 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
                                         user_id=ctx["user_id"],
                                     )
                                 except Exception as hist_err:
-                                    logger.warning(f"Failed to record match history: {hist_err}")
+                                    logger.warning(
+                                        f"Failed to record match history: {hist_err}"
+                                    )
 
                                 recon_matched = True
-                                logger.info(f"Auto-matched transaction {transaction_id} with statement line {recon_line_id}")
+                                logger.info(
+                                    f"Auto-matched transaction {transaction_id} with statement line {recon_line_id}"
+                                )
 
                 except Exception as recon_err:
                     logger.warning(f"Failed to auto-match recon: {recon_err}")
@@ -1111,11 +1206,15 @@ async def post_transaction(request: Request, transaction_id: UUID, body: PostTra
         raise
     except Exception as e:
         err_str = str(e)
-        logger.error(f"Error posting transaction {transaction_id}: {err_str}", exc_info=True)
+        logger.error(
+            f"Error posting transaction {transaction_id}: {err_str}", exc_info=True
+        )
         if "header/parent account" in err_str:
-            raise HTTPException(status_code=400, detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi.")
+            raise HTTPException(
+                status_code=400,
+                detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi.",
+            )
         raise HTTPException(status_code=500, detail="Failed to post transaction")
-
 
 
 @router.post("/bank-transactions/{transaction_id}/void", tags=["kasbank-v2"])
@@ -1140,7 +1239,10 @@ async def void_transaction(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock prevents concurrent duplicate
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TX_VOID:{transaction_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TX_VOID:{transaction_id}",
+                )
                 # Lock the transaction
                 tx = await conn.fetchrow(
                     """
@@ -1150,19 +1252,22 @@ async def void_transaction(
                     WHERE bt.id = $1 AND bt.tenant_id = $2
                     FOR UPDATE OF bt
                     """,
-                    transaction_id, ctx["tenant_id"],
+                    transaction_id,
+                    ctx["tenant_id"],
                 )
                 if not tx:
                     raise HTTPException(status_code=404, detail="Transaction not found")
 
                 if tx["status"] == "VOIDED":
-                    raise HTTPException(status_code=400, detail="Transaction already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Transaction already voided"
+                    )
 
                 # Guard: Opening balance transactions cannot be voided
                 if tx["transaction_type"] == "opening":
                     raise HTTPException(
                         status_code=400,
-                        detail="Saldo awal tidak bisa di-void. Gunakan Edit Akun untuk mengubah saldo awal."
+                        detail="Saldo awal tidak bisa di-void. Gunakan Edit Akun untuk mengubah saldo awal.",
                     )
 
                 if tx["status"] == "DRAFT":
@@ -1182,12 +1287,13 @@ async def void_transaction(
                 # POSTED transaction - need reversal journal
                 if tx["reconciliation_status"] == "RECONCILED":
                     raise HTTPException(
-                        status_code=400,
-                        detail="Cannot void a reconciled transaction"
+                        status_code=400, detail="Cannot void a reconciled transaction"
                     )
 
                 # Check period
-                await check_period_is_open(conn, ctx["tenant_id"], tx["transaction_date"])
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], tx["transaction_date"]
+                )
 
                 # Get original journal lines
                 original_lines = await conn.fetch(
@@ -1197,8 +1303,7 @@ async def void_transaction(
 
                 if not original_lines:
                     raise HTTPException(
-                        status_code=500,
-                        detail="Original journal lines not found"
+                        status_code=500, detail="Original journal lines not found"
                     )
 
                 abs_amount = sum(line["debit"] or 0 for line in original_lines)
@@ -1237,7 +1342,7 @@ async def void_transaction(
                         idx,
                         line["account_id"],
                         (line["credit"] or 0),  # Swap
-                        (line["debit"] or 0),    # Swap
+                        (line["debit"] or 0),  # Swap
                         f"Reversal - {line['memo'] or ''}",
                     )
 
@@ -1247,7 +1352,7 @@ async def void_transaction(
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_journal_id
+                    reversal_journal_id,
                 )
                 await conn.execute(
                     """
@@ -1255,12 +1360,15 @@ async def void_transaction(
                     SET reversed_by_id = $2
                     WHERE id = $1
                     """,
-                    tx["journal_id"], reversal_journal_id,
+                    tx["journal_id"],
+                    reversal_journal_id,
                 )
 
                 # BankSync Rule 3: Create mirror bank_transaction for void
                 # (trigger trg_update_bank_balance handles current_balance automatically)
-                mirror_type = "withdrawal" if tx["transaction_type"] == "deposit" else "deposit"
+                mirror_type = (
+                    "withdrawal" if tx["transaction_type"] == "deposit" else "deposit"
+                )
                 await conn.execute(
                     """
                     INSERT INTO bank_transactions (
@@ -1276,7 +1384,9 @@ async def void_transaction(
                     ctx["tenant_id"],
                     tx["bank_account_id"],
                     mirror_type,
-                    -(tx["amount"]),  # Negate: deposit becomes negative, withdrawal becomes positive
+                    -(
+                        tx["amount"]
+                    ),  # Negate: deposit becomes negative, withdrawal becomes positive
                     transaction_id,
                     f"VOID-{tx['transaction_number']}",
                     f"Void - {body.reason}",
@@ -1294,14 +1404,18 @@ async def void_transaction(
                         void_reason = $3
                     WHERE id = $1
                     """,
-                    transaction_id, ctx["user_id"], body.reason,
+                    transaction_id,
+                    ctx["user_id"],
+                    body.reason,
                 )
 
                 row = await conn.fetchrow(
                     "SELECT * FROM bank_transactions WHERE id = $1", transaction_id
                 )
 
-                logger.info(f"Transaction voided: {transaction_id}, reversal={reversal_journal_id}")
+                logger.info(
+                    f"Transaction voided: {transaction_id}, reversal={reversal_journal_id}"
+                )
 
                 return {
                     "success": True,
@@ -1319,6 +1433,7 @@ async def void_transaction(
 # =============================================================================
 # BANK TRANSFERS - CREATE / POST / VOID
 # =============================================================================
+
 
 @router.post("/bank-transfers", tags=["kasbank-v2"])
 async def create_transfer(request: Request, body: CreateTransferRequest):
@@ -1343,12 +1458,17 @@ async def create_transfer(request: Request, body: CreateTransferRequest):
                     FROM bank_accounts
                     WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL
                     """,
-                    body.from_bank_account_id, ctx["tenant_id"],
+                    body.from_bank_account_id,
+                    ctx["tenant_id"],
                 )
                 if not from_bank:
-                    raise HTTPException(status_code=400, detail="Source bank account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Source bank account not found"
+                    )
                 if not from_bank["is_active"]:
-                    raise HTTPException(status_code=400, detail="Source bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Source bank account is inactive"
+                    )
 
                 # Validate to bank
                 to_bank = await conn.fetchrow(
@@ -1357,21 +1477,29 @@ async def create_transfer(request: Request, body: CreateTransferRequest):
                     FROM bank_accounts
                     WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL
                     """,
-                    body.to_bank_account_id, ctx["tenant_id"],
+                    body.to_bank_account_id,
+                    ctx["tenant_id"],
                 )
                 if not to_bank:
-                    raise HTTPException(status_code=400, detail="Destination bank account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Destination bank account not found"
+                    )
                 if not to_bank["is_active"]:
-                    raise HTTPException(status_code=400, detail="Destination bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Destination bank account is inactive"
+                    )
 
                 # Validate fee account if provided
                 if body.fee_account_id:
                     fee_acct = await conn.fetchrow(
                         "SELECT id FROM chart_of_accounts WHERE id = $1::uuid AND tenant_id = $2",
-                        body.fee_account_id, ctx["tenant_id"],
+                        body.fee_account_id,
+                        ctx["tenant_id"],
                     )
                     if not fee_acct:
-                        raise HTTPException(status_code=400, detail="Fee account not found")
+                        raise HTTPException(
+                            status_code=400, detail="Fee account not found"
+                        )
 
                 fee_amount = body.fee_amount or 0
                 total_amount = body.amount + fee_amount
@@ -1449,7 +1577,10 @@ async def post_transfer(request: Request, transfer_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock prevents concurrent duplicate
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TRANSFER:{transfer_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TRANSFER:{transfer_id}",
+                )
                 # Lock source bank account to prevent concurrent balance changes
                 bt = await conn.fetchrow(
                     """
@@ -1462,15 +1593,18 @@ async def post_transfer(request: Request, transfer_id: UUID):
                     WHERE bt.id = $1 AND bt.tenant_id = $2
                     FOR UPDATE OF bt
                     """,
-                    transfer_id, ctx["tenant_id"],
+                    transfer_id,
+                    ctx["tenant_id"],
                 )
                 if not bt:
-                    raise HTTPException(status_code=404, detail="Bank transfer not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank transfer not found"
+                    )
 
                 if bt["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot post transfer with status '{bt['status']}'"
+                        detail=f"Cannot post transfer with status '{bt['status']}'",
                     )
 
                 # Check period
@@ -1512,8 +1646,11 @@ async def post_transfer(request: Request, transfer_id: UUID):
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number,
-                    bt["to_coa_id"], amount,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    bt["to_coa_id"],
+                    amount,
                     f"Transfer masuk dari {bt['from_name']}",
                 )
                 line_number += 1
@@ -1525,8 +1662,11 @@ async def post_transfer(request: Request, transfer_id: UUID):
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, $3, $4, $5, 0, $6)
                         """,
-                        uuid_module.uuid4(), journal_id, line_number,
-                        bt["fee_account_id"], fee_amount,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        bt["fee_account_id"],
+                        fee_amount,
                         f"Biaya transfer - {bt['transfer_number']}",
                     )
                     line_number += 1
@@ -1537,8 +1677,11 @@ async def post_transfer(request: Request, transfer_id: UUID):
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number,
-                    bt["from_coa_id"], total_amount,
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    bt["from_coa_id"],
+                    total_amount,
                     f"Transfer keluar ke {bt['to_name']}",
                 )
 
@@ -1547,7 +1690,7 @@ async def post_transfer(request: Request, transfer_id: UUID):
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
                 from_tx_id = uuid_module.uuid4()
                 await conn.execute(
@@ -1606,9 +1749,11 @@ async def post_transfer(request: Request, transfer_id: UUID):
                         posted_at = NOW(), posted_by = $6, updated_at = NOW()
                     WHERE id = $1
                     """,
-                    transfer_id, journal_id,
+                    transfer_id,
+                    journal_id,
                     bt["fee_account_id"],
-                    from_tx_id, to_tx_id,
+                    from_tx_id,
+                    to_tx_id,
                     ctx["user_id"],
                 )
 
@@ -1633,7 +1778,10 @@ async def post_transfer(request: Request, transfer_id: UUID):
         err_str = str(e)
         logger.error(f"Error posting transfer {transfer_id}: {err_str}", exc_info=True)
         if "header/parent account" in err_str:
-            raise HTTPException(status_code=400, detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi.")
+            raise HTTPException(
+                status_code=400,
+                detail="Akun yang dipilih adalah akun induk (header). Pilih akun spesifik (anak) untuk mencatat transaksi.",
+            )
         raise HTTPException(status_code=500, detail="Failed to post transfer")
 
 
@@ -1659,7 +1807,10 @@ async def void_transfer(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock prevents concurrent duplicate
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TRANSFER_VOID:{transfer_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BANK_TRANSFER_VOID:{transfer_id}",
+                )
                 # Get transfer with bank info
                 bt = await conn.fetchrow(
                     """
@@ -1672,13 +1823,18 @@ async def void_transfer(
                     WHERE bt.id = $1 AND bt.tenant_id = $2
                     FOR UPDATE OF bt
                     """,
-                    transfer_id, ctx["tenant_id"],
+                    transfer_id,
+                    ctx["tenant_id"],
                 )
                 if not bt:
-                    raise HTTPException(status_code=404, detail="Bank transfer not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank transfer not found"
+                    )
 
                 if bt["status"] == "void":
-                    raise HTTPException(status_code=400, detail="Transfer already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Transfer already voided"
+                    )
 
                 if bt["status"] == "draft":
                     # Delete draft - no accounting to reverse
@@ -1700,7 +1856,7 @@ async def void_transfer(
                     if from_tx and from_tx["reconciliation_status"] == "RECONCILED":
                         raise HTTPException(
                             status_code=400,
-                            detail="Cannot void: source transaction is reconciled"
+                            detail="Cannot void: source transaction is reconciled",
                         )
 
                 if bt["to_transaction_id"]:
@@ -1711,7 +1867,7 @@ async def void_transfer(
                     if to_tx and to_tx["reconciliation_status"] == "RECONCILED":
                         raise HTTPException(
                             status_code=400,
-                            detail="Cannot void: destination transaction is reconciled"
+                            detail="Cannot void: destination transaction is reconciled",
                         )
 
                 # Check period
@@ -1770,7 +1926,7 @@ async def void_transfer(
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_journal_id
+                    reversal_journal_id,
                 )
                 await conn.execute(
                     """
@@ -1778,7 +1934,8 @@ async def void_transfer(
                     SET reversed_by_id = $2
                     WHERE id = $1
                     """,
-                    bt["journal_id"], reversal_journal_id,
+                    bt["journal_id"],
+                    reversal_journal_id,
                 )
 
                 # Create reversal bank transactions (trigger handles balance)
@@ -1830,12 +1987,16 @@ async def void_transfer(
                 if bt["from_transaction_id"]:
                     await conn.execute(
                         "UPDATE bank_transactions SET status = 'VOIDED', voided_by = $2, voided_at = NOW(), void_reason = $3 WHERE id = $1",
-                        bt["from_transaction_id"], ctx["user_id"], body.reason,
+                        bt["from_transaction_id"],
+                        ctx["user_id"],
+                        body.reason,
                     )
                 if bt["to_transaction_id"]:
                     await conn.execute(
                         "UPDATE bank_transactions SET status = 'VOIDED', voided_by = $2, voided_at = NOW(), void_reason = $3 WHERE id = $1",
-                        bt["to_transaction_id"], ctx["user_id"], body.reason,
+                        bt["to_transaction_id"],
+                        ctx["user_id"],
+                        body.reason,
                     )
 
                 # Update transfer status
@@ -1846,10 +2007,14 @@ async def void_transfer(
                         voided_reason = $3, updated_at = NOW()
                     WHERE id = $1
                     """,
-                    transfer_id, ctx["user_id"], body.reason,
+                    transfer_id,
+                    ctx["user_id"],
+                    body.reason,
                 )
 
-                logger.info(f"Transfer voided: {transfer_id}, reversal={reversal_journal_id}")
+                logger.info(
+                    f"Transfer voided: {transfer_id}, reversal={reversal_journal_id}"
+                )
 
                 return {
                     "success": True,

@@ -14,31 +14,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Round 22: Global connection pool for better performance
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create database connection pool"""
-    global _pool
-    if _pool is None:
-        logger.info("Creating members database connection pool...")
-        _pool = await asyncpg.create_pool(
-            host="postgres",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="milkydb",
-            min_size=2,   # Keep 2 connections ready
-            max_size=10,  # Max 10 concurrent connections
-            command_timeout=30,
-        )
-        logger.info("Members database connection pool created")
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 # ========================================
 # Journal-based balance helpers (Pure Ledger)
 # ========================================
+
 
 async def get_ar_balances_by_customer(conn, tenant_id: str, customer_ids=None):
     """Get per-customer AR balance from journal via accounts_receivable linkage."""
@@ -60,7 +48,7 @@ async def get_ar_balances_by_customer(conn, tenant_id: str, customer_ids=None):
         params.append(customer_ids)
     query += " GROUP BY ar.customer_id"
     rows = await conn.fetch(query, *params)
-    return {row['cid']: int(row['balance']) for row in rows}
+    return {row["cid"]: int(row["balance"]) for row in rows}
 
 
 async def get_ap_balances_by_supplier(conn, tenant_id: str, supplier_ids=None):
@@ -83,37 +71,41 @@ async def get_ap_balances_by_supplier(conn, tenant_id: str, supplier_ids=None):
         params.append(supplier_ids)
     query += " GROUP BY ap.supplier_id"
     rows = await conn.fetch(query, *params)
-    return {row['sid']: int(row['balance']) for row in rows}
+    return {row["sid"]: int(row["balance"]) for row in rows}
 
 
 async def get_total_ar_from_journal(conn, tenant_id: str) -> int:
     """Total piutang from journal. Pure Ledger."""
-    row = await conn.fetchrow("""
+    row = await conn.fetchrow(
+        """
         SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_piutang
         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND coa.account_code LIKE '1-104%%'
-    """, tenant_id)
-    return int(row['total_piutang']) if row else 0
+    """,
+        tenant_id,
+    )
+    return int(row["total_piutang"]) if row else 0
 
 
 async def get_total_ap_from_journal(conn, tenant_id: str) -> int:
     """Total hutang from journal. Pure Ledger."""
-    row = await conn.fetchrow("""
+    row = await conn.fetchrow(
+        """
         SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as total_hutang
         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND coa.account_code LIKE '2-101%%'
-    """, tenant_id)
-    return int(row['total_hutang']) if row else 0
-
-
-
+    """,
+        tenant_id,
+    )
+    return int(row["total_hutang"]) if row else 0
 
 
 # ========================================
 # Response Models
 # ========================================
+
 
 class MemberItem(BaseModel):
     id: str
@@ -167,13 +159,14 @@ class AddPointsResponse(BaseModel):
 # API Endpoints
 # ========================================
 
+
 @router.get("/list")
 async def list_members(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     search: Optional[str] = None,
-    tipe: Optional[str] = None  # 'pelanggan' or 'supplier'
+    tipe: Optional[str] = None,  # 'pelanggan' or 'supplier'
 ):
     """
     List all members (customers) with optional filtering
@@ -181,7 +174,7 @@ async def list_members(
     """
     try:
         # Get tenant_id from auth context
-        tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
+        tenant_id = getattr(request.state, "tenant_id", "evlogia")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -213,10 +206,12 @@ async def list_members(
                 param_idx += 1
 
             # Get total count
-            total = await conn.fetchval(count_query, *params[:param_idx-1])
+            total = await conn.fetchval(count_query, *params[: param_idx - 1])
 
             # Add pagination
-            base_query += f" ORDER BY nama ASC LIMIT ${param_idx} OFFSET ${param_idx + 1}"
+            base_query += (
+                f" ORDER BY nama ASC LIMIT ${param_idx} OFFSET ${param_idx + 1}"
+            )
             params.extend([limit, offset])
 
             # Execute query
@@ -226,66 +221,83 @@ async def list_members(
             pelanggan_ids = []
             supplier_ids = []
             for row in rows:
-                rid = str(row['id'])
-                if row['tipe'] == 'pelanggan':
+                rid = str(row["id"])
+                if row["tipe"] == "pelanggan":
                     pelanggan_ids.append(rid)
-                elif row['tipe'] == 'supplier':
+                elif row["tipe"] == "supplier":
                     supplier_ids.append(rid)
 
             # Pure Ledger: batch-fetch AR/AP balances from journal
-            ar_balances = await get_ar_balances_by_customer(conn, tenant_id, pelanggan_ids) if pelanggan_ids else {}
-            ap_balances = await get_ap_balances_by_supplier(conn, tenant_id, supplier_ids) if supplier_ids else {}
+            ar_balances = (
+                await get_ar_balances_by_customer(conn, tenant_id, pelanggan_ids)
+                if pelanggan_ids
+                else {}
+            )
+            ap_balances = (
+                await get_ap_balances_by_supplier(conn, tenant_id, supplier_ids)
+                if supplier_ids
+                else {}
+            )
 
             members = []
             for row in rows:
-                rid = str(row['id'])
-                if row['tipe'] == 'pelanggan':
+                rid = str(row["id"])
+                if row["tipe"] == "pelanggan":
                     balance = ar_balances.get(rid, 0)
-                elif row['tipe'] == 'supplier':
+                elif row["tipe"] == "supplier":
                     balance = ap_balances.get(rid, 0)
                 else:
                     balance = 0
-                members.append(MemberItem(
-                    id=rid,
-                    nama=row['nama'],
-                    tipe=row['tipe'],
-                    telepon=row['telepon'],
-                    alamat=row['alamat'],
-                    email=row['email'],
-                    nomor_member=row['nomor_member'],
-                    points=row['points'] or 0,
-                    points_per_50k=row['points_per_50k'] or 1,
-                    total_transaksi=row['total_transaksi'] or 0,
-                    total_nilai=row['total_nilai'] or 0,
-                    saldo_hutang=balance,
-                    last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
-                    created_at=str(row['created_at']) if row['created_at'] else None
-                ))
+                members.append(
+                    MemberItem(
+                        id=rid,
+                        nama=row["nama"],
+                        tipe=row["tipe"],
+                        telepon=row["telepon"],
+                        alamat=row["alamat"],
+                        email=row["email"],
+                        nomor_member=row["nomor_member"],
+                        points=row["points"] or 0,
+                        points_per_50k=row["points_per_50k"] or 1,
+                        total_transaksi=row["total_transaksi"] or 0,
+                        total_nilai=row["total_nilai"] or 0,
+                        saldo_hutang=balance,
+                        last_transaction_at=str(row["last_transaction_at"])
+                        if row["last_transaction_at"]
+                        else None,
+                        created_at=str(row["created_at"])
+                        if row["created_at"]
+                        else None,
+                    )
+                )
 
             # Pure Ledger: summary from journal
-            count_row = await conn.fetchrow("""
+            count_row = await conn.fetchrow(
+                """
                 SELECT
                     COUNT(*) FILTER (WHERE tipe = 'pelanggan') as total_pelanggan,
                     COUNT(*) FILTER (WHERE tipe = 'supplier') as total_supplier
                 FROM customers
                 WHERE tenant_id = $1
-            """, tenant_id)
+            """,
+                tenant_id,
+            )
 
             total_piutang = await get_total_ar_from_journal(conn, tenant_id)
             total_hutang = await get_total_ap_from_journal(conn, tenant_id)
 
             summary = MemberSummary(
-                total_pelanggan=count_row['total_pelanggan'] or 0,
-                total_supplier=count_row['total_supplier'] or 0,
+                total_pelanggan=count_row["total_pelanggan"] or 0,
+                total_supplier=count_row["total_supplier"] or 0,
                 total_piutang=total_piutang,
-                total_hutang=total_hutang
+                total_hutang=total_hutang,
             )
 
             return MemberListResponse(
                 members=members,
                 total=total or 0,
                 has_more=(offset + limit) < (total or 0),
-                summary=summary
+                summary=summary,
             )
 
     except Exception as e:
@@ -296,8 +308,10 @@ async def list_members(
 @router.get("/search")
 async def search_members(
     request: Request,
-    q: str = Query(..., min_length=1, description="Search query (name, phone, or member number)"),
-    limit: int = Query(10, ge=1, le=50)
+    q: str = Query(
+        ..., min_length=1, description="Search query (name, phone, or member number)"
+    ),
+    limit: int = Query(10, ge=1, le=50),
 ):
     """
     Search members by name, phone number, or member number
@@ -306,14 +320,15 @@ async def search_members(
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
+        tenant_id = getattr(request.state, "tenant_id", "evlogia")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
             search_pattern = f"%{q}%"
 
             # Search only pelanggan (not suppliers) for POS
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
                        points_per_50k, total_transaksi, total_nilai,
                        last_transaction_at, created_at
@@ -326,36 +341,48 @@ async def search_members(
                     CASE WHEN nomor_member ILIKE $3 THEN 0 ELSE 1 END,
                     nama ASC
                 LIMIT $4
-            """, tenant_id, search_pattern, f"{q}%", limit)
+            """,
+                tenant_id,
+                search_pattern,
+                f"{q}%",
+                limit,
+            )
 
             # Pure Ledger: batch-fetch AR balances
-            member_ids = [str(row['id']) for row in rows]
-            ar_balances = await get_ar_balances_by_customer(conn, tenant_id, member_ids) if member_ids else {}
+            member_ids = [str(row["id"]) for row in rows]
+            ar_balances = (
+                await get_ar_balances_by_customer(conn, tenant_id, member_ids)
+                if member_ids
+                else {}
+            )
 
             members = []
             for row in rows:
-                rid = str(row['id'])
-                members.append(MemberItem(
-                    id=rid,
-                    nama=row['nama'],
-                    tipe=row['tipe'],
-                    telepon=row['telepon'],
-                    alamat=row['alamat'],
-                    email=row['email'],
-                    nomor_member=row['nomor_member'],
-                    points=row['points'] or 0,
-                    points_per_50k=row['points_per_50k'] or 1,
-                    total_transaksi=row['total_transaksi'] or 0,
-                    total_nilai=row['total_nilai'] or 0,
-                    saldo_hutang=ar_balances.get(rid, 0),
-                    last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
-                    created_at=str(row['created_at']) if row['created_at'] else None
-                ))
+                rid = str(row["id"])
+                members.append(
+                    MemberItem(
+                        id=rid,
+                        nama=row["nama"],
+                        tipe=row["tipe"],
+                        telepon=row["telepon"],
+                        alamat=row["alamat"],
+                        email=row["email"],
+                        nomor_member=row["nomor_member"],
+                        points=row["points"] or 0,
+                        points_per_50k=row["points_per_50k"] or 1,
+                        total_transaksi=row["total_transaksi"] or 0,
+                        total_nilai=row["total_nilai"] or 0,
+                        saldo_hutang=ar_balances.get(rid, 0),
+                        last_transaction_at=str(row["last_transaction_at"])
+                        if row["last_transaction_at"]
+                        else None,
+                        created_at=str(row["created_at"])
+                        if row["created_at"]
+                        else None,
+                    )
+                )
 
-            return MemberSearchResponse(
-                members=members,
-                query=q
-            )
+            return MemberSearchResponse(members=members, query=q)
 
     except Exception as e:
         logger.error(f"Error searching members: {e}")
@@ -369,27 +396,31 @@ async def get_member(request: Request, member_id: str):
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
+        tenant_id = getattr(request.state, "tenant_id", "evlogia")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT id, nama, tipe, telepon, alamat, email, nomor_member, points,
                        points_per_50k, total_transaksi, total_nilai,
                        last_transaction_at, created_at
                 FROM customers
                 WHERE tenant_id = $1 AND id = $2
-            """, tenant_id, member_id)
+            """,
+                tenant_id,
+                member_id,
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Member not found")
 
             # Pure Ledger: get balance from journal based on member type
-            rid = str(row['id'])
-            if row['tipe'] == 'pelanggan':
+            rid = str(row["id"])
+            if row["tipe"] == "pelanggan":
                 balances = await get_ar_balances_by_customer(conn, tenant_id, [rid])
                 balance = balances.get(rid, 0)
-            elif row['tipe'] == 'supplier':
+            elif row["tipe"] == "supplier":
                 balances = await get_ap_balances_by_supplier(conn, tenant_id, [rid])
                 balance = balances.get(rid, 0)
             else:
@@ -397,19 +428,21 @@ async def get_member(request: Request, member_id: str):
 
             return MemberItem(
                 id=rid,
-                nama=row['nama'],
-                tipe=row['tipe'],
-                telepon=row['telepon'],
-                alamat=row['alamat'],
-                email=row['email'],
-                nomor_member=row['nomor_member'],
-                points=row['points'] or 0,
-                points_per_50k=row['points_per_50k'] or 1,
-                total_transaksi=row['total_transaksi'] or 0,
-                total_nilai=row['total_nilai'] or 0,
+                nama=row["nama"],
+                tipe=row["tipe"],
+                telepon=row["telepon"],
+                alamat=row["alamat"],
+                email=row["email"],
+                nomor_member=row["nomor_member"],
+                points=row["points"] or 0,
+                points_per_50k=row["points_per_50k"] or 1,
+                total_transaksi=row["total_transaksi"] or 0,
+                total_nilai=row["total_nilai"] or 0,
                 saldo_hutang=balance,
-                last_transaction_at=str(row['last_transaction_at']) if row['last_transaction_at'] else None,
-                created_at=str(row['created_at']) if row['created_at'] else None
+                last_transaction_at=str(row["last_transaction_at"])
+                if row["last_transaction_at"]
+                else None,
+                created_at=str(row["created_at"]) if row["created_at"] else None,
             )
 
     except HTTPException:
@@ -427,29 +460,34 @@ async def add_points(request: Request, data: AddPointsRequest):
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, 'tenant_id', 'evlogia')
+        tenant_id = getattr(request.state, "tenant_id", "evlogia")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
             # Get current member data
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT id, points, points_per_50k, total_transaksi, total_nilai
                 FROM customers
                 WHERE tenant_id = $1 AND id = $2
-            """, tenant_id, data.member_id)
+            """,
+                tenant_id,
+                data.member_id,
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Member not found")
 
             # Calculate points to add
-            points_per_50k = row['points_per_50k'] or 1
+            points_per_50k = row["points_per_50k"] or 1
             points_to_add = (data.transaction_amount // 50000) * points_per_50k
-            new_total_points = (row['points'] or 0) + points_to_add
-            new_total_transaksi = (row['total_transaksi'] or 0) + 1
-            new_total_nilai = (row['total_nilai'] or 0) + data.transaction_amount
+            new_total_points = (row["points"] or 0) + points_to_add
+            new_total_transaksi = (row["total_transaksi"] or 0) + 1
+            new_total_nilai = (row["total_nilai"] or 0) + data.transaction_amount
 
             # Update member
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE customers
                 SET points = $1,
                     total_transaksi = $2,
@@ -457,13 +495,19 @@ async def add_points(request: Request, data: AddPointsRequest):
                     last_transaction_at = NOW(),
                     updated_at = NOW()
                 WHERE tenant_id = $4 AND id = $5
-            """, new_total_points, new_total_transaksi, new_total_nilai, tenant_id, data.member_id)
+            """,
+                new_total_points,
+                new_total_transaksi,
+                new_total_nilai,
+                tenant_id,
+                data.member_id,
+            )
 
             return AddPointsResponse(
                 success=True,
                 member_id=data.member_id,
                 points_added=points_to_add,
-                new_total_points=new_total_points
+                new_total_points=new_total_points,
             )
 
     except HTTPException:

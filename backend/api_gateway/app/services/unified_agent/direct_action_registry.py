@@ -484,7 +484,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(
                 name="bill_id",
                 label="Bill ID",
-                required=True,
+                required=False,
                 hidden=True,
                 aliases=["EXTRACT:allocations.bill_id"],
             ),
@@ -586,7 +586,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 name="allocations",
                 label="Allocations",
                 field_type="json",
-                required=True,
+                required=False,  # auto-built by _enrich_receive_payment from oldest unpaid invoices
                 hidden=True,
             ),
             # Display-only (user sees, stripped before REST call)
@@ -682,6 +682,76 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
             FieldSpec(name="notes", label="Catatan"),
             FieldSpec(name="auto_post", label="Auto Post", default="true", hidden=True),
+        ],
+    ),
+    "create_sales_order": DirectActionConfig(
+        action_key="create_sales_order",
+        display_name="Buat Pesanan Penjualan",
+        rest_endpoint="/api/sales-orders",
+        rest_method="POST",
+        entity_type="sales_order",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="CREATE_SALES_ORDER",
+        signal_words=[
+            "buat pesanan",
+            "bikin pesanan",
+            "pesanan baru",
+            "sales order",
+            "order penjualan",
+            "buat SO",
+            "bikin SO",
+        ],
+        entity_name_field="customer_name",
+        loading_message_template="Membuat pesanan penjualan untuk {entity_name}\u2026",
+        success_message_template="Pesanan penjualan untuk '{entity_name}' berhasil dibuat.",
+        impact_rules=[
+            ImpactRule(
+                field="tax_rate",
+                condition="nonzero",
+                message_template="Pajak {formatted_value}% akan diterapkan per item.",
+            ),
+        ],
+        fields=[
+            FieldSpec(
+                name="customer_id",
+                label="ID Pelanggan",
+                required=True,
+                hidden=True,
+                description="UUID pelanggan — resolve via search_customers",
+            ),
+            FieldSpec(name="customer_name", label="Pelanggan", required=True),
+            FieldSpec(
+                name="order_date",
+                label="Tanggal Pesanan",
+                field_type="date",
+                required=True,
+            ),
+            FieldSpec(
+                name="expected_ship_date",
+                label="Tanggal Kirim",
+                field_type="date",
+            ),
+            FieldSpec(
+                name="items",
+                label="Item",
+                field_type="json",
+                required=True,
+                hidden=True,
+                description="Array of {item_id, description, quantity, unit_price, unit}",
+            ),
+            FieldSpec(
+                name="tax_rate", label="Pajak (%)", field_type="percent", default="0"
+            ),
+            FieldSpec(
+                name="discount_percent",
+                label="Diskon (%)",
+                field_type="percent",
+                default="0",
+            ),
+            FieldSpec(name="reference", label="Referensi"),
+            FieldSpec(name="notes", label="Catatan"),
         ],
     ),
     "create_bill": DirectActionConfig(
@@ -958,6 +1028,123 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 required=True,
                 aliases=[
                     "void_reason",
+                    "description",
+                    "alasan",
+                    "note",
+                    "notes",
+                    "keterangan",
+                ],
+            ),
+        ],
+    ),
+    "update_sales_invoice": DirectActionConfig(
+        action_key="update_sales_invoice",
+        display_name="Ubah Faktur Penjualan",
+        rest_endpoint="/api/sales-invoices/{id}",
+        rest_method="PATCH",
+        entity_type="sales_invoice",
+        risk_level="medium",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="UPDATE_SALES_INVOICE",
+        signal_words=[
+            "ubah faktur",
+            "edit faktur penjualan",
+            "update invoice",
+            "ganti faktur",
+        ],
+        entity_name_field="invoice_number",
+        loading_message_template="Mengubah faktur {entity_name}\u2026",
+        success_message_template="Faktur '{entity_name}' berhasil diubah.",
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="invoice_number", label="No. Faktur", display_only=True),
+            FieldSpec(name="customer_id", label="ID Pelanggan", hidden=True),
+            FieldSpec(name="customer_name", label="Pelanggan"),
+            FieldSpec(name="invoice_date", label="Tanggal Faktur", field_type="date"),
+            FieldSpec(name="due_date", label="Jatuh Tempo", field_type="date"),
+            FieldSpec(
+                name="items",
+                label="Item",
+                field_type="json",
+                hidden=True,
+                description="Optional replacement items array",
+            ),
+            FieldSpec(name="tax_rate", label="Pajak (%)", field_type="percent"),
+            FieldSpec(
+                name="discount_percent", label="Diskon (%)", field_type="percent"
+            ),
+            FieldSpec(name="notes", label="Catatan"),
+        ],
+    ),
+    "update_sales_order": DirectActionConfig(
+        action_key="update_sales_order",
+        display_name="Ubah Pesanan Penjualan",
+        rest_endpoint="/api/sales-orders/{id}",
+        rest_method="PATCH",
+        entity_type="sales_order",
+        risk_level="low",
+        creates_journal=False,
+        ttl_seconds=300,
+        action_type_key="UPDATE_SALES_ORDER",
+        signal_words=[
+            "ubah pesanan",
+            "edit pesanan",
+            "update SO",
+            "ganti order penjualan",
+        ],
+        entity_name_field="order_number",
+        loading_message_template="Mengubah pesanan {entity_name}\u2026",
+        success_message_template="Pesanan '{entity_name}' berhasil diubah.",
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="order_number", label="No. Pesanan", display_only=True),
+            FieldSpec(name="customer_id", label="ID Pelanggan", hidden=True),
+            FieldSpec(name="customer_name", label="Pelanggan"),
+            FieldSpec(name="order_date", label="Tanggal Pesanan", field_type="date"),
+            FieldSpec(
+                name="expected_ship_date", label="Tanggal Kirim", field_type="date"
+            ),
+            FieldSpec(
+                name="items",
+                label="Item",
+                field_type="json",
+                hidden=True,
+                description="Optional replacement items array",
+            ),
+            FieldSpec(name="reference", label="Referensi"),
+            FieldSpec(name="notes", label="Catatan"),
+        ],
+    ),
+    "void_sales_order": DirectActionConfig(
+        action_key="void_sales_order",
+        display_name="Batalkan Pesanan Penjualan",
+        rest_endpoint="/api/sales-orders/{id}/cancel",
+        rest_method="POST",
+        entity_type="sales_order",
+        risk_level="high",
+        creates_journal=False,
+        ttl_seconds=60,
+        action_type_key="VOID_SALES_ORDER",
+        signal_words=[
+            "batalkan pesanan",
+            "cancel pesanan",
+            "void SO",
+            "batal order penjualan",
+        ],
+        entity_name_field="order_number",
+        loading_message_template="Membatalkan pesanan {entity_name}\u2026",
+        success_message_template="Pesanan '{entity_name}' berhasil dibatalkan.",
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="order_number", label="No. Pesanan", display_only=True),
+            FieldSpec(
+                name="reason",
+                label="Alasan",
+                required=True,
+                aliases=[
+                    "void_reason",
+                    "cancel_reason",
                     "description",
                     "alasan",
                     "note",
@@ -2235,15 +2422,47 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         entity_name_field="quote_number",
         loading_message_template="Membuat penawaran…",
         success_message_template="Penawaran berhasil dibuat.",
+        impact_rules=[
+            ImpactRule(
+                field="tax_rate",
+                condition="nonzero",
+                message_template="Pajak {formatted_value}% akan diterapkan per item.",
+            ),
+        ],
         fields=[
             FieldSpec(
-                name="customer_id", label="ID Pelanggan", required=True, hidden=True
+                name="customer_id",
+                label="ID Pelanggan",
+                required=True,
+                hidden=True,
+                description="UUID pelanggan — resolve via search_customers",
             ),
-            FieldSpec(name="customer_name", label="Pelanggan", display_only=True),
+            FieldSpec(name="customer_name", label="Pelanggan", required=True),
             FieldSpec(
                 name="quote_date", label="Tanggal", field_type="date", required=True
             ),
             FieldSpec(name="expiry_date", label="Berlaku Sampai", field_type="date"),
+            FieldSpec(name="subject", label="Judul Penawaran"),
+            FieldSpec(
+                name="items",
+                label="Item",
+                field_type="json",
+                required=True,
+                hidden=True,
+                description="Array of {item_id, description, quantity, unit_price, unit}",
+            ),
+            FieldSpec(
+                name="tax_rate", label="Pajak (%)", field_type="percent", default="0"
+            ),
+            FieldSpec(
+                name="discount_value", label="Diskon", field_type="number", default="0"
+            ),
+            FieldSpec(
+                name="discount_type",
+                label="Tipe Diskon",
+                default="percentage",
+                hidden=True,
+            ),
             FieldSpec(name="notes", label="Catatan"),
         ],
     ),
@@ -2431,21 +2650,17 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_ar_outstanding": QueryActionConfig(
         action_key="query_ar_outstanding",
         display_name="Piutang (AR Outstanding)",
-        rest_endpoint="/api/sales-invoices",
-        response_format="list",
-        description="Daftar piutang per pelanggan — status=unpaid excludes draft/void/paid. Only invoices with real outstanding.",
+        rest_endpoint="/api/sales-invoices/outstanding-summary",
+        response_format="summary",
+        description="Ringkasan piutang: total outstanding, overdue, current, jumlah pelanggan. Journal-derived via compute_ar_outstanding().",
         signal_words=[
             "piutang",
             "total piutang",
             "ar outstanding",
             "siapa yang punya piutang",
+            "berapa piutang",
         ],
-        query_params=[
-            QueryParam(
-                name="status", label="Status", param_type="string", default="unpaid"
-            ),
-            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
-        ],
+        query_params=[],
     ),
     "query_ar_invoices": QueryActionConfig(
         action_key="query_ar_invoices",
@@ -2464,22 +2679,18 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
     "query_ap_outstanding": QueryActionConfig(
         action_key="query_ap_outstanding",
         display_name="Utang (AP Outstanding)",
-        rest_endpoint="/api/bills",
-        response_format="list",
-        description="Daftar hutang per vendor — status=unpaid excludes draft/void/paid. Only bills with real outstanding.",
+        rest_endpoint="/api/bills/outstanding-summary",
+        response_format="summary",
+        description="Ringkasan hutang: total outstanding, overdue, current, jumlah vendor. Journal-derived via compute_ap_outstanding().",
         signal_words=[
             "utang",
             "total utang",
             "ap outstanding",
             "hutang",
             "siapa yang punya hutang",
+            "berapa hutang",
         ],
-        query_params=[
-            QueryParam(
-                name="status", label="Status", param_type="string", default="unpaid"
-            ),
-            QueryParam(name="limit", label="Limit", param_type="number", default="50"),
-        ],
+        query_params=[],
     ),
     # Kas & Bank
     "query_bank_accounts_list": QueryActionConfig(

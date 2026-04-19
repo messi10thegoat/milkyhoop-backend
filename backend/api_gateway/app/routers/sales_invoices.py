@@ -23,7 +23,6 @@ from ..schemas.sales_invoices import (
     InvoiceSummaryResponse,
     InvoiceCalculationResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 from ..utils.idempotency import get_idempotency_key
 
@@ -36,7 +35,10 @@ router = APIRouter()
 async def get_pool() -> asyncpg.Pool:
     """Get singleton connection pool (Law 32)."""
     from ..services.db_pool import get_db_pool
+
     return await get_db_pool()
+
+
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
@@ -184,6 +186,57 @@ async def get_invoice_summary(request: Request):
     except Exception as e:
         logger.error(f"Error getting invoice summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get summary")
+
+
+# =============================================================================
+# OUTSTANDING SUMMARY (for desktop dashboard)
+# =============================================================================
+@router.get("/outstanding-summary")
+async def get_outstanding_summary(request: Request):
+    """Get AR outstanding summary — total, overdue vs current, customer count."""
+    try:
+        ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+
+            query = """
+                WITH ar AS (
+                    SELECT invoice_id, customer_id, outstanding, due_date
+                    FROM compute_ar_outstanding($1)
+                )
+                SELECT
+                    COALESCE(SUM(outstanding), 0) AS total_outstanding,
+                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE THEN outstanding ELSE 0 END), 0) AS overdue_amount,
+                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) AS current_amount,
+                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) AS overdue_count,
+                    COUNT(CASE WHEN due_date >= CURRENT_DATE THEN 1 END) AS current_count,
+                    COUNT(DISTINCT customer_id) AS customer_count
+                FROM ar
+            """
+            row = await conn.fetchrow(query, tenant_id)
+
+            return {
+                "success": True,
+                "data": {
+                    "total_outstanding": float(row["total_outstanding"]),
+                    "overdue_amount": float(row["overdue_amount"]),
+                    "current_amount": float(row["current_amount"]),
+                    "overdue_count": int(row["overdue_count"]),
+                    "current_count": int(row["current_count"]),
+                    "customer_count": int(row["customer_count"]),
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting outstanding summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get outstanding summary")
 
 
 # =============================================================================
@@ -613,9 +666,603 @@ async def get_invoice(request: Request, invoice_id: UUID):
 
 # =============================================================================
 # INTERNAL HELPER: Post invoice (for auto_post)
+
+
+# =============================================================================
+# HELPERS: Revenue Recognition & Fulfillment (3-Event Model)
+# =============================================================================
+
+
+def canonical_json(data) -> str:
+    """Deterministic JSON for payload hashing (v1.3 spec)."""
+    import json as _json
+    from decimal import Decimal as _Dec
+
+    def _norm(obj):
+        if isinstance(obj, dict):
+            return {k: _norm(obj[k]) for k in sorted(obj)}
+        elif isinstance(obj, list):
+            return [_norm(x) for x in obj]
+        elif isinstance(obj, _Dec):
+            return format(obj, "f")
+        else:
+            return obj
+
+    return _json.dumps(_norm(data), separators=(",", ":"), ensure_ascii=False)
+
+
+def _r2d(v) -> Decimal:
+    """Round to 2 decimals, returning Decimal (NOT float). Use instead of _r2 for DB writes."""
+    if not isinstance(v, Decimal):
+        v = Decimal(str(v)) if v else Decimal("0")
+    return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+async def _resolve_unearned_revenue(conn, tenant_id: str):
+    """Resolve Pendapatan Diterima Dimuka. Tries 2-10750 first, falls back to 2-10700."""
+    acct = await conn.fetchval(
+        "SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND account_code=$2 AND is_active=true",
+        tenant_id,
+        "2-10750",
+    )
+    if acct:
+        return acct
+    return await _resolve_unearned_revenue(conn, tenant_id)
+
+
+async def _update_invoice_fulfillment_status(conn, invoice_id, tenant_id):
+    """Recompute fulfillment_status and revenue_status from line items."""
+    stats = await conn.fetchrow(
+        """
+        SELECT SUM(quantity) AS total_qty, SUM(fulfilled_qty) AS total_fulfilled,
+               SUM(allocated_amount) AS total_allocated, SUM(recognized_amount) AS total_recognized
+        FROM sales_invoice_items WHERE invoice_id = $1
+    """,
+        invoice_id,
+    )
+    total_qty = Decimal(str(stats["total_qty"] or 0))
+    total_fulfilled = Decimal(str(stats["total_fulfilled"] or 0))
+    total_allocated = Decimal(str(stats["total_allocated"] or 0))
+    total_recognized = Decimal(str(stats["total_recognized"] or 0))
+
+    if total_qty == 0:
+        f_status = "not_applicable"
+    elif total_fulfilled >= total_qty:
+        f_status = "fulfilled"
+    elif total_fulfilled > 0:
+        f_status = "partial"
+    else:
+        f_status = "pending"
+
+    if total_allocated == 0:
+        r_status = "not_applicable"
+    elif total_recognized >= total_allocated:
+        r_status = "recognized"
+    elif total_recognized > 0:
+        r_status = "partial"
+    else:
+        r_status = "deferred"
+
+    await conn.execute(
+        """
+        UPDATE sales_invoices SET fulfillment_status=$1, revenue_status=$2,
+            total_fulfilled_qty=$3, total_recognized_amount=$4
+        WHERE id=$5 AND tenant_id=$6
+    """,
+        f_status,
+        r_status,
+        str(total_fulfilled),
+        str(total_recognized),
+        invoice_id,
+        tenant_id,
+    )
+
+
+async def _execute_fulfillment(
+    conn,
+    tenant_id,
+    user_id,
+    invoice,
+    items_to_fulfill,
+    warehouse_id,
+    fulfillment_date,
+    recognize_revenue=True,
+    idempotency_key=None,
+    notes=None,
+    payload_hash=None,
+):
+    """
+    Core shared fulfillment function for 3-Event Revenue Recognition.
+    Called by both auto-fulfill (posting) and manual /fulfill endpoint.
+
+    items_to_fulfill: list of {"invoice_item_id": uuid, "quantity": Decimal, "batch_id": uuid|None}
+    """
+    import uuid
+    from datetime import date as dt_date
+
+    invoice_id = invoice["id"]
+    invoice_number = invoice["invoice_number"]
+    today = dt_date.today()
+    year_month_str = today.strftime("%y%m")
+
+    total_cogs = Decimal("0")
+    total_revenue = Decimal("0")
+    cogs_items = []
+    fulfillment_item_ids = []
+
+    # -- Per-item loop ---------------------------------------------------------
+    for req in items_to_fulfill:
+        inv_item_id = req["invoice_item_id"]
+        req_qty = Decimal(str(req["quantity"]))
+
+        # 1. Lock invoice item row
+        inv_item = await conn.fetchrow(
+            """
+            SELECT id, item_id, description, quantity, fulfilled_qty,
+                   allocated_amount, recognized_amount
+            FROM sales_invoice_items WHERE id=$1 FOR UPDATE
+        """,
+            inv_item_id,
+        )
+        if not inv_item:
+            raise HTTPException(404, f"Invoice item {inv_item_id} not found")
+
+        product_id = inv_item["item_id"]
+        description = inv_item["description"] or ""
+        quantity_total = Decimal(str(inv_item["quantity"]))
+        fulfilled_so_far = Decimal(str(inv_item["fulfilled_qty"] or 0))
+        allocated = Decimal(str(inv_item["allocated_amount"] or 0))
+        recognized_so_far = Decimal(str(inv_item["recognized_amount"] or 0))
+
+        # 2. Check remaining qty
+        remaining_qty = quantity_total - fulfilled_so_far
+        if req_qty > remaining_qty:
+            raise HTTPException(
+                409, f"Sisa qty {description} hanya {remaining_qty}, diminta {req_qty}"
+            )
+
+        # 3. Atomic stock deduction
+        # Ensure warehouse_stock row exists
+        await conn.execute(
+            """
+            INSERT INTO warehouse_stock (tenant_id, item_id, warehouse_id, quantity,
+                reserved_quantity)
+            VALUES ($1, $2, $3, 0, 0)
+            ON CONFLICT (tenant_id, warehouse_id, item_id) DO NOTHING
+        """,
+            tenant_id,
+            product_id,
+            warehouse_id,
+        )
+
+        stock_row = await conn.fetchrow(
+            """
+            UPDATE warehouse_stock
+            SET quantity = quantity - $1,
+
+                updated_at = NOW()
+            WHERE item_id = $2 AND warehouse_id = $3 AND tenant_id = $4
+              AND quantity >= $1
+            RETURNING quantity
+        """,
+            req_qty,
+            product_id,
+            warehouse_id,
+            tenant_id,
+        )
+        if not stock_row:
+            raise HTTPException(409, f"Stok {description} tidak cukup")
+
+        # 4. Get WAC
+        avg_cost = await conn.fetchval(
+            "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
+        )
+        if not avg_cost or Decimal(str(avg_cost)) == 0:
+            raise HTTPException(
+                409,
+                f"WAC = 0 untuk '{description}'. Catat penerimaan barang terlebih dahulu.",
+            )
+        avg_cost = Decimal(str(avg_cost))
+        line_cogs = _r2d(avg_cost * req_qty)
+        total_cogs += line_cogs
+
+        # 5. Revenue rounding safe
+        remaining_rev = allocated - recognized_so_far
+        if req_qty == remaining_qty:  # last fulfillment -- take remainder
+            item_revenue = remaining_rev
+        else:
+            proportional = allocated * req_qty / quantity_total
+            proportional = _r2d(proportional)
+            item_revenue = min(proportional, remaining_rev)
+        if item_revenue < Decimal("0"):
+            item_revenue = Decimal("0")
+        total_revenue += item_revenue
+
+        # 6. INSERT fulfillment item (fulfillment_id set after header insert)
+        fi_id = uuid.uuid4()
+        fulfillment_item_ids.append(
+            {
+                "id": fi_id,
+                "invoice_item_id": inv_item_id,
+                "product_id": product_id,
+                "quantity": req_qty,
+                "unit_cost": avg_cost,
+                "total_cost": line_cogs,
+                "batch_id": req.get("batch_id"),
+                "notes": notes,
+            }
+        )
+
+        cogs_items.append(
+            {
+                "item_id": str(product_id),
+                "description": description,
+                "quantity": req_qty,
+                "unit_cost": avg_cost,
+                "total_cost": line_cogs,
+            }
+        )
+
+        # 7. Inventory ledger entry (inline -- not record_inventory_outbound)
+        current_balance = await conn.fetchval(
+            "SELECT get_inventory_balance($1, $2)", tenant_id, product_id
+        )
+        new_balance = Decimal(str(current_balance or 0)) - req_qty
+
+        # Get product info for ledger
+        product_info = await conn.fetchrow(
+            """
+            SELECT item_code, nama_produk, track_batches FROM products WHERE id = $1
+        """,
+            product_id,
+        )
+        p_code = product_info["item_code"] if product_info else ""
+        p_name = product_info["nama_produk"] if product_info else ""
+
+        batch_id = req.get("batch_id")
+        # FEFO auto-allocation if needed
+        if not batch_id and product_info and product_info.get("track_batches"):
+            fefo_batches = await conn.fetch(
+                "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
+                tenant_id,
+                product_id,
+                warehouse_id,
+                req_qty,
+            )
+            if fefo_batches:
+                total_allocated_batch = sum(
+                    Decimal(str(r["quantity_to_use"])) for r in fefo_batches
+                )
+                if total_allocated_batch >= req_qty:
+                    batch_id = fefo_batches[0]["batch_id"]
+                else:
+                    raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
+            else:
+                raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
+
+        await conn.execute(
+            """
+            INSERT INTO inventory_ledger (
+                tenant_id, product_id, product_code, product_name,
+                movement_type, movement_date,
+                source_type, source_id, source_number,
+                quantity_in, quantity_out, quantity_balance,
+                unit_cost, total_cost, average_cost,
+                created_by, notes, warehouse_id, batch_id
+            ) VALUES (
+                $1, $2, $3, $4,
+                'SALE', $5,
+                'INVOICE_FULFILLMENT', $6, $7,
+                0, $8, $9,
+                $10, $11, $10,
+                $12, $13, $14, $15
+            )
+        """,
+            tenant_id,
+            product_id,
+            p_code,
+            p_name,
+            fulfillment_date,
+            invoice_id,
+            invoice_number,
+            str(req_qty),
+            str(new_balance),
+            str(avg_cost),
+            str(line_cogs),
+            user_id,
+            f"Fulfillment: {invoice_number}",
+            warehouse_id,
+            batch_id,
+        )
+
+        # Batch deduction (if batch tracking)
+        if batch_id:
+            bws_row = await conn.fetchrow(
+                """
+                SELECT available_quantity FROM batch_warehouse_stock
+                WHERE batch_id = $1 AND warehouse_id = $2
+                FOR UPDATE
+            """,
+                batch_id,
+                warehouse_id,
+            )
+
+            if bws_row is None or Decimal(str(bws_row["available_quantity"])) < req_qty:
+                available = (
+                    Decimal(str(bws_row["available_quantity"])) if bws_row else 0
+                )
+                raise HTTPException(
+                    400,
+                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {req_qty}",
+                )
+
+            await conn.execute(
+                """
+                UPDATE batch_warehouse_stock
+                SET quantity = quantity - $3,
+                    last_movement_date = NOW(), updated_at = NOW()
+                WHERE batch_id = $1 AND warehouse_id = $2
+            """,
+                batch_id,
+                warehouse_id,
+                req_qty,
+            )
+
+            await conn.execute(
+                """
+                UPDATE item_batches SET status = 'depleted'
+                WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
+            """,
+                batch_id,
+            )
+
+        # 8. Update invoice item fulfilled/recognized
+        await conn.execute(
+            """
+            UPDATE sales_invoice_items
+            SET fulfilled_qty = fulfilled_qty + $2,
+                recognized_amount = recognized_amount + $3
+            WHERE id = $1
+        """,
+            inv_item_id,
+            str(req_qty),
+            str(item_revenue),
+        )
+
+    # -- After item loop -------------------------------------------------------
+
+    # 1. Generate fulfillment_number via sequence
+    ful_seq = await conn.fetchval(
+        """
+        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+        VALUES ($1, 'SJ', $2, $3, 1)
+        ON CONFLICT (tenant_id, prefix, year, month)
+        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+        RETURNING last_number
+    """,
+        tenant_id,
+        today.year,
+        today.month,
+    )
+    fulfillment_number = f"SJ-{year_month_str}-{ful_seq:04d}"
+
+    # 2. Idempotency pre-check (safety net for auto-fulfill retries)
+    if idempotency_key:
+        existing = await conn.fetchrow(
+            "SELECT id, payload_hash FROM invoice_fulfillments WHERE tenant_id=$1 AND idempotency_key=$2 AND status='posted'",
+            tenant_id,
+            idempotency_key,
+        )
+        if existing:
+            if payload_hash and existing["payload_hash"] != payload_hash:
+                raise HTTPException(409, "Idempotency key conflict: payload berbeda")
+            return {
+                "fulfillment_id": str(existing["id"]),
+                "message": "Already fulfilled (idempotent)",
+            }
+
+    # INSERT invoice_fulfillments header
+    fulfillment_id = uuid.uuid4()
+    await conn.execute(
+        """
+        INSERT INTO invoice_fulfillments (
+            id, tenant_id, invoice_id, fulfillment_number, fulfillment_date,
+            warehouse_id, status, notes, idempotency_key, payload_hash,
+            created_by, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'posted', $7, $8, $9, $10, NOW(), NOW())
+    """,
+        fulfillment_id,
+        tenant_id,
+        invoice_id,
+        fulfillment_number,
+        fulfillment_date,
+        warehouse_id,
+        notes,
+        idempotency_key,
+        payload_hash,
+        user_id,
+    )
+
+    # INSERT fulfillment item rows
+    for fi in fulfillment_item_ids:
+        await conn.execute(
+            """
+            INSERT INTO invoice_fulfillment_items (
+                id, fulfillment_id, invoice_item_id, product_id,
+                quantity, unit_cost, total_cost, batch_id, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+            fi["id"],
+            fulfillment_id,
+            fi["invoice_item_id"],
+            fi["product_id"],
+            str(fi["quantity"]),
+            str(fi["unit_cost"]),
+            str(fi["total_cost"]),
+            fi["batch_id"],
+            fi["notes"],
+        )
+
+    # 3. COGS journal -- DRAFT->POSTED (Law 20)
+    cogs_journal_id = None
+    if total_cogs > Decimal("0"):
+        cogs_journal_id = uuid.uuid4()
+        cogs_trace_id = str(uuid.uuid4())
+
+        hpp_account_id = await resolve_account_id(conn, tenant_id, "5-10100")
+        inventory_account_id = await resolve_account_id(conn, tenant_id, "1-10600")
+
+        cogs_seq = await conn.fetchval(
+            """
+            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+            VALUES ($1, 'COGS', $2, $3, 1)
+            ON CONFLICT (tenant_id, prefix, year, month)
+            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+            RETURNING last_number
+        """,
+            tenant_id,
+            today.year,
+            today.month,
+        )
+        cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                total_debit, total_credit, status, created_by
+            ) VALUES ($1, $2, $3, $4, $5, 'INVOICE_FULFILLMENT', $6, $7, $8, $8, 'DRAFT', $9)
+        """,
+            cogs_journal_id,
+            tenant_id,
+            cogs_journal_number,
+            fulfillment_date,
+            f"HPP Fulfillment {fulfillment_number} - {invoice['customer_name']}",
+            invoice_id,
+            cogs_trace_id,
+            str(total_cogs),
+            user_id,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, account_id, memo, debit, credit, line_number
+            ) VALUES
+            ($1, $2, $3, 'HPP Barang Dagang', $5, 0, 1),
+            ($4, $2, $6, 'Persediaan Barang Dagang', 0, $5, 2)
+        """,
+            uuid.uuid4(),
+            cogs_journal_id,
+            hpp_account_id,
+            uuid.uuid4(),
+            str(total_cogs),
+            inventory_account_id,
+        )
+
+        # Law 20: DRAFT->POSTED triggers hash chain
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            cogs_journal_id,
+        )
+
+    # 4. Revenue journal (if recognize_revenue and total_revenue > 0)
+    revenue_journal_id = None
+    if recognize_revenue and total_revenue > Decimal("0"):
+        revenue_journal_id = uuid.uuid4()
+        rev_trace_id = str(uuid.uuid4())
+
+        deferred_rev_account_id = await _resolve_unearned_revenue(conn, tenant_id)
+        sales_account_id = await resolve_account_id(conn, tenant_id, "4-10100")
+
+        recog_seq = await conn.fetchval(
+            """
+            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+            VALUES ($1, 'RECOG', $2, $3, 1)
+            ON CONFLICT (tenant_id, prefix, year, month)
+            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+            RETURNING last_number
+        """,
+            tenant_id,
+            today.year,
+            today.month,
+        )
+        recog_journal_number = f"RECOG-{year_month_str}-{recog_seq:04d}"
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                total_debit, total_credit, status, created_by
+            ) VALUES ($1, $2, $3, $4, $5, 'INVOICE_REVENUE', $6, $7, $8, $8, 'DRAFT', $9)
+        """,
+            revenue_journal_id,
+            tenant_id,
+            recog_journal_number,
+            fulfillment_date,
+            f"Revenue Recognition {fulfillment_number} - {invoice['customer_name']}",
+            invoice_id,
+            rev_trace_id,
+            str(total_revenue),
+            user_id,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, account_id, memo, debit, credit, line_number
+            ) VALUES
+            ($1, $2, $3, 'Pendapatan Diterima Dimuka', $5, 0, 1),
+            ($4, $2, $6, 'Penjualan', 0, $5, 2)
+        """,
+            uuid.uuid4(),
+            revenue_journal_id,
+            deferred_rev_account_id,
+            uuid.uuid4(),
+            str(total_revenue),
+            sales_account_id,
+        )
+
+        # Law 20: DRAFT->POSTED
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            revenue_journal_id,
+        )
+
+    # 5. UPDATE fulfillment header with journal IDs
+    await conn.execute(
+        """
+        UPDATE invoice_fulfillments
+        SET journal_id = $2, revenue_journal_id = $3
+        WHERE id = $1
+    """,
+        fulfillment_id,
+        cogs_journal_id,
+        revenue_journal_id,
+    )
+
+    # 6. Update invoice fulfillment/revenue status
+    await _update_invoice_fulfillment_status(conn, invoice_id, tenant_id)
+
+    return {
+        "fulfillment_id": str(fulfillment_id),
+        "fulfillment_number": fulfillment_number,
+        "total_cogs": str(total_cogs),
+        "total_revenue": str(total_revenue),
+        "cogs_journal_id": str(cogs_journal_id) if cogs_journal_id else None,
+        "revenue_journal_id": str(revenue_journal_id) if revenue_journal_id else None,
+    }
+
+
 # =============================================================================
 async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_amount):
-    """Internal helper to post an invoice within the same transaction."""
+    """Internal helper to post an invoice within the same transaction.
+    3-Event Revenue Recognition (PSAK 72):
+    - Billing journal credits Unearned Revenue (2-10700), not Sales (4-10100)
+    - Revenue recognized on fulfillment (inventory) or immediately (service)
+    """
     import uuid
     from datetime import date as dt_date
 
@@ -695,15 +1342,16 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         ctx["user_id"],
     )
 
-    # Get AR and Sales accounts
+    # Get AR and Unearned Revenue accounts
+    # 3-Event: Credit goes to Pendapatan Diterima Dimuka (2-10700), NOT Penjualan (4-10100)
     ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], "1-10400")}
-    sales_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], "4-10100")}
+    unearned_account = {"id": await _resolve_unearned_revenue(conn, ctx["tenant_id"])}
     vat_output_account = {
         "id": await resolve_account_id(conn, ctx["tenant_id"], "2-10600")
     }
 
     # Compute subtotal (revenue without tax)
-    tax_amount = float(invoice["tax_amount"] or 0)
+    tax_amount = _d(invoice["tax_amount"] or 0)
     subtotal_amount = total_amount - tax_amount
     line_number = 1
 
@@ -724,8 +1372,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         )
         line_number += 1
 
-    # Line 2: Credit Sales Revenue = subtotal (WITHOUT tax)
-    if sales_account:
+    # Line 2: Credit Unearned Revenue = subtotal (WITHOUT tax)
+    if unearned_account:
         await conn.execute(
             """
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
@@ -734,9 +1382,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             uuid.uuid4(),
             journal_id,
             line_number,
-            sales_account["id"],
+            unearned_account["id"],
             subtotal_amount,
-            f"Penjualan - {invoice_number}",
+            f"Pendapatan Diterima Dimuka - {invoice_number}",
         )
         line_number += 1
 
@@ -790,7 +1438,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 continue
             _tcid = await conn.fetchval(
                 "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
-                ctx["tenant_id"], ti["tax_rate"],
+                ctx["tenant_id"],
+                ti["tax_rate"],
             )
             if not _tcid:
                 continue
@@ -822,251 +1471,151 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             vat_jl_id,
         )
 
-    # COGS CALCULATION AND INVENTORY LEDGER (matching post_invoice logic)
     # =============================================================
-    # Get invoice items
+    # PSAK 72 Step 4: Calculate allocated_amount per item
+    # =============================================================
     items = await conn.fetch(
         """
-        SELECT id, item_id, item_code, description, quantity, unit_price, batch_id, batch_no, exp_date
+        SELECT id, item_id, item_code, description, quantity, unit_price,
+               batch_id, batch_no, exp_date, discount_amount
         FROM sales_invoice_items
         WHERE invoice_id = $1
         """,
         invoice_id,
     )
 
-    total_cogs = 0
-    cogs_items = []
-    warnings = []
+    tax_amount_total = _d(invoice.get("tax_amount", 0) or 0)
+    subtotal_after_discount = _d(invoice["total_amount"]) - tax_amount_total
 
-    for item in items:
-        if not item["item_id"]:
-            # Skip non-inventory items (service items)
-            continue
+    total_line_subtotals = Decimal("0")
+    for itm in items:
+        qty = _d(itm["quantity"])
+        price = _d(itm["unit_price"])
+        line_sub = qty * price
+        disc = _d(itm.get("discount_amount", 0))
+        line_sub -= disc
+        total_line_subtotals += line_sub
 
-        # Check if item is inventory tracked
-        product = await conn.fetchrow(
-            """
-            SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory, track_batches
-            FROM products
-            WHERE tenant_id = $1 AND id = $2
-            """,
-            ctx["tenant_id"],
-            item["item_id"],
-        )
-
-        if not product or not product.get("track_inventory", True):
-            # Skip non-inventory products
-            continue
-
-        # Get weighted average cost from inventory ledger
-        avg_cost = await conn.fetchval(
-            """
-            SELECT get_weighted_average_cost($1, $2)
-            """,
-            ctx["tenant_id"],
-            item["item_id"],
-        )
-
-        cost_source = "WEIGHTED_AVG"
-
-        # Fallback to purchase_price if no inventory history
-        if not avg_cost or avg_cost == 0:
-            avg_cost = product.get("purchase_price_amount", 0) or 0
-            cost_source = "PURCHASE_PRICE"
-
-        if (not avg_cost or avg_cost == 0) and product.get("track_inventory", True):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Tidak bisa post faktur: produk '{product['nama_produk']}' tidak punya "
-                    f"riwayat stok / biaya perolehan (WAC=0 dan harga beli=0). "
-                    f"Catat penerimaan barang (Bill / Penerimaan Produksi / Opening Stock) terlebih dahulu."
-                )
+    if total_line_subtotals > 0:
+        for i, itm in enumerate(items):
+            qty = _d(itm["quantity"])
+            price = _d(itm["unit_price"])
+            line_sub = qty * price - _d(itm.get("discount_amount", 0))
+            proportion = line_sub / total_line_subtotals
+            alloc = (proportion * subtotal_after_discount).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
             )
+            items[i] = dict(itm)  # make mutable copy
+            items[i]["_allocated"] = alloc
+        # Last item absorbs rounding
+        sum_others = sum(items[j]["_allocated"] for j in range(len(items) - 1))
+        items[-1]["_allocated"] = subtotal_after_discount - sum_others
+    else:
+        for i, itm in enumerate(items):
+            items[i] = dict(itm)
+            items[i]["_allocated"] = Decimal("0")
 
-        if avg_cost > 0:
-            quantity = float(item["quantity"])
-            line_cogs = int(quantity * float(avg_cost))
-            total_cogs += line_cogs
+    # Persist allocated_amount
+    for itm in items:
+        await conn.execute(
+            "UPDATE sales_invoice_items SET allocated_amount = $1 WHERE id = $2",
+            str(itm["_allocated"]),
+            itm["id"],
+        )
 
-            cogs_items.append(
+    # =============================================================
+    # 3-Event Path Selection
+    # =============================================================
+    has_inventory_items = False
+    all_have_cost = True
+    inventory_items_for_fulfill = []
+
+    for itm in items:
+        if not itm.get("item_id"):
+            continue
+        product = await conn.fetchrow(
+            "SELECT id, track_inventory FROM products WHERE tenant_id=$1 AND id=$2",
+            ctx["tenant_id"],
+            itm["item_id"],
+        )
+        if not product or not product.get("track_inventory", True):
+            continue
+        has_inventory_items = True
+        avg_cost = await conn.fetchval(
+            "SELECT get_weighted_average_cost($1, $2)",
+            ctx["tenant_id"],
+            itm["item_id"],
+        )
+        if not avg_cost or avg_cost == 0:
+            all_have_cost = False
+        else:
+            inventory_items_for_fulfill.append(
                 {
-                    "item_id": str(item["item_id"]),
-                    "item_code": item["item_code"] or product["item_code"],
-                    "quantity": quantity,
-                    "unit_cost": avg_cost,
-                    "total_cost": line_cogs,
-                    "cost_source": cost_source,
+                    "invoice_item_id": itm["id"],
+                    "quantity": itm["quantity"],
                 }
             )
 
-            # Update sales_invoice_items with cost info
-            await conn.execute(
-                """
-                UPDATE sales_invoice_items
-                SET unit_cost = $2, total_cost = $3,
-                    is_inventory_item = true, cost_source = $4
-                WHERE id = $1
-                """,
-                item["id"],
-                avg_cost,
-                line_cogs,
-                cost_source,
-            )
+    fulfillment_status = "not_applicable"
+    revenue_status = "recognized"
 
-            # Get current inventory balance for ledger entry
-            current_balance = await conn.fetchval(
-                """
-                SELECT get_inventory_balance($1, $2)
-                """,
+    if has_inventory_items and all_have_cost:
+        # SELL-FROM-STOCK: auto-fulfill (zero UX change)
+        from hashlib import sha256
+
+        payload_for_hash = canonical_json(
+            {
+                "warehouse_id": str(invoice.get("warehouse_id", "")),
+                "items": sorted(
+                    [
+                        {"id": str(i["invoice_item_id"]), "qty": str(i["quantity"])}
+                        for i in inventory_items_for_fulfill
+                    ],
+                    key=lambda x: x["id"],
+                ),
+            }
+        )
+        p_hash = sha256(payload_for_hash.encode()).hexdigest()
+
+        posting_warehouse_id = invoice.get("warehouse_id")
+        if not posting_warehouse_id:
+            posting_warehouse_id = await conn.fetchval(
+                "SELECT id FROM warehouses WHERE tenant_id=$1 ORDER BY created_at LIMIT 1",
                 ctx["tenant_id"],
-                item["item_id"],
             )
 
-            new_balance = float(current_balance or 0) - quantity
+        await _execute_fulfillment(
+            conn,
+            ctx["tenant_id"],
+            ctx["user_id"],
+            dict(invoice),
+            inventory_items_for_fulfill,
+            posting_warehouse_id,
+            invoice["invoice_date"],
+            recognize_revenue=True,
+            idempotency_key=f"AUTO_FULFILL:{invoice_id}",
+            payload_hash=p_hash,
+        )
+        fulfillment_status = "fulfilled"
+        revenue_status = "recognized"
 
-            # Resolve warehouse_id for this posting
-            posting_warehouse_id = invoice.get("warehouse_id")
-            if not posting_warehouse_id:
-                # Fallback: get default warehouse for tenant
-                posting_warehouse_id = await conn.fetchval(
-                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                    ctx["tenant_id"],
-                )
+    elif has_inventory_items and not all_have_cost:
+        # MAKE-TO-ORDER: billing only, fulfill later
+        fulfillment_status = "pending"
+        revenue_status = "deferred"
 
-            # Resolve batch_id (explicit or FEFO auto-allocation)
-            si_batch_id = item.get("batch_id")
-            if (
-                not si_batch_id
-                and product.get("track_batches")
-                and posting_warehouse_id
-            ):
-                # FEFO auto-allocation
-                fefo_batches = await conn.fetch(
-                    "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
-                    ctx["tenant_id"],
-                    item["item_id"],
-                    posting_warehouse_id,
-                    quantity,
-                )
-                if fefo_batches:
-                    total_allocated = sum(
-                        float(r["quantity_to_use"]) for r in fefo_batches
-                    )
-                    if total_allocated >= quantity:
-                        si_batch_id = fefo_batches[0]["batch_id"]
-                    else:
-                        raise HTTPException(
-                            400,
-                            f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
-                        )
-                else:
-                    raise HTTPException(
-                        400,
-                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
-                    )
-
-            # Record inventory movement in ledger
-            await conn.execute(
-                """
-                INSERT INTO inventory_ledger (
-                    tenant_id, product_id, product_code, product_name,
-                    movement_type, movement_date,
-                    source_type, source_id, source_number,
-                    quantity_in, quantity_out, quantity_balance,
-                    unit_cost, total_cost, average_cost,
-                    created_by, notes, warehouse_id, batch_id
-                ) VALUES (
-                    $1, $2, $3, $4,
-                    'SALE', $5,
-                    'SALES_INVOICE', $6, $7,
-                    0, $8, $9,
-                    $10, $11, $10,
-                    $12, $13, $14, $15
-                )
-                """,
-                ctx["tenant_id"],
-                item["item_id"],
-                item["item_code"] or product["item_code"],
-                product["nama_produk"],
-                invoice["invoice_date"],
-                invoice_id,
-                invoice_number,
-                quantity,
-                new_balance,
-                avg_cost,
-                line_cogs,
-                ctx["user_id"],
-                f"Sale: {invoice_number}",
-                posting_warehouse_id,
-                si_batch_id,
-            )
-
-            # Batch deduction (if batch tracking)
-            if si_batch_id:
-                # Row-level lock + validate
-                bws_row = await conn.fetchrow(
-                    """
-                    SELECT available_quantity FROM batch_warehouse_stock
-                    WHERE batch_id = $1 AND warehouse_id = $2
-                    FOR UPDATE
-                """,
-                    si_batch_id,
-                    posting_warehouse_id,
-                )
-
-                if bws_row is None or float(bws_row["available_quantity"]) < quantity:
-                    available = float(bws_row["available_quantity"]) if bws_row else 0
-                    raise HTTPException(
-                        400,
-                        f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}",
-                    )
-
-                # Deduct batch_warehouse_stock
-                await conn.execute(
-                    """
-                    UPDATE batch_warehouse_stock
-                    SET quantity = quantity - $3,
-                        last_movement_date = NOW(), updated_at = NOW()
-                    WHERE batch_id = $1 AND warehouse_id = $2
-                """,
-                    si_batch_id,
-                    posting_warehouse_id,
-                    quantity,
-                )
-
-                # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
-
-                # Mark depleted if needed
-                await conn.execute(
-                    """
-                    UPDATE item_batches SET status = 'depleted'
-                    WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
-                """,
-                    si_batch_id,
-                )
-
-    # Create COGS journal if there are inventory items
-    cogs_journal_id = None
-    if total_cogs > 0:
-        cogs_journal_id = uuid.uuid4()
-        cogs_trace_id = str(uuid.uuid4())
-
-        # Get account IDs
-        hpp_account = {
-            "id": await resolve_account_id(conn, ctx["tenant_id"], "5-10100")
-        }
-
-        inventory_account = {
-            "id": await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
-        }
-
-        if hpp_account and inventory_account:
-            # Get COGS journal number using sequence
-            cogs_seq = await conn.fetchval(
+    else:
+        # SERVICE: no inventory items, recognize revenue immediately
+        total_service_revenue = sum(_d(itm["_allocated"]) for itm in items)
+        if total_service_revenue > 0:
+            unearned_id2 = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
+            revenue_id2 = await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
+            rev_j_id = uuid.uuid4()
+            rev_trace = str(uuid.uuid4())
+            rev_seq = await conn.fetchval(
                 """
                 INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                VALUES ($1, 'COGS', $2, $3, 1)
+                VALUES ($1, 'RECOG', $2, $3, 1)
                 ON CONFLICT (tenant_id, prefix, year, month)
                 DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                 RETURNING last_number
@@ -1075,81 +1624,92 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 today.year,
                 today.month,
             )
-            cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
-
-            # Create COGS journal entry
+            rev_jn = f"RECOG-{today.strftime('%y%m')}-{rev_seq:04d}"
             await conn.execute(
                 """
                 INSERT INTO journal_entries (
                     id, tenant_id, journal_number, journal_date,
                     description, source_type, source_id, trace_id,
-                    total_debit, total_credit,
-                    status, created_by
-                ) VALUES ($1, $2, $3, $4, $5, 'SALES_INVOICE_COGS', $6, $7, $8, $8, 'DRAFT', $9)
+                    total_debit, total_credit, status, created_by
+                ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE',$6,$7,$8,$8,'DRAFT',$9)
                 """,
-                cogs_journal_id,
+                rev_j_id,
                 ctx["tenant_id"],
-                cogs_journal_number,
+                rev_jn,
                 invoice["invoice_date"],
-                f"HPP {invoice_number} - {invoice['customer_name']}",
+                f"Revenue Recognition {invoice_number} (Service)",
                 invoice_id,
-                cogs_trace_id,
-                total_cogs,
+                rev_trace,
+                float(total_service_revenue),
                 ctx["user_id"],
             )
-
-            # Journal lines: Dr. HPP (5-10100), Cr. Inventory (1-10600)
             await conn.execute(
                 """
-                INSERT INTO journal_lines (
-                    journal_id, account_id, memo,
-                    debit, credit, line_number
-                ) VALUES
-                ($1, $2, 'HPP Barang Dagang', $3, 0, 1),
-                ($1, $4, 'Persediaan Barang Dagang', 0, $3, 2)
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1,$2,1,$3,$4,0,$5)
                 """,
-                cogs_journal_id,
-                hpp_account["id"],
-                total_cogs,
-                inventory_account["id"],
+                uuid.uuid4(),
+                rev_j_id,
+                unearned_id2,
+                float(total_service_revenue),
+                f"Dimuka \u2192 Penjualan {invoice_number}",
             )
-
-            # Law 20: DRAFT->POSTED triggers hash chain
             await conn.execute(
-                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                cogs_journal_id,
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1,$2,2,$3,0,$4,$5)
+                """,
+                uuid.uuid4(),
+                rev_j_id,
+                revenue_id2,
+                float(total_service_revenue),
+                f"Penjualan {invoice_number}",
             )
-
-            import logging
-
-            logging.getLogger(__name__).info(
-                f"COGS journal created in auto_post: {cogs_journal_id}, amount: {total_cogs}"
+            await conn.execute(
+                "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                rev_j_id,
             )
+            # Update items as fully recognized
+            for itm in items:
+                await conn.execute(
+                    "UPDATE sales_invoice_items SET recognized_amount = allocated_amount WHERE id = $1",
+                    itm["id"],
+                )
+        fulfillment_status = "not_applicable"
+        revenue_status = "recognized"
 
-    # Update invoice status (including COGS info)
+    # Query totals from items
+    totals = await conn.fetchrow(
+        "SELECT COALESCE(SUM(fulfilled_qty),0) as f, COALESCE(SUM(recognized_amount),0) as r FROM sales_invoice_items WHERE invoice_id=$1",
+        invoice_id,
+    )
+
+    # Update invoice status (including fulfillment/revenue info)
     await conn.execute(
         """
         UPDATE sales_invoices
         SET status = 'posted', operational_status = 'SENT', accounting_status = 'POSTED',
             ar_id = $1, journal_id = $2, posted_at = NOW(), posted_by = $3,
-            cogs_journal_id = $5, total_cogs = $6::bigint,
-            cogs_posted_at = CASE WHEN $6::bigint > 0 THEN NOW() ELSE NULL END
+            fulfillment_status = $5, revenue_status = $6,
+            total_fulfilled_qty = $7, total_recognized_amount = $8
         WHERE id = $4
         """,
         ar_id,
         journal_id,
         ctx["user_id"],
         invoice_id,
-        cogs_journal_id,
-        total_cogs,
+        fulfillment_status,
+        revenue_status,
+        float(totals["f"]),
+        float(totals["r"]),
     )
 
     return {
         "journal_id": str(journal_id),
         "ar_id": str(ar_id),
         "journal_number": journal_number,
-        "cogs_journal_id": str(cogs_journal_id) if cogs_journal_id else None,
-        "total_cogs": total_cogs,
+        "fulfillment_status": fulfillment_status,
+        "revenue_status": revenue_status,
     }
 
 
@@ -1251,7 +1811,16 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     subtotal,
                     body.discount_percent,
                     invoice_discount,
-                    (body.tax_rate if body.tax_rate and float(body.tax_rate) > 0 else (max((float(it.tax_rate or 0) for it in body.items), default=0))),
+                    (
+                        body.tax_rate
+                        if body.tax_rate and float(body.tax_rate) > 0
+                        else (
+                            max(
+                                (float(it.tax_rate or 0) for it in body.items),
+                                default=0,
+                            )
+                        )
+                    ),
                     total_tax,
                     total_amount,
                     ctx["user_id"],
@@ -1626,17 +2195,14 @@ async def post_invoice(
     request: Request, invoice_id: UUID, body: PostInvoiceRequest = None
 ):
     """
-    Post invoice to accounting (creates AR, journal entry, and COGS).
-
-    For inventory items, automatically:
-    - Calculates COGS using weighted average cost
-    - Creates COGS journal (Dr. HPP, Cr. Inventory)
-    - Records inventory movements in ledger
+    Post invoice to accounting (creates AR, journal entry).
+    3-Event Revenue Recognition (PSAK 72):
+    - Billing journal credits Unearned Revenue
+    - Revenue recognized based on fulfillment path
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        warnings = []
 
         async with pool.acquire() as conn:
             # Check invoice exists and is draft
@@ -1662,576 +2228,30 @@ async def post_invoice(
             # Check if accounting period is open
             await check_period_is_open(conn, ctx["tenant_id"], invoice["invoice_date"])
 
-            # Get invoice items
-            items = await conn.fetch(
-                """
-                SELECT id, item_id, item_code, description, quantity, unit_price, batch_id, batch_no, exp_date
-                FROM sales_invoice_items
-                WHERE invoice_id = $1
-            """,
-                invoice_id,
-            )
-
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"INVOICE:{str(invoice_id)}",
-                )
-
-                # Create AR record
-                ar_id = await conn.fetchval(
-                    """
-                    INSERT INTO accounts_receivable (
-                        tenant_id, customer_id, customer_name,
-                        source_type, source_id, invoice_number,
-                        amount, amount_paid,
-                        invoice_date, due_date,
-                        status
-                    ) VALUES ($1, $2::uuid, $3, 'INVOICE', $4, $5, $6, 0, $7, $8, 'OPEN')
-                    RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    invoice["customer_id"],
-                    invoice["customer_name"],
+                post_result = await _internal_post_invoice(
+                    conn,
+                    ctx,
                     invoice_id,
                     invoice["invoice_number"],
                     invoice["total_amount"],
-                    invoice["invoice_date"],
-                    invoice["due_date"],
-                )
-
-                # Create journal entry (simplified - actual implementation would use AccountingFacade)
-                # Debit: Piutang Usaha (1-10300)
-                # Credit: Penjualan (4-10100)
-                import uuid
-
-                journal_id = uuid.uuid4()
-                trace_id = str(uuid.uuid4())
-
-                # Get next journal number using sequence table
-                from datetime import date as dt_date
-
-                today = dt_date.today()
-                year_month_str = today.strftime("%y%m")
-                journal_seq = await conn.fetchval(
-                    """
-                    INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                    VALUES ($1, 'JV', $2, $3, 1)
-                    ON CONFLICT (tenant_id, prefix, year, month)
-                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                    RETURNING last_number
-                """,
-                    ctx["tenant_id"],
-                    today.year,
-                    today.month,
-                )
-                journal_number = f"JV-{year_month_str}-{journal_seq:04d}"
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        total_debit, total_credit,
-                        status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'INVOICE', $6, $7, $8, $8, 'DRAFT', $9)
-                """,
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    invoice["invoice_date"],
-                    f"Faktur Penjualan {invoice['invoice_number']} - {invoice['customer_name']}",
-                    invoice_id,
-                    trace_id,
-                    invoice["total_amount"],
-                    ctx["user_id"],
-                )
-                # Get AR and Sales accounts
-                ar_account = {
-                    "id": await resolve_account_id(conn, ctx["tenant_id"], "1-10400")
-                }
-                sales_account = {
-                    "id": await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
-                }
-
-                # Fetch per-item tax data for proper journal split + DTL
-                tax_items = await conn.fetch(
-                    """
-                    SELECT id, tax_code_id, tax_rate, tax_amount, subtotal, discount_amount, dpp
-                    FROM sales_invoice_items
-                    WHERE invoice_id = $1 AND COALESCE(tax_amount, 0) > 0
-                    """,
-                    invoice_id,
-                )
-                total_tax = sum(float(ti["tax_amount"] or 0) for ti in tax_items)
-                subtotal_amount = float(invoice["total_amount"]) - total_tax
-
-                # Resolve PPN Keluaran account
-                vat_output_account = {
-                    "id": await resolve_account_id(conn, ctx["tenant_id"], "2-10600")
-                }
-
-                if ar_account and sales_account:
-                    import uuid as _uuid
-
-                    line_number = 1
-
-                    # Line 1: Debit AR = total_amount (inclusive of tax)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, $5, 0, $6)
-                        """,
-                        _uuid.uuid4(),
-                        journal_id,
-                        line_number,
-                        ar_account["id"],
-                        invoice["total_amount"],
-                        f"Piutang - {invoice['invoice_number']}",
-                    )
-                    line_number += 1
-
-                    # Line 2: Credit Sales = subtotal (WITHOUT tax)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, 0, $5, $6)
-                        """,
-                        _uuid.uuid4(),
-                        journal_id,
-                        line_number,
-                        sales_account["id"],
-                        subtotal_amount,
-                        f"Penjualan - {invoice['invoice_number']}",
-                    )
-                    line_number += 1
-
-                    # Line 3: Credit PPN Keluaran = total_tax
-                    vat_journal_line_id = None
-                    if total_tax > 0 and vat_output_account.get("id"):
-                        vat_journal_line_id = _uuid.uuid4()
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                            VALUES ($1, $2, $3, $4, 0, $5, $6)
-                            """,
-                            vat_journal_line_id,
-                            journal_id,
-                            line_number,
-                            vat_output_account["id"],
-                            total_tax,
-                            f"PPN Keluaran - {invoice['invoice_number']}",
-                        )
-                        line_number += 1
-                else:
-                    vat_journal_line_id = None
-                    warnings.append(
-                        "AR account (1-10400) or Sales account (4-10100) not found. Journal lines not created."
-                    )
-
-                # Law 20: DRAFT->POSTED triggers hash chain
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # T3: Write document_tax_lines per taxable item
-                for ti in tax_items:
-                    import uuid as _uuid_dtl
-                    _tcid = ti["tax_code_id"]
-                    # Fallback: resolve tax_code_id by rate for legacy rows (e.g. from SO to-invoice)
-                    if not _tcid:
-                        if float(ti["tax_rate"] or 0) <= 0 or float(ti["tax_amount"] or 0) <= 0:
-                            continue
-                        _tcid = await conn.fetchval(
-                            "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true AND (name ILIKE '%%Keluaran%%' OR name NOT ILIKE '%%Masukan%%') ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
-                            ctx["tenant_id"], ti["tax_rate"],
-                        )
-                        if not _tcid:
-                            continue
-
-                    tc_coa = await conn.fetchval(
-                        "SELECT coa_id FROM tax_codes WHERE id = $1",
-                        _tcid,
-                    )
-                    dpp_val = float(ti["dpp"] or 0) or (
-                        float(ti["subtotal"] or 0) - float(ti["discount_amount"] or 0)
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO document_tax_lines (
-                            id, tenant_id, document_type, document_id, line_item_id,
-                            tax_code_id, direction, base_amount, tax_amount,
-                            coa_id, journal_line_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                        """,
-                        _uuid_dtl.uuid4(),
-                        ctx["tenant_id"],
-                        "SALES_INVOICE",
-                        invoice_id,
-                        ti["id"],
-                        _tcid,
-                        "output",
-                        dpp_val,
-                        float(ti["tax_amount"]),
-                        tc_coa,
-                        vat_journal_line_id,
-                    )
-
-                # =============================================================
-                # COGS CALCULATION AND POSTING
-                # =============================================================
-                total_cogs = 0
-                cogs_items = []
-
-                for item in items:
-                    if not item["item_id"]:
-                        # Skip non-inventory items (service items)
-                        continue
-
-                    # Check if item is inventory tracked
-                    product = await conn.fetchrow(
-                        """
-                        SELECT id, item_code, nama_produk, purchase_price_amount, track_inventory, track_batches
-                        FROM products
-                        WHERE tenant_id = $1 AND id = $2
-                    """,
-                        ctx["tenant_id"],
-                        item["item_id"],
-                    )
-
-                    if not product or not product.get("track_inventory", True):
-                        # Skip non-inventory products
-                        continue
-
-                    # Get weighted average cost from inventory ledger
-                    avg_cost = await conn.fetchval(
-                        """
-                        SELECT get_weighted_average_cost($1, $2)
-                    """,
-                        ctx["tenant_id"],
-                        item["item_id"],
-                    )
-
-                    cost_source = "WEIGHTED_AVG"
-
-                    # Fallback to purchase_price if no inventory history
-                    if not avg_cost or avg_cost == 0:
-                        avg_cost = product.get("purchase_price_amount", 0) or 0
-                        cost_source = "PURCHASE_PRICE"
-                        if avg_cost > 0:
-                            warnings.append(
-                                f"Item {item['item_code'] or product['item_code']}: Using purchase_price as fallback (no cost history)"
-                            )
-
-                    if (not avg_cost or avg_cost == 0) and product.get("track_inventory", True):
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"Tidak bisa post faktur: produk '{product['nama_produk']}' tidak punya "
-                                f"riwayat stok / biaya perolehan (WAC=0 dan harga beli=0). "
-                                f"Catat penerimaan barang (Bill / Penerimaan Produksi / Opening Stock) terlebih dahulu."
-                            )
-                        )
-
-                    if avg_cost > 0:
-                        quantity = float(item["quantity"])
-                        line_cogs = int(quantity * float(avg_cost))
-                        total_cogs += line_cogs
-
-                        cogs_items.append(
-                            {
-                                "item_id": str(item["item_id"]),
-                                "item_code": item["item_code"] or product["item_code"],
-                                "quantity": quantity,
-                                "unit_cost": avg_cost,
-                                "total_cost": line_cogs,
-                                "cost_source": cost_source,
-                            }
-                        )
-
-                        # Update sales_invoice_items with cost info
-                        await conn.execute(
-                            """
-                            UPDATE sales_invoice_items
-                            SET unit_cost = $2, total_cost = $3,
-                                is_inventory_item = true, cost_source = $4
-                            WHERE id = $1
-                        """,
-                            item["id"],
-                            avg_cost,
-                            line_cogs,
-                            cost_source,
-                        )
-
-                        # Get current inventory balance for ledger entry
-                        current_balance = await conn.fetchval(
-                            """
-                            SELECT get_inventory_balance($1, $2)
-                        """,
-                            ctx["tenant_id"],
-                            item["item_id"],
-                        )
-
-                        new_balance = float(current_balance or 0) - quantity
-
-                        # Resolve warehouse_id for this posting
-                        posting_warehouse_id = invoice.get("warehouse_id")
-                        if not posting_warehouse_id:
-                            posting_warehouse_id = await conn.fetchval(
-                                "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                                ctx["tenant_id"],
-                            )
-
-                        # Resolve batch_id (explicit or FEFO auto-allocation)
-                        si_batch_id = item.get("batch_id")
-                        if (
-                            not si_batch_id
-                            and product.get("track_batches")
-                            and posting_warehouse_id
-                        ):
-                            fefo_batches = await conn.fetch(
-                                "SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')",
-                                ctx["tenant_id"],
-                                item["item_id"],
-                                posting_warehouse_id,
-                                quantity,
-                            )
-                            if fefo_batches:
-                                total_allocated = sum(
-                                    float(r["quantity_to_use"]) for r in fefo_batches
-                                )
-                                if total_allocated >= quantity:
-                                    si_batch_id = fefo_batches[0]["batch_id"]
-                                else:
-                                    raise HTTPException(
-                                        400,
-                                        f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
-                                    )
-                            else:
-                                raise HTTPException(
-                                    400,
-                                    f"Stok batch tidak cukup untuk {product.get('nama_produk', item['item_id'])}",
-                                )
-
-                        # Record inventory movement in ledger
-                        await conn.execute(
-                            """
-                            INSERT INTO inventory_ledger (
-                                tenant_id, product_id, product_code, product_name,
-                                movement_type, movement_date,
-                                source_type, source_id, source_number,
-                                quantity_in, quantity_out, quantity_balance,
-                                unit_cost, total_cost, average_cost,
-                                created_by, notes, warehouse_id, batch_id,
-                                transaction_unit, transaction_quantity, conversion_factor
-                            ) VALUES (
-                                $1, $2, $3, $4,
-                                'SALE', $5,
-                                'SALES_INVOICE', $6, $7,
-                                0, $8, $9,
-                                $10, $11, $10,
-                                $12, $13, $14, $15,
-                                $16, $17, $18
-                            )
-                        """,
-                            ctx["tenant_id"],
-                            item["item_id"],
-                            item["item_code"] or product["item_code"],
-                            product["nama_produk"],
-                            invoice["invoice_date"],
-                            invoice_id,
-                            invoice["invoice_number"],
-                            quantity,
-                            new_balance,
-                            avg_cost,
-                            line_cogs,
-                            ctx["user_id"],
-                            f"Sale: {invoice['invoice_number']}",
-                            posting_warehouse_id,
-                            si_batch_id,
-                            (product.get("base_unit") or item.get("unit") or "pcs"),
-                            quantity,
-                            1.0,
-                        )
-
-                        # Batch deduction (if batch tracking)
-                        if si_batch_id:
-                            bws_row = await conn.fetchrow(
-                                """
-                                SELECT available_quantity FROM batch_warehouse_stock
-                                WHERE batch_id = $1 AND warehouse_id = $2
-                                FOR UPDATE
-                            """,
-                                si_batch_id,
-                                posting_warehouse_id,
-                            )
-
-                            if (
-                                bws_row is None
-                                or float(bws_row["available_quantity"]) < quantity
-                            ):
-                                available = (
-                                    float(bws_row["available_quantity"])
-                                    if bws_row
-                                    else 0
-                                )
-                                raise HTTPException(
-                                    400,
-                                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {quantity}",
-                                )
-
-                            await conn.execute(
-                                """
-                                UPDATE batch_warehouse_stock
-                                SET quantity = quantity - $3,
-                                    last_movement_date = NOW(), updated_at = NOW()
-                                WHERE batch_id = $1 AND warehouse_id = $2
-                            """,
-                                si_batch_id,
-                                posting_warehouse_id,
-                                quantity,
-                            )
-
-                            # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
-
-                            await conn.execute(
-                                """
-                                UPDATE item_batches SET status = 'depleted'
-                                WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
-                            """,
-                                si_batch_id,
-                            )
-
-                        # Stock is tracked via inventory_ledger, not products.stock_quantity
-
-                # Create COGS journal if there are inventory items
-                cogs_journal_id = None
-                if total_cogs > 0:
-                    cogs_journal_id = uuid.uuid4()
-                    cogs_trace_id = str(uuid.uuid4())
-
-                    # Get account IDs
-                    hpp_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "5-10100"
-                        )
-                    }
-
-                    inventory_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "1-10600"
-                        )
-                    }
-
-                    if hpp_account and inventory_account:
-                        # Get COGS journal number using sequence
-                        cogs_seq = await conn.fetchval(
-                            """
-                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                            VALUES ($1, 'COGS', $2, $3, 1)
-                            ON CONFLICT (tenant_id, prefix, year, month)
-                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                            RETURNING last_number
-                        """,
-                            ctx["tenant_id"],
-                            today.year,
-                            today.month,
-                        )
-                        cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
-
-                        # Create COGS journal entry
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_entries (
-                                id, tenant_id, journal_number, journal_date,
-                                description, source_type, source_id, trace_id,
-                                total_debit, total_credit,
-                                status, created_by
-                            ) VALUES ($1, $2, $3, $4, $5, 'SALES_INVOICE_COGS', $6, $7, $8, $8, 'DRAFT', $9)
-                        """,
-                            cogs_journal_id,
-                            ctx["tenant_id"],
-                            cogs_journal_number,
-                            invoice["invoice_date"],
-                            f"HPP {invoice['invoice_number']} - {invoice['customer_name']}",
-                            invoice_id,
-                            cogs_trace_id,
-                            total_cogs,
-                            ctx["user_id"],
-                        )
-
-                        # Journal lines: Dr. HPP (5-10100), Cr. Inventory (1-10400)
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                journal_id, account_id, memo,
-                                debit, credit, line_number
-                            ) VALUES
-                            ($1, $2, 'HPP Barang Dagang', $3, 0, 1),
-                            ($1, $4, 'Persediaan Barang Dagang', 0, $3, 2)
-                        """,
-                            cogs_journal_id,
-                            hpp_account["id"],
-                            total_cogs,
-                            inventory_account["id"],
-                        )
-
-                        # Law 20: DRAFT->POSTED triggers hash chain
-                        await conn.execute(
-                            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                            cogs_journal_id,
-                        )
-
-                        logger.info(
-                            f"COGS journal created: {cogs_journal_id}, amount: {total_cogs}"
-                        )
-                    else:
-                        warnings.append(
-                            "COGS accounts (5-10100 or 1-10400) not found. COGS journal not created."
-                        )
-
-                # Update invoice status and COGS info
-                await conn.execute(
-                    """
-                    UPDATE sales_invoices
-                    SET status = 'posted', operational_status = 'SENT', accounting_status = 'POSTED', ar_id = $2, journal_id = $3,
-                        cogs_journal_id = $4, total_cogs = $5::bigint, cogs_posted_at = CASE WHEN $5::bigint > 0 THEN NOW() ELSE NULL END,
-                        posted_at = NOW(), posted_by = $6, updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    invoice_id,
-                    ar_id,
-                    journal_id,
-                    cogs_journal_id,
-                    total_cogs,
-                    ctx["user_id"],
                 )
 
                 logger.info(
-                    f"Invoice posted: {invoice_id}, AR: {ar_id}, COGS: {total_cogs}"
+                    f"Invoice posted: {invoice_id}, AR: {post_result.get('ar_id')}"
                 )
-
-                response_data = {
-                    "id": str(invoice_id),
-                    "ar_id": str(ar_id),
-                    "journal_id": str(journal_id),
-                    "total_cogs": total_cogs,
-                }
-
-                if cogs_journal_id:
-                    response_data["cogs_journal_id"] = str(cogs_journal_id)
-                    response_data["cogs_items"] = cogs_items
-
-                if warnings:
-                    response_data["warnings"] = warnings
 
                 return {
                     "success": True,
-                    "message": "Invoice posted successfully"
-                    + (" with COGS" if total_cogs > 0 else ""),
-                    "data": response_data,
+                    "message": "Invoice posted successfully",
+                    "data": {
+                        "id": str(invoice_id),
+                        "ar_id": post_result.get("ar_id"),
+                        "journal_id": post_result.get("journal_id"),
+                        "journal_number": post_result.get("journal_number"),
+                        "fulfillment_status": post_result.get("fulfillment_status"),
+                        "revenue_status": post_result.get("revenue_status"),
+                    },
                 }
 
     except HTTPException:
@@ -2652,10 +2672,11 @@ async def record_payment(
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
 async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequest):
     """
-    Void an invoice following Iron Laws:
+    Void an invoice following Iron Laws + 3-Event Revenue Recognition:
     - Law 2: Journal Immutability - creates REVERSAL journals, not delete
     - Law 3: Append-Only - inventory restored via new ledger entry
     - Law 4: Double-Entry - all reversals must balance
+    - Fulfillment cascade: void fulfillments (reverse chrono) before billing reversal
     """
     try:
         ctx = get_user_context(request)
@@ -2665,7 +2686,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
             # Get full invoice data including COGS info
             invoice = await conn.fetchrow(
                 """
-                SELECT id, invoice_number, customer_name, total_amount, invoice_date,
+                SELECT id, invoice_number, customer_id, customer_name, total_amount, invoice_date,
                        status, ar_id, journal_id, cogs_journal_id, total_cogs
                 FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
@@ -2718,10 +2739,69 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     detail="Cannot void invoice with payments. Refund first.",
                 )
 
-            # Check if period is open for void date
+            # ============================================================
+            # Fulfillment pre-checks (3-Event Revenue Recognition)
+            # ============================================================
+            fulfillments = await conn.fetch(
+                """
+                SELECT id, fulfillment_number, fulfillment_date, journal_id, revenue_journal_id, status
+                FROM invoice_fulfillments
+                WHERE invoice_id = $1 AND tenant_id = $2 AND status = 'posted'
+                ORDER BY created_at DESC
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
+            # Pre-check: ALL fulfillment periods must be open
+            for f in fulfillments:
+                f_period = await conn.fetchrow(
+                    "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+                    ctx["tenant_id"],
+                    f["fulfillment_date"],
+                )
+                if f_period and f_period["status"] in ("CLOSED", "LOCKED"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": f"Pengiriman {f['fulfillment_number']} di periode {f_period['period_name']} yang sudah {f_period['status'].lower()}",
+                            "suggestion": "credit_note",
+                            "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
+                            "prefill": {
+                                "customer_id": str(invoice.get("customer_id", "")),
+                                "customer_name": invoice.get("customer_name", ""),
+                                "invoice_id": str(invoice_id),
+                                "invoice_number": invoice.get("invoice_number", ""),
+                            },
+                        },
+                    )
+
+            # Check billing period (with CN suggestion if closed)
             from datetime import date as dt_date
 
             today = dt_date.today()
+
+            billing_period = await conn.fetchrow(
+                "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+                ctx["tenant_id"],
+                invoice["invoice_date"],
+            )
+            if billing_period and billing_period["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": f"Faktur di periode {billing_period['period_name']} yang sudah {billing_period['status'].lower()}",
+                        "suggestion": "credit_note",
+                        "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
+                        "prefill": {
+                            "customer_id": str(invoice.get("customer_id", "")),
+                            "customer_name": invoice.get("customer_name", ""),
+                            "invoice_id": str(invoice_id),
+                            "invoice_number": invoice.get("invoice_number", ""),
+                        },
+                    },
+                )
+            # Still check void date period
             await check_period_is_open(conn, ctx["tenant_id"], today)
 
             async with conn.transaction():
@@ -2736,16 +2816,189 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 year_month_str = today.strftime("%y%m")
                 reversal_journal_id = None
                 cogs_reversal_journal_id = None
+                last_cogs_rev_id = None
 
                 # ============================================================
-                # 1. Create REVERSAL Journal for AR (if posted)
+                # 0. VOID FULFILLMENTS (reverse chronological)
+                # 3-Event Revenue Recognition cascade
+                # ============================================================
+                for f in fulfillments:
+                    # 0a. Reverse revenue journal (if exists)
+                    if f["revenue_journal_id"]:
+                        rev_rev_id = uuid.uuid4()
+                        rev_trace = str(uuid.uuid4())
+                        rev_seq = await conn.fetchval(
+                            """
+                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                            VALUES ($1, 'REV', $2, $3, 1)
+                            ON CONFLICT (tenant_id, prefix, year, month)
+                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                            RETURNING last_number
+                        """,
+                            ctx["tenant_id"],
+                            today.year,
+                            today.month,
+                        )
+
+                        orig_rev = await conn.fetchrow(
+                            "SELECT total_debit, description FROM journal_entries WHERE id=$1",
+                            f["revenue_journal_id"],
+                        )
+                        rev_amount = orig_rev["total_debit"] if orig_rev else 0
+
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_entries (
+                                id, tenant_id, journal_number, journal_date,
+                                description, source_type, source_id, trace_id,
+                                total_debit, total_credit,
+                                status, created_by, reversal_of_id, reversal_reason
+                            ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+                        """,
+                            rev_rev_id,
+                            ctx["tenant_id"],
+                            f"REV-{year_month_str}-{rev_seq:04d}",
+                            today,
+                            f"VOID Revenue: {invoice['invoice_number']}",
+                            invoice_id,
+                            rev_trace,
+                            rev_amount,
+                            ctx["user_id"],
+                            f["revenue_journal_id"],
+                            body.reason,
+                        )
+                        # Reverse lines: flip debit/credit
+                        orig_lines = await conn.fetch(
+                            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                            f["revenue_journal_id"],
+                        )
+                        for ln_num, ol in enumerate(orig_lines, 1):
+                            await conn.execute(
+                                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                                uuid.uuid4(),
+                                rev_rev_id,
+                                ln_num,
+                                ol["account_id"],
+                                ol["credit"],
+                                ol["debit"],
+                                f"VOID: {ol['memo']}",
+                            )
+                        await conn.execute(
+                            "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                            rev_rev_id,
+                        )
+                        await conn.execute(
+                            "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+                            f["revenue_journal_id"],
+                            rev_rev_id,
+                        )
+
+                    # 0b. Reverse COGS journal (if exists)
+                    if f["journal_id"]:
+                        last_cogs_rev_id = uuid.uuid4()
+                        cogs_trace = str(uuid.uuid4())
+                        cogs_seq = await conn.fetchval(
+                            """
+                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                            VALUES ($1, 'COGS-REV', $2, $3, 1)
+                            ON CONFLICT (tenant_id, prefix, year, month)
+                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                            RETURNING last_number
+                        """,
+                            ctx["tenant_id"],
+                            today.year,
+                            today.month,
+                        )
+                        orig_cogs = await conn.fetchrow(
+                            "SELECT total_debit FROM journal_entries WHERE id=$1",
+                            f["journal_id"],
+                        )
+                        cogs_amount = orig_cogs["total_debit"] if orig_cogs else 0
+
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_entries (
+                                id, tenant_id, journal_number, journal_date,
+                                description, source_type, source_id, trace_id,
+                                total_debit, total_credit,
+                                status, created_by, reversal_of_id, reversal_reason
+                            ) VALUES ($1,$2,$3,$4,$5,'INVOICE_FULFILLMENT_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+                        """,
+                            last_cogs_rev_id,
+                            ctx["tenant_id"],
+                            f"COGS-REV-{year_month_str}-{cogs_seq:04d}",
+                            today,
+                            f"VOID COGS: {invoice['invoice_number']}",
+                            invoice_id,
+                            cogs_trace,
+                            cogs_amount,
+                            ctx["user_id"],
+                            f["journal_id"],
+                            body.reason,
+                        )
+                        orig_cogs_lines = await conn.fetch(
+                            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                            f["journal_id"],
+                        )
+                        for ln_num, ol in enumerate(orig_cogs_lines, 1):
+                            await conn.execute(
+                                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                                uuid.uuid4(),
+                                last_cogs_rev_id,
+                                ln_num,
+                                ol["account_id"],
+                                ol["credit"],
+                                ol["debit"],
+                                f"VOID: {ol['memo']}",
+                            )
+                        await conn.execute(
+                            "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                            last_cogs_rev_id,
+                        )
+                        await conn.execute(
+                            "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+                            f["journal_id"],
+                            last_cogs_rev_id,
+                        )
+
+                    # 0c. Mark fulfillment as voided
+                    await conn.execute(
+                        "UPDATE invoice_fulfillments SET status='voided', voided_at=NOW(), voided_reason=$2 WHERE id=$1",
+                        f["id"],
+                        body.reason,
+                    )
+
+                # Inventory reversal for ALL fulfillments (single call since same source_id)
+                if fulfillments:
+                    from ..services.inventory_helpers import record_inventory_reversal
+
+                    await record_inventory_reversal(
+                        conn,
+                        ctx["tenant_id"],
+                        source_type="INVOICE_FULFILLMENT",
+                        source_id=invoice_id,
+                        reversal_journal_id=last_cogs_rev_id or invoice_id,
+                        created_by=ctx["user_id"],
+                        reversal_date=today,
+                        notes_prefix="VOID",
+                    )
+
+                # Reset fulfillment tracking on invoice items
+                if fulfillments:
+                    await conn.execute(
+                        "UPDATE sales_invoice_items SET fulfilled_qty=0, recognized_amount=0 WHERE invoice_id=$1",
+                        invoice_id,
+                    )
+
+                # ============================================================
+                # 1. Create REVERSAL Journal for AR/Billing (if posted)
                 # Iron Law 2: Journal Immutability - REVERSAL, not delete
+                # Uses flip-lines approach: automatically handles Dimuka + PPN
                 # ============================================================
                 if invoice["journal_id"]:
                     reversal_journal_id = uuid.uuid4()
                     trace_id = str(uuid.uuid4())
 
-                    # Get next journal number
                     rev_seq = await conn.fetchval(
                         """
                         INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
@@ -2760,7 +3013,6 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
                     rev_journal_number = f"REV-{year_month_str}-{rev_seq:04d}"
 
-                    # Create reversal journal entry
                     await conn.execute(
                         """
                         INSERT INTO journal_entries (
@@ -2779,36 +3031,28 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         trace_id,
                         invoice["total_amount"],
                         ctx["user_id"],
-                        invoice["journal_id"],  # Reference to original
+                        invoice["journal_id"],
                         body.reason,
                     )
 
-                    # Get account IDs
-                    ar_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "1-10400"
-                        )
-                    }
-                    sales_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "4-10100"
-                        )
-                    }
-
-                    if ar_account and sales_account:
-                        # REVERSAL: Dr. Sales (reverse of Cr), Cr. AR (reverse of Dr)
+                    # Flip original billing journal lines (handles Dimuka + PPN correctly)
+                    orig_billing_lines = await conn.fetch(
+                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                        invoice["journal_id"],
+                    )
+                    for ln_num, ol in enumerate(orig_billing_lines, 1):
                         await conn.execute(
                             """
-                            INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES
-                            ($1, $2, $3, 0, $4, 1),
-                            ($1, $5, 0, $3, $4, 2)
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
+                            uuid.uuid4(),
                             reversal_journal_id,
-                            sales_account["id"],  # Dr. Sales
-                            invoice["total_amount"],
-                            f"VOID: Faktur {invoice['invoice_number']}",
-                            ar_account["id"],  # Cr. AR
+                            ln_num,
+                            ol["account_id"],
+                            ol["credit"],
+                            ol["debit"],
+                            f"VOID: {ol['memo']}",
                         )
 
                     # Law 20: DRAFT->POSTED triggers hash chain
@@ -2831,18 +3075,18 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     logger.info(f"AR reversal journal created: {reversal_journal_id}")
 
                 # ============================================================
-                # 2. Create REVERSAL Journal for COGS (if exists)
-                # Iron Law 2: Journal Immutability - REVERSAL, not delete
+                # 2. Legacy COGS reversal (pre-3-event invoices only)
+                # For invoices that have cogs_journal_id but NO fulfillment records
                 # ============================================================
                 if (
-                    invoice["cogs_journal_id"]
+                    not fulfillments
+                    and invoice["cogs_journal_id"]
                     and invoice["total_cogs"]
                     and invoice["total_cogs"] > 0
                 ):
                     cogs_reversal_journal_id = uuid.uuid4()
                     cogs_trace_id = str(uuid.uuid4())
 
-                    # Get next COGS reversal number
                     cogs_rev_seq = await conn.fetchval(
                         """
                         INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
@@ -2857,7 +3101,6 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
                     cogs_rev_number = f"COGS-REV-{year_month_str}-{cogs_rev_seq:04d}"
 
-                    # Create COGS reversal journal
                     await conn.execute(
                         """
                         INSERT INTO journal_entries (
@@ -2876,45 +3119,35 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         cogs_trace_id,
                         invoice["total_cogs"],
                         ctx["user_id"],
-                        invoice["cogs_journal_id"],  # Reference to original
+                        invoice["cogs_journal_id"],
                         body.reason,
                     )
 
-                    # Get account IDs
-                    hpp_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "5-10100"
-                        )
-                    }
-                    inventory_account = {
-                        "id": await resolve_account_id(
-                            conn, ctx["tenant_id"], "1-10600"
-                        )
-                    }
-
-                    if hpp_account and inventory_account:
-                        # REVERSAL: Dr. Inventory (reverse of Cr), Cr. HPP (reverse of Dr)
+                    # Flip original COGS journal lines
+                    orig_cogs_lines = await conn.fetch(
+                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                        invoice["cogs_journal_id"],
+                    )
+                    for ln_num, ol in enumerate(orig_cogs_lines, 1):
                         await conn.execute(
                             """
-                            INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES
-                            ($1, $2, $3, 0, $4, 1),
-                            ($1, $5, 0, $3, $4, 2)
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
+                            uuid.uuid4(),
                             cogs_reversal_journal_id,
-                            inventory_account["id"],  # Dr. Inventory
-                            invoice["total_cogs"],
-                            f"VOID HPP: {invoice['invoice_number']}",
-                            hpp_account["id"],  # Cr. HPP
+                            ln_num,
+                            ol["account_id"],
+                            ol["credit"],
+                            ol["debit"],
+                            f"VOID: {ol['memo']}",
                         )
 
-                    # Law 20: DRAFT->POSTED triggers hash chain
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                         cogs_reversal_journal_id,
                     )
 
-                    # Mark original COGS journal as reversed
                     await conn.execute(
                         """
                         UPDATE journal_entries
@@ -2930,23 +3163,22 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
                 # ============================================================
-                # 3. Restore Inventory via shared helper
-                # Iron Law 3: Append-Only - new entry to restore
-                # Uses record_inventory_reversal() (milkyhoop-inventory Rule 9)
+                # 3. Restore Inventory (legacy path, pre-3-event)
                 # ============================================================
-                from ..services.inventory_helpers import record_inventory_reversal
+                if not fulfillments:
+                    from ..services.inventory_helpers import record_inventory_reversal
 
-                await record_inventory_reversal(
-                    conn,
-                    ctx["tenant_id"],
-                    source_type="SALES_INVOICE",
-                    source_id=invoice_id,
-                    reversal_journal_id=cogs_reversal_journal_id
-                    or (reversal_journal_id if reversal_journal_id else invoice_id),
-                    created_by=ctx["user_id"],
-                    reversal_date=today,
-                    notes_prefix="VOID",
-                )
+                    await record_inventory_reversal(
+                        conn,
+                        ctx["tenant_id"],
+                        source_type="SALES_INVOICE",
+                        source_id=invoice_id,
+                        reversal_journal_id=cogs_reversal_journal_id
+                        or (reversal_journal_id if reversal_journal_id else invoice_id),
+                        created_by=ctx["user_id"],
+                        reversal_date=today,
+                        notes_prefix="VOID",
+                    )
 
                 # ============================================================
                 # 3.5. Reverse Bank Transactions (BankSync Rule 3)
@@ -3006,12 +3238,15 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
                 # ============================================================
-                # 5. Update invoice status to void
+                # 5. Update invoice status to void (+ fulfillment tracking reset)
                 # ============================================================
                 await conn.execute(
                     """
                     UPDATE sales_invoices
-                    SET status = 'void', operational_status = 'VOID', accounting_status = 'REVERSED', voided_at = NOW(), voided_reason = $2,
+                    SET status = 'void', operational_status = 'VOID', accounting_status = 'REVERSED',
+                        voided_at = NOW(), voided_reason = $2,
+                        fulfillment_status = 'not_applicable', revenue_status = 'not_applicable',
+                        total_fulfilled_qty = 0, total_recognized_amount = 0,
                         updated_at = NOW()
                     WHERE id = $1
                 """,
@@ -3022,7 +3257,8 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 # Clean up document_tax_lines on void
                 await conn.execute(
                     "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
-                    invoice_id, ctx["tenant_id"],
+                    invoice_id,
+                    ctx["tenant_id"],
                 )
 
                 logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")
@@ -3039,6 +3275,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         "cogs_reversal_journal_id": str(cogs_reversal_journal_id)
                         if cogs_reversal_journal_id
                         else None,
+                        "fulfillments_voided": len(fulfillments),
                     },
                 }
 
@@ -3318,6 +3555,13 @@ async def get_invoice_pdf(
                 "tax_amount": invoice["tax_amount"],
                 "total_amount": invoice["total_amount"],
                 "amount_paid": pdf_amount_paid,
+                "amount_due": float(pdf_ar_row["outstanding"])
+                if pdf_ar_row
+                else (
+                    0
+                    if invoice["status"] in ("paid",)
+                    else float(invoice["total_amount"])
+                ),
                 "status": invoice["status"],
                 "tenant": tenant_info,
                 "items": [
@@ -3902,3 +4146,265 @@ async def download_invoice_attachment(
             f"Error downloading attachment {attachment_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to download attachment")
+
+
+@router.post("/{invoice_id}/fulfill")
+async def fulfill_invoice(request: Request, invoice_id: UUID):
+    """
+    Fulfill (ship) invoice items — creates COGS journal + inventory outbound + revenue recognition.
+    Used for make-to-order after stock is available.
+    """
+    try:
+        from hashlib import sha256
+        from datetime import date as dt_date
+
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        # Parse body manually (no Pydantic schema yet)
+        body = await request.json()
+        warehouse_id_str = body.get("warehouse_id")
+        fulfillment_date_str = body.get("fulfillment_date", str(dt_date.today()))
+        recognize_revenue = body.get("recognize_revenue", True)
+        client_idempotency_key = body.get("idempotency_key")
+        notes = body.get("notes")
+        req_items = body.get("items", [])
+
+        if not warehouse_id_str:
+            raise HTTPException(400, "warehouse_id required")
+        if not req_items:
+            raise HTTPException(400, "items required")
+
+        warehouse_id = UUID(warehouse_id_str)
+        fulfillment_date = dt_date.fromisoformat(fulfillment_date_str)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Dual-int advisory lock (Law 13)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+                    ctx["tenant_id"],
+                    f"INVOICE_FULFILL:{str(invoice_id)}",
+                )
+
+                # Validate invoice
+                invoice = await conn.fetchrow(
+                    """SELECT id, invoice_number, customer_name, total_amount, invoice_date,
+                             status, fulfillment_status, warehouse_id
+                       FROM sales_invoices WHERE id=$1 AND tenant_id=$2""",
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+                if not invoice:
+                    raise HTTPException(404, "Invoice not found")
+                if invoice["status"] != "posted":
+                    raise HTTPException(400, "Hanya faktur posted yang bisa dikirim")
+                if invoice["fulfillment_status"] not in ("pending", "partial"):
+                    raise HTTPException(
+                        400,
+                        f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
+                    )
+
+                # Period check
+                await check_period_is_open(conn, ctx["tenant_id"], fulfillment_date)
+
+                # Compute payload hash
+                payload_for_hash = canonical_json(
+                    {
+                        "warehouse_id": str(warehouse_id),
+                        "fulfillment_date": fulfillment_date_str,
+                        "recognize_revenue": recognize_revenue,
+                        "items": sorted(
+                            [
+                                {
+                                    "invoice_item_id": str(i["invoice_item_id"]),
+                                    "qty": str(i["quantity"]),
+                                }
+                                for i in req_items
+                            ],
+                            key=lambda x: x["invoice_item_id"],
+                        ),
+                    }
+                )
+                p_hash = sha256(payload_for_hash.encode()).hexdigest()
+
+                # Idempotency check
+                idem_key = None
+                if client_idempotency_key:
+                    idem_key = f"MANUAL_FULFILL:{client_idempotency_key}"
+                    existing = await conn.fetchrow(
+                        "SELECT id, payload_hash, status FROM invoice_fulfillments WHERE tenant_id=$1 AND idempotency_key=$2 AND status='posted'",
+                        ctx["tenant_id"],
+                        idem_key,
+                    )
+                    if existing:
+                        if existing["payload_hash"] != p_hash:
+                            raise HTTPException(
+                                409, "Idempotency key conflict: payload berbeda"
+                            )
+                        return {
+                            "success": True,
+                            "data": {
+                                "fulfillment_id": str(existing["id"]),
+                                "message": "Already fulfilled (idempotent)",
+                            },
+                        }
+
+                # Build items list
+                items_to_fulfill = [
+                    {
+                        "invoice_item_id": UUID(i["invoice_item_id"]),
+                        "quantity": Decimal(str(i["quantity"])),
+                    }
+                    for i in req_items
+                ]
+
+                # Execute shared fulfillment
+                result = await _execute_fulfillment(
+                    conn,
+                    ctx["tenant_id"],
+                    ctx["user_id"],
+                    dict(invoice),
+                    items_to_fulfill,
+                    warehouse_id,
+                    fulfillment_date,
+                    recognize_revenue=recognize_revenue,
+                    idempotency_key=idem_key,
+                    notes=notes,
+                    payload_hash=p_hash,
+                )
+
+                return {"success": True, "data": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fulfilling invoice {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(500, "Failed to fulfill invoice")
+
+
+@router.get("/{invoice_id}/fulfillments")
+async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
+    """Get fulfillment history + per-item summary for an invoice."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Verify invoice exists
+            invoice = await conn.fetchrow(
+                "SELECT id, fulfillment_status, revenue_status, total_fulfilled_qty, total_recognized_amount FROM sales_invoices WHERE id=$1 AND tenant_id=$2",
+                invoice_id,
+                ctx["tenant_id"],
+            )
+            if not invoice:
+                raise HTTPException(404, "Invoice not found")
+
+            # Get fulfillments
+            fulfillments = await conn.fetch(
+                """
+                SELECT f.id, f.fulfillment_number, f.fulfillment_date, f.warehouse_id,
+                       w.name AS warehouse_name, f.journal_id, f.revenue_journal_id,
+                       f.status, f.notes, f.created_at, f.voided_at, f.void_reason
+                FROM invoice_fulfillments f
+                LEFT JOIN warehouses w ON w.id = f.warehouse_id
+                WHERE f.invoice_id = $1 AND f.tenant_id = $2
+                ORDER BY f.created_at DESC
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
+            fulfillment_list = []
+            for f in fulfillments:
+                # Get items per fulfillment
+                f_items = await conn.fetch(
+                    """
+                    SELECT fi.id, fi.invoice_item_id, fi.product_id, fi.product_name,
+                           fi.quantity, fi.unit_cost, fi.total_cost, fi.revenue_amount
+                    FROM invoice_fulfillment_items fi
+                    WHERE fi.fulfillment_id = $1
+                """,
+                    f["id"],
+                )
+
+                fulfillment_list.append(
+                    {
+                        **dict(f),
+                        "id": str(f["id"]),
+                        "warehouse_id": str(f["warehouse_id"])
+                        if f["warehouse_id"]
+                        else None,
+                        "journal_id": str(f["journal_id"]) if f["journal_id"] else None,
+                        "revenue_journal_id": str(f["revenue_journal_id"])
+                        if f["revenue_journal_id"]
+                        else None,
+                        "items": [
+                            {
+                                **dict(fi),
+                                "id": str(fi["id"]),
+                                "invoice_item_id": str(fi["invoice_item_id"]),
+                                "product_id": str(fi["product_id"])
+                                if fi["product_id"]
+                                else None,
+                                "quantity": float(fi["quantity"]),
+                                "unit_cost": float(fi["unit_cost"])
+                                if fi["unit_cost"]
+                                else None,
+                                "total_cost": float(fi["total_cost"])
+                                if fi["total_cost"]
+                                else None,
+                                "revenue_amount": float(fi["revenue_amount"])
+                                if fi["revenue_amount"]
+                                else None,
+                            }
+                            for fi in f_items
+                        ],
+                    }
+                )
+
+            # Per-item summary
+            item_summary = await conn.fetch(
+                """
+                SELECT si.id, si.description, si.quantity, si.fulfilled_qty,
+                       si.allocated_amount, si.recognized_amount,
+                       (si.quantity - COALESCE(si.fulfilled_qty, 0)) AS remaining_qty,
+                       (COALESCE(si.allocated_amount, 0) - COALESCE(si.recognized_amount, 0)) AS deferred_amount
+                FROM sales_invoice_items si
+                WHERE si.invoice_id = $1
+                ORDER BY si.id
+            """,
+                invoice_id,
+            )
+
+            return {
+                "success": True,
+                "data": {
+                    "invoice_id": str(invoice_id),
+                    "fulfillment_status": invoice["fulfillment_status"],
+                    "revenue_status": invoice["revenue_status"],
+                    "total_fulfilled_qty": float(invoice["total_fulfilled_qty"] or 0),
+                    "total_recognized_amount": float(
+                        invoice["total_recognized_amount"] or 0
+                    ),
+                    "fulfillments": fulfillment_list,
+                    "item_summary": [
+                        {
+                            "id": str(s["id"]),
+                            "description": s["description"],
+                            "quantity": float(s["quantity"]),
+                            "fulfilled_qty": float(s["fulfilled_qty"] or 0),
+                            "remaining_qty": float(s["remaining_qty"] or 0),
+                            "allocated_amount": float(s["allocated_amount"] or 0),
+                            "recognized_amount": float(s["recognized_amount"] or 0),
+                            "deferred_amount": float(s["deferred_amount"] or 0),
+                        }
+                        for s in item_summary
+                    ],
+                },
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting fulfillments for {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(500, "Failed to get fulfillments")

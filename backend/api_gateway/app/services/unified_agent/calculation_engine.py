@@ -20,8 +20,8 @@ class CalculationTemplate:
     limit: int = 200  # fetch enough for accurate aggregation
     label: str = ""
     format_as_currency: bool = False
-    list_field: str = ""      # key containing the list in response (e.g. "top_accounts")
-    name_field: str = ""      # name field within each list item (e.g. "account_name")
+    list_field: str = ""  # key containing the list in response (e.g. "top_accounts")
+    name_field: str = ""  # name field within each list item (e.g. "account_name")
 
 
 # ── Template Registry ──────────────────────────────────────────────────────
@@ -393,9 +393,15 @@ async def execute_calculation(
     # SUMMARY_LIST: extract a list from summary endpoint, rank by value
     if template.calc_type == "SUMMARY_LIST":
         source = data
-        if isinstance(source, dict) and "data" in source and isinstance(source["data"], dict):
+        if (
+            isinstance(source, dict)
+            and "data" in source
+            and isinstance(source["data"], dict)
+        ):
             source = source["data"]
-        _list_data = source.get(template.list_field, []) if isinstance(source, dict) else []
+        _list_data = (
+            source.get(template.list_field, []) if isinstance(source, dict) else []
+        )
         if not _list_data:
             return {"type": "error", "message": "Data tidak tersedia"}
         items = []
@@ -482,9 +488,18 @@ async def execute_calculation(
     elif template.calc_type == "RANK":
         sorted_items = sorted(items_with_values, key=lambda x: -x[1])
         top_items = []
+        rec_items = []  # REC-ready items for session state (for pronoun/ordinal follow-ups)
         for item, val in sorted_items[:10]:
             name = (
                 item.get("nama_produk") or item.get("name") or item.get("nama") or "?"
+            )
+            _id = item.get("id") or item.get("uuid") or item.get("_id")
+            _ref = (
+                item.get("invoice_number")
+                or item.get("bill_number")
+                or item.get("expense_number")
+                or item.get("document_number")
+                or item.get("code")
             )
             top_items.append(
                 {
@@ -493,9 +508,18 @@ async def execute_calculation(
                     "formatted_value": _format_number(val, template.format_as_currency),
                 }
             )
+            rec_items.append(
+                {
+                    "_name": name,
+                    "_id": _id,
+                    "_ref": _ref,
+                    "_amount": val,
+                }
+            )
         return {
             "type": "rank",
             "data": top_items,
+            "rec_items": rec_items,
             "label": template.label,
             "count": len(values),
             "source_total": total_from_api,

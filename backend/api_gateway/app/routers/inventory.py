@@ -567,7 +567,13 @@ async def adjust_stock(
 
 
 @router.get("/low-stock", response_model=LowStockAlertsResponse)
-async def get_low_stock_alerts(request: Request, limit: int = Query(50, ge=1, le=200)):
+async def get_low_stock_alerts(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    include_zero_stock: bool = Query(
+        False, description="Include items with zero stock even if no reorder level set"
+    ),
+):
     """
     Get all products with low stock (below minimum threshold).
     Queries inventory_ledger directly for current stock.
@@ -603,12 +609,16 @@ async def get_low_stock_alerts(request: Request, limit: int = Query(50, ge=1, le
                 ) stock ON true
                 WHERE p.tenant_id = $1
                     AND COALESCE(p.track_inventory, true) = true
-                    AND COALESCE(stock.current_stock, 0) < COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0)
-                    AND COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) > 0
+                    AND (
+                        (COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) > 0
+                         AND COALESCE(stock.current_stock, 0) < COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0))
+                        OR
+                        ($3 = true AND COALESCE(stock.current_stock, 0) <= 0)
+                    )
                 ORDER BY shortfall DESC
                 LIMIT $2
             """
-            rows = await conn.fetch(query, tenant_id, limit)
+            rows = await conn.fetch(query, tenant_id, limit, include_zero_stock)
 
             alerts = [
                 LowStockAlertItem(

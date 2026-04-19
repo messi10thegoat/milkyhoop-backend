@@ -43,7 +43,7 @@ IRON LAW COMPLIANCE:
 - Law 27: resolve_account_id for all account code lookups
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query, Depends
+from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal, List
 from uuid import UUID
 import uuid as uuid_module
@@ -60,23 +60,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payroll", tags=["payroll"])
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes for journal entries — Law 27: resolved at runtime via resolve_account_id
-SALARY_EXPENSE_ACCOUNT = "6-10100"    # Beban Gaji (Expense)
-SALARY_PAYABLE_ACCOUNT = "2-10500"    # Hutang Gaji (Liability)
+SALARY_EXPENSE_ACCOUNT = "6-10100"  # Beban Gaji (Expense)
+SALARY_PAYABLE_ACCOUNT = "2-10500"  # Hutang Gaji (Liability)
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        from ..config import settings
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -129,7 +123,8 @@ async def ensure_tables_exist(conn, tenant_id: str) -> None:
 
     if not table_exists:
         # Create payroll_runs table
-        await conn.execute("""
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS payroll_runs (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 tenant_id TEXT NOT NULL,
@@ -167,7 +162,8 @@ async def ensure_tables_exist(conn, tenant_id: str) -> None:
                     status IN ('draft', 'pending_approval', 'approved', 'rejected', 'posted', 'voided')
                 )
             )
-        """)
+        """
+        )
 
         # Create indexes
         await conn.execute(
@@ -184,7 +180,8 @@ async def ensure_tables_exist(conn, tenant_id: str) -> None:
         )
 
         # Create payroll_allocations table
-        await conn.execute("""
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS payroll_allocations (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 tenant_id TEXT NOT NULL,
@@ -207,7 +204,8 @@ async def ensure_tables_exist(conn, tenant_id: str) -> None:
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
-        """)
+        """
+        )
 
         # Create indexes for allocations
         await conn.execute(
@@ -226,6 +224,7 @@ async def ensure_tables_exist(conn, tenant_id: str) -> None:
 # =============================================================================
 # SCHEMAS
 # =============================================================================
+
 
 class AllocationItem(BaseModel):
     employee_id: Optional[str] = None
@@ -250,6 +249,7 @@ class CreatePayrollRequest(BaseModel):
     payment_method: str = "bank_transfer"
     bank_account_id: Optional[str] = None
     allocations: List[AllocationItem] = Field(default_factory=list)
+    employee_ids: Optional[List[str]] = Field(default_factory=list)
 
 
 class UpdatePayrollRequest(BaseModel):
@@ -274,6 +274,7 @@ class VoidPayrollRequest(BaseModel):
 # HELPER FUNCTIONS
 # =============================================================================
 
+
 async def get_next_payroll_number(conn, tenant_id: str) -> str:
     """Generate next payroll number."""
     # Try to use stored function first
@@ -297,7 +298,7 @@ async def get_next_payroll_number(conn, tenant_id: str) -> str:
         ORDER BY payroll_number DESC LIMIT 1
         """,
         tenant_id,
-        f"{prefix}%"
+        f"{prefix}%",
     )
 
     if last_number:
@@ -335,16 +336,29 @@ def calculate_allocation_totals(allocation: dict) -> dict:
 # LIST PAYROLL RUNS
 # =============================================================================
 
+
 @router.get("")
 async def list_payroll_runs(
     request: Request,
-    status: Optional[Literal["all", "draft", "pending_approval", "approved", "rejected", "posted", "voided"]] = Query("all"),
+    status: Optional[
+        Literal[
+            "all",
+            "draft",
+            "pending_approval",
+            "approved",
+            "rejected",
+            "posted",
+            "voided",
+        ]
+    ] = Query("all"),
     period_start: Optional[date] = Query(None),
     period_end: Optional[date] = Query(None),
     search: Optional[str] = Query(None, description="Search by payroll number"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    sort_by: Literal["period_start", "payroll_number", "total_net_salary", "created_at"] = Query("created_at"),
+    sort_by: Literal[
+        "period_start", "payroll_number", "total_net_salary", "created_at"
+    ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List payroll runs with filters and pagination."""
@@ -430,21 +444,43 @@ async def list_payroll_runs(
                 {
                     "id": str(row["id"]),
                     "payroll_number": row["payroll_number"],
-                    "period_start": row["period_start"].isoformat() if row["period_start"] else None,
-                    "period_end": row["period_end"].isoformat() if row["period_end"] else None,
-                    "payment_date": row["payment_date"].isoformat() if row["payment_date"] else None,
+                    "period_start": row["period_start"].isoformat()
+                    if row["period_start"]
+                    else None,
+                    "period_end": row["period_end"].isoformat()
+                    if row["period_end"]
+                    else None,
+                    "payment_date": row["payment_date"].isoformat()
+                    if row["payment_date"]
+                    else None,
                     "description": row["description"],
-                    "total_basic_salary": int(row["total_basic_salary"] or 0),  # Law 25: int for IDR
-                    "total_allowances": int(row["total_allowances"] or 0),  # Law 25: int for IDR
-                    "total_deductions": int(row["total_deductions"] or 0),  # Law 25: int for IDR
-                    "total_net_salary": int(row["total_net_salary"] or 0),  # Law 25: int for IDR
+                    "total_basic_salary": int(
+                        row["total_basic_salary"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_allowances": int(
+                        row["total_allowances"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_deductions": int(
+                        row["total_deductions"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_net_salary": int(
+                        row["total_net_salary"] or 0
+                    ),  # Law 25: int for IDR
                     "employee_count": row["employee_count"] or 0,
                     "status": row["status"],
                     "payment_method": row["payment_method"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                    "submitted_at": row["submitted_at"].isoformat() if row["submitted_at"] else None,
-                    "approved_at": row["approved_at"].isoformat() if row["approved_at"] else None,
-                    "posted_at": row["posted_at"].isoformat() if row["posted_at"] else None,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "submitted_at": row["submitted_at"].isoformat()
+                    if row["submitted_at"]
+                    else None,
+                    "approved_at": row["approved_at"].isoformat()
+                    if row["approved_at"]
+                    else None,
+                    "posted_at": row["posted_at"].isoformat()
+                    if row["posted_at"]
+                    else None,
                 }
                 for row in rows
             ]
@@ -471,6 +507,7 @@ async def list_payroll_runs(
 # GET SUMMARY
 # =============================================================================
 
+
 @router.get("/summary")
 async def get_payroll_summary(request: Request):
     """Get payroll summary statistics."""
@@ -490,7 +527,7 @@ async def get_payroll_summary(request: Request):
                 WHERE tenant_id = $1
                 GROUP BY status
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             summary = {
@@ -520,7 +557,7 @@ async def get_payroll_summary(request: Request):
                     AND status = 'posted'
                     AND DATE_TRUNC('month', period_start) = DATE_TRUNC('month', CURRENT_DATE)
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             return {
@@ -529,7 +566,9 @@ async def get_payroll_summary(request: Request):
                     "by_status": summary,
                     "current_month": {
                         "count": current_month_total["count"],
-                        "total": int(current_month_total["total"]),  # Law 25: int for IDR
+                        "total": int(
+                            current_month_total["total"]
+                        ),  # Law 25: int for IDR
                     },
                     "total_all": sum(s["count"] for s in summary.values()),
                 },
@@ -545,6 +584,7 @@ async def get_payroll_summary(request: Request):
 # =============================================================================
 # GET PAYROLL DETAIL
 # =============================================================================
+
 
 @router.get("/{payroll_id}")
 async def get_payroll_detail(request: Request, payroll_id: UUID):
@@ -564,7 +604,7 @@ async def get_payroll_detail(request: Request, payroll_id: UUID):
                 WHERE id = $1 AND tenant_id = $2
                 """,
                 payroll_id,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             if not payroll:
@@ -577,7 +617,7 @@ async def get_payroll_detail(request: Request, payroll_id: UUID):
                 WHERE payroll_id = $1
                 ORDER BY employee_name
                 """,
-                payroll_id
+                payroll_id,
             )
 
             allocation_items = [
@@ -590,9 +630,13 @@ async def get_payroll_detail(request: Request, payroll_id: UUID):
                     "department": a["department"],
                     "basic_salary": int(a["basic_salary"] or 0),  # Law 25: int for IDR
                     "allowances": a["allowances"] or [],
-                    "total_allowances": int(a["total_allowances"] or 0),  # Law 25: int for IDR
+                    "total_allowances": int(
+                        a["total_allowances"] or 0
+                    ),  # Law 25: int for IDR
                     "deductions": a["deductions"] or [],
-                    "total_deductions": int(a["total_deductions"] or 0),  # Law 25: int for IDR
+                    "total_deductions": int(
+                        a["total_deductions"] or 0
+                    ),  # Law 25: int for IDR
                     "net_salary": int(a["net_salary"] or 0),  # Law 25: int for IDR
                     "bank_name": a["bank_name"],
                     "bank_account_number": a["bank_account_number"],
@@ -607,27 +651,57 @@ async def get_payroll_detail(request: Request, payroll_id: UUID):
                 "data": {
                     "id": str(payroll["id"]),
                     "payroll_number": payroll["payroll_number"],
-                    "period_start": payroll["period_start"].isoformat() if payroll["period_start"] else None,
-                    "period_end": payroll["period_end"].isoformat() if payroll["period_end"] else None,
-                    "payment_date": payroll["payment_date"].isoformat() if payroll["payment_date"] else None,
+                    "period_start": payroll["period_start"].isoformat()
+                    if payroll["period_start"]
+                    else None,
+                    "period_end": payroll["period_end"].isoformat()
+                    if payroll["period_end"]
+                    else None,
+                    "payment_date": payroll["payment_date"].isoformat()
+                    if payroll["payment_date"]
+                    else None,
                     "description": payroll["description"],
-                    "total_basic_salary": int(payroll["total_basic_salary"] or 0),  # Law 25: int for IDR
-                    "total_allowances": int(payroll["total_allowances"] or 0),  # Law 25: int for IDR
-                    "total_deductions": int(payroll["total_deductions"] or 0),  # Law 25: int for IDR
-                    "total_net_salary": int(payroll["total_net_salary"] or 0),  # Law 25: int for IDR
+                    "total_basic_salary": int(
+                        payroll["total_basic_salary"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_allowances": int(
+                        payroll["total_allowances"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_deductions": int(
+                        payroll["total_deductions"] or 0
+                    ),  # Law 25: int for IDR
+                    "total_net_salary": int(
+                        payroll["total_net_salary"] or 0
+                    ),  # Law 25: int for IDR
                     "employee_count": payroll["employee_count"] or 0,
                     "status": payroll["status"],
                     "payment_method": payroll["payment_method"],
-                    "bank_account_id": str(payroll["bank_account_id"]) if payroll["bank_account_id"] else None,
-                    "journal_id": str(payroll["journal_id"]) if payroll["journal_id"] else None,
-                    "submitted_at": payroll["submitted_at"].isoformat() if payroll["submitted_at"] else None,
-                    "approved_at": payroll["approved_at"].isoformat() if payroll["approved_at"] else None,
-                    "rejected_at": payroll["rejected_at"].isoformat() if payroll["rejected_at"] else None,
+                    "bank_account_id": str(payroll["bank_account_id"])
+                    if payroll["bank_account_id"]
+                    else None,
+                    "journal_id": str(payroll["journal_id"])
+                    if payroll["journal_id"]
+                    else None,
+                    "submitted_at": payroll["submitted_at"].isoformat()
+                    if payroll["submitted_at"]
+                    else None,
+                    "approved_at": payroll["approved_at"].isoformat()
+                    if payroll["approved_at"]
+                    else None,
+                    "rejected_at": payroll["rejected_at"].isoformat()
+                    if payroll["rejected_at"]
+                    else None,
                     "rejection_reason": payroll["rejection_reason"],
-                    "posted_at": payroll["posted_at"].isoformat() if payroll["posted_at"] else None,
-                    "voided_at": payroll["voided_at"].isoformat() if payroll["voided_at"] else None,
+                    "posted_at": payroll["posted_at"].isoformat()
+                    if payroll["posted_at"]
+                    else None,
+                    "voided_at": payroll["voided_at"].isoformat()
+                    if payroll["voided_at"]
+                    else None,
                     "void_reason": payroll["void_reason"],
-                    "created_at": payroll["created_at"].isoformat() if payroll["created_at"] else None,
+                    "created_at": payroll["created_at"].isoformat()
+                    if payroll["created_at"]
+                    else None,
                     "allocations": allocation_items,
                 },
             }
@@ -643,6 +717,7 @@ async def get_payroll_detail(request: Request, payroll_id: UUID):
 # CREATE PAYROLL RUN
 # =============================================================================
 
+
 @router.post("")
 async def create_payroll_run(request: Request, data: CreatePayrollRequest):
     """Create a new payroll run."""
@@ -654,6 +729,62 @@ async def create_payroll_run(request: Request, data: CreatePayrollRequest):
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
                 await ensure_tables_exist(conn, ctx["tenant_id"])
+
+                # Auto-generate allocations from employee_ids if allocations empty
+                if not data.allocations and data.employee_ids:
+                    for eid in data.employee_ids:
+                        emp = await conn.fetchrow(
+                            "SELECT id, employee_code, name, position, department, bank_name, bank_account_number, bank_account_name FROM employees WHERE id = $1 AND tenant_id = $2",
+                            UUID(eid),
+                            ctx["tenant_id"],
+                        )
+                        if not emp:
+                            continue
+                        # Get salary components for this employee
+                        components = await conn.fetch(
+                            """
+                            SELECT esc.amount, sc.type, sc.name, sc.code
+                            FROM employee_salary_config esc
+                            JOIN salary_components sc ON sc.id = esc.component_id
+                            WHERE esc.tenant_id = $1 AND esc.employee_id = $2
+                              AND esc.effective_date <= $3
+                              AND (esc.end_date IS NULL OR esc.end_date >= $3)
+                            ORDER BY sc.sort_order
+                            """,
+                            ctx["tenant_id"],
+                            emp["id"],
+                            data.period_start,
+                        )
+                        basic_salary = Decimal("0")
+                        allowances = []
+                        deductions = []
+                        for comp in components:
+                            amt = Decimal(str(comp["amount"]))
+                            if comp["type"] == "earning" and comp["code"] == "BASIC":
+                                basic_salary = amt
+                            elif comp["type"] == "earning":
+                                allowances.append(
+                                    {"name": comp["name"], "amount": float(amt)}
+                                )
+                            elif comp["type"] == "deduction":
+                                deductions.append(
+                                    {"name": comp["name"], "amount": float(amt)}
+                                )
+                        data.allocations.append(
+                            AllocationItem(
+                                employee_id=str(emp["id"]),
+                                employee_name=emp["name"],
+                                employee_code=emp["employee_code"],
+                                position=emp["position"],
+                                department=emp["department"],
+                                basic_salary=basic_salary,
+                                allowances=allowances,
+                                deductions=deductions,
+                                bank_name=emp["bank_name"],
+                                bank_account_number=emp["bank_account_number"],
+                                bank_account_name=emp["bank_account_name"],
+                            )
+                        )
 
                 # Generate payroll number
                 payroll_number = await get_next_payroll_number(conn, ctx["tenant_id"])
@@ -756,8 +887,11 @@ async def create_payroll_run(request: Request, data: CreatePayrollRequest):
 # UPDATE PAYROLL RUN
 # =============================================================================
 
+
 @router.put("/{payroll_id}")
-async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePayrollRequest):
+async def update_payroll_run(
+    request: Request, payroll_id: UUID, data: UpdatePayrollRequest
+):
     """Update a draft payroll run."""
     try:
         ctx = get_user_context(request)
@@ -771,7 +905,7 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -780,7 +914,7 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
                 if payroll["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot update payroll in {payroll['status']} status"
+                        detail=f"Cannot update payroll in {payroll['status']} status",
                     )
 
                 # Build update fields
@@ -815,7 +949,9 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
 
                 if data.bank_account_id is not None:
                     updates.append(f"bank_account_id = ${param_idx}")
-                    params.append(UUID(data.bank_account_id) if data.bank_account_id else None)
+                    params.append(
+                        UUID(data.bank_account_id) if data.bank_account_id else None
+                    )
                     param_idx += 1
 
                 # Handle allocations update
@@ -823,7 +959,7 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
                     # Delete existing allocations
                     await conn.execute(
                         "DELETE FROM payroll_allocations WHERE payroll_id = $1",
-                        payroll_id
+                        payroll_id,
                     )
 
                     # Calculate new totals and insert allocations
@@ -888,7 +1024,7 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
                     param_idx += 1
 
                 if updates:
-                    updates.append(f"updated_at = NOW()")
+                    updates.append("updated_at = NOW()")
                     updates.append(f"updated_by = ${param_idx}")
                     params.append(ctx["user_id"])
                     param_idx += 1
@@ -922,6 +1058,7 @@ async def update_payroll_run(request: Request, payroll_id: UUID, data: UpdatePay
 # DELETE PAYROLL RUN
 # =============================================================================
 
+
 @router.delete("/{payroll_id}")
 async def delete_payroll_run(request: Request, payroll_id: UUID):
     """Delete a draft payroll run."""
@@ -937,7 +1074,7 @@ async def delete_payroll_run(request: Request, payroll_id: UUID):
                 payroll = await conn.fetchrow(
                     "SELECT status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -946,20 +1083,19 @@ async def delete_payroll_run(request: Request, payroll_id: UUID):
                 if payroll["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot delete payroll in {payroll['status']} status. Use void instead."
+                        detail=f"Cannot delete payroll in {payroll['status']} status. Use void instead.",
                     )
 
                 # Delete allocations (cascade should handle this, but be explicit)
                 await conn.execute(
-                    "DELETE FROM payroll_allocations WHERE payroll_id = $1",
-                    payroll_id
+                    "DELETE FROM payroll_allocations WHERE payroll_id = $1", payroll_id
                 )
 
                 # Delete payroll run
                 await conn.execute(
                     "DELETE FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 logger.info(f"Deleted payroll run: {payroll_id}")
@@ -980,6 +1116,7 @@ async def delete_payroll_run(request: Request, payroll_id: UUID):
 # SUBMIT FOR APPROVAL
 # =============================================================================
 
+
 @router.post("/{payroll_id}/submit")
 async def submit_payroll_for_approval(request: Request, payroll_id: UUID):
     """Submit payroll run for approval."""
@@ -994,7 +1131,7 @@ async def submit_payroll_for_approval(request: Request, payroll_id: UUID):
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -1003,13 +1140,13 @@ async def submit_payroll_for_approval(request: Request, payroll_id: UUID):
                 if payroll["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot submit payroll in {payroll['status']} status"
+                        detail=f"Cannot submit payroll in {payroll['status']} status",
                     )
 
                 if payroll["employee_count"] == 0:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot submit payroll with no employees"
+                        detail="Cannot submit payroll with no employees",
                     )
 
                 # Update status to pending_approval
@@ -1025,7 +1162,7 @@ async def submit_payroll_for_approval(request: Request, payroll_id: UUID):
                     """,
                     payroll_id,
                     ctx["tenant_id"],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 logger.info(f"Submitted payroll for approval: {payroll_id}")
@@ -1050,6 +1187,7 @@ async def submit_payroll_for_approval(request: Request, payroll_id: UUID):
 # APPROVE PAYROLL
 # =============================================================================
 
+
 @router.post("/{payroll_id}/approve")
 async def approve_payroll(request: Request, payroll_id: UUID):
     """Approve payroll run."""
@@ -1059,7 +1197,10 @@ async def approve_payroll(request: Request, payroll_id: UUID):
         # Check business role - only OWNER or FINANCE_MGR can approve
         business_role = ctx.get("business_role_code")
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
-            raise HTTPException(status_code=403, detail="Only Owner or Finance Manager can approve payroll")
+            raise HTTPException(
+                status_code=403,
+                detail="Only Owner or Finance Manager can approve payroll",
+            )
 
         pool = await get_pool()
 
@@ -1070,7 +1211,7 @@ async def approve_payroll(request: Request, payroll_id: UUID):
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -1079,7 +1220,7 @@ async def approve_payroll(request: Request, payroll_id: UUID):
                 if payroll["status"] != "pending_approval":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot approve payroll in {payroll['status']} status"
+                        detail=f"Cannot approve payroll in {payroll['status']} status",
                     )
 
                 # Update status to approved
@@ -1095,7 +1236,7 @@ async def approve_payroll(request: Request, payroll_id: UUID):
                     """,
                     payroll_id,
                     ctx["tenant_id"],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 logger.info(f"Approved payroll: {payroll_id}")
@@ -1120,8 +1261,11 @@ async def approve_payroll(request: Request, payroll_id: UUID):
 # REJECT PAYROLL
 # =============================================================================
 
+
 @router.post("/{payroll_id}/reject")
-async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayrollRequest):
+async def reject_payroll(
+    request: Request, payroll_id: UUID, data: RejectPayrollRequest
+):
     """Reject payroll run."""
     try:
         ctx = get_user_context(request)
@@ -1129,7 +1273,10 @@ async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayroll
         # Check business role
         business_role = ctx.get("business_role_code")
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
-            raise HTTPException(status_code=403, detail="Only Owner or Finance Manager can reject payroll")
+            raise HTTPException(
+                status_code=403,
+                detail="Only Owner or Finance Manager can reject payroll",
+            )
 
         pool = await get_pool()
 
@@ -1140,7 +1287,7 @@ async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayroll
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -1149,7 +1296,7 @@ async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayroll
                 if payroll["status"] != "pending_approval":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot reject payroll in {payroll['status']} status"
+                        detail=f"Cannot reject payroll in {payroll['status']} status",
                     )
 
                 # Update status to rejected
@@ -1167,7 +1314,7 @@ async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayroll
                     payroll_id,
                     ctx["tenant_id"],
                     ctx["user_id"],
-                    data.reason
+                    data.reason,
                 )
 
                 logger.info(f"Rejected payroll: {payroll_id}")
@@ -1192,6 +1339,7 @@ async def reject_payroll(request: Request, payroll_id: UUID, data: RejectPayroll
 # =============================================================================
 # POST PAYROLL TO JOURNAL
 # =============================================================================
+
 
 @router.post("/{payroll_id}/post")
 async def post_payroll(request: Request, payroll_id: UUID):
@@ -1222,13 +1370,13 @@ async def post_payroll(request: Request, payroll_id: UUID):
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"PAYROLL:{payroll_id}"
+                    f"PAYROLL:{payroll_id}",
                 )
 
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
@@ -1237,7 +1385,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
                 if payroll["status"] not in ["approved"]:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot post payroll in {payroll['status']} status. Must be approved first."
+                        detail=f"Cannot post payroll in {payroll['status']} status. Must be approved first.",
                     )
 
                 # Law 5: Check accounting period
@@ -1245,7 +1393,9 @@ async def post_payroll(request: Request, payroll_id: UUID):
                 await check_period_is_open(conn, ctx["tenant_id"], payment_date)
 
                 # Law 27: Resolve account IDs via resolve_account_id
-                salary_expense_id = await resolve_account_id(conn, ctx["tenant_id"], SALARY_EXPENSE_ACCOUNT)
+                salary_expense_id = await resolve_account_id(
+                    conn, ctx["tenant_id"], SALARY_EXPENSE_ACCOUNT
+                )
 
                 # Hutang Gaji - Liability account (or Bank for direct payment)
                 if payroll["payment_method"] == "direct" and payroll["bank_account_id"]:
@@ -1258,17 +1408,21 @@ async def post_payroll(request: Request, payroll_id: UUID):
                         WHERE ba.id = $1 AND ba.tenant_id = $2
                         """,
                         payroll["bank_account_id"],
-                        ctx["tenant_id"]
+                        ctx["tenant_id"],
                     )
                     if not bank_account:
                         raise HTTPException(
                             status_code=400,
-                            detail="Bank account not found or has no linked CoA account."
+                            detail="Bank account not found or has no linked CoA account.",
                         )
                     credit_account_id = bank_account["id"]
                 else:
                     # Accrual - credit hutang gaji
-                    credit_account_id = UUID(await resolve_account_id(conn, ctx["tenant_id"], SALARY_PAYABLE_ACCOUNT))
+                    credit_account_id = UUID(
+                        await resolve_account_id(
+                            conn, ctx["tenant_id"], SALARY_PAYABLE_ACCOUNT
+                        )
+                    )
 
                 # Get journal number
                 try:
@@ -1278,7 +1432,9 @@ async def post_payroll(request: Request, payroll_id: UUID):
                 except Exception:
                     journal_number = f"JNL-PR-{payroll['payroll_number']}"
 
-                total_amount = payroll["total_net_salary"]  # Law 25: already Decimal from DB
+                total_amount = payroll[
+                    "total_net_salary"
+                ]  # Law 25: already Decimal from DB
 
                 # Law 20: Step 1 — INSERT as DRAFT
                 journal_id = await conn.fetchval(
@@ -1297,7 +1453,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
                     f"Payroll {payroll['payroll_number']} - {payroll['period_start']} to {payroll['period_end']}",
                     payroll_id,
                     total_amount,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Law 20: Step 2 — INSERT journal_lines
@@ -1312,7 +1468,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
                     journal_id,
                     UUID(salary_expense_id),
                     total_amount,
-                    f"Beban Gaji - {payroll['payroll_number']}"
+                    f"Beban Gaji - {payroll['payroll_number']}",
                 )
 
                 # Line 2: Credit Hutang Gaji or Bank
@@ -1324,15 +1480,17 @@ async def post_payroll(request: Request, payroll_id: UUID):
                     """,
                     uuid_module.uuid4(),
                     journal_id,
-                    credit_account_id if isinstance(credit_account_id, UUID) else UUID(str(credit_account_id)),
+                    credit_account_id
+                    if isinstance(credit_account_id, UUID)
+                    else UUID(str(credit_account_id)),
                     total_amount,
-                    f"Payroll credit - {payroll['payroll_number']}"
+                    f"Payroll credit - {payroll['payroll_number']}",
                 )
 
                 # Law 20: Step 3 — UPDATE to POSTED
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id
+                    journal_id,
                 )
 
                 # Update payroll status
@@ -1350,7 +1508,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
                     payroll_id,
                     ctx["tenant_id"],
                     journal_id,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 logger.info(f"Posted payroll: {payroll_id}, journal={journal_id}")
@@ -1377,6 +1535,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
 # VOID PAYROLL
 # =============================================================================
 
+
 @router.post("/{payroll_id}/void")
 async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequest):
     """
@@ -1395,7 +1554,9 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
         # Check business role
         business_role = ctx.get("business_role_code")
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
-            raise HTTPException(status_code=403, detail="Only Owner or Finance Manager can void payroll")
+            raise HTTPException(
+                status_code=403, detail="Only Owner or Finance Manager can void payroll"
+            )
 
         pool = await get_pool()
 
@@ -1406,25 +1567,27 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"PAYROLL_VOID:{payroll_id}"
+                    f"PAYROLL_VOID:{payroll_id}",
                 )
 
                 payroll = await conn.fetchrow(
                     "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     payroll_id,
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
                 if not payroll:
                     raise HTTPException(status_code=404, detail="Payroll run not found")
 
                 if payroll["status"] == "voided":
-                    raise HTTPException(status_code=400, detail="Payroll already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Payroll already voided"
+                    )
 
                 if payroll["status"] == "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot void draft payroll. Delete it instead."
+                        detail="Cannot void draft payroll. Delete it instead.",
                     )
 
                 # Law 5: Check accounting period
@@ -1438,13 +1601,13 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                     # Get original journal lines
                     original_lines = await conn.fetch(
                         "SELECT * FROM journal_lines WHERE journal_id = $1",
-                        payroll["journal_id"]
+                        payroll["journal_id"],
                     )
 
                     # Get original journal
                     original_journal = await conn.fetchrow(
                         "SELECT total_debit FROM journal_entries WHERE id = $1",
-                        payroll["journal_id"]
+                        payroll["journal_id"],
                     )
 
                     # Generate void journal number
@@ -1471,8 +1634,10 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                         f"Void {payroll['payroll_number']} - {data.reason}",
                         payroll_id,
                         payroll["journal_id"],
-                        original_journal["total_debit"],  # Law 25: already Decimal from DB
-                        ctx["user_id"]
+                        original_journal[
+                            "total_debit"
+                        ],  # Law 25: already Decimal from DB
+                        ctx["user_id"],
                     )
 
                     # Law 20: Step 2 — INSERT reversed lines (swap debit/credit)
@@ -1488,14 +1653,14 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                             idx,
                             line["account_id"],
                             line["credit"],  # Swap
-                            line["debit"],   # Swap
+                            line["debit"],  # Swap
                             f"Reversal - {line['memo']}",
                         )
 
                     # Law 20: Step 3 — UPDATE to POSTED
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        void_journal_id
+                        void_journal_id,
                     )
 
                     # Law 26: Mark original journal as reversed
@@ -1506,7 +1671,7 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                         WHERE id = $1
                         """,
                         payroll["journal_id"],
-                        void_journal_id
+                        void_journal_id,
                     )
 
                 # Update payroll status
@@ -1524,7 +1689,7 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                     payroll_id,
                     ctx["tenant_id"],
                     ctx["user_id"],
-                    data.reason
+                    data.reason,
                 )
 
                 logger.info(f"Voided payroll: {payroll_id}")
@@ -1535,7 +1700,9 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                     "data": {
                         "id": str(payroll_id),
                         "status": "voided",
-                        "void_journal_id": str(void_journal_id) if void_journal_id else None,
+                        "void_journal_id": str(void_journal_id)
+                        if void_journal_id
+                        else None,
                         "void_journal_number": void_journal_number,
                     },
                 }
@@ -1546,9 +1713,11 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
         logger.error(f"Error voiding payroll: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void payroll")
 
+
 # =============================================================================
 # TABNAV ENDPOINTS
 # =============================================================================
+
 
 @router.get("/{payroll_id}/allocations")
 async def get_payroll_allocations(request: Request, payroll_id: str):
@@ -1583,24 +1752,36 @@ async def get_payroll_allocations(request: Request, payroll_id: str):
 
             allocations = []
             for row in rows:
-                allocations.append({
-                    "id": str(row["id"]),
-                    "employee_id": str(row["employee_id"]) if row["employee_id"] else None,
-                    "employee_name": row["employee_name"],
-                    "employee_code": row["employee_code"],
-                    "position": row["position"],
-                    "department": row["department"],
-                    "basic_salary": int(row["basic_salary"] or 0),  # Law 25: int for IDR
-                    "allowances": row["allowances"] or [],
-                    "total_allowances": int(row["total_allowances"] or 0),  # Law 25: int for IDR
-                    "deductions": row["deductions"] or [],
-                    "total_deductions": int(row["total_deductions"] or 0),  # Law 25: int for IDR
-                    "net_salary": int(row["net_salary"] or 0),  # Law 25: int for IDR
-                    "bank_name": row["bank_name"],
-                    "bank_account_number": row["bank_account_number"],
-                    "bank_account_name": row["bank_account_name"],
-                    "notes": row["notes"],
-                })
+                allocations.append(
+                    {
+                        "id": str(row["id"]),
+                        "employee_id": str(row["employee_id"])
+                        if row["employee_id"]
+                        else None,
+                        "employee_name": row["employee_name"],
+                        "employee_code": row["employee_code"],
+                        "position": row["position"],
+                        "department": row["department"],
+                        "basic_salary": int(
+                            row["basic_salary"] or 0
+                        ),  # Law 25: int for IDR
+                        "allowances": row["allowances"] or [],
+                        "total_allowances": int(
+                            row["total_allowances"] or 0
+                        ),  # Law 25: int for IDR
+                        "deductions": row["deductions"] or [],
+                        "total_deductions": int(
+                            row["total_deductions"] or 0
+                        ),  # Law 25: int for IDR
+                        "net_salary": int(
+                            row["net_salary"] or 0
+                        ),  # Law 25: int for IDR
+                        "bank_name": row["bank_name"],
+                        "bank_account_number": row["bank_account_number"],
+                        "bank_account_name": row["bank_account_name"],
+                        "notes": row["notes"],
+                    }
+                )
 
             return {"success": True, "data": allocations}
     except HTTPException:
@@ -1623,7 +1804,8 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
         async with pool.acquire() as conn:
             payroll = await conn.fetchrow(
                 "SELECT id, payroll_number, journal_id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
-                payroll_id, ctx["tenant_id"]
+                payroll_id,
+                ctx["tenant_id"],
             )
             if not payroll:
                 raise HTTPException(status_code=404, detail="Payroll not found")
@@ -1638,7 +1820,8 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                 SELECT id FROM journal_entries
                 WHERE tenant_id = $1 AND source_id = $2
                 """,
-                ctx["tenant_id"], payroll_id
+                ctx["tenant_id"],
+                payroll_id,
             )
             for row in source_journals:
                 journal_ids.add(row["id"])
@@ -1648,7 +1831,11 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                     "success": True,
                     "data": [],
                     "total": 0,
-                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True,
+                    },
                 }
 
             journals = await conn.fetch(
@@ -1659,7 +1846,7 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                list(journal_ids)
+                list(journal_ids),
             )
 
             journal_data = []
@@ -1676,7 +1863,7 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -1688,7 +1875,7 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                         "account_name": line["account_name"],
                         "debit": int(line["debit"] or 0),  # Law 25: int for IDR
                         "credit": int(line["credit"] or 0),  # Law 25: int for IDR
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -1698,18 +1885,23 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": int(journal_debit),  # Law 25: int for IDR
-                    "total_credit": int(journal_credit),  # Law 25: int for IDR
-                    "is_balanced": abs(journal_debit - journal_credit) < Decimal("0.01"),
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": int(journal_debit),  # Law 25: int for IDR
+                        "total_credit": int(journal_credit),  # Law 25: int for IDR
+                        "is_balanced": abs(journal_debit - journal_credit)
+                        < Decimal("0.01"),
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -1718,8 +1910,8 @@ async def get_payroll_journal_entries(request: Request, payroll_id: UUID):
                 "summary": {
                     "total_debit": int(total_debit),  # Law 25: int for IDR
                     "total_credit": int(total_credit),  # Law 25: int for IDR
-                    "is_balanced": abs(total_debit - total_credit) < Decimal("0.01")
-                }
+                    "is_balanced": abs(total_debit - total_credit) < Decimal("0.01"),
+                },
             }
     except HTTPException:
         raise

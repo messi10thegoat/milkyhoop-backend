@@ -12,7 +12,7 @@ Journal Entries:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID, uuid4
-from datetime import date, timedelta
+from datetime import date
 import logging
 import asyncpg
 
@@ -29,38 +29,26 @@ from ..schemas.intercompany import (
     VarianceReportResponse,
     IntercompanyBalanceListResponse,
     IntercompanyBalanceDetailResponse,
-    CreateSettlementRequest,
-    SettlementListResponse,
     IntercompanyReportResponse,
     IntercompanyAgingResponse,
     IntercompanyResponse,
 )
-from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -70,10 +58,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # Law 5: Period check helper
@@ -84,18 +69,15 @@ async def _check_period_is_open(conn, tenant_id: str, journal_date: date):
         SELECT id, status FROM fiscal_periods
         WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2
         """,
-        tenant_id, journal_date
+        tenant_id,
+        journal_date,
     )
     if not period:
         raise HTTPException(
-            status_code=400,
-            detail="Tidak ada periode akuntansi untuk tanggal ini"
+            status_code=400, detail="Tidak ada periode akuntansi untuk tanggal ini"
         )
     if period["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail="Periode akuntansi sudah ditutup"
-        )
+        raise HTTPException(status_code=400, detail="Periode akuntansi sudah ditutup")
 
 
 # =============================================================================
@@ -135,7 +117,9 @@ async def list_transactions(
             param_idx = 2
 
             if entity_tenant_id:
-                conditions.append(f"(ict.from_entity_tenant_id = ${param_idx} OR ict.to_entity_tenant_id = ${param_idx})")
+                conditions.append(
+                    f"(ict.from_entity_tenant_id = ${param_idx} OR ict.to_entity_tenant_id = ${param_idx})"
+                )
                 params.append(entity_tenant_id)
                 param_idx += 1
 
@@ -163,7 +147,7 @@ async def list_transactions(
 
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM intercompany_transactions ict WHERE {where_clause}",
-                *params
+                *params,
             )
 
             query = f"""
@@ -207,7 +191,9 @@ async def list_transactions(
 
 
 @router.post("/transactions", response_model=IntercompanyResponse, status_code=201)
-async def create_transaction(request: Request, body: CreateIntercompanyTransactionRequest):
+async def create_transaction(
+    request: Request, body: CreateIntercompanyTransactionRequest
+):
     """Create intercompany transaction and generate journal entries."""
     try:
         ctx = get_user_context(request)
@@ -219,16 +205,17 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
                 # Law 13: Advisory lock before any reads/writes
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"IC_CREATE:{ctx['tenant_id']}"
+                    f"IC_CREATE:{ctx['tenant_id']}",
                 )
 
                 # Law 5: Period check before journal creation
-                await _check_period_is_open(conn, ctx["tenant_id"], body.transaction_date)
+                await _check_period_is_open(
+                    conn, ctx["tenant_id"], body.transaction_date
+                )
 
                 # Generate transaction number
                 tx_number = await conn.fetchval(
-                    "SELECT generate_ic_transaction_number($1)",
-                    ctx["tenant_id"]
+                    "SELECT generate_ic_transaction_number($1)", ctx["tenant_id"]
                 )
 
                 # Create transaction
@@ -243,11 +230,20 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'confirmed', $14)
                     RETURNING id
                     """,
-                    ctx["tenant_id"], tx_number, body.transaction_date, body.description,
-                    body.from_entity_tenant_id, body.to_entity_tenant_id, body.transaction_type,
-                    body.amount, body.currency_id, body.exchange_rate,
-                    body.from_document_type, body.from_document_id, body.from_document_number,
-                    ctx["user_id"]
+                    ctx["tenant_id"],
+                    tx_number,
+                    body.transaction_date,
+                    body.description,
+                    body.from_entity_tenant_id,
+                    body.to_entity_tenant_id,
+                    body.transaction_type,
+                    body.amount,
+                    body.currency_id,
+                    body.exchange_rate,
+                    body.from_document_type,
+                    body.from_document_id,
+                    body.from_document_number,
+                    ctx["user_id"],
                 )
 
                 # Create journal entry for "from" entity
@@ -260,7 +256,8 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
                 if from_journal_id:
                     await conn.execute(
                         "UPDATE intercompany_transactions SET from_journal_id = $1 WHERE id = $2",
-                        from_journal_id, tx_id
+                        from_journal_id,
+                        tx_id,
                     )
 
                 return {
@@ -269,8 +266,10 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
                     "data": {
                         "id": str(tx_id),
                         "transaction_number": tx_number,
-                        "from_journal_id": str(from_journal_id) if from_journal_id else None
-                    }
+                        "from_journal_id": str(from_journal_id)
+                        if from_journal_id
+                        else None,
+                    },
                 }
 
     except HTTPException:
@@ -283,8 +282,8 @@ async def create_transaction(request: Request, body: CreateIntercompanyTransacti
 async def create_from_entity_journal(conn, tenant_id, tx_id, tx_number, body, user_id):
     """Create journal entry for the originating entity (Law 20: DRAFT→lines→POSTED)."""
     # Get IC accounts
-    ic_receivable_id = await resolve_account_id(conn, tenant_id, '1-10900')
-    ic_sales_id = await resolve_account_id(conn, tenant_id, '4-10200')
+    ic_receivable_id = await resolve_account_id(conn, tenant_id, "1-10900")
+    ic_sales_id = await resolve_account_id(conn, tenant_id, "4-10200")
 
     if not ic_receivable_id or not ic_sales_id:
         logger.warning(f"IC accounts not found for tenant {tenant_id}")
@@ -301,9 +300,14 @@ async def create_from_entity_journal(conn, tenant_id, tx_id, tx_number, body, us
         ) VALUES ($1, $2, $3, $4, $5, 'INTERCOMPANY', $6, 'DRAFT', $7, $7, $8)
         RETURNING id
         """,
-        uuid4(), tenant_id, journal_number, body.transaction_date,
+        uuid4(),
+        tenant_id,
+        journal_number,
+        body.transaction_date,
         f"IC Transaction: {body.description or body.transaction_type}",
-        tx_id, body.amount, user_id
+        tx_id,
+        body.amount,
+        user_id,
     )
 
     # Law 20 Step 2: INSERT journal_lines
@@ -313,8 +317,11 @@ async def create_from_entity_journal(conn, tenant_id, tx_id, tx_number, body, us
         INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
         VALUES ($1, $2, $3, 1, $4, 0, $5)
         """,
-        uuid4(), journal_id, ic_receivable_id, body.amount,
-        f"IC Receivable from {body.to_entity_tenant_id}"
+        uuid4(),
+        journal_id,
+        ic_receivable_id,
+        body.amount,
+        f"IC Receivable from {body.to_entity_tenant_id}",
     )
 
     # Credit IC Sales/Revenue
@@ -323,20 +330,25 @@ async def create_from_entity_journal(conn, tenant_id, tx_id, tx_number, body, us
         INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
         VALUES ($1, $2, $3, 2, 0, $4, $5)
         """,
-        uuid4(), journal_id, ic_sales_id, body.amount,
-        f"IC {body.transaction_type} to {body.to_entity_tenant_id}"
+        uuid4(),
+        journal_id,
+        ic_sales_id,
+        body.amount,
+        f"IC {body.transaction_type} to {body.to_entity_tenant_id}",
     )
 
     # Law 20 Step 3: UPDATE to POSTED
     await conn.execute(
-        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-        journal_id
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
 
     return journal_id
 
 
-@router.get("/transactions/{transaction_id}", response_model=IntercompanyTransactionDetailResponse)
+@router.get(
+    "/transactions/{transaction_id}",
+    response_model=IntercompanyTransactionDetailResponse,
+)
 async def get_transaction(request: Request, transaction_id: UUID):
     """Get intercompany transaction detail."""
     try:
@@ -368,25 +380,35 @@ async def get_transaction(request: Request, transaction_id: UUID):
                     "to_entity_name": None,
                     "transaction_type": row["transaction_type"],
                     "amount": row["amount"],
-                    "currency_id": str(row["currency_id"]) if row["currency_id"] else None,
+                    "currency_id": str(row["currency_id"])
+                    if row["currency_id"]
+                    else None,
                     "currency_code": row["currency_code"],
                     "exchange_rate": row["exchange_rate"],
                     "from_document_type": row["from_document_type"],
-                    "from_document_id": str(row["from_document_id"]) if row["from_document_id"] else None,
+                    "from_document_id": str(row["from_document_id"])
+                    if row["from_document_id"]
+                    else None,
                     "from_document_number": row["from_document_number"],
                     "to_document_type": row["to_document_type"],
-                    "to_document_id": str(row["to_document_id"]) if row["to_document_id"] else None,
+                    "to_document_id": str(row["to_document_id"])
+                    if row["to_document_id"]
+                    else None,
                     "to_document_number": row["to_document_number"],
                     "from_status": row["from_status"],
                     "to_status": row["to_status"],
-                    "from_journal_id": str(row["from_journal_id"]) if row["from_journal_id"] else None,
-                    "to_journal_id": str(row["to_journal_id"]) if row["to_journal_id"] else None,
+                    "from_journal_id": str(row["from_journal_id"])
+                    if row["from_journal_id"]
+                    else None,
+                    "to_journal_id": str(row["to_journal_id"])
+                    if row["to_journal_id"]
+                    else None,
                     "is_reconciled": row["is_reconciled"],
                     "reconciled_at": row["reconciled_at"],
                     "variance_amount": row["variance_amount"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -397,7 +419,9 @@ async def get_transaction(request: Request, transaction_id: UUID):
 
 
 @router.patch("/transactions/{transaction_id}", response_model=IntercompanyResponse)
-async def update_transaction(request: Request, transaction_id: UUID, body: UpdateIntercompanyTransactionRequest):
+async def update_transaction(
+    request: Request, transaction_id: UUID, body: UpdateIntercompanyTransactionRequest
+):
     """Update intercompany transaction (pending only)."""
     try:
         ctx = get_user_context(request)
@@ -410,13 +434,16 @@ async def update_transaction(request: Request, transaction_id: UUID, body: Updat
                 SELECT * FROM intercompany_transactions
                 WHERE id = $1 AND tenant_id = $2
                 """,
-                transaction_id, ctx["tenant_id"]
+                transaction_id,
+                ctx["tenant_id"],
             )
             if not tx:
                 raise HTTPException(status_code=404, detail="Transaction not found")
 
             if tx["from_status"] != "pending":
-                raise HTTPException(status_code=400, detail="Can only update pending transactions")
+                raise HTTPException(
+                    status_code=400, detail="Can only update pending transactions"
+                )
 
             # Build update
             updates = []
@@ -450,8 +477,12 @@ async def update_transaction(request: Request, transaction_id: UUID, body: Updat
 # =============================================================================
 # CONFIRM / REJECT
 # =============================================================================
-@router.post("/transactions/{transaction_id}/confirm", response_model=IntercompanyResponse)
-async def confirm_transaction(request: Request, transaction_id: UUID, body: ConfirmTransactionRequest = None):
+@router.post(
+    "/transactions/{transaction_id}/confirm", response_model=IntercompanyResponse
+)
+async def confirm_transaction(
+    request: Request, transaction_id: UUID, body: ConfirmTransactionRequest = None
+):
     """Confirm receipt of IC transaction (by counterparty)."""
     try:
         ctx = get_user_context(request)
@@ -463,7 +494,7 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
                 # Law 13: Advisory lock before any reads/writes
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"IC_CONFIRM:{transaction_id}"
+                    f"IC_CONFIRM:{transaction_id}",
                 )
 
                 # Get transaction
@@ -472,16 +503,24 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
                     SELECT * FROM intercompany_transactions
                     WHERE id = $1 AND to_entity_tenant_id = $2
                     """,
-                    transaction_id, ctx["tenant_id"]
+                    transaction_id,
+                    ctx["tenant_id"],
                 )
                 if not tx:
-                    raise HTTPException(status_code=404, detail="Transaction not found or not for your entity")
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Transaction not found or not for your entity",
+                    )
 
                 if tx["to_status"] != "pending":
-                    raise HTTPException(status_code=400, detail="Transaction already processed")
+                    raise HTTPException(
+                        status_code=400, detail="Transaction already processed"
+                    )
 
                 # Law 5: Period check before journal creation
-                await _check_period_is_open(conn, ctx["tenant_id"], tx["transaction_date"])
+                await _check_period_is_open(
+                    conn, ctx["tenant_id"], tx["transaction_date"]
+                )
 
                 # Update status
                 update_fields = ["to_status = 'confirmed'", "updated_at = NOW()"]
@@ -504,7 +543,7 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
 
                 await conn.execute(
                     f"UPDATE intercompany_transactions SET {', '.join(update_fields)} WHERE id = $1",
-                    *params
+                    *params,
                 )
 
                 # Create journal entry for "to" entity
@@ -516,13 +555,16 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
                 if to_journal_id:
                     await conn.execute(
                         "UPDATE intercompany_transactions SET to_journal_id = $1 WHERE id = $2",
-                        to_journal_id, transaction_id
+                        to_journal_id,
+                        transaction_id,
                     )
 
                 return {
                     "success": True,
                     "message": "Transaction confirmed",
-                    "data": {"to_journal_id": str(to_journal_id) if to_journal_id else None}
+                    "data": {
+                        "to_journal_id": str(to_journal_id) if to_journal_id else None
+                    },
                 }
 
     except HTTPException:
@@ -535,8 +577,8 @@ async def confirm_transaction(request: Request, transaction_id: UUID, body: Conf
 async def create_to_entity_journal(conn, tenant_id, tx, user_id):
     """Create journal entry for the receiving entity (Law 20: DRAFT→lines→POSTED)."""
     # Get IC accounts
-    ic_payable_id = await resolve_account_id(conn, tenant_id, '2-10900')
-    ic_purchases_id = await resolve_account_id(conn, tenant_id, '5-10400')
+    ic_payable_id = await resolve_account_id(conn, tenant_id, "2-10900")
+    ic_purchases_id = await resolve_account_id(conn, tenant_id, "5-10400")
 
     if not ic_payable_id or not ic_purchases_id:
         logger.warning(f"IC accounts not found for tenant {tenant_id}")
@@ -553,9 +595,14 @@ async def create_to_entity_journal(conn, tenant_id, tx, user_id):
         ) VALUES ($1, $2, $3, $4, $5, 'INTERCOMPANY', $6, 'DRAFT', $7, $7, $8)
         RETURNING id
         """,
-        uuid4(), tenant_id, journal_number, tx["transaction_date"],
+        uuid4(),
+        tenant_id,
+        journal_number,
+        tx["transaction_date"],
         f"IC Transaction Receipt: {tx['description'] or tx['transaction_type']}",
-        tx["id"], tx["amount"], user_id
+        tx["id"],
+        tx["amount"],
+        user_id,
     )
 
     # Law 20 Step 2: INSERT journal_lines
@@ -565,8 +612,11 @@ async def create_to_entity_journal(conn, tenant_id, tx, user_id):
         INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
         VALUES ($1, $2, $3, 1, $4, 0, $5)
         """,
-        uuid4(), journal_id, ic_purchases_id, tx["amount"],
-        f"IC {tx['transaction_type']} from {tx['from_entity_tenant_id']}"
+        uuid4(),
+        journal_id,
+        ic_purchases_id,
+        tx["amount"],
+        f"IC {tx['transaction_type']} from {tx['from_entity_tenant_id']}",
     )
 
     # Credit IC Payable
@@ -575,21 +625,27 @@ async def create_to_entity_journal(conn, tenant_id, tx, user_id):
         INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
         VALUES ($1, $2, $3, 2, 0, $4, $5)
         """,
-        uuid4(), journal_id, ic_payable_id, tx["amount"],
-        f"IC Payable to {tx['from_entity_tenant_id']}"
+        uuid4(),
+        journal_id,
+        ic_payable_id,
+        tx["amount"],
+        f"IC Payable to {tx['from_entity_tenant_id']}",
     )
 
     # Law 20 Step 3: UPDATE to POSTED
     await conn.execute(
-        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-        journal_id
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
 
     return journal_id
 
 
-@router.post("/transactions/{transaction_id}/reject", response_model=IntercompanyResponse)
-async def reject_transaction(request: Request, transaction_id: UUID, body: RejectTransactionRequest):
+@router.post(
+    "/transactions/{transaction_id}/reject", response_model=IntercompanyResponse
+)
+async def reject_transaction(
+    request: Request, transaction_id: UUID, body: RejectTransactionRequest
+):
     """Reject/dispute IC transaction."""
     try:
         ctx = get_user_context(request)
@@ -602,10 +658,13 @@ async def reject_transaction(request: Request, transaction_id: UUID, body: Rejec
                 SET to_status = 'rejected', updated_at = NOW()
                 WHERE id = $1 AND to_entity_tenant_id = $2 AND to_status = 'pending'
                 """,
-                transaction_id, ctx["tenant_id"]
+                transaction_id,
+                ctx["tenant_id"],
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Transaction not found or already processed")
+                raise HTTPException(
+                    status_code=404, detail="Transaction not found or already processed"
+                )
 
             # TODO: Could notify originator about rejection
 
@@ -636,13 +695,15 @@ async def list_unreconciled(
                 "(from_entity_tenant_id = $1 OR to_entity_tenant_id = $1)",
                 "is_reconciled = false",
                 "from_status = 'confirmed'",
-                "to_status = 'confirmed'"
+                "to_status = 'confirmed'",
             ]
             params = [ctx["tenant_id"]]
             param_idx = 2
 
             if entity_tenant_id:
-                conditions.append(f"(from_entity_tenant_id = ${param_idx} OR to_entity_tenant_id = ${param_idx})")
+                conditions.append(
+                    f"(from_entity_tenant_id = ${param_idx} OR to_entity_tenant_id = ${param_idx})"
+                )
                 params.append(entity_tenant_id)
                 param_idx += 1
 
@@ -660,17 +721,23 @@ async def list_unreconciled(
             items = []
             total_amount = 0
             for row in rows:
-                counterparty = row["to_entity_tenant_id"] if row["from_entity_tenant_id"] == ctx["tenant_id"] else row["from_entity_tenant_id"]
-                items.append({
-                    "id": str(row["id"]),
-                    "transaction_number": row["transaction_number"],
-                    "transaction_date": row["transaction_date"],
-                    "counterparty_tenant_id": counterparty,
-                    "counterparty_name": None,
-                    "transaction_type": row["transaction_type"],
-                    "amount": row["amount"],
-                    "days_outstanding": row["days_outstanding"],
-                })
+                counterparty = (
+                    row["to_entity_tenant_id"]
+                    if row["from_entity_tenant_id"] == ctx["tenant_id"]
+                    else row["from_entity_tenant_id"]
+                )
+                items.append(
+                    {
+                        "id": str(row["id"]),
+                        "transaction_number": row["transaction_number"],
+                        "transaction_date": row["transaction_date"],
+                        "counterparty_tenant_id": counterparty,
+                        "counterparty_name": None,
+                        "transaction_type": row["transaction_type"],
+                        "amount": row["amount"],
+                        "days_outstanding": row["days_outstanding"],
+                    }
+                )
                 total_amount += row["amount"]
 
             return {"items": items, "total": len(items), "total_amount": total_amount}
@@ -679,7 +746,9 @@ async def list_unreconciled(
         raise
     except Exception as e:
         logger.error(f"Error listing unreconciled: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list unreconciled transactions")
+        raise HTTPException(
+            status_code=500, detail="Failed to list unreconciled transactions"
+        )
 
 
 @router.post("/reconcile", response_model=ReconcileResponse)
@@ -705,7 +774,8 @@ async def reconcile_transactions(request: Request, body: ReconcileRequest):
                           AND from_status = 'confirmed'
                           AND to_status = 'confirmed'
                         """,
-                        tx_id, ctx["tenant_id"]
+                        tx_id,
+                        ctx["tenant_id"],
                     )
                     if tx:
                         await conn.execute(
@@ -718,7 +788,8 @@ async def reconcile_transactions(request: Request, body: ReconcileRequest):
                                 to_status = 'reconciled'
                             WHERE id = $2
                             """,
-                            ctx["user_id"], tx_id
+                            ctx["user_id"],
+                            tx_id,
                         )
 
                         # Update IC balance
@@ -732,8 +803,10 @@ async def reconcile_transactions(request: Request, body: ReconcileRequest):
                               AND entity_a_tenant_id = $3
                               AND entity_b_tenant_id = $4
                             """,
-                            tx["amount"], ctx["tenant_id"],
-                            tx["from_entity_tenant_id"], tx["to_entity_tenant_id"]
+                            tx["amount"],
+                            ctx["tenant_id"],
+                            tx["from_entity_tenant_id"],
+                            tx["to_entity_tenant_id"],
                         )
 
                         reconciled += 1
@@ -742,7 +815,7 @@ async def reconcile_transactions(request: Request, body: ReconcileRequest):
                     "success": True,
                     "message": f"Reconciled {reconciled} transactions",
                     "reconciled_count": reconciled,
-                    "variance_total": total_variance
+                    "variance_total": total_variance,
                 }
 
     except HTTPException:
@@ -769,20 +842,26 @@ async def get_variances(request: Request):
                 ORDER BY transaction_date DESC
                 LIMIT 100
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             items = []
             total_variance = 0
             for row in rows:
-                items.append({
-                    "transaction_id": str(row["id"]),
-                    "transaction_number": row["transaction_number"],
-                    "from_amount": row["amount"],
-                    "to_amount": row["amount"] + row["variance_amount"],
-                    "variance": row["variance_amount"],
-                    "variance_percent": round(row["variance_amount"] / row["amount"] * 100, 2) if row["amount"] else 0
-                })
+                items.append(
+                    {
+                        "transaction_id": str(row["id"]),
+                        "transaction_number": row["transaction_number"],
+                        "from_amount": row["amount"],
+                        "to_amount": row["amount"] + row["variance_amount"],
+                        "variance": row["variance_amount"],
+                        "variance_percent": round(
+                            row["variance_amount"] / row["amount"] * 100, 2
+                        )
+                        if row["amount"]
+                        else 0,
+                    }
+                )
                 total_variance += row["variance_amount"]
 
             return {"success": True, "items": items, "total_variance": total_variance}
@@ -819,7 +898,7 @@ async def list_balances(request: Request):
                 WHERE icb.entity_a_tenant_id = $1 OR icb.entity_b_tenant_id = $1
                 ORDER BY ABS(icb.balance) DESC
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             items = []
@@ -835,15 +914,17 @@ async def list_balances(request: Request):
                     counterparty = row["entity_a_tenant_id"]
                     balance = -row["balance"]  # flip sign
 
-                items.append({
-                    "entity_tenant_id": counterparty,
-                    "entity_name": None,
-                    "balance": balance,
-                    "currency_code": None,
-                    "last_transaction_date": row["last_transaction_date"],
-                    "last_reconciled_date": row["last_reconciled_date"],
-                    "transaction_count": row["tx_count"],
-                })
+                items.append(
+                    {
+                        "entity_tenant_id": counterparty,
+                        "entity_name": None,
+                        "balance": balance,
+                        "currency_code": None,
+                        "last_transaction_date": row["last_transaction_date"],
+                        "last_reconciled_date": row["last_reconciled_date"],
+                        "transaction_count": row["tx_count"],
+                    }
+                )
 
                 if balance > 0:
                     total_receivable += balance
@@ -855,7 +936,7 @@ async def list_balances(request: Request):
                 "items": items,
                 "total_receivable": total_receivable,
                 "total_payable": total_payable,
-                "net_position": total_receivable - total_payable
+                "net_position": total_receivable - total_payable,
             }
 
     except HTTPException:
@@ -865,7 +946,9 @@ async def list_balances(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list balances")
 
 
-@router.get("/balances/{entity_tenant_id}", response_model=IntercompanyBalanceDetailResponse)
+@router.get(
+    "/balances/{entity_tenant_id}", response_model=IntercompanyBalanceDetailResponse
+)
 async def get_balance_with_entity(request: Request, entity_tenant_id: str):
     """Get balance with specific entity."""
     try:
@@ -880,7 +963,8 @@ async def get_balance_with_entity(request: Request, entity_tenant_id: str):
                 WHERE (entity_a_tenant_id = $1 AND entity_b_tenant_id = $2)
                    OR (entity_a_tenant_id = $2 AND entity_b_tenant_id = $1)
                 """,
-                ctx["tenant_id"], entity_tenant_id
+                ctx["tenant_id"],
+                entity_tenant_id,
             )
 
             balance = 0
@@ -904,7 +988,8 @@ async def get_balance_with_entity(request: Request, entity_tenant_id: str):
                 ORDER BY transaction_date DESC
                 LIMIT 20
                 """,
-                ctx["tenant_id"], entity_tenant_id
+                ctx["tenant_id"],
+                entity_tenant_id,
             )
 
             recent_tx = [
@@ -938,7 +1023,7 @@ async def get_balance_with_entity(request: Request, entity_tenant_id: str):
                     "last_reconciled_date": last_rec_date,
                     "transaction_count": len(recent_tx),
                 },
-                "recent_transactions": recent_tx
+                "recent_transactions": recent_tx,
             }
 
     except HTTPException:
@@ -968,13 +1053,15 @@ async def get_report(
             conditions = [
                 "(from_entity_tenant_id = $1 OR to_entity_tenant_id = $1)",
                 "transaction_date >= $2",
-                "transaction_date <= $3"
+                "transaction_date <= $3",
             ]
             params = [ctx["tenant_id"], start_date, end_date]
             param_idx = 4
 
             if entity_tenant_id:
-                conditions.append(f"(from_entity_tenant_id = ${param_idx} OR to_entity_tenant_id = ${param_idx})")
+                conditions.append(
+                    f"(from_entity_tenant_id = ${param_idx} OR to_entity_tenant_id = ${param_idx})"
+                )
                 params.append(entity_tenant_id)
                 param_idx += 1
 
@@ -990,7 +1077,7 @@ async def get_report(
                 WHERE {where_clause}
                 ORDER BY transaction_date
                 """,
-                *params
+                *params,
             )
 
             transactions = [
@@ -1014,8 +1101,16 @@ async def get_report(
             ]
 
             # Calculate summary
-            total_sent = sum(row["amount"] for row in rows if row["from_entity_tenant_id"] == ctx["tenant_id"])
-            total_received = sum(row["amount"] for row in rows if row["to_entity_tenant_id"] == ctx["tenant_id"])
+            total_sent = sum(
+                row["amount"]
+                for row in rows
+                if row["from_entity_tenant_id"] == ctx["tenant_id"]
+            )
+            total_received = sum(
+                row["amount"]
+                for row in rows
+                if row["to_entity_tenant_id"] == ctx["tenant_id"]
+            )
             reconciled_count = sum(1 for row in rows if row["is_reconciled"])
 
             return {
@@ -1028,8 +1123,8 @@ async def get_report(
                     "total_sent": total_sent,
                     "total_received": total_received,
                     "reconciled_count": reconciled_count,
-                    "unreconciled_count": len(transactions) - reconciled_count
-                }
+                    "unreconciled_count": len(transactions) - reconciled_count,
+                },
             }
 
     except HTTPException:
@@ -1067,7 +1162,7 @@ async def get_aging_report(request: Request):
                 GROUP BY counterparty
                 ORDER BY total DESC
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             items = [
@@ -1095,7 +1190,7 @@ async def get_aging_report(request: Request):
                 "success": True,
                 "as_of_date": today,
                 "items": items,
-                "totals": totals
+                "totals": totals,
             }
 
     except HTTPException:

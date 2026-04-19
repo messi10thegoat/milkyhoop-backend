@@ -4,13 +4,12 @@ Item Serials Router
 Serial number tracking for individual units.
 """
 from datetime import date
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.item_serials import (
     AdjustSerialRequest,
     AdjustSerialResponse,
@@ -30,22 +29,17 @@ from ..schemas.item_serials import (
     SerialMovementData,
     TransferSerialRequest,
     TransferSerialResponse,
-    UpdateItemSerialRequest,
-    UpdateItemSerialResponse,
     WarehouseSerialsResponse,
 )
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -60,6 +54,7 @@ def get_user_context(request: Request) -> dict:
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
+
 
 @router.get("", response_model=ItemSerialListResponse)
 async def list_item_serials(
@@ -76,7 +71,9 @@ async def list_item_serials(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["s.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -105,8 +102,7 @@ async def list_item_serials(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM item_serials s WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM item_serials s WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -123,11 +119,15 @@ async def list_item_serials(
             ORDER BY s.created_at DESC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         data = [ItemSerialData(**dict(row)) for row in rows]
-        return ItemSerialListResponse(data=data, total=total, has_more=(skip + limit) < total)
+        return ItemSerialListResponse(
+            data=data, total=total, has_more=(skip + limit) < total
+        )
 
 
 @router.get("/search", response_model=SearchSerialResponse)
@@ -140,17 +140,20 @@ async def search_serial_number(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM search_serial_number($1, $2)",
-            ctx["tenant_id"], serial_number
+            ctx["tenant_id"],
+            serial_number,
         )
 
         return SearchSerialResponse(
             query=serial_number,
             data=[SearchSerialResult(**dict(row)) for row in rows],
-            total=len(rows)
+            total=len(rows),
         )
 
 
@@ -161,7 +164,9 @@ async def get_item_serial(request: Request, serial_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -175,7 +180,8 @@ async def get_item_serial(request: Request, serial_id: UUID):
             LEFT JOIN item_batches b ON s.batch_id = b.id
             WHERE s.id = $1 AND s.tenant_id = $2
             """,
-            serial_id, ctx["tenant_id"]
+            serial_id,
+            ctx["tenant_id"],
         )
 
         if not row:
@@ -192,12 +198,11 @@ async def get_item_serial(request: Request, serial_id: UUID):
             WHERE sm.serial_id = $1
             ORDER BY sm.movement_date DESC
             """,
-            serial_id
+            serial_id,
         )
 
         data = ItemSerialDetailData(
-            **dict(row),
-            movements=[SerialMovementData(**dict(m)) for m in movements]
+            **dict(row), movements=[SerialMovementData(**dict(m)) for m in movements]
         )
 
         return ItemSerialDetailResponse(data=data)
@@ -211,15 +216,21 @@ async def create_item_serial(request: Request, body: CreateItemSerialRequest):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             # Check uniqueness
             existing = await conn.fetchval(
                 "SELECT id FROM item_serials WHERE tenant_id = $1 AND item_id = $2 AND serial_number = $3",
-                ctx["tenant_id"], body.item_id, body.serial_number
+                ctx["tenant_id"],
+                body.item_id,
+                body.serial_number,
             )
             if existing:
-                raise HTTPException(status_code=400, detail="Serial number already exists for this item")
+                raise HTTPException(
+                    status_code=400, detail="Serial number already exists for this item"
+                )
 
             row = await conn.fetchrow(
                 """
@@ -231,11 +242,23 @@ async def create_item_serial(request: Request, body: CreateItemSerialRequest):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 RETURNING *
                 """,
-                ctx["tenant_id"], body.item_id, body.serial_number, body.warehouse_id,
-                body.received_date or date.today(), body.warranty_start_date, body.warranty_expiry,
-                body.unit_cost, body.selling_price, body.purchase_order_id, body.bill_id,
-                body.supplier_serial, body.batch_id, body.condition, body.condition_notes,
-                body.notes, ctx.get("user_id")
+                ctx["tenant_id"],
+                body.item_id,
+                body.serial_number,
+                body.warehouse_id,
+                body.received_date or date.today(),
+                body.warranty_start_date,
+                body.warranty_expiry,
+                body.unit_cost,
+                body.selling_price,
+                body.purchase_order_id,
+                body.bill_id,
+                body.supplier_serial,
+                body.batch_id,
+                body.condition,
+                body.condition_notes,
+                body.notes,
+                ctx.get("user_id"),
             )
 
             serial_id = row["id"]
@@ -247,18 +270,30 @@ async def create_item_serial(request: Request, body: CreateItemSerialRequest):
                     tenant_id, serial_id, movement_type, to_warehouse_id, to_status, performed_by
                 ) VALUES ($1, $2, 'received', $3, 'available', $4)
                 """,
-                ctx["tenant_id"], serial_id, body.warehouse_id, ctx.get("user_id")
+                ctx["tenant_id"],
+                serial_id,
+                body.warehouse_id,
+                ctx.get("user_id"),
             )
 
-            item = await conn.fetchrow("SELECT sku as code, nama_produk as name FROM products WHERE id = $1", body.item_id)
-            wh = await conn.fetchrow("SELECT name FROM warehouses WHERE id = $1", body.warehouse_id) if body.warehouse_id else None
+            item = await conn.fetchrow(
+                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
+                body.item_id,
+            )
+            wh = (
+                await conn.fetchrow(
+                    "SELECT name FROM warehouses WHERE id = $1", body.warehouse_id
+                )
+                if body.warehouse_id
+                else None
+            )
 
             return CreateItemSerialResponse(
                 data=ItemSerialData(
                     **dict(row),
                     item_code=item["code"] if item else None,
                     item_name=item["name"] if item else None,
-                    warehouse_name=wh["name"] if wh else None
+                    warehouse_name=wh["name"] if wh else None,
                 )
             )
 
@@ -271,14 +306,18 @@ async def bulk_create_serials(request: Request, body: BulkCreateSerialsRequest):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             created = []
             for serial_number in body.serial_numbers:
                 # Check uniqueness
                 existing = await conn.fetchval(
                     "SELECT id FROM item_serials WHERE tenant_id = $1 AND item_id = $2 AND serial_number = $3",
-                    ctx["tenant_id"], body.item_id, serial_number
+                    ctx["tenant_id"],
+                    body.item_id,
+                    serial_number,
                 )
                 if existing:
                     continue  # Skip duplicates
@@ -291,9 +330,17 @@ async def bulk_create_serials(request: Request, body: BulkCreateSerialsRequest):
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     RETURNING *
                     """,
-                    ctx["tenant_id"], body.item_id, serial_number, body.warehouse_id,
-                    body.received_date or date.today(), body.unit_cost, body.purchase_order_id,
-                    body.bill_id, body.batch_id, body.condition, ctx.get("user_id")
+                    ctx["tenant_id"],
+                    body.item_id,
+                    serial_number,
+                    body.warehouse_id,
+                    body.received_date or date.today(),
+                    body.unit_cost,
+                    body.purchase_order_id,
+                    body.bill_id,
+                    body.batch_id,
+                    body.condition,
+                    ctx.get("user_id"),
                 )
 
                 # Create movement
@@ -303,42 +350,53 @@ async def bulk_create_serials(request: Request, body: BulkCreateSerialsRequest):
                         tenant_id, serial_id, movement_type, to_warehouse_id, to_status, performed_by
                     ) VALUES ($1, $2, 'received', $3, 'available', $4)
                     """,
-                    ctx["tenant_id"], row["id"], body.warehouse_id, ctx.get("user_id")
+                    ctx["tenant_id"],
+                    row["id"],
+                    body.warehouse_id,
+                    ctx.get("user_id"),
                 )
 
                 created.append(ItemSerialData(**dict(row)))
 
-            return BulkCreateSerialsResponse(
-                data=created,
-                created_count=len(created)
-            )
+            return BulkCreateSerialsResponse(data=created, created_count=len(created))
 
 
 @router.post("/{serial_id}/transfer", response_model=TransferSerialResponse)
-async def transfer_serial(request: Request, serial_id: UUID, body: TransferSerialRequest):
+async def transfer_serial(
+    request: Request, serial_id: UUID, body: TransferSerialRequest
+):
     """Transfer serial to another warehouse"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             serial = await conn.fetchrow(
                 "SELECT * FROM item_serials WHERE id = $1 AND tenant_id = $2",
-                serial_id, ctx["tenant_id"]
+                serial_id,
+                ctx["tenant_id"],
             )
 
             if not serial:
                 raise HTTPException(status_code=404, detail="Serial not found")
 
             if serial["status"] != "available":
-                raise HTTPException(status_code=400, detail="Only available serials can be transferred")
+                raise HTTPException(
+                    status_code=400, detail="Only available serials can be transferred"
+                )
 
             # Record movement
             movement_id = await conn.fetchval(
                 "SELECT record_serial_movement($1, $2, 'transferred', $3, NULL, NULL, NULL, NULL, $4, $5)",
-                ctx["tenant_id"], serial_id, body.to_warehouse_id, ctx.get("user_id"), body.notes
+                ctx["tenant_id"],
+                serial_id,
+                body.to_warehouse_id,
+                ctx.get("user_id"),
+                body.notes,
             )
 
             # Get updated serial
@@ -350,7 +408,7 @@ async def transfer_serial(request: Request, serial_id: UUID, body: TransferSeria
                 LEFT JOIN warehouses w ON s.warehouse_id = w.id
                 WHERE s.id = $1
                 """,
-                serial_id
+                serial_id,
             )
 
             movement = await conn.fetchrow(
@@ -361,28 +419,33 @@ async def transfer_serial(request: Request, serial_id: UUID, body: TransferSeria
                 LEFT JOIN warehouses tw ON sm.to_warehouse_id = tw.id
                 WHERE sm.id = $1
                 """,
-                movement_id
+                movement_id,
             )
 
             return TransferSerialResponse(
                 data=ItemSerialData(**dict(row)),
-                movement=SerialMovementData(**dict(movement))
+                movement=SerialMovementData(**dict(movement)),
             )
 
 
 @router.post("/{serial_id}/adjust", response_model=AdjustSerialResponse)
-async def adjust_serial_status(request: Request, serial_id: UUID, body: AdjustSerialRequest):
+async def adjust_serial_status(
+    request: Request, serial_id: UUID, body: AdjustSerialRequest
+):
     """Adjust serial status (mark as damaged, scrapped, etc.)"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             serial = await conn.fetchrow(
                 "SELECT * FROM item_serials WHERE id = $1 AND tenant_id = $2",
-                serial_id, ctx["tenant_id"]
+                serial_id,
+                ctx["tenant_id"],
             )
 
             if not serial:
@@ -396,7 +459,12 @@ async def adjust_serial_status(request: Request, serial_id: UUID, body: AdjustSe
 
             movement_id = await conn.fetchval(
                 "SELECT record_serial_movement($1, $2, $3, NULL, $4, 'adjustment', NULL, NULL, $5, $6)",
-                ctx["tenant_id"], serial_id, movement_type, body.status, ctx.get("user_id"), body.reason
+                ctx["tenant_id"],
+                serial_id,
+                movement_type,
+                body.status,
+                ctx.get("user_id"),
+                body.reason,
             )
 
             row = await conn.fetchrow(
@@ -407,7 +475,7 @@ async def adjust_serial_status(request: Request, serial_id: UUID, body: AdjustSe
                 LEFT JOIN warehouses w ON s.warehouse_id = w.id
                 WHERE s.id = $1
                 """,
-                serial_id
+                serial_id,
             )
 
             movement = await conn.fetchrow(
@@ -418,12 +486,12 @@ async def adjust_serial_status(request: Request, serial_id: UUID, body: AdjustSe
                 LEFT JOIN warehouses tw ON sm.to_warehouse_id = tw.id
                 WHERE sm.id = $1
                 """,
-                movement_id
+                movement_id,
             )
 
             return AdjustSerialResponse(
                 data=ItemSerialData(**dict(row)),
-                movement=SerialMovementData(**dict(movement))
+                movement=SerialMovementData(**dict(movement)),
             )
 
 
@@ -434,30 +502,34 @@ async def get_serial_history(request: Request, serial_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         serial = await conn.fetchrow(
             "SELECT id, serial_number FROM item_serials WHERE id = $1 AND tenant_id = $2",
-            serial_id, ctx["tenant_id"]
+            serial_id,
+            ctx["tenant_id"],
         )
 
         if not serial:
             raise HTTPException(status_code=404, detail="Serial not found")
 
         rows = await conn.fetch(
-            "SELECT * FROM get_serial_history($1, $2)",
-            ctx["tenant_id"], serial_id
+            "SELECT * FROM get_serial_history($1, $2)", ctx["tenant_id"], serial_id
         )
 
         return SerialHistoryResponse(
             serial_id=serial_id,
             serial_number=serial["serial_number"],
             data=[SerialMovementData(**dict(row)) for row in rows],
-            total=len(rows)
+            total=len(rows),
         )
 
 
-@router.get("/items/{item_id}/serials/available", response_model=AvailableSerialsResponse)
+@router.get(
+    "/items/{item_id}/serials/available", response_model=AvailableSerialsResponse
+)
 async def get_available_serials_for_item(
     request: Request,
     item_id: UUID,
@@ -469,22 +541,29 @@ async def get_available_serials_for_item(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_available_serials($1, $2, $3, $4)",
-            ctx["tenant_id"], item_id, warehouse_id, limit
+            ctx["tenant_id"],
+            item_id,
+            warehouse_id,
+            limit,
         )
 
         return AvailableSerialsResponse(
             item_id=item_id,
             warehouse_id=warehouse_id,
             data=[AvailableSerial(**dict(row)) for row in rows],
-            total=len(rows)
+            total=len(rows),
         )
 
 
-@router.get("/warehouses/{warehouse_id}/serials", response_model=WarehouseSerialsResponse)
+@router.get(
+    "/warehouses/{warehouse_id}/serials", response_model=WarehouseSerialsResponse
+)
 async def get_warehouse_serials(
     request: Request,
     warehouse_id: UUID,
@@ -497,11 +576,14 @@ async def get_warehouse_serials(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         wh = await conn.fetchrow(
             "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
 
         if not wh:
@@ -512,7 +594,9 @@ async def get_warehouse_serials(
             SELECT COUNT(*) FROM item_serials
             WHERE tenant_id = $1 AND warehouse_id = $2 AND status = $3
             """,
-            ctx["tenant_id"], warehouse_id, status
+            ctx["tenant_id"],
+            warehouse_id,
+            status,
         )
 
         rows = await conn.fetch(
@@ -524,12 +608,17 @@ async def get_warehouse_serials(
             ORDER BY s.serial_number ASC
             LIMIT $4 OFFSET $5
             """,
-            ctx["tenant_id"], warehouse_id, status, limit, skip
+            ctx["tenant_id"],
+            warehouse_id,
+            status,
+            limit,
+            skip,
         )
 
         available_count = await conn.fetchval(
             "SELECT COUNT(*) FROM item_serials WHERE tenant_id = $1 AND warehouse_id = $2 AND status = 'available'",
-            ctx["tenant_id"], warehouse_id
+            ctx["tenant_id"],
+            warehouse_id,
         )
 
         return WarehouseSerialsResponse(
@@ -537,5 +626,5 @@ async def get_warehouse_serials(
             warehouse_name=wh["name"],
             data=[ItemSerialData(**dict(row)) for row in rows],
             total=total,
-            available_count=available_count
+            available_count=available_count,
         )

@@ -3,28 +3,21 @@ Payroll Config Router — BPJS rates + Monthly Recap
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional
 from datetime import date as date_type
 import logging
 import asyncpg
 
 from ..schemas.payroll import UpdateBpjsConfigRequest
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -35,6 +28,23 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
+
+
+@router.get("")
+@router.get("/")
+async def get_payroll_config(request: Request):
+    """Get combined payroll configuration (BPJS + general settings)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        rows = await conn.fetch(
+            """SELECT DISTINCT ON (component) *
+               FROM bpjs_config WHERE tenant_id = $1 AND is_active = true
+               ORDER BY component, effective_date DESC""",
+            ctx["tenant_id"],
+        )
+        return {"success": True, "data": {"bpjs": [dict(r) for r in rows]}}
 
 
 @router.get("/bpjs")

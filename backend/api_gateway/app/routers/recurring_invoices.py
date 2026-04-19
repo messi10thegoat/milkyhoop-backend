@@ -11,7 +11,6 @@ import asyncpg
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.recurring_invoices import (
     CreateRecurringInvoiceRequest,
     CreateRecurringInvoiceResponse,
@@ -29,21 +28,16 @@ from ..schemas.recurring_invoices import (
     RecurringInvoiceItemData,
     RecurringInvoiceListResponse,
     ResumeRecurringInvoiceResponse,
-    UpdateRecurringInvoiceRequest,
-    UpdateRecurringInvoiceResponse,
 )
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -55,8 +49,13 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-def calculate_next_date(current: date, frequency: str, interval: int = 1,
-                        day_of_month: int = None, day_of_week: int = None) -> date:
+def calculate_next_date(
+    current: date,
+    frequency: str,
+    interval: int = 1,
+    day_of_month: int = None,
+    day_of_week: int = None,
+) -> date:
     """Calculate next invoice date based on frequency"""
     if frequency == "daily":
         return current + timedelta(days=interval)
@@ -90,6 +89,7 @@ def calculate_next_date(current: date, frequency: str, interval: int = 1,
 # ENDPOINTS
 # ============================================================================
 
+
 @router.get("", response_model=RecurringInvoiceListResponse)
 async def list_recurring_invoices(
     request: Request,
@@ -103,7 +103,9 @@ async def list_recurring_invoices(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["ri.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -122,8 +124,7 @@ async def list_recurring_invoices(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM recurring_invoices ri WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM recurring_invoices ri WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -135,11 +136,15 @@ async def list_recurring_invoices(
             ORDER BY ri.next_invoice_date ASC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         data = [RecurringInvoiceData(**dict(row)) for row in rows]
-        return RecurringInvoiceListResponse(data=data, total=total, has_more=(skip + limit) < total)
+        return RecurringInvoiceListResponse(
+            data=data, total=total, has_more=(skip + limit) < total
+        )
 
 
 @router.get("/due", response_model=DueRecurringInvoicesResponse)
@@ -152,14 +157,19 @@ async def get_due_recurring_invoices(request: Request, as_of_date: date = None):
         as_of_date = date.today()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_due_recurring_invoices($1, $2)",
-            ctx["tenant_id"], as_of_date
+            ctx["tenant_id"],
+            as_of_date,
         )
 
-        return DueRecurringInvoicesResponse(data=[dict(row) for row in rows], total=len(rows))
+        return DueRecurringInvoicesResponse(
+            data=[dict(row) for row in rows], total=len(rows)
+        )
 
 
 @router.get("/{recurring_id}", response_model=RecurringInvoiceDetailResponse)
@@ -169,7 +179,9 @@ async def get_recurring_invoice(request: Request, recurring_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -178,7 +190,8 @@ async def get_recurring_invoice(request: Request, recurring_id: UUID):
             LEFT JOIN warehouses w ON ri.warehouse_id = w.id
             WHERE ri.id = $1 AND ri.tenant_id = $2
             """,
-            recurring_id, ctx["tenant_id"]
+            recurring_id,
+            ctx["tenant_id"],
         )
 
         if not row:
@@ -186,36 +199,41 @@ async def get_recurring_invoice(request: Request, recurring_id: UUID):
 
         items = await conn.fetch(
             "SELECT * FROM recurring_invoice_items WHERE recurring_invoice_id = $1 ORDER BY line_number",
-            recurring_id
+            recurring_id,
         )
 
         data = RecurringInvoiceDetailData(
             **dict(row),
-            items=[RecurringInvoiceItemData(**dict(item)) for item in items]
+            items=[RecurringInvoiceItemData(**dict(item)) for item in items],
         )
 
         return RecurringInvoiceDetailResponse(data=data)
 
 
 @router.post("", response_model=CreateRecurringInvoiceResponse)
-async def create_recurring_invoice(request: Request, body: CreateRecurringInvoiceRequest):
+async def create_recurring_invoice(
+    request: Request, body: CreateRecurringInvoiceRequest
+):
     """Create a new recurring invoice template"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             # Verify customer
             customer = await conn.fetchrow(
-                "SELECT id, name FROM customers WHERE id = $1 AND tenant_id = $2",
-                body.customer_id, ctx["tenant_id"]
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                str(body.customer_id),
+                ctx["tenant_id"],
             )
             if not customer:
                 raise HTTPException(status_code=400, detail="Customer not found")
 
-            customer_name = body.customer_name or customer["name"]
+            customer_name = body.customer_name or customer["nama"]
 
             # Calculate initial next_invoice_date
             next_invoice_date = body.start_date
@@ -232,14 +250,16 @@ async def create_recurring_invoice(request: Request, body: CreateRecurringInvoic
                 item_tax = int(after_discount * item.tax_rate / 100)
                 item_total = after_discount + item_tax
 
-                items_data.append({
-                    **item.model_dump(),
-                    "subtotal": item_subtotal,
-                    "discount_amount": item_discount,
-                    "tax_amount": item_tax,
-                    "line_total": item_total,
-                    "line_number": idx,
-                })
+                items_data.append(
+                    {
+                        **item.model_dump(),
+                        "subtotal": item_subtotal,
+                        "discount_amount": item_discount,
+                        "tax_amount": item_tax,
+                        "line_total": item_total,
+                        "line_number": idx,
+                    }
+                )
 
                 subtotal += item_subtotal
                 tax_amount += item_tax
@@ -265,13 +285,31 @@ async def create_recurring_invoice(request: Request, body: CreateRecurringInvoic
                 )
                 RETURNING *
                 """,
-                ctx["tenant_id"], body.template_name, body.template_code,
-                body.customer_id, customer_name, body.warehouse_id,
-                body.frequency, body.interval_count, body.day_of_month, body.day_of_week,
-                body.start_date, body.end_date, next_invoice_date, body.due_days, body.payment_terms,
-                subtotal, body.discount_percent, discount_amount, tax_amount, total_amount,
-                body.auto_send, body.auto_post, body.invoice_notes, body.internal_notes,
-                ctx.get("user_id")
+                ctx["tenant_id"],
+                body.template_name,
+                body.template_code,
+                str(body.customer_id),
+                customer_name,
+                body.warehouse_id,
+                body.frequency,
+                body.interval_count,
+                body.day_of_month,
+                body.day_of_week,
+                body.start_date,
+                body.end_date,
+                next_invoice_date,
+                body.due_days,
+                body.payment_terms,
+                subtotal,
+                body.discount_percent,
+                discount_amount,
+                tax_amount,
+                total_amount,
+                body.auto_send,
+                body.auto_post,
+                body.invoice_notes,
+                body.internal_notes,
+                ctx.get("user_id"),
             )
 
             recurring_id = row["id"]
@@ -288,11 +326,22 @@ async def create_recurring_invoice(request: Request, body: CreateRecurringInvoic
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     RETURNING *
                     """,
-                    recurring_id, item.get("item_id"), item.get("item_code"), item.get("item_name"),
-                    item["description"], item["quantity"], item.get("unit"), item["unit_price"],
-                    item.get("discount_percent", 0), item["discount_amount"],
-                    item.get("tax_id"), item.get("tax_rate", 0), item["tax_amount"],
-                    item["subtotal"], item["line_total"], item["line_number"]
+                    recurring_id,
+                    item.get("item_id"),
+                    item.get("item_code"),
+                    item.get("item_name"),
+                    item["description"],
+                    item["quantity"],
+                    item.get("unit"),
+                    item["unit_price"],
+                    item.get("discount_percent", 0),
+                    item["discount_amount"],
+                    item.get("tax_id"),
+                    item.get("tax_rate", 0),
+                    item["tax_amount"],
+                    item["subtotal"],
+                    item["line_total"],
+                    item["line_number"],
                 )
                 final_items.append(RecurringInvoiceItemData(**dict(item_row)))
 
@@ -302,24 +351,31 @@ async def create_recurring_invoice(request: Request, body: CreateRecurringInvoic
 
 
 @router.post("/{recurring_id}/pause", response_model=PauseRecurringInvoiceResponse)
-async def pause_recurring_invoice(request: Request, recurring_id: UUID, body: PauseRecurringInvoiceRequest = None):
+async def pause_recurring_invoice(
+    request: Request, recurring_id: UUID, body: PauseRecurringInvoiceRequest = None
+):
     """Pause a recurring invoice"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM recurring_invoices WHERE id = $1 AND tenant_id = $2",
-            recurring_id, ctx["tenant_id"]
+            recurring_id,
+            ctx["tenant_id"],
         )
 
         if not existing:
             raise HTTPException(status_code=404, detail="Recurring invoice not found")
 
         if existing["status"] != "active":
-            raise HTTPException(status_code=400, detail="Can only pause active recurring invoices")
+            raise HTTPException(
+                status_code=400, detail="Can only pause active recurring invoices"
+            )
 
         reason = body.reason if body else None
 
@@ -330,7 +386,9 @@ async def pause_recurring_invoice(request: Request, recurring_id: UUID, body: Pa
             WHERE id = $1
             RETURNING *
             """,
-            recurring_id, ctx.get("user_id"), reason
+            recurring_id,
+            ctx.get("user_id"),
+            reason,
         )
 
         return PauseRecurringInvoiceResponse(data=RecurringInvoiceData(**dict(row)))
@@ -343,18 +401,23 @@ async def resume_recurring_invoice(request: Request, recurring_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM recurring_invoices WHERE id = $1 AND tenant_id = $2",
-            recurring_id, ctx["tenant_id"]
+            recurring_id,
+            ctx["tenant_id"],
         )
 
         if not existing:
             raise HTTPException(status_code=404, detail="Recurring invoice not found")
 
         if existing["status"] != "paused":
-            raise HTTPException(status_code=400, detail="Can only resume paused recurring invoices")
+            raise HTTPException(
+                status_code=400, detail="Can only resume paused recurring invoices"
+            )
 
         # Recalculate next_invoice_date if it's in the past
         next_date = existing["next_invoice_date"]
@@ -365,7 +428,7 @@ async def resume_recurring_invoice(request: Request, recurring_id: UUID):
                 existing["frequency"],
                 existing["interval_count"],
                 existing["day_of_month"],
-                existing["day_of_week"]
+                existing["day_of_week"],
             )
 
         row = await conn.fetchrow(
@@ -376,7 +439,8 @@ async def resume_recurring_invoice(request: Request, recurring_id: UUID):
             WHERE id = $1
             RETURNING *
             """,
-            recurring_id, next_date
+            recurring_id,
+            next_date,
         )
 
         return ResumeRecurringInvoiceResponse(data=RecurringInvoiceData(**dict(row)))
@@ -390,23 +454,29 @@ async def generate_invoice(request: Request, recurring_id: UUID):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             template = await conn.fetchrow(
                 "SELECT * FROM recurring_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                recurring_id, ctx["tenant_id"]
+                recurring_id,
+                ctx["tenant_id"],
             )
 
             if not template:
-                raise HTTPException(status_code=404, detail="Recurring invoice not found")
+                raise HTTPException(
+                    status_code=404, detail="Recurring invoice not found"
+                )
 
             if template["status"] != "active":
-                raise HTTPException(status_code=400, detail="Recurring invoice is not active")
+                raise HTTPException(
+                    status_code=400, detail="Recurring invoice is not active"
+                )
 
             # Generate invoice number
             invoice_number = await conn.fetchval(
-                "SELECT generate_invoice_number($1)",
-                ctx["tenant_id"]
+                "SELECT generate_invoice_number($1)", ctx["tenant_id"]
             )
 
             invoice_date = template["next_invoice_date"]
@@ -423,11 +493,21 @@ async def generate_invoice(request: Request, recurring_id: UUID):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, true, 'draft', $15)
                 RETURNING id, invoice_number
                 """,
-                ctx["tenant_id"], invoice_number, invoice_date, due_date,
-                template["customer_id"], template["customer_name"], template["warehouse_id"],
-                template["subtotal"], template["discount_percent"], template["discount_amount"],
-                template["tax_amount"], template["total_amount"], template["invoice_notes"],
-                recurring_id, ctx.get("user_id")
+                ctx["tenant_id"],
+                invoice_number,
+                invoice_date,
+                due_date,
+                template["customer_id"],
+                template["customer_name"],
+                template["warehouse_id"],
+                template["subtotal"],
+                template["discount_percent"],
+                template["discount_amount"],
+                template["tax_amount"],
+                template["total_amount"],
+                template["invoice_notes"],
+                recurring_id,
+                ctx.get("user_id"),
             )
 
             invoice_id = invoice_row["id"]
@@ -435,7 +515,7 @@ async def generate_invoice(request: Request, recurring_id: UUID):
             # Copy items
             template_items = await conn.fetch(
                 "SELECT * FROM recurring_invoice_items WHERE recurring_invoice_id = $1",
-                recurring_id
+                recurring_id,
             )
 
             for item in template_items:
@@ -447,11 +527,22 @@ async def generate_invoice(request: Request, recurring_id: UUID):
                         tax_id, tax_rate, tax_amount, subtotal, line_total, line_number
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     """,
-                    invoice_id, item["item_id"], item["item_code"], item["item_name"],
-                    item["description"], item["quantity"], item["unit"], item["unit_price"],
-                    item["discount_percent"], item["discount_amount"], item["tax_id"],
-                    item["tax_rate"], item["tax_amount"], item["subtotal"], item["line_total"],
-                    item["line_number"]
+                    invoice_id,
+                    item["item_id"],
+                    item["item_code"],
+                    item["item_name"],
+                    item["description"],
+                    item["quantity"],
+                    item["unit"],
+                    item["unit_price"],
+                    item["discount_percent"],
+                    item["discount_amount"],
+                    item["tax_id"],
+                    item["tax_rate"],
+                    item["tax_amount"],
+                    item["subtotal"],
+                    item["line_total"],
+                    item["line_number"],
                 )
 
             # Calculate next invoice date
@@ -460,7 +551,7 @@ async def generate_invoice(request: Request, recurring_id: UUID):
                 template["frequency"],
                 template["interval_count"],
                 template["day_of_month"],
-                template["day_of_week"]
+                template["day_of_week"],
             )
 
             # Check if should complete
@@ -478,13 +569,17 @@ async def generate_invoice(request: Request, recurring_id: UUID):
                     status = $5, updated_at = NOW()
                 WHERE id = $1
                 """,
-                recurring_id, next_date, invoice_date, template["total_amount"], new_status
+                recurring_id,
+                next_date,
+                invoice_date,
+                template["total_amount"],
+                new_status,
             )
 
             return GenerateInvoiceResponse(
                 invoice_id=invoice_id,
                 invoice_number=invoice_number,
-                next_invoice_date=next_date
+                next_invoice_date=next_date,
             )
 
 
@@ -499,39 +594,43 @@ async def process_due_invoices(request: Request):
     failed = 0
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         due_invoices = await conn.fetch(
             "SELECT * FROM get_due_recurring_invoices($1, $2)",
-            ctx["tenant_id"], date.today()
+            ctx["tenant_id"],
+            date.today(),
         )
 
         for due in due_invoices:
             try:
                 # Generate each invoice
                 result = await generate_invoice(request, due["id"])
-                results.append(ProcessDueResult(
-                    recurring_invoice_id=due["id"],
-                    template_name=due["template_name"],
-                    success=True,
-                    invoice_id=result.invoice_id,
-                    invoice_number=result.invoice_number
-                ))
+                results.append(
+                    ProcessDueResult(
+                        recurring_invoice_id=due["id"],
+                        template_name=due["template_name"],
+                        success=True,
+                        invoice_id=result.invoice_id,
+                        invoice_number=result.invoice_number,
+                    )
+                )
                 succeeded += 1
             except Exception as e:
-                results.append(ProcessDueResult(
-                    recurring_invoice_id=due["id"],
-                    template_name=due["template_name"],
-                    success=False,
-                    error=str(e)
-                ))
+                results.append(
+                    ProcessDueResult(
+                        recurring_invoice_id=due["id"],
+                        template_name=due["template_name"],
+                        success=False,
+                        error=str(e),
+                    )
+                )
                 failed += 1
 
     return ProcessDueResponse(
-        processed=len(results),
-        succeeded=succeeded,
-        failed=failed,
-        results=results
+        processed=len(results), succeeded=succeeded, failed=failed, results=results
     )
 
 
@@ -546,11 +645,14 @@ async def get_recurring_invoice_history(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         template = await conn.fetchrow(
             "SELECT id, template_name FROM recurring_invoices WHERE id = $1 AND tenant_id = $2",
-            recurring_id, ctx["tenant_id"]
+            recurring_id,
+            ctx["tenant_id"],
         )
 
         if not template:
@@ -564,12 +666,13 @@ async def get_recurring_invoice_history(
             ORDER BY invoice_date DESC
             LIMIT $2
             """,
-            recurring_id, limit
+            recurring_id,
+            limit,
         )
 
         return RecurringInvoiceHistoryResponse(
             recurring_invoice_id=recurring_id,
             template_name=template["template_name"],
             data=[GeneratedInvoice(**dict(row)) for row in rows],
-            total=len(rows)
+            total=len(rows),
         )

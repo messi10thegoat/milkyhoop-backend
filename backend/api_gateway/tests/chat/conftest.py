@@ -64,7 +64,7 @@ class TestSuite:
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(
                 CHAT_URL,
-                json={"text": text, "conversation_id": conv_id},
+                json={"text": text, "conversation_id": conv_id, "session_id": conv_id},
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",

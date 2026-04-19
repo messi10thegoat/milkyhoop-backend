@@ -6,21 +6,22 @@ Linked via tax_invoice_sources junction table (M:N).
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional, List
-from datetime import date
+from typing import Optional
 import logging
 import asyncpg
 
 from ..schemas.tax_invoices import (
-    TaxInvoiceCreate, TaxInvoiceBulkCreate, TaxInvoiceStatusUpdate,
-    TaxInvoiceCancel, TaxInvoiceReplace, BulkAssignNSFP,
+    TaxInvoiceCreate,
+    TaxInvoiceBulkCreate,
+    TaxInvoiceStatusUpdate,
+    TaxInvoiceCancel,
+    TaxInvoiceReplace,
+    BulkAssignNSFP,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
 
 VALID_TRANSITIONS = {
     "draft": ["nsfp_assigned", "cancelled"],
@@ -32,17 +33,14 @@ VALID_TRANSITIONS = {
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     if not user.get("tenant_id"):
@@ -54,9 +52,9 @@ def row_to_dict(row) -> dict:
     """Convert asyncpg Record to dict with UUID→str conversion."""
     d = dict(row)
     for k, v in d.items():
-        if hasattr(v, 'hex'):  # UUID
+        if hasattr(v, "hex"):  # UUID
             d[k] = str(v)
-        elif hasattr(v, 'isoformat'):  # date/datetime
+        elif hasattr(v, "isoformat"):  # date/datetime
             d[k] = v.isoformat()
     return d
 
@@ -67,20 +65,28 @@ async def get_pkp_info(conn, tenant_id: str):
         "SELECT is_pkp, npwp_pkp, nitku, nama_pkp, alamat_pkp, "
         "default_kode_transaksi, negara "
         "FROM tax_info WHERE tenant_id = $1",
-        tenant_id
+        tenant_id,
     )
     if not pkp or not pkp["is_pkp"]:
-        raise HTTPException(400, "Tenant bukan PKP. Aktifkan PKP di Settings terlebih dahulu.")
+        raise HTTPException(
+            400, "Tenant bukan PKP. Aktifkan PKP di Settings terlebih dahulu."
+        )
     if not pkp["npwp_pkp"]:
         raise HTTPException(400, "NPWP PKP belum diisi. Lengkapi di Settings > PKP.")
     return pkp
 
 
 async def build_tax_invoice_from_sources(
-    conn, tenant_id: str, user_id, source_type: str,
-    source_ids: list, faktur_date_override=None,
-    kode_override=None, email_override=None,
-    fg_pengganti: int = 0, replaces_id=None,
+    conn,
+    tenant_id: str,
+    user_id,
+    source_type: str,
+    source_ids: list,
+    faktur_date_override=None,
+    kode_override=None,
+    email_override=None,
+    fg_pengganti: int = 0,
+    replaces_id=None,
 ):
     """Core logic: create tax_invoice + items + sources from source documents.
     Supports: sales_invoice, credit_note, vendor_credit."""
@@ -102,21 +108,29 @@ async def build_tax_invoice_from_sources(
                 "SELECT id, status, customer_id, invoice_number, invoice_date, "
                 "customer_npwp, customer_nik, subtotal, tax_amount, total_amount, kode_transaksi "
                 "FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if not inv:
                 raise HTTPException(404, f"Invoice {source_id} tidak ditemukan")
             if inv["status"] not in ("posted", "paid", "partial"):
-                raise HTTPException(400, f"Invoice {inv['invoice_number']} belum posted (status: {inv['status']})")
+                raise HTTPException(
+                    400,
+                    f"Invoice {inv['invoice_number']} belum posted (status: {inv['status']})",
+                )
             existing = await conn.fetchval(
                 "SELECT ti.id FROM tax_invoice_sources tis "
                 "JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id "
                 "WHERE tis.source_type = 'sales_invoice' AND tis.source_id = $1 "
                 "AND ti.tenant_id = $2 AND ti.status NOT IN ('cancelled', 'replaced')",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if existing:
-                raise HTTPException(400, f"Invoice {inv['invoice_number']} sudah punya faktur pajak aktif")
+                raise HTTPException(
+                    400,
+                    f"Invoice {inv['invoice_number']} sudah punya faktur pajak aktif",
+                )
             invoices.append(inv)
             referensi_parts.append(inv["invoice_number"])
 
@@ -124,22 +138,34 @@ async def build_tax_invoice_from_sources(
         if len(invoices) > 1:
             for inv in invoices[1:]:
                 if inv["customer_id"] != first_cust:
-                    raise HTTPException(400, "Faktur gabungan hanya bisa untuk customer yang sama")
+                    raise HTTPException(
+                        400, "Faktur gabungan hanya bisa untuk customer yang sama"
+                    )
 
         customer = await conn.fetchrow(
             "SELECT display_name, tax_id, nik, is_pkp, alamat, nitku, negara, "
             "nomor_dokumen, jenis_id, email "
             "FROM customers WHERE id = $1 AND tenant_id = $2",
-            first_cust, tenant_id
+            first_cust,
+            tenant_id,
         )
         faktur_date = faktur_date_override or invoices[0]["invoice_date"]
-        kode = kode_override or invoices[0].get("kode_transaksi") or pkp["default_kode_transaksi"] or "01"
-        npwp_pembeli = (customer["tax_id"] if customer else invoices[0]["customer_npwp"]) or None
-        nik_pembeli = (customer["nik"] if customer else invoices[0]["customer_nik"]) or None
+        kode = (
+            kode_override
+            or invoices[0].get("kode_transaksi")
+            or pkp["default_kode_transaksi"]
+            or "01"
+        )
+        npwp_pembeli = (
+            customer["tax_id"] if customer else invoices[0]["customer_npwp"]
+        ) or None
+        nik_pembeli = (
+            customer["nik"] if customer else invoices[0]["customer_nik"]
+        ) or None
         nama_pembeli = customer["display_name"] if customer else "Unknown"
         alamat_pembeli = customer["alamat"] if customer else None
-        jenis_id = (customer["jenis_id"] if customer and customer["jenis_id"] else "TIN")
-        negara = (customer["negara"] if customer and customer["negara"] else "IDN")
+        jenis_id = customer["jenis_id"] if customer and customer["jenis_id"] else "TIN"
+        negara = customer["negara"] if customer and customer["negara"] else "IDN"
         nitku_pembeli = customer["nitku"] if customer else None
         nomor_dokumen = customer["nomor_dokumen"] if customer else None
         email = email_override or (customer["email"] if customer else None)
@@ -162,14 +188,20 @@ async def build_tax_invoice_from_sources(
                 "original_invoice_id, original_invoice_number, "
                 "subtotal, tax_rate, tax_amount, total_amount, tax_invoice_id "
                 "FROM credit_notes WHERE id = $1 AND tenant_id = $2",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if not cn:
                 raise HTTPException(404, f"Credit note {source_id} tidak ditemukan")
             if cn["status"] == "draft":
-                raise HTTPException(400, f"Credit note {cn['credit_note_number']} belum di-post")
+                raise HTTPException(
+                    400, f"Credit note {cn['credit_note_number']} belum di-post"
+                )
             if cn["tax_invoice_id"]:
-                raise HTTPException(400, f"Credit note {cn['credit_note_number']} sudah punya faktur pajak")
+                raise HTTPException(
+                    400,
+                    f"Credit note {cn['credit_note_number']} sudah punya faktur pajak",
+                )
 
             # Check not already linked
             existing = await conn.fetchval(
@@ -177,10 +209,14 @@ async def build_tax_invoice_from_sources(
                 "JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id "
                 "WHERE tis.source_type = 'credit_note' AND tis.source_id = $1 "
                 "AND ti.tenant_id = $2 AND ti.status NOT IN ('cancelled', 'replaced')",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if existing:
-                raise HTTPException(400, f"Credit note {cn['credit_note_number']} sudah punya faktur pajak aktif")
+                raise HTTPException(
+                    400,
+                    f"Credit note {cn['credit_note_number']} sudah punya faktur pajak aktif",
+                )
 
             # Find original tax invoice (retur reference)
             if cn["original_invoice_id"]:
@@ -191,7 +227,8 @@ async def build_tax_invoice_from_sources(
                     "WHERE tis.source_type = 'sales_invoice' AND tis.source_id = $1 "
                     "AND ti.tenant_id = $2 AND ti.status NOT IN ('cancelled', 'replaced') "
                     "ORDER BY ti.created_at DESC LIMIT 1",
-                    cn["original_invoice_id"], tenant_id
+                    cn["original_invoice_id"],
+                    tenant_id,
                 )
                 if orig_ti:
                     retur_of_tax_invoice_id = orig_ti["id"]
@@ -205,16 +242,21 @@ async def build_tax_invoice_from_sources(
             "SELECT display_name, tax_id, nik, is_pkp, alamat, nitku, negara, "
             "nomor_dokumen, jenis_id, email "
             "FROM customers WHERE id = $1 AND tenant_id = $2",
-            first_cust, tenant_id
+            first_cust,
+            tenant_id,
         )
         faktur_date = faktur_date_override or invoices[0]["credit_note_date"]
         kode = kode_override or pkp["default_kode_transaksi"] or "01"
         npwp_pembeli = (customer["tax_id"] if customer else None) or None
         nik_pembeli = (customer["nik"] if customer else None) or None
-        nama_pembeli = customer["display_name"] if customer else (invoices[0]["customer_name"] or "Unknown")
+        nama_pembeli = (
+            customer["display_name"]
+            if customer
+            else (invoices[0]["customer_name"] or "Unknown")
+        )
         alamat_pembeli = customer["alamat"] if customer else None
-        jenis_id = (customer["jenis_id"] if customer and customer["jenis_id"] else "TIN")
-        negara = (customer["negara"] if customer and customer["negara"] else "IDN")
+        jenis_id = customer["jenis_id"] if customer and customer["jenis_id"] else "TIN"
+        negara = customer["negara"] if customer and customer["negara"] else "IDN"
         nitku_pembeli = customer["nitku"] if customer else None
         nomor_dokumen = customer["nomor_dokumen"] if customer else None
         email = email_override or (customer["email"] if customer else None)
@@ -237,24 +279,33 @@ async def build_tax_invoice_from_sources(
                 "original_bill_id, original_bill_number, "
                 "subtotal, tax_rate, tax_amount, total_amount, tax_invoice_id "
                 "FROM vendor_credits WHERE id = $1 AND tenant_id = $2",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if not vc:
                 raise HTTPException(404, f"Vendor credit {source_id} tidak ditemukan")
             if vc["status"] == "draft":
-                raise HTTPException(400, f"Vendor credit {vc['credit_number']} belum di-post")
+                raise HTTPException(
+                    400, f"Vendor credit {vc['credit_number']} belum di-post"
+                )
             if vc["tax_invoice_id"]:
-                raise HTTPException(400, f"Vendor credit {vc['credit_number']} sudah punya faktur pajak")
+                raise HTTPException(
+                    400, f"Vendor credit {vc['credit_number']} sudah punya faktur pajak"
+                )
 
             existing = await conn.fetchval(
                 "SELECT ti.id FROM tax_invoice_sources tis "
                 "JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id "
                 "WHERE tis.source_type = 'vendor_credit' AND tis.source_id = $1 "
                 "AND ti.tenant_id = $2 AND ti.status NOT IN ('cancelled', 'replaced')",
-                source_id, tenant_id
+                source_id,
+                tenant_id,
             )
             if existing:
-                raise HTTPException(400, f"Vendor credit {vc['credit_number']} sudah punya faktur pajak aktif")
+                raise HTTPException(
+                    400,
+                    f"Vendor credit {vc['credit_number']} sudah punya faktur pajak aktif",
+                )
 
             # Find original tax invoice masukan (retur reference)
             if vc["original_bill_id"]:
@@ -265,7 +316,8 @@ async def build_tax_invoice_from_sources(
                     "WHERE tis.source_type = 'bill' AND tis.source_id = $1 "
                     "AND ti.tenant_id = $2 AND ti.status NOT IN ('cancelled', 'replaced') "
                     "ORDER BY ti.created_at DESC LIMIT 1",
-                    vc["original_bill_id"], tenant_id
+                    vc["original_bill_id"],
+                    tenant_id,
                 )
                 if orig_ti:
                     retur_of_tax_invoice_id = orig_ti["id"]
@@ -278,7 +330,8 @@ async def build_tax_invoice_from_sources(
         vendor = await conn.fetchrow(
             "SELECT name, tax_id, nik, address, nitku, negara "
             "FROM vendors WHERE id = $1 AND tenant_id = $2",
-            first_vendor_id, tenant_id
+            first_vendor_id,
+            tenant_id,
         )
 
         faktur_date = faktur_date_override or invoices[0]["credit_date"]
@@ -288,7 +341,9 @@ async def build_tax_invoice_from_sources(
         # Penjual = VENDOR (they are the seller)
         npwp_penjual = vendor["tax_id"] if vendor else None
         nitku_penjual = vendor["nitku"] if vendor else None
-        nama_penjual = vendor["name"] if vendor else (invoices[0]["vendor_name"] or "Unknown")
+        nama_penjual = (
+            vendor["name"] if vendor else (invoices[0]["vendor_name"] or "Unknown")
+        )
         alamat_penjual = vendor["address"] if vendor else None
 
         # Pembeli = US (PKP) - we are the buyer
@@ -313,21 +368,28 @@ async def build_tax_invoice_from_sources(
     is_retur = source_type in ("credit_note", "vendor_credit")
     if is_retur:
         # DJP: retur faktur MUST reference the original faktur number
-        if False and not retur_of_faktur_number:  # Relaxed: allow retur without original faktur ref
-            src_label = "credit note" if source_type == "credit_note" else "vendor credit"
+        if (
+            False and not retur_of_faktur_number
+        ):  # Relaxed: allow retur without original faktur ref
+            src_label = (
+                "credit note" if source_type == "credit_note" else "vendor credit"
+            )
             raise HTTPException(
                 400,
                 f"Faktur retur memerlukan referensi faktur asli. "
-                f"Pastikan {src_label} terkait dengan invoice/bill yang sudah punya faktur pajak."
+                f"Pastikan {src_label} terkait dengan invoice/bill yang sudah punya faktur pajak.",
             )
         # DJP: kode_transaksi for retur is always "07"
         kode = "07"
-        logger.info(f"Retur faktur: forcing kode_transaksi=07, ref={retur_of_faktur_number}")
+        logger.info(
+            f"Retur faktur: forcing kode_transaksi=07, ref={retur_of_faktur_number}"
+        )
 
     referensi = ", ".join(referensi_parts)
 
     # ── INSERT tax_invoice header ──
-    tax_invoice_id = await conn.fetchval("""
+    tax_invoice_id = await conn.fetchval(
+        """
         INSERT INTO tax_invoices (
             tenant_id, direction, faktur_date, kode_transaksi,
             npwp_penjual, nitku_penjual, nama_penjual, alamat_penjual,
@@ -348,13 +410,30 @@ async def build_tax_invoice_from_sources(
             'draft', $22, $23, $24
         ) RETURNING id
     """,
-        tenant_id, direction, faktur_date, kode,
-        npwp_penjual, nitku_penjual, nama_penjual, alamat_penjual,
-        npwp_pembeli, nik_pembeli, jenis_id, negara,
-        nomor_dokumen, nama_pembeli, alamat_pembeli, email,
-        nitku_pembeli, referensi,
-        retur_of_tax_invoice_id, retur_of_faktur_number, source_document_type,
-        fg_pengganti, replaces_id, user_id
+        tenant_id,
+        direction,
+        faktur_date,
+        kode,
+        npwp_penjual,
+        nitku_penjual,
+        nama_penjual,
+        alamat_penjual,
+        npwp_pembeli,
+        nik_pembeli,
+        jenis_id,
+        negara,
+        nomor_dokumen,
+        nama_pembeli,
+        alamat_pembeli,
+        email,
+        nitku_pembeli,
+        referensi,
+        retur_of_tax_invoice_id,
+        retur_of_faktur_number,
+        source_document_type,
+        fg_pengganti,
+        replaces_id,
+        user_id,
     )
 
     # ── INSERT sources ──
@@ -362,7 +441,10 @@ async def build_tax_invoice_from_sources(
         await conn.execute(
             "INSERT INTO tax_invoice_sources (tenant_id, tax_invoice_id, source_type, source_id) "
             "VALUES ($1, $2, $3, $4)",
-            tenant_id, tax_invoice_id, source_type, source_id
+            tenant_id,
+            tax_invoice_id,
+            source_type,
+            source_id,
         )
 
     # ── INSERT items ──
@@ -371,29 +453,38 @@ async def build_tax_invoice_from_sources(
     line_num = 0
 
     for source_id in source_ids:
-        items = await conn.fetch(f"""
+        items = await conn.fetch(
+            f"""
             SELECT id, item_id, description, quantity, unit_price,
                    discount_amount, subtotal, tax_rate, tax_amount,
                    total, line_number
             FROM {items_table}
             WHERE {items_fk} = $1
             ORDER BY line_number
-        """, source_id)
+        """,
+            source_id,
+        )
 
         for item in items:
             line_num += 1
-            mapping = await conn.fetchrow("""
+            mapping = await conn.fetchrow(
+                """
                 SELECT dkbj.kode, dkbj.nama, dkbj.jenis, dsu.kode AS satuan_kode
                 FROM product_djp_mapping pdm
                 JOIN djp_kode_barang_jasa dkbj ON dkbj.id = pdm.djp_kode_barang_jasa_id
                 JOIN djp_satuan_ukur dsu ON dsu.id = pdm.djp_satuan_ukur_id
                 WHERE pdm.product_id = $1 AND pdm.tenant_id = $2
-            """, item["item_id"], tenant_id)
+            """,
+                item["item_id"],
+                tenant_id,
+            )
 
             kode_brg = mapping["kode"] if mapping else "000000"
             jenis_brg = mapping["jenis"] if mapping else "A"
             satuan = mapping["satuan_kode"] if mapping else "UM.0069"
-            nama_brg = item["description"] or (mapping["nama"] if mapping else "Barang/Jasa")
+            nama_brg = item["description"] or (
+                mapping["nama"] if mapping else "Barang/Jasa"
+            )
 
             item_dpp = float(item["subtotal"] or 0)
             item_ppn = float(item["tax_amount"] or 0)
@@ -406,7 +497,8 @@ async def build_tax_invoice_from_sources(
                 diskon = abs(diskon)
             dpp_nl = item_dpp
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT INTO tax_invoice_items (
                     tenant_id, tax_invoice_id, line_number, source_line_id,
                     barang_jasa, kode_barang_jasa, nama_barang_jasa, satuan_ukur,
@@ -415,13 +507,30 @@ async def build_tax_invoice_from_sources(
                     tarif_ppnbm, ppnbm, harga_total
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             """,
-                tenant_id, tax_invoice_id, line_num, item["id"],
-                jenis_brg, kode_brg, nama_brg, satuan,
-                abs(float(item["unit_price"] or 0)) if is_retur else float(item["unit_price"] or 0),
-                abs(float(item["quantity"] or 0)) if is_retur else float(item["quantity"] or 0),
+                tenant_id,
+                tax_invoice_id,
+                line_num,
+                item["id"],
+                jenis_brg,
+                kode_brg,
+                nama_brg,
+                satuan,
+                abs(float(item["unit_price"] or 0))
+                if is_retur
+                else float(item["unit_price"] or 0),
+                abs(float(item["quantity"] or 0))
+                if is_retur
+                else float(item["quantity"] or 0),
                 diskon,
-                item_dpp, dpp_nl, tarif, item_ppn,
-                0.0, 0.0, abs(float(item["total"] or 0)) if is_retur else float(item["total"] or 0)
+                item_dpp,
+                dpp_nl,
+                tarif,
+                item_ppn,
+                0.0,
+                0.0,
+                abs(float(item["total"] or 0))
+                if is_retur
+                else float(item["total"] or 0),
             )
 
             total_dpp += item_dpp
@@ -429,25 +538,36 @@ async def build_tax_invoice_from_sources(
 
     # ── Update totals ──
     grand = total_dpp + total_ppn
-    await conn.execute("""
+    await conn.execute(
+        """
         UPDATE tax_invoices SET
             dpp = $1, dpp_nilai_lain = $2,
             ppn = $3, grand_total = $4
         WHERE id = $5
-    """, total_dpp, total_dpp, total_ppn, grand, tax_invoice_id)
+    """,
+        total_dpp,
+        total_dpp,
+        total_ppn,
+        grand,
+        tax_invoice_id,
+    )
 
     # ── Link back to source document ──
     if source_type == "credit_note":
         for source_id in source_ids:
             await conn.execute(
                 "UPDATE credit_notes SET tax_invoice_id = $1 WHERE id = $2 AND tenant_id = $3",
-                tax_invoice_id, source_id, tenant_id
+                tax_invoice_id,
+                source_id,
+                tenant_id,
             )
     elif source_type == "vendor_credit":
         for source_id in source_ids:
             await conn.execute(
                 "UPDATE vendor_credits SET tax_invoice_id = $1 WHERE id = $2 AND tenant_id = $3",
-                tax_invoice_id, source_id, tenant_id
+                tax_invoice_id,
+                source_id,
+                tenant_id,
             )
 
     return tax_invoice_id
@@ -457,7 +577,8 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
     """Fetch full tax invoice detail with items and sources."""
     ti = await conn.fetchrow(
         "SELECT * FROM tax_invoices WHERE id = $1 AND tenant_id = $2",
-        tax_invoice_id, tenant_id
+        tax_invoice_id,
+        tenant_id,
     )
     if not ti:
         return None
@@ -468,7 +589,8 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
     items = await conn.fetch(
         "SELECT * FROM tax_invoice_items WHERE tax_invoice_id = $1 AND tenant_id = $2 "
         "ORDER BY line_number",
-        tax_invoice_id, tenant_id
+        tax_invoice_id,
+        tenant_id,
     )
     result["items"] = [row_to_dict(i) for i in items]
 
@@ -476,7 +598,8 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
     sources_raw = await conn.fetch(
         "SELECT source_type, source_id FROM tax_invoice_sources "
         "WHERE tax_invoice_id = $1 AND tenant_id = $2",
-        tax_invoice_id, tenant_id
+        tax_invoice_id,
+        tenant_id,
     )
     sources_list = []
     for s in sources_raw:
@@ -485,16 +608,22 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
         ref_num = None
         if s["source_type"] == "sales_invoice":
             ref_num = await conn.fetchval(
-                "SELECT invoice_number FROM sales_invoices WHERE id = $1", s["source_id"])
+                "SELECT invoice_number FROM sales_invoices WHERE id = $1",
+                s["source_id"],
+            )
         elif s["source_type"] == "credit_note":
             ref_num = await conn.fetchval(
-                "SELECT credit_note_number FROM credit_notes WHERE id = $1", s["source_id"])
+                "SELECT credit_note_number FROM credit_notes WHERE id = $1",
+                s["source_id"],
+            )
         elif s["source_type"] == "vendor_credit":
             ref_num = await conn.fetchval(
-                "SELECT credit_number FROM vendor_credits WHERE id = $1", s["source_id"])
+                "SELECT credit_number FROM vendor_credits WHERE id = $1", s["source_id"]
+            )
         elif s["source_type"] == "bill":
             ref_num = await conn.fetchval(
-                "SELECT bill_number FROM bills WHERE id = $1", s["source_id"])
+                "SELECT bill_number FROM bills WHERE id = $1", s["source_id"]
+            )
         sd["invoice_number"] = ref_num  # keep key for backward compat
         sd["document_number"] = ref_num
         sources_list.append(sd)
@@ -504,6 +633,7 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
 
 
 # ─── ENDPOINTS ───────────────────────────────────────────────
+
 
 @router.get("")
 async def list_tax_invoices(
@@ -559,7 +689,8 @@ async def list_tax_invoices(
 
         # Fetch page
         params_page = params + [per_page, offset]
-        rows = await conn.fetch(f"""
+        rows = await conn.fetch(
+            f"""
             SELECT ti.id, ti.direction, ti.faktur_number, ti.faktur_date,
                    ti.masa_pajak, ti.tahun_pajak, ti.kode_transaksi,
                    ti.nama_pembeli, ti.npwp_pembeli, ti.referensi,
@@ -569,7 +700,9 @@ async def list_tax_invoices(
             WHERE {where}
             ORDER BY ti.created_at DESC
             LIMIT ${idx} OFFSET ${idx + 1}
-        """, *params_page)
+        """,
+            *params_page,
+        )
 
         data = []
         for r in rows:
@@ -578,19 +711,31 @@ async def list_tax_invoices(
             src = await conn.fetch(
                 "SELECT source_type, source_id FROM tax_invoice_sources "
                 "WHERE tax_invoice_id = $1 AND tenant_id = $2",
-                r["id"], ctx["tenant_id"]
+                r["id"],
+                ctx["tenant_id"],
             )
             src_nums = []
             for s in src:
                 num = None
                 if s["source_type"] == "sales_invoice":
-                    num = await conn.fetchval("SELECT invoice_number FROM sales_invoices WHERE id=$1", s["source_id"])
+                    num = await conn.fetchval(
+                        "SELECT invoice_number FROM sales_invoices WHERE id=$1",
+                        s["source_id"],
+                    )
                 elif s["source_type"] == "credit_note":
-                    num = await conn.fetchval("SELECT credit_note_number FROM credit_notes WHERE id=$1", s["source_id"])
+                    num = await conn.fetchval(
+                        "SELECT credit_note_number FROM credit_notes WHERE id=$1",
+                        s["source_id"],
+                    )
                 elif s["source_type"] == "vendor_credit":
-                    num = await conn.fetchval("SELECT credit_number FROM vendor_credits WHERE id=$1", s["source_id"])
+                    num = await conn.fetchval(
+                        "SELECT credit_number FROM vendor_credits WHERE id=$1",
+                        s["source_id"],
+                    )
                 elif s["source_type"] == "bill":
-                    num = await conn.fetchval("SELECT bill_number FROM bills WHERE id=$1", s["source_id"])
+                    num = await conn.fetchval(
+                        "SELECT bill_number FROM bills WHERE id=$1", s["source_id"]
+                    )
                 if num:
                     src_nums.append(num)
             d["source_invoices"] = src_nums
@@ -602,18 +747,20 @@ async def list_tax_invoices(
         return {"data": data, "total": total, "page": page, "per_page": per_page}
 
 
-
 @router.get("/by-source")
 async def get_tax_invoice_by_source(
     request: Request,
-    source_type: str = Query(..., description="sales_invoice, bill, credit_note, vendor_credit"),
+    source_type: str = Query(
+        ..., description="sales_invoice, bill, credit_note, vendor_credit"
+    ),
     source_id: str = Query(..., description="UUID of source document"),
 ):
     """Lookup tax invoice by source document. Used for badge display."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             SELECT ti.id, ti.faktur_number, ti.status, ti.direction,
                    ti.source_document_type, ti.dpp, ti.ppn
             FROM tax_invoice_sources tis
@@ -624,7 +771,11 @@ async def get_tax_invoice_by_source(
               AND ti.status NOT IN ('cancelled', 'replaced')
             ORDER BY ti.created_at DESC
             LIMIT 1
-        """, source_type, source_id, ctx["tenant_id"])
+        """,
+            source_type,
+            source_id,
+            ctx["tenant_id"],
+        )
 
         if not row:
             return {"has_tax_invoice": False, "tax_invoice": None}
@@ -639,7 +790,7 @@ async def get_tax_invoice_by_source(
                 "source_document_type": row["source_document_type"],
                 "total_dpp": float(row["dpp"] or 0),
                 "total_ppn": float(row["ppn"] or 0),
-            }
+            },
         }
 
 
@@ -659,8 +810,18 @@ async def get_tax_invoice(request: Request, tax_invoice_id: str):
             if k in result:
                 result[k] = float(result.get(k) or 0)
         for item in result.get("items", []):
-            for k in ("harga_satuan", "jumlah", "diskon", "dpp", "dpp_nilai_lain",
-                       "tarif_ppn", "ppn", "tarif_ppnbm", "ppnbm", "harga_total"):
+            for k in (
+                "harga_satuan",
+                "jumlah",
+                "diskon",
+                "dpp",
+                "dpp_nilai_lain",
+                "tarif_ppn",
+                "ppn",
+                "tarif_ppnbm",
+                "ppnbm",
+                "harga_total",
+            ):
                 if k in item:
                     item[k] = float(item.get(k) or 0)
 
@@ -676,8 +837,11 @@ async def create_tax_invoice(request: Request, payload: TaxInvoiceCreate):
     async with pool.acquire() as conn:
         async with conn.transaction():
             tax_invoice_id = await build_tax_invoice_from_sources(
-                conn, ctx["tenant_id"], ctx["user_id"],
-                payload.source_type, payload.source_ids,
+                conn,
+                ctx["tenant_id"],
+                ctx["user_id"],
+                payload.source_type,
+                payload.source_ids,
                 faktur_date_override=payload.faktur_date,
                 kode_override=payload.kode_transaksi,
                 email_override=payload.email_pembeli,
@@ -685,12 +849,29 @@ async def create_tax_invoice(request: Request, payload: TaxInvoiceCreate):
 
             result = await fetch_detail(conn, tax_invoice_id, ctx["tenant_id"])
             # Cast numerics
-            for k in ("dpp", "dpp_nilai_lain", "ppn", "ppnbm", "tarif_ppn", "grand_total"):
+            for k in (
+                "dpp",
+                "dpp_nilai_lain",
+                "ppn",
+                "ppnbm",
+                "tarif_ppn",
+                "grand_total",
+            ):
                 if k in result:
                     result[k] = float(result.get(k) or 0)
             for item in result.get("items", []):
-                for k in ("harga_satuan", "jumlah", "diskon", "dpp", "dpp_nilai_lain",
-                           "tarif_ppn", "ppn", "tarif_ppnbm", "ppnbm", "harga_total"):
+                for k in (
+                    "harga_satuan",
+                    "jumlah",
+                    "diskon",
+                    "dpp",
+                    "dpp_nilai_lain",
+                    "tarif_ppn",
+                    "ppn",
+                    "tarif_ppnbm",
+                    "ppnbm",
+                    "harga_total",
+                ):
                     if k in item:
                         item[k] = float(item.get(k) or 0)
             return result
@@ -710,7 +891,8 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
         sdt = payload.source_document_type or "sales_invoice"
 
         if sdt == "credit_note":
-            eligible = await conn.fetch("""
+            eligible = await conn.fetch(
+                """
                 SELECT cn.id
                 FROM credit_notes cn
                 WHERE cn.tenant_id = $1
@@ -727,9 +909,14 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
                         AND ti.status NOT IN ('cancelled', 'replaced')
                   )
                 ORDER BY cn.credit_note_date, cn.credit_note_number
-            """, ctx["tenant_id"], int(payload.masa_pajak), payload.tahun_pajak)
+            """,
+                ctx["tenant_id"],
+                int(payload.masa_pajak),
+                payload.tahun_pajak,
+            )
         elif sdt == "vendor_credit":
-            eligible = await conn.fetch("""
+            eligible = await conn.fetch(
+                """
                 SELECT vc.id
                 FROM vendor_credits vc
                 WHERE vc.tenant_id = $1
@@ -746,11 +933,16 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
                         AND ti.status NOT IN ('cancelled', 'replaced')
                   )
                 ORDER BY vc.credit_date, vc.credit_number
-            """, ctx["tenant_id"], int(payload.masa_pajak), payload.tahun_pajak)
+            """,
+                ctx["tenant_id"],
+                int(payload.masa_pajak),
+                payload.tahun_pajak,
+            )
         else:
             # Default: sales_invoice
             sdt = "sales_invoice"
-            eligible = await conn.fetch("""
+            eligible = await conn.fetch(
+                """
                 SELECT si.id
                 FROM sales_invoices si
                 WHERE si.tenant_id = $1
@@ -766,7 +958,11 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
                         AND ti.status NOT IN ('cancelled', 'replaced')
                   )
                 ORDER BY si.invoice_date, si.invoice_number
-            """, ctx["tenant_id"], int(payload.masa_pajak), payload.tahun_pajak)
+            """,
+                ctx["tenant_id"],
+                int(payload.masa_pajak),
+                payload.tahun_pajak,
+            )
 
         created = 0
         skipped = 0
@@ -776,8 +972,11 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
             try:
                 async with conn.transaction():
                     await build_tax_invoice_from_sources(
-                        conn, ctx["tenant_id"], ctx["user_id"],
-                        sdt, [row["id"]],
+                        conn,
+                        ctx["tenant_id"],
+                        ctx["user_id"],
+                        sdt,
+                        [row["id"]],
                         kode_override=payload.kode_transaksi,
                     )
                     created += 1
@@ -802,14 +1001,15 @@ async def assign_nsfp(request: Request, tax_invoice_id: str):
             ti = await conn.fetchrow(
                 "SELECT id, status, faktur_number FROM tax_invoices "
                 "WHERE id = $1 AND tenant_id = $2",
-                tax_invoice_id, ctx["tenant_id"]
+                tax_invoice_id,
+                ctx["tenant_id"],
             )
             if not ti:
                 raise HTTPException(404, "Tax invoice tidak ditemukan")
             if ti["status"] != "draft":
                 raise HTTPException(
                     400,
-                    f"Hanya faktur DRAFT yang bisa di-assign NSFP (current: {ti['status']})"
+                    f"Hanya faktur DRAFT yang bisa di-assign NSFP (current: {ti['status']})",
                 )
             if ti["faktur_number"]:
                 raise HTTPException(400, "Faktur sudah punya NSFP")
@@ -819,21 +1019,34 @@ async def assign_nsfp(request: Request, tax_invoice_id: str):
                 "SELECT generate_efaktur_number($1)", ctx["tenant_id"]
             )
             if not faktur_number:
-                raise HTTPException(400, "Tidak ada range NSFP aktif. Tambahkan range di Settings > NSFP.")
+                raise HTTPException(
+                    400,
+                    "Tidak ada range NSFP aktif. Tambahkan range di Settings > NSFP.",
+                )
 
             nsfp_number = int(faktur_number.split(".")[-1])
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE tax_invoices SET
                     faktur_number = $1, nsfp_number = $2, status = 'nsfp_assigned',
                     updated_at = now()
                 WHERE id = $3
-            """, faktur_number, nsfp_number, tax_invoice_id)
+            """,
+                faktur_number,
+                nsfp_number,
+                tax_invoice_id,
+            )
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT INTO nsfp_assignments (tenant_id, tax_invoice_id, faktur_number)
                 VALUES ($1, $2, $3)
-            """, ctx["tenant_id"], tax_invoice_id, faktur_number)
+            """,
+                ctx["tenant_id"],
+                tax_invoice_id,
+                faktur_number,
+            )
 
             return {"faktur_number": faktur_number, "status": "nsfp_assigned"}
 
@@ -852,7 +1065,7 @@ async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
                 "SELECT id FROM tax_invoices "
                 "WHERE tenant_id = $1 AND status = 'draft' AND faktur_number IS NULL "
                 "ORDER BY created_at",
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             ids = [str(r["id"]) for r in rows]
 
@@ -865,7 +1078,8 @@ async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
                     ti = await conn.fetchrow(
                         "SELECT id, status, faktur_number FROM tax_invoices "
                         "WHERE id = $1 AND tenant_id = $2",
-                        tid, ctx["tenant_id"]
+                        tid,
+                        ctx["tenant_id"],
                     )
                     if not ti or ti["status"] != "draft" or ti["faktur_number"]:
                         errors.append({"id": tid, "error": "Not eligible"})
@@ -880,18 +1094,28 @@ async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
 
                     nsfp_number = int(faktur_number.split(".")[-1])
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE tax_invoices SET
                             faktur_number = $1, nsfp_number = $2, status = 'nsfp_assigned',
                             updated_at = now()
                         WHERE id = $3
-                    """, faktur_number, nsfp_number, ti["id"])
+                    """,
+                        faktur_number,
+                        nsfp_number,
+                        ti["id"],
+                    )
 
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO nsfp_assignments
                             (tenant_id, tax_invoice_id, faktur_number)
                         VALUES ($1, $2, $3)
-                    """, ctx["tenant_id"], ti["id"], faktur_number)
+                    """,
+                        ctx["tenant_id"],
+                        ti["id"],
+                        faktur_number,
+                    )
 
                     assigned += 1
             except Exception as e:
@@ -901,7 +1125,9 @@ async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
 
 
 @router.patch("/{tax_invoice_id}/status")
-async def update_status(request: Request, tax_invoice_id: str, payload: TaxInvoiceStatusUpdate):
+async def update_status(
+    request: Request, tax_invoice_id: str, payload: TaxInvoiceStatusUpdate
+):
     """Update tax invoice status (exported, uploaded, approved)."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -909,7 +1135,8 @@ async def update_status(request: Request, tax_invoice_id: str, payload: TaxInvoi
     async with pool.acquire() as conn:
         ti = await conn.fetchrow(
             "SELECT id, status FROM tax_invoices WHERE id = $1 AND tenant_id = $2",
-            tax_invoice_id, ctx["tenant_id"]
+            tax_invoice_id,
+            ctx["tenant_id"],
         )
         if not ti:
             raise HTTPException(404, "Tax invoice tidak ditemukan")
@@ -920,19 +1147,22 @@ async def update_status(request: Request, tax_invoice_id: str, payload: TaxInvoi
             raise HTTPException(
                 400,
                 f"Transisi {current} → {payload.status} tidak valid. "
-                f"Allowed: {allowed}"
+                f"Allowed: {allowed}",
             )
 
         await conn.execute(
             "UPDATE tax_invoices SET status = $1, updated_at = now() WHERE id = $2",
-            payload.status, tax_invoice_id
+            payload.status,
+            tax_invoice_id,
         )
 
         return {"id": str(tax_invoice_id), "status": payload.status}
 
 
 @router.post("/{tax_invoice_id}/cancel")
-async def cancel_tax_invoice(request: Request, tax_invoice_id: str, payload: TaxInvoiceCancel):
+async def cancel_tax_invoice(
+    request: Request, tax_invoice_id: str, payload: TaxInvoiceCancel
+):
     """Cancel a tax invoice."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -940,32 +1170,46 @@ async def cancel_tax_invoice(request: Request, tax_invoice_id: str, payload: Tax
     async with pool.acquire() as conn:
         ti = await conn.fetchrow(
             "SELECT id, status FROM tax_invoices WHERE id = $1 AND tenant_id = $2",
-            tax_invoice_id, ctx["tenant_id"]
+            tax_invoice_id,
+            ctx["tenant_id"],
         )
         if not ti:
             raise HTTPException(404, "Tax invoice tidak ditemukan")
 
         if ti["status"] in ("cancelled", "replaced"):
-            raise HTTPException(400, f"Faktur sudah {ti['status']}, tidak bisa di-cancel")
+            raise HTTPException(
+                400, f"Faktur sudah {ti['status']}, tidak bisa di-cancel"
+            )
         if ti["status"] == "approved":
-            raise HTTPException(400, "Faktur APPROVED tidak bisa di-cancel. Gunakan Replace.")
+            raise HTTPException(
+                400, "Faktur APPROVED tidak bisa di-cancel. Gunakan Replace."
+            )
 
         # Reason required for exported/uploaded
         if ti["status"] in ("exported", "uploaded") and not payload.reason:
-            raise HTTPException(400, "Alasan pembatalan wajib untuk faktur yang sudah exported/uploaded")
+            raise HTTPException(
+                400, "Alasan pembatalan wajib untuk faktur yang sudah exported/uploaded"
+            )
 
-        await conn.execute("""
+        await conn.execute(
+            """
             UPDATE tax_invoices SET
                 status = 'cancelled', cancellation_reason = $1,
                 cancelled_at = now(), cancelled_by = $2, updated_at = now()
             WHERE id = $3
-        """, payload.reason, ctx["user_id"], tax_invoice_id)
+        """,
+            payload.reason,
+            ctx["user_id"],
+            tax_invoice_id,
+        )
 
         return {"id": str(tax_invoice_id), "status": "cancelled"}
 
 
 @router.post("/{tax_invoice_id}/replace")
-async def replace_tax_invoice(request: Request, tax_invoice_id: str, payload: TaxInvoiceReplace):
+async def replace_tax_invoice(
+    request: Request, tax_invoice_id: str, payload: TaxInvoiceReplace
+):
     """Create replacement faktur for an approved tax invoice."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -974,7 +1218,8 @@ async def replace_tax_invoice(request: Request, tax_invoice_id: str, payload: Ta
         async with conn.transaction():
             original = await conn.fetchrow(
                 "SELECT * FROM tax_invoices WHERE id = $1 AND tenant_id = $2",
-                tax_invoice_id, ctx["tenant_id"]
+                tax_invoice_id,
+                ctx["tenant_id"],
             )
             if not original:
                 raise HTTPException(404, "Tax invoice tidak ditemukan")
@@ -984,7 +1229,8 @@ async def replace_tax_invoice(request: Request, tax_invoice_id: str, payload: Ta
             faktur_date = payload.faktur_date or original["faktur_date"]
 
             # Create new tax invoice (copy from original)
-            new_id = await conn.fetchval("""
+            new_id = await conn.fetchval(
+                """
                 INSERT INTO tax_invoices (
                     tenant_id, direction, faktur_date, kode_transaksi,
                     npwp_penjual, nitku_penjual, nama_penjual, alamat_penjual,
@@ -1003,28 +1249,45 @@ async def replace_tax_invoice(request: Request, tax_invoice_id: str, payload: Ta
                     'draft', 1, $25, $26, $27
                 ) RETURNING id
             """,
-                ctx["tenant_id"], original["direction"], faktur_date, original["kode_transaksi"],
-                original["npwp_penjual"], original["nitku_penjual"],
-                original["nama_penjual"], original["alamat_penjual"],
-                original["npwp_pembeli"], original["nik_pembeli"],
-                original["jenis_id_pembeli"], original["negara_pembeli"],
-                original["nomor_dokumen_pembeli"], original["nama_pembeli"],
-                original["alamat_pembeli"], original["email_pembeli"],
-                original["nitku_pembeli"], original["referensi"],
-                original["dpp"], original["dpp_nilai_lain"],
-                original["ppn"], original["ppnbm"], original["tarif_ppn"],
+                ctx["tenant_id"],
+                original["direction"],
+                faktur_date,
+                original["kode_transaksi"],
+                original["npwp_penjual"],
+                original["nitku_penjual"],
+                original["nama_penjual"],
+                original["alamat_penjual"],
+                original["npwp_pembeli"],
+                original["nik_pembeli"],
+                original["jenis_id_pembeli"],
+                original["negara_pembeli"],
+                original["nomor_dokumen_pembeli"],
+                original["nama_pembeli"],
+                original["alamat_pembeli"],
+                original["email_pembeli"],
+                original["nitku_pembeli"],
+                original["referensi"],
+                original["dpp"],
+                original["dpp_nilai_lain"],
+                original["ppn"],
+                original["ppnbm"],
+                original["tarif_ppn"],
                 original["grand_total"],
-                tax_invoice_id, payload.reason, ctx["user_id"]
+                tax_invoice_id,
+                payload.reason,
+                ctx["user_id"],
             )
 
             # Copy items
             orig_items = await conn.fetch(
                 "SELECT * FROM tax_invoice_items WHERE tax_invoice_id = $1 AND tenant_id = $2 "
                 "ORDER BY line_number",
-                tax_invoice_id, ctx["tenant_id"]
+                tax_invoice_id,
+                ctx["tenant_id"],
             )
             for item in orig_items:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO tax_invoice_items (
                         tenant_id, tax_invoice_id, line_number, source_line_id,
                         barang_jasa, kode_barang_jasa, nama_barang_jasa, satuan_ukur,
@@ -1033,40 +1296,77 @@ async def replace_tax_invoice(request: Request, tax_invoice_id: str, payload: Ta
                         tarif_ppnbm, ppnbm, harga_total
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                 """,
-                    ctx["tenant_id"], new_id, item["line_number"], item["source_line_id"],
-                    item["barang_jasa"], item["kode_barang_jasa"],
-                    item["nama_barang_jasa"], item["satuan_ukur"],
-                    item["harga_satuan"], item["jumlah"], item["diskon"],
-                    item["dpp"], item["dpp_nilai_lain"], item["tarif_ppn"], item["ppn"],
-                    item["tarif_ppnbm"], item["ppnbm"], item["harga_total"]
+                    ctx["tenant_id"],
+                    new_id,
+                    item["line_number"],
+                    item["source_line_id"],
+                    item["barang_jasa"],
+                    item["kode_barang_jasa"],
+                    item["nama_barang_jasa"],
+                    item["satuan_ukur"],
+                    item["harga_satuan"],
+                    item["jumlah"],
+                    item["diskon"],
+                    item["dpp"],
+                    item["dpp_nilai_lain"],
+                    item["tarif_ppn"],
+                    item["ppn"],
+                    item["tarif_ppnbm"],
+                    item["ppnbm"],
+                    item["harga_total"],
                 )
 
             # Copy sources
             orig_sources = await conn.fetch(
                 "SELECT * FROM tax_invoice_sources WHERE tax_invoice_id = $1 AND tenant_id = $2",
-                tax_invoice_id, ctx["tenant_id"]
+                tax_invoice_id,
+                ctx["tenant_id"],
             )
             for src in orig_sources:
                 await conn.execute(
                     "INSERT INTO tax_invoice_sources (tenant_id, tax_invoice_id, source_type, source_id) "
                     "VALUES ($1, $2, $3, $4)",
-                    ctx["tenant_id"], new_id, src["source_type"], src["source_id"]
+                    ctx["tenant_id"],
+                    new_id,
+                    src["source_type"],
+                    src["source_id"],
                 )
 
             # Mark original as replaced
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE tax_invoices SET
                     status = 'replaced', replaced_by_id = $1, updated_at = now()
                 WHERE id = $2
-            """, new_id, tax_invoice_id)
+            """,
+                new_id,
+                tax_invoice_id,
+            )
 
             result = await fetch_detail(conn, new_id, ctx["tenant_id"])
-            for k in ("dpp", "dpp_nilai_lain", "ppn", "ppnbm", "tarif_ppn", "grand_total"):
+            for k in (
+                "dpp",
+                "dpp_nilai_lain",
+                "ppn",
+                "ppnbm",
+                "tarif_ppn",
+                "grand_total",
+            ):
                 if k in result:
                     result[k] = float(result.get(k) or 0)
             for item in result.get("items", []):
-                for k in ("harga_satuan", "jumlah", "diskon", "dpp", "dpp_nilai_lain",
-                           "tarif_ppn", "ppn", "tarif_ppnbm", "ppnbm", "harga_total"):
+                for k in (
+                    "harga_satuan",
+                    "jumlah",
+                    "diskon",
+                    "dpp",
+                    "dpp_nilai_lain",
+                    "tarif_ppn",
+                    "ppn",
+                    "tarif_ppnbm",
+                    "ppnbm",
+                    "harga_total",
+                ):
                     if k in item:
                         item[k] = float(item.get(k) or 0)
             return result

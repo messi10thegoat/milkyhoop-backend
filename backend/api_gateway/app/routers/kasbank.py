@@ -14,12 +14,9 @@ from pydantic import BaseModel
 import logging
 import asyncpg
 
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_pool: Optional[asyncpg.Pool] = None
 
 
 class KasBankAccountResponse(BaseModel):
@@ -36,13 +33,10 @@ class KasBankTransactionsResponse(BaseModel):
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -110,7 +104,9 @@ async def list_kasbank_accounts(request: Request):
                     "balance": row["balance"],
                     "currency": row["currency"] or "IDR",
                     "is_active": row["is_active"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
                 }
                 for row in rows
             ]
@@ -136,7 +132,9 @@ async def list_kasbank_accounts(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list accounts")
 
 
-@router.get("/accounts/{account_id}/transactions", response_model=KasBankTransactionsResponse)
+@router.get(
+    "/accounts/{account_id}/transactions", response_model=KasBankTransactionsResponse
+)
 async def get_account_transactions(
     request: Request,
     account_id: str,
@@ -169,7 +167,8 @@ async def get_account_transactions(
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
                 """,
-                account_id, ctx["tenant_id"],
+                account_id,
+                ctx["tenant_id"],
             )
             if not account:
                 raise HTTPException(status_code=404, detail="Account not found")
@@ -256,9 +255,17 @@ async def get_account_transactions(
             ]
 
             return {
-                "success": True, "transactions": transactions, "total": count,
-                "page": page, "limit": limit, "has_more": offset + limit < count,
-                "account": {"id": str(account["id"]), "name": account["account_name"], "balance": account["balance"]},
+                "success": True,
+                "transactions": transactions,
+                "total": count,
+                "page": page,
+                "limit": limit,
+                "has_more": offset + limit < count,
+                "account": {
+                    "id": str(account["id"]),
+                    "name": account["account_name"],
+                    "balance": account["balance"],
+                },
             }
 
     except HTTPException:
@@ -292,12 +299,18 @@ async def get_account_summary(
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
                 """,
-                account_id, ctx["tenant_id"],
+                account_id,
+                ctx["tenant_id"],
             )
             if not account:
                 raise HTTPException(status_code=404, detail="Account not found")
 
-            period_filter = {"day": "1 day", "week": "7 days", "month": "30 days", "year": "365 days"}.get(period, "30 days")
+            period_filter = {
+                "day": "1 day",
+                "week": "7 days",
+                "month": "30 days",
+                "year": "365 days",
+            }.get(period, "30 days")
 
             # Iron Law 1: Derive inflows/outflows from journal_lines
             coa_id = account["coa_id"]
@@ -313,7 +326,8 @@ async def get_account_summary(
                     AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
                     AND jl.debit > 0
                 """,
-                coa_id, ctx["tenant_id"],
+                coa_id,
+                ctx["tenant_id"],
             )
 
             outflows = await conn.fetchval(
@@ -328,14 +342,18 @@ async def get_account_summary(
                     AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
                     AND jl.credit > 0
                 """,
-                coa_id, ctx["tenant_id"],
+                coa_id,
+                ctx["tenant_id"],
             )
 
             return {
-                "success": True, "account_id": account_id,
+                "success": True,
+                "account_id": account_id,
                 "account_name": account["account_name"],
                 "current_balance": account["balance"],
-                "period": period, "inflows": inflows, "outflows": outflows,
+                "period": period,
+                "inflows": inflows,
+                "outflows": outflows,
                 "net_change": inflows - outflows,
             }
 

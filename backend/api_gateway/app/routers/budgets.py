@@ -4,14 +4,12 @@ Budgets Router
 Budget planning and variance analysis.
 NO journal entries - budgets are planning data only.
 """
-from datetime import date
 from typing import Optional, List
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.budgets import (
     BudgetCreate,
     BudgetUpdate,
@@ -22,31 +20,21 @@ from ..schemas.budgets import (
     BudgetItemResponse,
     BudgetVsActualItem,
     BudgetVsActualResponse,
-    BudgetVsActualMonthlyItem,
-    BudgetVsActualMonthlyResponse,
     VarianceAlertItem,
     VarianceAlertsResponse,
     BudgetSummaryByType,
     BudgetSummaryResponse,
-    BudgetByCostCenterItem,
-    BudgetByCostCenterResponse,
-    BudgetRevisionResponse,
-    BudgetItemsImportRequest,
-    BudgetItemsImportResponse,
     BudgetStatus,
 )
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -62,6 +50,7 @@ def get_user_context(request: Request) -> dict:
 # BUDGET CRUD
 # ============================================================================
 
+
 @router.get("", response_model=BudgetListResponse)
 async def list_budgets(
     request: Request,
@@ -75,7 +64,9 @@ async def list_budgets(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -93,7 +84,9 @@ async def list_budgets(
 
         where_sql = " AND ".join(where_clauses)
 
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM budgets WHERE {where_sql}", *params)
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM budgets WHERE {where_sql}", *params
+        )
 
         rows = await conn.fetch(
             f"""
@@ -102,7 +95,9 @@ async def list_budgets(
             ORDER BY fiscal_year DESC, name
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
-            *params, skip, limit
+            *params,
+            skip,
+            limit,
         )
 
         items = [BudgetResponse(**dict(row)) for row in rows]
@@ -116,11 +111,14 @@ async def get_budget(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
@@ -135,16 +133,14 @@ async def get_budget(request: Request, budget_id: UUID):
             WHERE bi.budget_id = $1
             ORDER BY coa.account_code
             """,
-            budget_id
+            budget_id,
         )
 
         item_responses = [BudgetItemResponse(**dict(item)) for item in items]
         total_budget = sum(i.annual_amount for i in item_responses)
 
         return BudgetDetailResponse(
-            **dict(budget),
-            items=item_responses,
-            total_budget=total_budget
+            **dict(budget), items=item_responses, total_budget=total_budget
         )
 
 
@@ -155,15 +151,22 @@ async def create_budget(request: Request, data: BudgetCreate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check uniqueness
         exists = await conn.fetchval(
             "SELECT 1 FROM budgets WHERE tenant_id = $1 AND fiscal_year = $2 AND name = $3",
-            ctx["tenant_id"], data.fiscal_year, data.name
+            ctx["tenant_id"],
+            data.fiscal_year,
+            data.name,
         )
         if exists:
-            raise HTTPException(status_code=400, detail="Budget with this name already exists for the fiscal year")
+            raise HTTPException(
+                status_code=400,
+                detail="Budget with this name already exists for the fiscal year",
+            )
 
         async with conn.transaction():
             row = await conn.fetchrow(
@@ -172,8 +175,12 @@ async def create_budget(request: Request, data: BudgetCreate):
                 VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING *
                 """,
-                ctx["tenant_id"], data.name, data.description, data.fiscal_year,
-                data.budget_type.value, ctx.get("user_id")
+                ctx["tenant_id"],
+                data.name,
+                data.description,
+                data.fiscal_year,
+                data.budget_type.value,
+                ctx.get("user_id"),
             )
 
             # Insert items if provided
@@ -188,11 +195,22 @@ async def create_budget(request: Request, data: BudgetCreate):
                             sep_amount, oct_amount, nov_amount, dec_amount, notes
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                         """,
-                        row["id"], item.account_id, item.cost_center_id,
-                        item.jan_amount, item.feb_amount, item.mar_amount, item.apr_amount,
-                        item.may_amount, item.jun_amount, item.jul_amount, item.aug_amount,
-                        item.sep_amount, item.oct_amount, item.nov_amount, item.dec_amount,
-                        item.notes
+                        row["id"],
+                        item.account_id,
+                        item.cost_center_id,
+                        item.jan_amount,
+                        item.feb_amount,
+                        item.mar_amount,
+                        item.apr_amount,
+                        item.may_amount,
+                        item.jun_amount,
+                        item.jul_amount,
+                        item.aug_amount,
+                        item.sep_amount,
+                        item.oct_amount,
+                        item.nov_amount,
+                        item.dec_amount,
+                        item.notes,
                     )
 
             return BudgetResponse(**dict(row))
@@ -205,11 +223,14 @@ async def update_budget(request: Request, budget_id: UUID, data: BudgetUpdate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
@@ -236,7 +257,7 @@ async def update_budget(request: Request, budget_id: UUID, data: BudgetUpdate):
             WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
         return BudgetResponse(**dict(row))
@@ -249,11 +270,14 @@ async def delete_budget(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
@@ -269,6 +293,7 @@ async def delete_budget(request: Request, budget_id: UUID):
 # BUDGET STATUS TRANSITIONS
 # ============================================================================
 
+
 @router.post("/{budget_id}/approve", response_model=BudgetResponse)
 async def approve_budget(request: Request, budget_id: UUID):
     """Approve budget"""
@@ -276,17 +301,22 @@ async def approve_budget(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         if existing["status"] != "draft":
-            raise HTTPException(status_code=400, detail="Can only approve draft budgets")
+            raise HTTPException(
+                status_code=400, detail="Can only approve draft budgets"
+            )
 
         row = await conn.fetchrow(
             """
@@ -294,7 +324,9 @@ async def approve_budget(request: Request, budget_id: UUID):
             WHERE id = $1 AND tenant_id = $2
             RETURNING *
             """,
-            budget_id, ctx["tenant_id"], ctx.get("user_id")
+            budget_id,
+            ctx["tenant_id"],
+            ctx.get("user_id"),
         )
 
         return BudgetResponse(**dict(row))
@@ -307,17 +339,22 @@ async def activate_budget(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         if existing["status"] not in ("draft", "approved"):
-            raise HTTPException(status_code=400, detail="Can only activate draft or approved budgets")
+            raise HTTPException(
+                status_code=400, detail="Can only activate draft or approved budgets"
+            )
 
         row = await conn.fetchrow(
             """
@@ -325,7 +362,8 @@ async def activate_budget(request: Request, budget_id: UUID):
             WHERE id = $1 AND tenant_id = $2
             RETURNING *
             """,
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
 
         return BudgetResponse(**dict(row))
@@ -338,11 +376,14 @@ async def close_budget(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
@@ -353,24 +394,30 @@ async def close_budget(request: Request, budget_id: UUID):
             WHERE id = $1 AND tenant_id = $2
             RETURNING *
             """,
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
 
         return BudgetResponse(**dict(row))
 
 
 @router.post("/{budget_id}/duplicate", response_model=BudgetResponse)
-async def duplicate_budget(request: Request, budget_id: UUID, new_fiscal_year: int = Query(...)):
+async def duplicate_budget(
+    request: Request, budget_id: UUID, new_fiscal_year: int = Query(...)
+):
     """Duplicate budget to new year"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Budget not found")
@@ -384,8 +431,12 @@ async def duplicate_budget(request: Request, budget_id: UUID, new_fiscal_year: i
                 VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING *
                 """,
-                ctx["tenant_id"], new_name, existing["description"],
-                new_fiscal_year, existing["budget_type"], ctx.get("user_id")
+                ctx["tenant_id"],
+                new_name,
+                existing["description"],
+                new_fiscal_year,
+                existing["budget_type"],
+                ctx.get("user_id"),
             )
 
             # Copy items
@@ -403,7 +454,8 @@ async def duplicate_budget(request: Request, budget_id: UUID, new_fiscal_year: i
                     sep_amount, oct_amount, nov_amount, dec_amount, notes
                 FROM budget_items WHERE budget_id = $1
                 """,
-                budget_id, new_budget["id"]
+                budget_id,
+                new_budget["id"],
             )
 
             return BudgetResponse(**dict(new_budget))
@@ -413,24 +465,32 @@ async def duplicate_budget(request: Request, budget_id: UUID, new_fiscal_year: i
 # BUDGET ITEMS
 # ============================================================================
 
+
 @router.post("/{budget_id}/items", response_model=List[BudgetItemResponse])
-async def upsert_budget_items(request: Request, budget_id: UUID, items: List[BudgetItemCreate]):
+async def upsert_budget_items(
+    request: Request, budget_id: UUID, items: List[BudgetItemCreate]
+):
     """Add or update budget items (batch)"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         if budget["status"] not in ("draft", "approved"):
-            raise HTTPException(status_code=400, detail="Cannot modify items on active/closed budget")
+            raise HTTPException(
+                status_code=400, detail="Cannot modify items on active/closed budget"
+            )
 
         async with conn.transaction():
             for item in items:
@@ -452,11 +512,22 @@ async def upsert_budget_items(request: Request, budget_id: UUID, items: List[Bud
                         nov_amount = EXCLUDED.nov_amount, dec_amount = EXCLUDED.dec_amount,
                         notes = EXCLUDED.notes
                     """,
-                    budget_id, item.account_id, item.cost_center_id,
-                    item.jan_amount, item.feb_amount, item.mar_amount, item.apr_amount,
-                    item.may_amount, item.jun_amount, item.jul_amount, item.aug_amount,
-                    item.sep_amount, item.oct_amount, item.nov_amount, item.dec_amount,
-                    item.notes
+                    budget_id,
+                    item.account_id,
+                    item.cost_center_id,
+                    item.jan_amount,
+                    item.feb_amount,
+                    item.mar_amount,
+                    item.apr_amount,
+                    item.may_amount,
+                    item.jun_amount,
+                    item.jul_amount,
+                    item.aug_amount,
+                    item.sep_amount,
+                    item.oct_amount,
+                    item.nov_amount,
+                    item.dec_amount,
+                    item.notes,
                 )
 
         # Return updated items
@@ -470,7 +541,7 @@ async def upsert_budget_items(request: Request, budget_id: UUID, items: List[Bud
             WHERE bi.budget_id = $1
             ORDER BY coa.account_code
             """,
-            budget_id
+            budget_id,
         )
 
         return [BudgetItemResponse(**dict(row)) for row in rows]
@@ -483,21 +554,27 @@ async def delete_budget_item(request: Request, budget_id: UUID, item_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         if budget["status"] not in ("draft", "approved"):
-            raise HTTPException(status_code=400, detail="Cannot modify items on active/closed budget")
+            raise HTTPException(
+                status_code=400, detail="Cannot modify items on active/closed budget"
+            )
 
         result = await conn.execute(
             "DELETE FROM budget_items WHERE id = $1 AND budget_id = $2",
-            item_id, budget_id
+            item_id,
+            budget_id,
         )
 
         if result == "DELETE 0":
@@ -510,6 +587,7 @@ async def delete_budget_item(request: Request, budget_id: UUID, item_id: UUID):
 # BUDGET VS ACTUAL
 # ============================================================================
 
+
 @router.get("/{budget_id}/vs-actual", response_model=BudgetVsActualResponse)
 async def get_budget_vs_actual(
     request: Request,
@@ -521,32 +599,39 @@ async def get_budget_vs_actual(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         rows = await conn.fetch(
-            "SELECT * FROM get_budget_vs_actual($1, $2)",
-            budget_id, month
+            "SELECT * FROM get_budget_vs_actual($1, $2)", budget_id, month
         )
 
-        items = [BudgetVsActualItem(
-            account_id=row["account_id"],
-            account_code=row["account_code"],
-            account_name=row["account_name"],
-            account_type=row["account_type"],
-            cost_center_id=row["cost_center_id"],
-            cost_center_name=row["cost_center_name"],
-            budget_amount=row["budget_amount"],
-            actual_amount=row["actual_amount"],
-            variance=row["variance"],
-            percentage_used=float(row["percentage_used"]) if row["percentage_used"] else 0,
-        ) for row in rows]
+        items = [
+            BudgetVsActualItem(
+                account_id=row["account_id"],
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                account_type=row["account_type"],
+                cost_center_id=row["cost_center_id"],
+                cost_center_name=row["cost_center_name"],
+                budget_amount=row["budget_amount"],
+                actual_amount=row["actual_amount"],
+                variance=row["variance"],
+                percentage_used=float(row["percentage_used"])
+                if row["percentage_used"]
+                else 0,
+            )
+            for row in rows
+        ]
 
         total_budget = sum(i.budget_amount for i in items)
         total_actual = sum(i.actual_amount for i in items)
@@ -571,25 +656,33 @@ async def get_variance_alerts(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_variance_alerts($1, $2)",
-            ctx["tenant_id"], threshold_percent
+            ctx["tenant_id"],
+            threshold_percent,
         )
 
-        items = [VarianceAlertItem(
-            budget_id=row["budget_id"],
-            budget_name=row["budget_name"],
-            fiscal_year=row["fiscal_year"],
-            account_id=row["account_id"],
-            account_code=row["account_code"],
-            account_name=row["account_name"],
-            budget_amount=row["budget_amount"],
-            actual_amount=row["actual_amount"],
-            variance=row["variance"],
-            percentage_used=float(row["percentage_used"]) if row["percentage_used"] else 0,
-        ) for row in rows]
+        items = [
+            VarianceAlertItem(
+                budget_id=row["budget_id"],
+                budget_name=row["budget_name"],
+                fiscal_year=row["fiscal_year"],
+                account_id=row["account_id"],
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                budget_amount=row["budget_amount"],
+                actual_amount=row["actual_amount"],
+                variance=row["variance"],
+                percentage_used=float(row["percentage_used"])
+                if row["percentage_used"]
+                else 0,
+            )
+            for row in rows
+        ]
 
         return VarianceAlertsResponse(
             threshold_percent=threshold_percent,
@@ -604,24 +697,32 @@ async def get_budget_summary(request: Request, budget_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
-            budget_id, ctx["tenant_id"]
+            budget_id,
+            ctx["tenant_id"],
         )
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
 
         rows = await conn.fetch("SELECT * FROM get_budget_summary($1)", budget_id)
 
-        by_type = [BudgetSummaryByType(
-            account_type=row["account_type"],
-            total_budget=row["total_budget"],
-            total_actual=row["total_actual"],
-            total_variance=row["total_variance"],
-            avg_percentage_used=float(row["avg_percentage_used"]) if row["avg_percentage_used"] else 0,
-        ) for row in rows]
+        by_type = [
+            BudgetSummaryByType(
+                account_type=row["account_type"],
+                total_budget=row["total_budget"],
+                total_actual=row["total_actual"],
+                total_variance=row["total_variance"],
+                avg_percentage_used=float(row["avg_percentage_used"])
+                if row["avg_percentage_used"]
+                else 0,
+            )
+            for row in rows
+        ]
 
         return BudgetSummaryResponse(
             budget=BudgetResponse(**dict(budget)),

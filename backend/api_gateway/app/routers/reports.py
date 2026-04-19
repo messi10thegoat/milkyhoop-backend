@@ -43,19 +43,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool for AccountingFacade (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 _facade: Optional[AccountingFacade] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool for AccountingFacade."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 async def get_facade() -> AccountingFacade:
@@ -278,7 +273,11 @@ class LabaRugiResponse(BaseModel):
 # ========================================
 
 
-@router.get("/neraca/{periode}", response_model=NeracaResponse, description="Balance Sheet from journal entries (Pure Ledger).")
+@router.get(
+    "/neraca/{periode}",
+    response_model=NeracaResponse,
+    description="Balance Sheet from journal entries (Pure Ledger).",
+)
 async def get_neraca(request: Request, periode: str):
     """
     Get Laporan Posisi Keuangan (Neraca/Balance Sheet) for a given period.
@@ -294,7 +293,8 @@ async def get_neraca(request: Request, periode: str):
         as_of = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT coa.account_code, coa.name as account_name, coa.account_type,
                     coa.category, coa.normal_balance,
                     COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -307,15 +307,24 @@ async def get_neraca(request: Request, periode: str):
                 GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.normal_balance
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.account_code
-            """, tenant_id, as_of)
+            """,
+                tenant_id,
+                as_of,
+            )
 
             def net_bal(row):
                 d, c = int(row["total_debit"] or 0), int(row["total_credit"] or 0)
                 return (d - c) if row["normal_balance"] == "DEBIT" else (c - d)
 
-            kas = bank = piutang_usaha = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
+            kas = (
+                bank
+            ) = (
+                piutang_usaha
+            ) = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
             peralatan = kendaraan = bangunan = tanah = akum_penyusutan = 0
-            hutang_usaha = hutang_bank_jp = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
+            hutang_usaha = (
+                hutang_bank_jp
+            ) = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
             hutang_bank = 0
             modal_awal = setor_modal = prive = laba_ditahan = 0
             total_revenue = total_expense = total_cogs = 0
@@ -329,9 +338,17 @@ async def get_neraca(request: Request, periode: str):
                         kas += bal
                     elif "bank" in cat or code.startswith("1-1002"):
                         bank += bal
-                    elif "piutang" in cat or "receivable" in cat or code.startswith("1-1003"):
+                    elif (
+                        "piutang" in cat
+                        or "receivable" in cat
+                        or code.startswith("1-1003")
+                    ):
                         piutang_usaha += bal
-                    elif "persediaan" in cat or "inventory" in cat or code.startswith("1-1004"):
+                    elif (
+                        "persediaan" in cat
+                        or "inventory" in cat
+                        or code.startswith("1-1004")
+                    ):
                         persediaan += bal
                     elif "beban_dibayar_dimuka" in cat or "prepaid" in cat:
                         beban_dibayar_dimuka += bal
@@ -345,16 +362,26 @@ async def get_neraca(request: Request, periode: str):
                         bangunan += bal
                     elif "tanah" in cat or "land" in cat:
                         tanah += bal
-                    elif "akumulasi" in cat or "accumulated" in cat or "depreciation" in cat:
+                    elif (
+                        "akumulasi" in cat
+                        or "accumulated" in cat
+                        or "depreciation" in cat
+                    ):
                         akum_penyusutan += abs(bal)
                     elif code.startswith("1-2"):
                         peralatan += bal
                     else:
                         kas += bal
                 elif atype in ("LIABILITY", "PAYABLE"):
-                    if "hutang_usaha" in cat or "payable" in cat or code.startswith("2-1001"):
+                    if (
+                        "hutang_usaha" in cat
+                        or "payable" in cat
+                        or code.startswith("2-1001")
+                    ):
                         hutang_usaha += bal
-                    elif "hutang_bank" in cat and ("jangka_pendek" in cat or "short" in cat):
+                    elif "hutang_bank" in cat and (
+                        "jangka_pendek" in cat or "short" in cat
+                    ):
                         hutang_bank_jp += bal
                     elif "uang_muka_pelanggan" in cat or "customer_deposit" in cat:
                         uang_muka_pelanggan += bal
@@ -385,14 +412,31 @@ async def get_neraca(request: Request, periode: str):
                     total_cogs += bal
 
             laba_periode_berjalan = total_revenue - total_cogs - total_expense
-            total_aset_lancar = kas + bank + persediaan + piutang_usaha + beban_dibayar_dimuka + uang_muka_pembelian
+            total_aset_lancar = (
+                kas
+                + bank
+                + persediaan
+                + piutang_usaha
+                + beban_dibayar_dimuka
+                + uang_muka_pembelian
+            )
             total_aset_tetap = peralatan + kendaraan + bangunan + tanah
             total_aset_tetap_neto = total_aset_tetap - akum_penyusutan
             total_aset = total_aset_lancar + total_aset_tetap_neto
-            total_kewajiban_jangka_pendek = hutang_usaha + hutang_bank_jp + uang_muka_pelanggan + hutang_pajak + hutang_gaji
+            total_kewajiban_jangka_pendek = (
+                hutang_usaha
+                + hutang_bank_jp
+                + uang_muka_pelanggan
+                + hutang_pajak
+                + hutang_gaji
+            )
             total_kewajiban_jangka_panjang = hutang_bank
-            total_kewajiban = total_kewajiban_jangka_pendek + total_kewajiban_jangka_panjang
-            total_ekuitas = modal_awal + setor_modal - prive + laba_ditahan + laba_periode_berjalan
+            total_kewajiban = (
+                total_kewajiban_jangka_pendek + total_kewajiban_jangka_panjang
+            )
+            total_ekuitas = (
+                modal_awal + setor_modal - prive + laba_ditahan + laba_periode_berjalan
+            )
             is_balanced = abs(total_aset - (total_kewajiban + total_ekuitas)) < 1000
             fixed_total = peralatan + kendaraan + bangunan
             if fixed_total > 0:
@@ -409,7 +453,9 @@ async def get_neraca(request: Request, periode: str):
                 periode=periode,
                 tanggal=end_date.strftime("%d %B %Y"),
                 aset_lancar=AsetLancarResponse(
-                    kas=kas, bank=bank, persediaan=persediaan,
+                    kas=kas,
+                    bank=bank,
+                    persediaan=persediaan,
                     piutang_usaha=piutang_usaha,
                     beban_dibayar_dimuka=beban_dibayar_dimuka,
                     uang_muka_pembelian=uang_muka_pembelian,
@@ -441,8 +487,10 @@ async def get_neraca(request: Request, periode: str):
                 ),
                 total_kewajiban=total_kewajiban,
                 ekuitas=EkuitasResponse(
-                    modal_awal=modal_awal, setor_modal=setor_modal,
-                    prive=prive, laba_ditahan=laba_ditahan,
+                    modal_awal=modal_awal,
+                    setor_modal=setor_modal,
+                    prive=prive,
+                    laba_ditahan=laba_ditahan,
                     laba_periode_berjalan=laba_periode_berjalan,
                     total=total_ekuitas,
                 ),
@@ -455,7 +503,11 @@ async def get_neraca(request: Request, periode: str):
         raise HTTPException(status_code=500, detail="Failed to generate neraca report")
 
 
-@router.get("/arus-kas/{periode}", response_model=ArusKasResponse, description="Cash Flow from journal entries (Pure Ledger).")
+@router.get(
+    "/arus-kas/{periode}",
+    response_model=ArusKasResponse,
+    description="Cash Flow from journal entries (Pure Ledger).",
+)
 async def get_arus_kas(request: Request, periode: str):
     """
     Get Laporan Arus Kas (Cash Flow Statement) for a given period.
@@ -474,40 +526,62 @@ async def get_arus_kas(request: Request, periode: str):
         ed = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
         async with pool.acquire() as conn:
-            cash_accounts = await conn.fetch("""
+            cash_accounts = await conn.fetch(
+                """
                 SELECT id, account_code, name, category FROM chart_of_accounts
                 WHERE tenant_id = $1 AND is_active = true AND account_type = 'ASSET'
                     AND (LOWER(category) IN ('kas', 'bank', 'cash', 'cash_and_bank')
                          OR account_code LIKE '1-1001%' OR account_code LIKE '1-1002%')
-            """, tenant_id)
+            """,
+                tenant_id,
+            )
             cash_ids = [r["id"] for r in cash_accounts]
             empty = ArusKasResponse(
                 periode=periode,
                 tanggal_awal=start_date.strftime("%d %B %Y"),
                 tanggal_akhir=end_date.strftime("%d %B %Y"),
                 operasi=ArusKasOperasiResponse(
-                    penerimaan_penjualan=0, penerimaan_piutang=0, penerimaan_lainnya=0,
-                    total_penerimaan=0, pembayaran_kulakan=0, pembayaran_beban_operasi=0,
-                    pembayaran_gaji=0, pembayaran_pajak=0, pembayaran_lainnya=0,
-                    total_pengeluaran=0, net_arus_kas_operasi=0,
+                    penerimaan_penjualan=0,
+                    penerimaan_piutang=0,
+                    penerimaan_lainnya=0,
+                    total_penerimaan=0,
+                    pembayaran_kulakan=0,
+                    pembayaran_beban_operasi=0,
+                    pembayaran_gaji=0,
+                    pembayaran_pajak=0,
+                    pembayaran_lainnya=0,
+                    total_pengeluaran=0,
+                    net_arus_kas_operasi=0,
                 ),
                 investasi=ArusKasInvestasiResponse(
-                    penjualan_aset_tetap=0, penerimaan_investasi=0, total_penerimaan=0,
-                    pembelian_aset_tetap=0, pengeluaran_investasi=0, total_pengeluaran=0,
+                    penjualan_aset_tetap=0,
+                    penerimaan_investasi=0,
+                    total_penerimaan=0,
+                    pembelian_aset_tetap=0,
+                    pengeluaran_investasi=0,
+                    total_pengeluaran=0,
                     net_arus_kas_investasi=0,
                 ),
                 pendanaan=ArusKasPendanaanResponse(
-                    setor_modal=0, penerimaan_pinjaman=0, total_penerimaan=0,
-                    prive=0, pembayaran_pinjaman=0, pembayaran_bunga=0,
-                    total_pengeluaran=0, net_arus_kas_pendanaan=0,
+                    setor_modal=0,
+                    penerimaan_pinjaman=0,
+                    total_penerimaan=0,
+                    prive=0,
+                    pembayaran_pinjaman=0,
+                    pembayaran_bunga=0,
+                    total_pengeluaran=0,
+                    net_arus_kas_pendanaan=0,
                 ),
-                kenaikan_bersih_kas=0, kas_awal_periode=0, kas_akhir_periode=0,
+                kenaikan_bersih_kas=0,
+                kas_awal_periode=0,
+                kas_akhir_periode=0,
             )
             if not cash_ids:
                 return empty
 
             # Get journal entries that hit cash/bank, with contra-account classification
-            cash_flows = await conn.fetch("""
+            cash_flows = await conn.fetch(
+                """
                 WITH cash_lines AS (
                     SELECT jl.journal_id, jl.debit as cash_debit, jl.credit as cash_credit
                     FROM journal_lines jl
@@ -538,7 +612,12 @@ async def get_arus_kas(request: Request, periode: str):
                     FROM contra_lines ct WHERE ct.journal_id = cl.journal_id LIMIT 1
                 ) contra ON true
                 GROUP BY cl.journal_id, contra.account_type, contra.category, contra.account_code
-            """, tenant_id, sd, ed, cash_ids)
+            """,
+                tenant_id,
+                sd,
+                ed,
+                cash_ids,
+            )
 
             # Classify cash flows by contra-account type
             pen_penjualan = pen_piutang = pen_lainnya = 0
@@ -561,49 +640,71 @@ async def get_arus_kas(request: Request, periode: str):
                         bay_kulakan += abs(net)
                 elif ct == "EXPENSE":
                     if "gaji" in cc or "salary" in cc:
-                        if net < 0: bay_gaji += abs(net)
+                        if net < 0:
+                            bay_gaji += abs(net)
                     elif "pajak" in cc or "tax" in cc:
-                        if net < 0: bay_pajak += abs(net)
+                        if net < 0:
+                            bay_pajak += abs(net)
                     elif "bunga" in cc or "interest" in cc:
-                        if net < 0: bay_bunga += abs(net)
+                        if net < 0:
+                            bay_bunga += abs(net)
                     else:
-                        if net < 0: bay_beban += abs(net)
+                        if net < 0:
+                            bay_beban += abs(net)
                 elif ct == "OTHER_EXPENSE":
                     if net < 0:
                         bay_beban += abs(net)
                 elif ct in ("ASSET", "RECEIVABLE"):
                     if "piutang" in cc or "receivable" in cc:
-                        if net > 0: pen_piutang += net
-                    elif cc in ("kas", "bank", "cash", "cash_and_bank") or ccode.startswith("1-1001") or ccode.startswith("1-1002"):
+                        if net > 0:
+                            pen_piutang += net
+                    elif (
+                        cc in ("kas", "bank", "cash", "cash_and_bank")
+                        or ccode.startswith("1-1001")
+                        or ccode.startswith("1-1002")
+                    ):
                         pass  # cash-to-cash transfer, ignore
                     elif "persediaan" in cc or "inventory" in cc:
-                        if net < 0: bay_kulakan += abs(net)
+                        if net < 0:
+                            bay_kulakan += abs(net)
                     elif ccode.startswith("1-2"):
                         if net < 0:
                             beli_aset += abs(net)
                         else:
                             jual_aset += net
                     else:
-                        if net > 0: pen_lainnya += net
-                        else: bay_lainnya += abs(net)
+                        if net > 0:
+                            pen_lainnya += net
+                        else:
+                            bay_lainnya += abs(net)
                 elif ct in ("LIABILITY", "PAYABLE"):
                     if "hutang_bank" in cc or "bank_loan" in cc:
-                        if net > 0: pen_pinjaman += net
-                        else: bay_pinjaman += abs(net)
+                        if net > 0:
+                            pen_pinjaman += net
+                        else:
+                            bay_pinjaman += abs(net)
                     elif "hutang" in cc or "payable" in cc:
-                        if net < 0: bay_kulakan += abs(net)
-                        else: pen_lainnya += net
+                        if net < 0:
+                            bay_kulakan += abs(net)
+                        else:
+                            pen_lainnya += net
                     else:
-                        if net > 0: pen_lainnya += net
-                        else: bay_lainnya += abs(net)
+                        if net > 0:
+                            pen_lainnya += net
+                        else:
+                            bay_lainnya += abs(net)
                 elif ct == "EQUITY":
                     if "prive" in cc or "drawing" in cc:
-                        if net < 0: prv += abs(net)
+                        if net < 0:
+                            prv += abs(net)
                     else:
-                        if net > 0: setor_modal += net
+                        if net > 0:
+                            setor_modal += net
                 else:
-                    if net > 0: pen_lainnya += net
-                    else: bay_lainnya += abs(net)
+                    if net > 0:
+                        pen_lainnya += net
+                    else:
+                        bay_lainnya += abs(net)
 
             # Compute totals
             tpo = pen_penjualan + pen_piutang + pen_lainnya
@@ -621,13 +722,18 @@ async def get_arus_kas(request: Request, periode: str):
             kenaikan = nop + niv + nfn
 
             # Opening cash balance from journals before period
-            kas_awal = await conn.fetchval("""
+            kas_awal = await conn.fetchval(
+                """
                 SELECT COALESCE(SUM(jl.debit - jl.credit), 0)::BIGINT
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE je.tenant_id = $1 AND je.status = 'POSTED'
                     AND je.journal_date < $2 AND jl.account_id = ANY($3)
-            """, tenant_id, sd, cash_ids)
+            """,
+                tenant_id,
+                sd,
+                cash_ids,
+            )
             kav = int(kas_awal or 0)
 
             logger.info(
@@ -684,7 +790,11 @@ async def get_arus_kas(request: Request, periode: str):
         )
 
 
-@router.get("/laba-rugi/{periode}", response_model=LabaRugiResponse, description="Income Statement from journal entries (Pure Ledger).")
+@router.get(
+    "/laba-rugi/{periode}",
+    response_model=LabaRugiResponse,
+    description="Income Statement from journal entries (Pure Ledger).",
+)
 async def get_laba_rugi(
     request: Request,
     periode: str,
@@ -714,20 +824,30 @@ async def get_laba_rugi(
                     "SELECT default_report_basis FROM accounting_settings WHERE tenant_id = $1",
                     tenant_id,
                 )
-                basis = settings_row["default_report_basis"] if settings_row else "accrual"
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+                basis = (
+                    settings_row["default_report_basis"] if settings_row else "accrual"
+                )
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
+            )
 
             # Get revenue using journal-based SQL function
             revenue_rows = await conn.fetch(
                 "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
-                tenant_id, sd, ed, basis,
+                tenant_id,
+                sd,
+                ed,
+                basis,
             )
             total_revenue = sum(int(r["total_amount"]) for r in revenue_rows)
 
             # Get expenses using journal-based SQL function
             expense_rows = await conn.fetch(
                 "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
-                tenant_id, sd, ed, basis,
+                tenant_id,
+                sd,
+                ed,
+                basis,
             )
 
             # Classify expenses by account name keywords
@@ -748,11 +868,20 @@ async def get_laba_rugi(
                     beban_gaji += amount
                 elif "sewa" in aname or "rent" in aname:
                     beban_sewa += amount
-                elif "listrik" in aname or "utilitas" in aname or "utility" in aname or "electricity" in aname:
+                elif (
+                    "listrik" in aname
+                    or "utilitas" in aname
+                    or "utility" in aname
+                    or "electricity" in aname
+                ):
                     beban_listrik += amount
                 elif "transportasi" in aname or "transport" in aname:
                     beban_transportasi += amount
-                elif "penyusutan" in aname or "depreciation" in aname or "amortization" in aname:
+                elif (
+                    "penyusutan" in aname
+                    or "depreciation" in aname
+                    or "amortization" in aname
+                ):
                     beban_penyusutan += amount
                 elif "bunga" in aname or "interest" in aname:
                     beban_bunga += amount
@@ -760,7 +889,8 @@ async def get_laba_rugi(
                     beban_lainnya += amount
 
             # Get other income from journals
-            other_income_val = await conn.fetchval("""
+            other_income_val = await conn.fetchval(
+                """
                 SELECT COALESCE(SUM(jl.credit - jl.debit), 0)::BIGINT
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
@@ -768,19 +898,36 @@ async def get_laba_rugi(
                 WHERE je.tenant_id = $1
                     AND je.journal_date BETWEEN $2 AND $3
                     AND coa.account_type = 'OTHER_INCOME'
-            """, tenant_id, sd, ed)
+            """,
+                tenant_id,
+                sd,
+                ed,
+            )
             pendapatan_lainnya = int(other_income_val or 0)
 
             # Compute all P&L figures
             total_pendapatan = total_revenue + pendapatan_lainnya
             laba_kotor = total_revenue - total_cogs
-            total_beban = beban_gaji + beban_sewa + beban_listrik + beban_transportasi + beban_penyusutan + beban_lainnya
+            total_beban = (
+                beban_gaji
+                + beban_sewa
+                + beban_listrik
+                + beban_transportasi
+                + beban_penyusutan
+                + beban_lainnya
+            )
             laba_operasional = laba_kotor - total_beban
             pendapatan_bunga = 0
-            laba_bersih = laba_operasional + pendapatan_lainnya + pendapatan_bunga - beban_bunga
+            laba_bersih = (
+                laba_operasional + pendapatan_lainnya + pendapatan_bunga - beban_bunga
+            )
 
-            margin_laba_kotor = (laba_kotor / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
-            margin_laba_bersih = (laba_bersih / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            margin_laba_kotor = (
+                (laba_kotor / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            )
+            margin_laba_bersih = (
+                (laba_bersih / total_pendapatan * 100) if total_pendapatan > 0 else 0.0
+            )
 
             logger.info(
                 f"Laba Rugi (journal) generated: tenant={tenant_id}, periode={periode}, "
@@ -820,7 +967,6 @@ async def get_laba_rugi(
         raise HTTPException(
             status_code=500, detail="Failed to generate laba rugi report"
         )
-
 
 
 @router.get("/health")
@@ -1323,7 +1469,11 @@ async def get_trial_balance_full(
 # ========================================
 
 
-@router.get("/accounting-settings", deprecated=True, description="DEPRECATED: Use GET /api/settings/accounting instead")
+@router.get(
+    "/accounting-settings",
+    deprecated=True,
+    description="DEPRECATED: Use GET /api/settings/accounting instead",
+)
 @router.get("/accounting-settings-old", response_model=AccountingSettingsDetailResponse)
 async def get_accounting_settings(request: Request):
     """
@@ -1403,7 +1553,12 @@ async def get_accounting_settings(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get accounting settings")
 
 
-@router.patch("/accounting-settings", deprecated=True, description="DEPRECATED: Use PATCH /api/settings/accounting instead", response_model=AccountingSettingsDetailResponse)
+@router.patch(
+    "/accounting-settings",
+    deprecated=True,
+    description="DEPRECATED: Use PATCH /api/settings/accounting instead",
+    response_model=AccountingSettingsDetailResponse,
+)
 async def update_accounting_settings(
     request: Request, data: UpdateAccountingSettingsRequest
 ):
@@ -2558,7 +2713,12 @@ async def get_ap_aging_for_vendor(
         )
 
 
-@router.post("/aging-snapshot", deprecated=True, description="DEPRECATED: Use POST /api/settings/aging-snapshot instead", response_model=CreateSnapshotResponse)
+@router.post(
+    "/aging-snapshot",
+    deprecated=True,
+    description="DEPRECATED: Use POST /api/settings/aging-snapshot instead",
+    response_model=CreateSnapshotResponse,
+)
 async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
     """Create an aging snapshot for trend analysis."""
     try:
@@ -2964,7 +3124,11 @@ async def get_pendapatan_report(
 # =============================================================================
 
 
-@router.get("/cash-flow", deprecated=True, description="DEPRECATED: Uses transaction tables. Use journal-based cash flow endpoint")
+@router.get(
+    "/cash-flow",
+    deprecated=True,
+    description="DEPRECATED: Uses transaction tables. Use journal-based cash flow endpoint",
+)
 async def get_cash_flow_report(
     request: Request,
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
@@ -2977,8 +3141,8 @@ async def get_cash_flow_report(
         status_code=410,
         content={
             "error": "This endpoint is deprecated. Use /api/reports/arus-kas/{periode} instead.",
-            "deprecated": True
-        }
+            "deprecated": True,
+        },
     )
     try:
         ctx = get_user_context(request)
@@ -3122,7 +3286,11 @@ async def get_cash_flow_report(
 # =============================================================================
 
 
-@router.get("/balance-sheet", deprecated=True, description="DEPRECATED: Uses pre-computed balances. Use /trial-balance for journal-derived data")
+@router.get(
+    "/balance-sheet",
+    deprecated=True,
+    description="DEPRECATED: Uses pre-computed balances. Use /trial-balance for journal-derived data",
+)
 async def get_balance_sheet(
     request: Request,
     as_of_date: str = Query(..., description="As of date YYYY-MM-DD"),
@@ -3134,8 +3302,8 @@ async def get_balance_sheet(
         status_code=410,
         content={
             "error": "This endpoint is deprecated. Use /api/reports/neraca/{periode} instead.",
-            "deprecated": True
-        }
+            "deprecated": True,
+        },
     )
     try:
         ctx = get_user_context(request)
@@ -3753,7 +3921,9 @@ async def get_profit_loss_query_params(
             # Calculate totals
             gross_profit = total_revenue - total_cogs
             operating_income = gross_profit - total_operating_expenses
-            net_income_before_tax = operating_income + total_other_income - total_other_expenses
+            net_income_before_tax = (
+                operating_income + total_other_income - total_other_expenses
+            )
             tax_expense = 0  # TODO: Implement tax calculation
             net_income = net_income_before_tax - tax_expense
 
@@ -3796,4 +3966,3 @@ async def get_profit_loss_query_params(
     except Exception as e:
         logger.error(f"Error getting profit/loss report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get profit/loss report")
-

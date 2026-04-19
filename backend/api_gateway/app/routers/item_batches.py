@@ -12,7 +12,6 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.item_batches import (
     AdjustBatchQuantityRequest,
     AdjustBatchResponse,
@@ -27,24 +26,18 @@ from ..schemas.item_batches import (
     ItemBatchDetailData,
     ItemBatchDetailResponse,
     ItemBatchListResponse,
-    ItemBatchesSummaryResponse,
     UpdateItemBatchRequest,
     UpdateItemBatchResponse,
-    WarehouseBatchesResponse,
-    WarehouseBatchesSummary,
 )
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -60,6 +53,7 @@ def get_user_context(request: Request) -> dict:
 # ENDPOINTS
 # ============================================================================
 
+
 @router.get("", response_model=ItemBatchListResponse)
 async def list_item_batches(
     request: Request,
@@ -74,7 +68,9 @@ async def list_item_batches(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["ib.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -98,8 +94,7 @@ async def list_item_batches(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM item_batches ib WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM item_batches ib WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -111,11 +106,15 @@ async def list_item_batches(
             ORDER BY ib.expiry_date ASC NULLS LAST, ib.created_at DESC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         data = [ItemBatchData(**dict(row)) for row in rows]
-        return ItemBatchListResponse(data=data, total=total, has_more=(skip + limit) < total)
+        return ItemBatchListResponse(
+            data=data, total=total, has_more=(skip + limit) < total
+        )
 
 
 @router.get("/expiring", response_model=ExpiringBatchesResponse)
@@ -129,20 +128,26 @@ async def get_expiring_batches(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_expiring_batches($1, $2, $3)",
-            ctx["tenant_id"], days, warehouse_id
+            ctx["tenant_id"],
+            days,
+            warehouse_id,
         )
 
-        total_value = sum(row["quantity"] * (row.get("unit_cost", 0) or 0) for row in rows)
+        total_value = sum(
+            row["quantity"] * (row.get("unit_cost", 0) or 0) for row in rows
+        )
 
         return ExpiringBatchesResponse(
             days_ahead=days,
             data=[dict(row) for row in rows],
             total=len(rows),
-            total_value=int(total_value)
+            total_value=int(total_value),
         )
 
 
@@ -156,11 +161,12 @@ async def get_expired_batches(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
-            "SELECT * FROM get_expired_batches($1, $2)",
-            ctx["tenant_id"], warehouse_id
+            "SELECT * FROM get_expired_batches($1, $2)", ctx["tenant_id"], warehouse_id
         )
 
         total_value = sum(row.get("total_value", 0) or 0 for row in rows)
@@ -168,7 +174,7 @@ async def get_expired_batches(
         return ExpiredBatchesResponse(
             data=[dict(row) for row in rows],
             total=len(rows),
-            total_value=int(total_value)
+            total_value=int(total_value),
         )
 
 
@@ -179,7 +185,9 @@ async def get_item_batch(request: Request, batch_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -188,7 +196,8 @@ async def get_item_batch(request: Request, batch_id: UUID):
             LEFT JOIN products i ON ib.item_id = i.id
             WHERE ib.id = $1 AND ib.tenant_id = $2
             """,
-            batch_id, ctx["tenant_id"]
+            batch_id,
+            ctx["tenant_id"],
         )
 
         if not row:
@@ -202,12 +211,12 @@ async def get_item_batch(request: Request, batch_id: UUID):
             JOIN warehouses w ON bws.warehouse_id = w.id
             WHERE bws.batch_id = $1
             """,
-            batch_id
+            batch_id,
         )
 
         data = ItemBatchDetailData(
             **dict(row),
-            warehouse_stock=[BatchWarehouseStock(**dict(ws)) for ws in warehouse_stock]
+            warehouse_stock=[BatchWarehouseStock(**dict(ws)) for ws in warehouse_stock],
         )
 
         return ItemBatchDetailResponse(data=data)
@@ -221,15 +230,21 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             # Check batch number uniqueness
             existing = await conn.fetchval(
                 "SELECT id FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3",
-                ctx["tenant_id"], body.item_id, body.batch_number
+                ctx["tenant_id"],
+                body.item_id,
+                body.batch_number,
             )
             if existing:
-                raise HTTPException(status_code=400, detail="Batch number already exists for this item")
+                raise HTTPException(
+                    status_code=400, detail="Batch number already exists for this item"
+                )
 
             total_value = int(body.initial_quantity * body.unit_cost)
 
@@ -243,11 +258,21 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 RETURNING *
                 """,
-                ctx["tenant_id"], body.item_id, body.batch_number, body.manufacture_date,
-                body.expiry_date, body.received_date or date.today(), body.initial_quantity,
-                body.unit_cost, total_value, body.purchase_order_id, body.bill_id,
-                body.supplier_batch_number, body.quality_grade, body.quality_notes,
-                ctx.get("user_id")
+                ctx["tenant_id"],
+                body.item_id,
+                body.batch_number,
+                body.manufacture_date,
+                body.expiry_date,
+                body.received_date or date.today(),
+                body.initial_quantity,
+                body.unit_cost,
+                total_value,
+                body.purchase_order_id,
+                body.bill_id,
+                body.supplier_batch_number,
+                body.quality_grade,
+                body.quality_notes,
+                ctx.get("user_id"),
             )
 
             batch_id = row["id"]
@@ -259,33 +284,44 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
                     INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
                     VALUES ($1, $2, $3, $4)
                     """,
-                    ctx["tenant_id"], batch_id, body.warehouse_id, body.initial_quantity
+                    ctx["tenant_id"],
+                    batch_id,
+                    body.warehouse_id,
+                    body.initial_quantity,
                 )
 
             # Get item info
-            item = await conn.fetchrow("SELECT sku as code, nama_produk as name FROM products WHERE id = $1", body.item_id)
+            item = await conn.fetchrow(
+                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
+                body.item_id,
+            )
 
             return CreateItemBatchResponse(
                 data=ItemBatchData(
                     **dict(row),
                     item_code=item["code"] if item else None,
-                    item_name=item["name"] if item else None
+                    item_name=item["name"] if item else None,
                 )
             )
 
 
 @router.patch("/{batch_id}", response_model=UpdateItemBatchResponse)
-async def update_item_batch(request: Request, batch_id: UUID, body: UpdateItemBatchRequest):
+async def update_item_batch(
+    request: Request, batch_id: UUID, body: UpdateItemBatchRequest
+):
     """Update batch details"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2",
-            batch_id, ctx["tenant_id"]
+            batch_id,
+            ctx["tenant_id"],
         )
 
         if not existing:
@@ -295,8 +331,15 @@ async def update_item_batch(request: Request, batch_id: UUID, body: UpdateItemBa
         params = []
         param_idx = 1
 
-        for field in ["batch_number", "manufacture_date", "expiry_date",
-                      "supplier_batch_number", "quality_grade", "quality_notes", "status"]:
+        for field in [
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
+            "supplier_batch_number",
+            "quality_grade",
+            "quality_notes",
+            "status",
+        ]:
             value = getattr(body, field, None)
             if value is not None:
                 updates.append(f"{field} = ${param_idx}")
@@ -314,33 +357,41 @@ async def update_item_batch(request: Request, batch_id: UUID, body: UpdateItemBa
             WHERE id = ${param_idx}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
-        item = await conn.fetchrow("SELECT sku as code, nama_produk as name FROM products WHERE id = $1", row["item_id"])
+        item = await conn.fetchrow(
+            "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
+            row["item_id"],
+        )
 
         return UpdateItemBatchResponse(
             data=ItemBatchData(
                 **dict(row),
                 item_code=item["code"] if item else None,
-                item_name=item["name"] if item else None
+                item_name=item["name"] if item else None,
             )
         )
 
 
 @router.post("/{batch_id}/adjust", response_model=AdjustBatchResponse)
-async def adjust_batch_quantity(request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest):
+async def adjust_batch_quantity(
+    request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest
+):
     """Adjust batch quantity in a warehouse"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             batch = await conn.fetchrow(
                 "SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2",
-                batch_id, ctx["tenant_id"]
+                batch_id,
+                ctx["tenant_id"],
             )
 
             if not batch:
@@ -355,13 +406,15 @@ async def adjust_batch_quantity(request: Request, batch_id: UUID, body: AdjustBa
                 DO UPDATE SET quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
                               updated_at = NOW()
                 """,
-                ctx["tenant_id"], batch_id, body.warehouse_id, body.quantity_change
+                ctx["tenant_id"],
+                batch_id,
+                body.warehouse_id,
+                body.quantity_change,
             )
 
             # Get updated batch
             row = await conn.fetchrow(
-                "SELECT * FROM item_batches WHERE id = $1",
-                batch_id
+                "SELECT * FROM item_batches WHERE id = $1", batch_id
             )
 
             ws = await conn.fetchrow(
@@ -371,22 +424,28 @@ async def adjust_batch_quantity(request: Request, batch_id: UUID, body: AdjustBa
                 JOIN warehouses w ON bws.warehouse_id = w.id
                 WHERE bws.batch_id = $1 AND bws.warehouse_id = $2
                 """,
-                batch_id, body.warehouse_id
+                batch_id,
+                body.warehouse_id,
             )
 
-            item = await conn.fetchrow("SELECT sku as code, nama_produk as name FROM products WHERE id = $1", row["item_id"])
+            item = await conn.fetchrow(
+                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
+                row["item_id"],
+            )
 
             return AdjustBatchResponse(
                 data=ItemBatchData(
                     **dict(row),
                     item_code=item["code"] if item else None,
-                    item_name=item["name"] if item else None
+                    item_name=item["name"] if item else None,
                 ),
-                warehouse_stock=BatchWarehouseStock(**dict(ws))
+                warehouse_stock=BatchWarehouseStock(**dict(ws)),
             )
 
 
-@router.get("/items/{item_id}/batches/available", response_model=AvailableBatchesResponse)
+@router.get(
+    "/items/{item_id}/batches/available", response_model=AvailableBatchesResponse
+)
 async def get_available_batches_for_item(
     request: Request,
     item_id: UUID,
@@ -399,11 +458,17 @@ async def get_available_batches_for_item(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_available_batches($1, $2, $3, $4, $5)",
-            ctx["tenant_id"], item_id, warehouse_id, quantity, method
+            ctx["tenant_id"],
+            item_id,
+            warehouse_id,
+            quantity,
+            method,
         )
 
         total_available = sum(row["available_quantity"] for row in rows)
@@ -415,15 +480,17 @@ async def get_available_batches_for_item(
             if row["expiry_date"]:
                 days_until = (row["expiry_date"] - date.today()).days
 
-            batches.append(AvailableBatch(
-                batch_id=row["batch_id"],
-                batch_number=row["batch_number"],
-                expiry_date=row["expiry_date"],
-                days_until_expiry=days_until,
-                available_quantity=row["available_quantity"],
-                quantity_to_use=row["quantity_to_use"],
-                unit_cost=row["unit_cost"]
-            ))
+            batches.append(
+                AvailableBatch(
+                    batch_id=row["batch_id"],
+                    batch_number=row["batch_number"],
+                    expiry_date=row["expiry_date"],
+                    days_until_expiry=days_until,
+                    available_quantity=row["available_quantity"],
+                    quantity_to_use=row["quantity_to_use"],
+                    unit_cost=row["unit_cost"],
+                )
+            )
 
         return AvailableBatchesResponse(
             item_id=item_id,
@@ -433,5 +500,5 @@ async def get_available_batches_for_item(
             quantity_allocated=total_allocated,
             fully_satisfied=total_allocated >= quantity,
             method=method,
-            batches=batches
+            batches=batches,
         )

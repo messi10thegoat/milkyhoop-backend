@@ -11,40 +11,41 @@ import asyncpg
 import logging
 import uuid as uuid_module
 
-from ..config import settings
 from ..schemas.quotes import (
-    CreateQuoteRequest, UpdateQuoteRequest,
-    SendQuoteRequest, DeclineQuoteRequest, VoidQuoteRequest,
-    ConvertToInvoiceRequest, ConvertToOrderRequest, DuplicateQuoteRequest,
-    QuoteListResponse, QuoteDetailResponse, QuoteResponse,
-    QuoteSummaryResponse, ExpiringQuotesResponse,
-    QuoteListItem, QuoteDetail, QuoteItemResponse
+    CreateQuoteRequest,
+    UpdateQuoteRequest,
+    SendQuoteRequest,
+    DeclineQuoteRequest,
+    VoidQuoteRequest,
+    ConvertToInvoiceRequest,
+    ConvertToOrderRequest,
+    DuplicateQuoteRequest,
+    QuoteListResponse,
+    QuoteDetailResponse,
+    QuoteResponse,
+    QuoteSummaryResponse,
+    ExpiringQuotesResponse,
+    QuoteListItem,
+    QuoteDetail,
+    QuoteItemResponse,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -56,16 +57,16 @@ def get_user_context(request: Request) -> dict:
 
     return {
         "tenant_id": tenant_id,
-        "user_id": uuid_module.UUID(user_id) if user_id else None
+        "user_id": uuid_module.UUID(user_id) if user_id else None,
     }
 
 
 def calculate_item_totals(item: dict) -> dict:
     """Calculate line item totals."""
-    quantity = Decimal(str(item.get('quantity', 1)))
-    unit_price = Decimal(str(item.get('unit_price', 0)))
-    discount_percent = Decimal(str(item.get('discount_percent', 0)))
-    tax_rate = Decimal(str(item.get('tax_rate', 0)))
+    quantity = Decimal(str(item.get("quantity", 1)))
+    unit_price = Decimal(str(item.get("unit_price", 0)))
+    discount_percent = Decimal(str(item.get("discount_percent", 0)))
+    tax_rate = Decimal(str(item.get("tax_rate", 0)))
 
     subtotal = quantity * unit_price
     discount = subtotal * discount_percent / 100
@@ -73,30 +74,32 @@ def calculate_item_totals(item: dict) -> dict:
     tax_amount = after_discount * tax_rate / 100
     line_total = after_discount + tax_amount
 
-    return {
-        **item,
-        'tax_amount': int(tax_amount),
-        'line_total': int(line_total)
-    }
+    return {**item, "tax_amount": int(tax_amount), "line_total": int(line_total)}
 
 
-def calculate_quote_totals(items: list, discount_type: str, discount_value: float) -> dict:
+def calculate_quote_totals(
+    items: list, discount_type: str, discount_value: float
+) -> dict:
     """Calculate quote totals from items."""
-    subtotal = sum(item.get('line_total', 0) - item.get('tax_amount', 0) for item in items)
-    total_tax = sum(item.get('tax_amount', 0) for item in items)
+    subtotal = sum(
+        item.get("line_total", 0) - item.get("tax_amount", 0) for item in items
+    )
+    total_tax = sum(item.get("tax_amount", 0) for item in items)
 
-    if discount_type == 'percentage':
-        discount_amount = int(Decimal(str(subtotal)) * Decimal(str(discount_value)) / 100)
+    if discount_type == "percentage":
+        discount_amount = int(
+            Decimal(str(subtotal)) * Decimal(str(discount_value)) / 100
+        )
     else:
         discount_amount = int(discount_value)
 
     total_amount = subtotal - discount_amount + total_tax
 
     return {
-        'subtotal': subtotal,
-        'discount_amount': discount_amount,
-        'tax_amount': total_tax,
-        'total_amount': total_amount
+        "subtotal": subtotal,
+        "discount_amount": discount_amount,
+        "tax_amount": total_tax,
+        "total_amount": total_amount,
     }
 
 
@@ -104,16 +107,17 @@ def calculate_quote_totals(items: list, discount_type: str, discount_value: floa
 # LIST & DETAIL ENDPOINTS
 # ============================================================================
 
+
 @router.get("", response_model=QuoteListResponse)
 async def list_quotes(
     request: Request,
-    status: Optional[str] = Query('all'),
+    status: Optional[str] = Query("all"),
     customer_id: Optional[str] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100)
+    limit: int = Query(20, ge=1, le=100),
 ):
     """List quotes with filters."""
     try:
@@ -123,7 +127,7 @@ async def list_quotes(
         async with pool.acquire() as conn:
             # Build query
             conditions = ["tenant_id = $1"]
-            params = [ctx['tenant_id']]
+            params = [ctx["tenant_id"]]
             param_idx = 2
 
             # Map frontend status aliases
@@ -152,13 +156,17 @@ async def list_quotes(
             if search:
                 words = search.strip().split()
                 if len(words) == 1:
-                    conditions.append(f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx})")
+                    conditions.append(
+                        f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx})"
+                    )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
                 else:
                     word_conds = []
                     for word in words:
-                        word_conds.append(f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx})")
+                        word_conds.append(
+                            f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx})"
+                        )
                         params.append(f"%{word}%")
                         param_idx += 1
                     conditions.append(f"({' AND '.join(word_conds)})")
@@ -186,28 +194,34 @@ async def list_quotes(
             items = []
             for row in rows:
                 is_expired = (
-                    row['expiry_date'] is not None
-                    and row['expiry_date'] < date.today()
-                    and row['status'] == 'sent'
+                    row["expiry_date"] is not None
+                    and row["expiry_date"] < date.today()
+                    and row["status"] == "sent"
                 )
-                items.append(QuoteListItem(
-                    id=str(row['id']),
-                    quote_number=row['quote_number'],
-                    quote_date=row['quote_date'].isoformat(),
-                    expiry_date=row['expiry_date'].isoformat() if row['expiry_date'] else None,
-                    customer_id=str(row['customer_id']),
-                    customer_name=row['customer_name'],
-                    subject=row['subject'],
-                    subtotal=row['subtotal'],
-                    discount_amount=row['discount_amount'],
-                    tax_amount=row['tax_amount'],
-                    total_amount=row['total_amount'],
-                    status=row['status'],
-                    converted_to_type=row['converted_to_type'],
-                    converted_to_id=str(row['converted_to_id']) if row['converted_to_id'] else None,
-                    created_at=row['created_at'].isoformat(),
-                    is_expired=is_expired
-                ))
+                items.append(
+                    QuoteListItem(
+                        id=str(row["id"]),
+                        quote_number=row["quote_number"],
+                        quote_date=row["quote_date"].isoformat(),
+                        expiry_date=row["expiry_date"].isoformat()
+                        if row["expiry_date"]
+                        else None,
+                        customer_id=str(row["customer_id"]),
+                        customer_name=row["customer_name"],
+                        subject=row["subject"],
+                        subtotal=row["subtotal"],
+                        discount_amount=row["discount_amount"],
+                        tax_amount=row["tax_amount"],
+                        total_amount=row["total_amount"],
+                        status=row["status"],
+                        converted_to_type=row["converted_to_type"],
+                        converted_to_id=str(row["converted_to_id"])
+                        if row["converted_to_id"]
+                        else None,
+                        created_at=row["created_at"].isoformat(),
+                        is_expired=is_expired,
+                    )
+                )
 
             page = (skip // limit) + 1 if limit > 0 else 1
             total_pages = (total + limit - 1) // limit if limit > 0 else 1
@@ -218,7 +232,7 @@ async def list_quotes(
                 has_more=(skip + limit) < total,
                 page=page,
                 limit=limit,
-                total_pages=total_pages
+                total_pages=total_pages,
             )
 
     except HTTPException:
@@ -230,8 +244,7 @@ async def list_quotes(
 
 @router.get("/expiring", response_model=ExpiringQuotesResponse)
 async def get_expiring_quotes(
-    request: Request,
-    days: int = Query(7, ge=1, le=30, description="Days until expiry")
+    request: Request, days: int = Query(7, ge=1, le=30, description="Days until expiry")
 ):
     """Get quotes expiring within specified days."""
     try:
@@ -249,25 +262,23 @@ async def get_expiring_quotes(
                 AND expiry_date >= CURRENT_DATE
                 ORDER BY expiry_date ASC
             """
-            rows = await conn.fetch(query, ctx['tenant_id'], days)
+            rows = await conn.fetch(query, ctx["tenant_id"], days)
 
             items = []
             for row in rows:
-                days_until = (row['expiry_date'] - date.today()).days
-                items.append({
-                    "id": str(row['id']),
-                    "quote_number": row['quote_number'],
-                    "customer_name": row['customer_name'],
-                    "expiry_date": row['expiry_date'].isoformat(),
-                    "total_amount": row['total_amount'],
-                    "days_until_expiry": days_until
-                })
+                days_until = (row["expiry_date"] - date.today()).days
+                items.append(
+                    {
+                        "id": str(row["id"]),
+                        "quote_number": row["quote_number"],
+                        "customer_name": row["customer_name"],
+                        "expiry_date": row["expiry_date"].isoformat(),
+                        "total_amount": row["total_amount"],
+                        "days_until_expiry": days_until,
+                    }
+                )
 
-            return ExpiringQuotesResponse(
-                success=True,
-                data=items,
-                total=len(items)
-            )
+            return ExpiringQuotesResponse(success=True, data=items, total=len(items))
 
     except HTTPException:
         raise
@@ -299,22 +310,22 @@ async def get_quote_summary(request: Request):
                 FROM quotes
                 WHERE tenant_id = $1
             """
-            row = await conn.fetchrow(query, ctx['tenant_id'])
+            row = await conn.fetchrow(query, ctx["tenant_id"])
 
             return QuoteSummaryResponse(
                 success=True,
                 data={
-                    "total_quotes": row['total_quotes'],
-                    "draft_count": row['draft_count'],
-                    "sent_count": row['sent_count'],
-                    "accepted_count": row['accepted_count'],
-                    "declined_count": row['declined_count'],
-                    "expired_count": row['expired_count'],
-                    "converted_count": row['converted_count'],
-                    "total_value": row['total_value'],
-                    "accepted_value": row['accepted_value'],
-                    "pending_value": row['pending_value']
-                }
+                    "total_quotes": row["total_quotes"],
+                    "draft_count": row["draft_count"],
+                    "sent_count": row["sent_count"],
+                    "accepted_count": row["accepted_count"],
+                    "declined_count": row["declined_count"],
+                    "expired_count": row["expired_count"],
+                    "converted_count": row["converted_count"],
+                    "total_value": row["total_value"],
+                    "accepted_value": row["accepted_value"],
+                    "pending_value": row["pending_value"],
+                },
             )
 
     except HTTPException:
@@ -337,7 +348,9 @@ async def get_quote_detail(request: Request, quote_id: str):
                 SELECT * FROM quotes
                 WHERE id = $1 AND tenant_id = $2
             """
-            quote = await conn.fetchrow(quote_query, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            quote = await conn.fetchrow(
+                quote_query, uuid_module.UUID(quote_id), ctx["tenant_id"]
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
@@ -351,63 +364,80 @@ async def get_quote_detail(request: Request, quote_id: str):
             items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
 
             is_expired = (
-                quote['expiry_date'] is not None
-                and quote['expiry_date'] < date.today()
-                and quote['status'] == 'sent'
+                quote["expiry_date"] is not None
+                and quote["expiry_date"] < date.today()
+                and quote["status"] == "sent"
             )
 
             return QuoteDetailResponse(
                 success=True,
                 data=QuoteDetail(
-                    id=str(quote['id']),
-                    quote_number=quote['quote_number'],
-                    quote_date=quote['quote_date'].isoformat(),
-                    expiry_date=quote['expiry_date'].isoformat() if quote['expiry_date'] else None,
-                    customer_id=str(quote['customer_id']),
-                    customer_name=quote['customer_name'],
-                    customer_email=quote['customer_email'],
-                    reference=quote['reference'],
-                    subject=quote['subject'],
-                    subtotal=quote['subtotal'],
-                    discount_type=quote['discount_type'],
-                    discount_value=float(quote['discount_value']),
-                    discount_amount=quote['discount_amount'],
-                    tax_amount=quote['tax_amount'],
-                    total_amount=quote['total_amount'],
-                    status=quote['status'],
-                    converted_to_type=quote['converted_to_type'],
-                    converted_to_id=str(quote['converted_to_id']) if quote['converted_to_id'] else None,
-                    converted_at=quote['converted_at'].isoformat() if quote['converted_at'] else None,
-                    notes=quote['notes'],
-                    terms=quote['terms'],
-                    footer=quote['footer'],
-                    opening_text=quote['opening_text'],
-                    closing_text=quote['closing_text'],
-                    items=[QuoteItemResponse(
-                        id=str(item['id']),
-                        item_id=str(item['item_id']) if item['item_id'] else None,
-                        description=item['description'],
-                        quantity=float(item['quantity']),
-                        unit=item['unit'],
-                        unit_price=item['unit_price'],
-                        discount_percent=float(item['discount_percent']),
-                        tax_id=str(item['tax_id']) if item['tax_id'] else None,
-                        tax_rate=float(item['tax_rate']),
-                        tax_amount=item['tax_amount'],
-                        line_total=item['line_total'],
-                        group_name=item['group_name'],
-                        sort_order=item['sort_order']
-                    ) for item in items],
-                    created_at=quote['created_at'].isoformat(),
-                    updated_at=quote['updated_at'].isoformat(),
-                    created_by=str(quote['created_by']) if quote['created_by'] else None,
-                    sent_at=quote['sent_at'].isoformat() if quote['sent_at'] else None,
-                    viewed_at=quote['viewed_at'].isoformat() if quote['viewed_at'] else None,
-                    accepted_at=quote['accepted_at'].isoformat() if quote['accepted_at'] else None,
-                    declined_at=quote['declined_at'].isoformat() if quote['declined_at'] else None,
-                    declined_reason=quote['declined_reason'],
-                    is_expired=is_expired
-                )
+                    id=str(quote["id"]),
+                    quote_number=quote["quote_number"],
+                    quote_date=quote["quote_date"].isoformat(),
+                    expiry_date=quote["expiry_date"].isoformat()
+                    if quote["expiry_date"]
+                    else None,
+                    customer_id=str(quote["customer_id"]),
+                    customer_name=quote["customer_name"],
+                    customer_email=quote["customer_email"],
+                    reference=quote["reference"],
+                    subject=quote["subject"],
+                    subtotal=quote["subtotal"],
+                    discount_type=quote["discount_type"],
+                    discount_value=float(quote["discount_value"]),
+                    discount_amount=quote["discount_amount"],
+                    tax_amount=quote["tax_amount"],
+                    total_amount=quote["total_amount"],
+                    status=quote["status"],
+                    converted_to_type=quote["converted_to_type"],
+                    converted_to_id=str(quote["converted_to_id"])
+                    if quote["converted_to_id"]
+                    else None,
+                    converted_at=quote["converted_at"].isoformat()
+                    if quote["converted_at"]
+                    else None,
+                    notes=quote["notes"],
+                    terms=quote["terms"],
+                    footer=quote["footer"],
+                    opening_text=quote["opening_text"],
+                    closing_text=quote["closing_text"],
+                    items=[
+                        QuoteItemResponse(
+                            id=str(item["id"]),
+                            item_id=str(item["item_id"]) if item["item_id"] else None,
+                            description=item["description"],
+                            quantity=float(item["quantity"]),
+                            unit=item["unit"],
+                            unit_price=item["unit_price"],
+                            discount_percent=float(item["discount_percent"]),
+                            tax_id=str(item["tax_id"]) if item["tax_id"] else None,
+                            tax_rate=float(item["tax_rate"]),
+                            tax_amount=item["tax_amount"],
+                            line_total=item["line_total"],
+                            group_name=item["group_name"],
+                            sort_order=item["sort_order"],
+                        )
+                        for item in items
+                    ],
+                    created_at=quote["created_at"].isoformat(),
+                    updated_at=quote["updated_at"].isoformat(),
+                    created_by=str(quote["created_by"])
+                    if quote["created_by"]
+                    else None,
+                    sent_at=quote["sent_at"].isoformat() if quote["sent_at"] else None,
+                    viewed_at=quote["viewed_at"].isoformat()
+                    if quote["viewed_at"]
+                    else None,
+                    accepted_at=quote["accepted_at"].isoformat()
+                    if quote["accepted_at"]
+                    else None,
+                    declined_at=quote["declined_at"].isoformat()
+                    if quote["declined_at"]
+                    else None,
+                    declined_reason=quote["declined_reason"],
+                    is_expired=is_expired,
+                ),
             )
 
     except HTTPException:
@@ -421,6 +451,7 @@ async def get_quote_detail(request: Request, quote_id: str):
 # CREATE, UPDATE, DELETE ENDPOINTS
 # ============================================================================
 
+
 @router.post("", response_model=QuoteResponse)
 async def create_quote(request: Request, body: CreateQuoteRequest):
     """Create a new quote (draft status)."""
@@ -432,19 +463,33 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
             async with conn.transaction():
                 # Generate quote number
                 quote_number = await conn.fetchval(
-                    "SELECT generate_quote_number($1, 'QUO')",
-                    ctx['tenant_id']
+                    "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
                 )
 
                 # Calculate item totals
-                calculated_items = [calculate_item_totals(item.model_dump()) for item in body.items]
+                calculated_items = [
+                    calculate_item_totals(item.model_dump()) for item in body.items
+                ]
 
                 # Calculate quote totals
-                totals = calculate_quote_totals(calculated_items, body.discount_type, body.discount_value)
+                totals = calculate_quote_totals(
+                    calculated_items, body.discount_type, body.discount_value
+                )
+
+                # Auto-resolve customer_name if not provided
+                if not body.customer_name and body.customer_id:
+                    cust = await conn.fetchrow(
+                        "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                        uuid_module.UUID(body.customer_id),
+                        ctx["tenant_id"],
+                    )
+                    if cust:
+                        body.customer_name = cust["nama"]
 
                 # Create quote
                 quote_id = uuid_module.uuid4()
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO quotes (
                         id, tenant_id, quote_number, quote_date, expiry_date,
                         customer_id, customer_name, customer_email,
@@ -463,18 +508,37 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         $22, $23, $24, $25
                     )
                 """,
-                    quote_id, ctx['tenant_id'], quote_number, body.quote_date, body.expiry_date,
-                    uuid_module.UUID(body.customer_id), body.customer_name, body.customer_email,
-                    body.reference, body.subject,
-                    totals['subtotal'], body.discount_type, body.discount_value, totals['discount_amount'],
-                    totals['tax_amount'], totals['total_amount'],
-                    body.notes, body.terms, body.footer, body.opening_text, body.closing_text,
-                    body.payment_bank_name, body.payment_account_number, body.payment_account_holder, ctx['user_id']
+                    quote_id,
+                    ctx["tenant_id"],
+                    quote_number,
+                    body.quote_date,
+                    body.expiry_date,
+                    uuid_module.UUID(body.customer_id),
+                    body.customer_name,
+                    body.customer_email,
+                    body.reference,
+                    body.subject,
+                    totals["subtotal"],
+                    body.discount_type,
+                    body.discount_value,
+                    totals["discount_amount"],
+                    totals["tax_amount"],
+                    totals["total_amount"],
+                    body.notes,
+                    body.terms,
+                    body.footer,
+                    body.opening_text,
+                    body.closing_text,
+                    body.payment_bank_name,
+                    body.payment_account_number,
+                    body.payment_account_holder,
+                    ctx["user_id"],
                 )
 
                 # Create items
                 for idx, item in enumerate(calculated_items):
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO quote_items (
                             id, quote_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
@@ -484,13 +548,24 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
                     """,
-                        uuid_module.uuid4(), quote_id,
-                        uuid_module.UUID(item['item_id']) if item.get('item_id') else None,
-                        item['description'], item['quantity'], item.get('unit'),
-                        item['unit_price'], item.get('discount_percent', 0),
-                        uuid_module.UUID(item['tax_id']) if item.get('tax_id') else None,
-                        item.get('tax_rate', 0), item['tax_amount'], item['line_total'],
-                        item.get('group_name'), item.get('sort_order', idx)
+                        uuid_module.uuid4(),
+                        quote_id,
+                        uuid_module.UUID(item["item_id"])
+                        if item.get("item_id")
+                        else None,
+                        item["description"],
+                        item["quantity"],
+                        item.get("unit"),
+                        item["unit_price"],
+                        item.get("discount_percent", 0),
+                        uuid_module.UUID(item["tax_id"])
+                        if item.get("tax_id")
+                        else None,
+                        item.get("tax_rate", 0),
+                        item["tax_amount"],
+                        item["line_total"],
+                        item.get("group_name"),
+                        item.get("sort_order", idx),
                     )
 
                 return QuoteResponse(
@@ -499,8 +574,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     data={
                         "id": str(quote_id),
                         "quote_number": quote_number,
-                        "total_amount": totals['total_amount']
-                    }
+                        "total_amount": totals["total_amount"],
+                    },
                 )
 
     except HTTPException:
@@ -520,16 +595,22 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Check quote exists and is draft
-                quote = await conn.fetchrow("""
+                quote = await conn.fetchrow(
+                    """
                     SELECT id, status FROM quotes
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
 
-                if quote['status'] != 'draft':
-                    raise HTTPException(status_code=400, detail="Only draft quotes can be updated")
+                if quote["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400, detail="Only draft quotes can be updated"
+                    )
 
                 # Build update query
                 updates = []
@@ -537,20 +618,22 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 param_idx = 1
 
                 update_fields = {
-                    'quote_date': body.quote_date,
-                    'expiry_date': body.expiry_date,
-                    'customer_id': uuid_module.UUID(body.customer_id) if body.customer_id else None,
-                    'customer_name': body.customer_name,
-                    'customer_email': body.customer_email,
-                    'reference': body.reference,
-                    'subject': body.subject,
-                    'discount_type': body.discount_type,
-                    'discount_value': body.discount_value,
-                    'notes': body.notes,
-                    'terms': body.terms,
-                    'footer': body.footer,
-                    'opening_text': body.opening_text,
-                    'closing_text': body.closing_text
+                    "quote_date": body.quote_date,
+                    "expiry_date": body.expiry_date,
+                    "customer_id": uuid_module.UUID(body.customer_id)
+                    if body.customer_id
+                    else None,
+                    "customer_name": body.customer_name,
+                    "customer_email": body.customer_email,
+                    "reference": body.reference,
+                    "subject": body.subject,
+                    "discount_type": body.discount_type,
+                    "discount_value": body.discount_value,
+                    "notes": body.notes,
+                    "terms": body.terms,
+                    "footer": body.footer,
+                    "opening_text": body.opening_text,
+                    "closing_text": body.closing_text,
                 }
 
                 for field, value in update_fields.items():
@@ -562,44 +645,56 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 # Update items if provided
                 if body.items is not None:
                     # Delete existing items
-                    await conn.execute("DELETE FROM quote_items WHERE quote_id = $1", uuid_module.UUID(quote_id))
+                    await conn.execute(
+                        "DELETE FROM quote_items WHERE quote_id = $1",
+                        uuid_module.UUID(quote_id),
+                    )
 
                     # Calculate and insert new items
-                    calculated_items = [calculate_item_totals(item.model_dump()) for item in body.items]
-                    discount_type = body.discount_type or 'fixed'
+                    calculated_items = [
+                        calculate_item_totals(item.model_dump()) for item in body.items
+                    ]
+                    discount_type = body.discount_type or "fixed"
                     discount_value = body.discount_value or 0
 
                     # Get current discount info if not provided
                     if body.discount_type is None or body.discount_value is None:
                         current = await conn.fetchrow(
                             "SELECT discount_type, discount_value FROM quotes WHERE id = $1",
-                            uuid_module.UUID(quote_id)
+                            uuid_module.UUID(quote_id),
                         )
-                        discount_type = body.discount_type or current['discount_type']
-                        discount_value = body.discount_value if body.discount_value is not None else float(current['discount_value'])
+                        discount_type = body.discount_type or current["discount_type"]
+                        discount_value = (
+                            body.discount_value
+                            if body.discount_value is not None
+                            else float(current["discount_value"])
+                        )
 
-                    totals = calculate_quote_totals(calculated_items, discount_type, discount_value)
+                    totals = calculate_quote_totals(
+                        calculated_items, discount_type, discount_value
+                    )
 
                     # Add totals to update
                     updates.append(f"subtotal = ${param_idx}")
-                    params.append(totals['subtotal'])
+                    params.append(totals["subtotal"])
                     param_idx += 1
 
                     updates.append(f"discount_amount = ${param_idx}")
-                    params.append(totals['discount_amount'])
+                    params.append(totals["discount_amount"])
                     param_idx += 1
 
                     updates.append(f"tax_amount = ${param_idx}")
-                    params.append(totals['tax_amount'])
+                    params.append(totals["tax_amount"])
                     param_idx += 1
 
                     updates.append(f"total_amount = ${param_idx}")
-                    params.append(totals['total_amount'])
+                    params.append(totals["total_amount"])
                     param_idx += 1
 
                     # Insert new items
                     for idx, item in enumerate(calculated_items):
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             INSERT INTO quote_items (
                                 id, quote_id, item_id, description,
                                 quantity, unit, unit_price, discount_percent,
@@ -609,18 +704,29 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                             )
                         """,
-                            uuid_module.uuid4(), uuid_module.UUID(quote_id),
-                            uuid_module.UUID(item['item_id']) if item.get('item_id') else None,
-                            item['description'], item['quantity'], item.get('unit'),
-                            item['unit_price'], item.get('discount_percent', 0),
-                            uuid_module.UUID(item['tax_id']) if item.get('tax_id') else None,
-                            item.get('tax_rate', 0), item['tax_amount'], item['line_total'],
-                            item.get('group_name'), item.get('sort_order', idx)
+                            uuid_module.uuid4(),
+                            uuid_module.UUID(quote_id),
+                            uuid_module.UUID(item["item_id"])
+                            if item.get("item_id")
+                            else None,
+                            item["description"],
+                            item["quantity"],
+                            item.get("unit"),
+                            item["unit_price"],
+                            item.get("discount_percent", 0),
+                            uuid_module.UUID(item["tax_id"])
+                            if item.get("tax_id")
+                            else None,
+                            item.get("tax_rate", 0),
+                            item["tax_amount"],
+                            item["line_total"],
+                            item.get("group_name"),
+                            item.get("sort_order", idx),
                         )
 
                 if updates:
                     params.append(uuid_module.UUID(quote_id))
-                    params.append(ctx['tenant_id'])
+                    params.append(ctx["tenant_id"])
                     update_query = f"""
                         UPDATE quotes SET {', '.join(updates)}
                         WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
@@ -630,7 +736,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 return QuoteResponse(
                     success=True,
                     message="Quote updated successfully",
-                    data={"id": quote_id}
+                    data={"id": quote_id},
                 )
 
     except HTTPException:
@@ -649,26 +755,36 @@ async def delete_quote(request: Request, quote_id: str):
 
         async with pool.acquire() as conn:
             # Check quote exists and is draft
-            quote = await conn.fetchrow("""
+            quote = await conn.fetchrow(
+                """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote['status'] != 'draft':
-                raise HTTPException(status_code=400, detail="Only draft quotes can be deleted")
+            if quote["status"] != "draft":
+                raise HTTPException(
+                    status_code=400, detail="Only draft quotes can be deleted"
+                )
 
             # Delete (cascade deletes items)
-            await conn.execute("""
+            await conn.execute(
+                """
                 DELETE FROM quotes WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             return QuoteResponse(
                 success=True,
                 message="Quote deleted successfully",
-                data={"quote_number": quote['quote_number']}
+                data={"quote_number": quote["quote_number"]},
             )
 
     except HTTPException:
@@ -682,6 +798,7 @@ async def delete_quote(request: Request, quote_id: str):
 # WORKFLOW ENDPOINTS
 # ============================================================================
 
+
 @router.post("/{quote_id}/send", response_model=QuoteResponse)
 async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = None):
     """Mark quote as sent."""
@@ -691,32 +808,45 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
 
         async with pool.acquire() as conn:
             # Check quote
-            quote = await conn.fetchrow("""
+            quote = await conn.fetchrow(
+                """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote['status'] not in ('draft', 'sent'):
-                raise HTTPException(status_code=400, detail=f"Cannot send quote with status '{quote['status']}'")
+            if quote["status"] not in ("draft", "sent"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot send quote with status '{quote['status']}'",
+                )
 
             # Update status
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE quotes SET status = 'sent', sent_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             # Send email notification if requested
             if body and body.send_email:
                 try:
                     customer_email = await conn.fetchval(
                         "SELECT customer_email FROM quotes WHERE id = $1",
-                        uuid_module.UUID(quote_id)
+                        uuid_module.UUID(quote_id),
                     )
                     if customer_email:
-                        email_subject = body.email_subject or f"Penawaran {quote['quote_number']}"
+                        email_subject = (
+                            body.email_subject or f"Penawaran {quote['quote_number']}"
+                        )
                         logger.info(
                             f"Quote email notification queued: "
                             f"quote={quote['quote_number']}, "
@@ -732,12 +862,14 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                         )
                 except Exception as email_err:
                     # Email failure should NOT fail the send operation
-                    logger.error(f"Failed to process email for quote {quote['quote_number']}: {email_err}")
+                    logger.error(
+                        f"Failed to process email for quote {quote['quote_number']}: {email_err}"
+                    )
 
             return QuoteResponse(
                 success=True,
                 message="Quote sent successfully",
-                data={"quote_number": quote['quote_number'], "status": "sent"}
+                data={"quote_number": quote["quote_number"], "status": "sent"},
             )
 
     except HTTPException:
@@ -755,26 +887,37 @@ async def accept_quote(request: Request, quote_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            quote = await conn.fetchrow("""
+            quote = await conn.fetchrow(
+                """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote['status'] not in ('sent', 'viewed'):
-                raise HTTPException(status_code=400, detail=f"Cannot accept quote with status '{quote['status']}'")
+            if quote["status"] not in ("sent", "viewed"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot accept quote with status '{quote['status']}'",
+                )
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE quotes SET status = 'accepted', accepted_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             return QuoteResponse(
                 success=True,
                 message="Quote accepted",
-                data={"quote_number": quote['quote_number'], "status": "accepted"}
+                data={"quote_number": quote["quote_number"], "status": "accepted"},
             )
 
     except HTTPException:
@@ -792,26 +935,38 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            quote = await conn.fetchrow("""
+            quote = await conn.fetchrow(
+                """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote['status'] not in ('sent', 'viewed'):
-                raise HTTPException(status_code=400, detail=f"Cannot decline quote with status '{quote['status']}'")
+            if quote["status"] not in ("sent", "viewed"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot decline quote with status '{quote['status']}'",
+                )
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE quotes SET status = 'declined', declined_at = NOW(), declined_reason = $3
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'], body.reason)
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+                body.reason,
+            )
 
             return QuoteResponse(
                 success=True,
                 message="Quote declined",
-                data={"quote_number": quote['quote_number'], "status": "declined"}
+                data={"quote_number": quote["quote_number"], "status": "declined"},
             )
 
     except HTTPException:
@@ -821,10 +976,10 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
         raise HTTPException(status_code=500, detail="Failed to decline quote")
 
 
-
 # ============================================================================
 # VOID QUOTE
 # ============================================================================
+
 
 @router.post("/{quote_id}/void", response_model=QuoteResponse)
 async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None):
@@ -837,27 +992,35 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            quote = await conn.fetchrow("""
+            quote = await conn.fetchrow(
+                """
                 SELECT id, status, quote_number, total_amount, customer_name
                 FROM quotes
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote['status'] not in ('draft', 'sent'):
+            if quote["status"] not in ("draft", "sent"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot void quote with status '{quote['status']}'. Only draft or sent quotes can be voided."
+                    detail=f"Cannot void quote with status '{quote['status']}'. Only draft or sent quotes can be voided.",
                 )
 
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE quotes SET status = 'void', updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+            """,
+                uuid_module.UUID(quote_id),
+                ctx["tenant_id"],
+            )
 
-            reason_str = body.reason if body and body.reason else 'No reason given'
+            reason_str = body.reason if body and body.reason else "No reason given"
             logger.info(
                 f"Quote voided: {quote['quote_number']} "
                 f"(customer={quote['customer_name']}, amount={quote['total_amount']}, "
@@ -869,10 +1032,10 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                 message="Quote voided successfully",
                 data={
                     "quote_id": quote_id,
-                    "quote_number": quote['quote_number'],
+                    "quote_number": quote["quote_number"],
                     "status": "void",
-                    "previous_status": quote['status']
-                }
+                    "previous_status": quote["status"],
+                },
             )
 
     except HTTPException:
@@ -883,7 +1046,9 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
 
 
 @router.post("/{quote_id}/duplicate", response_model=QuoteResponse)
-async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteRequest = None):
+async def duplicate_quote(
+    request: Request, quote_id: str, body: DuplicateQuoteRequest = None
+):
     """Duplicate a quote."""
     try:
         ctx = get_user_context(request)
@@ -892,31 +1057,42 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get original quote
-                quote = await conn.fetchrow("""
+                quote = await conn.fetchrow(
+                    """
                     SELECT * FROM quotes
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
 
                 # Get original items
-                items = await conn.fetch("""
+                items = await conn.fetch(
+                    """
                     SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order
-                """, uuid_module.UUID(quote_id))
+                """,
+                    uuid_module.UUID(quote_id),
+                )
 
                 # Generate new number
                 new_number = await conn.fetchval(
-                    "SELECT generate_quote_number($1, 'QUO')",
-                    ctx['tenant_id']
+                    "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
                 )
 
                 # Create new quote
                 new_id = uuid_module.uuid4()
                 new_date = body.quote_date if body and body.quote_date else date.today()
-                new_expiry = body.expiry_date if body and body.expiry_date else quote['expiry_date']
+                new_expiry = (
+                    body.expiry_date
+                    if body and body.expiry_date
+                    else quote["expiry_date"]
+                )
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO quotes (
                         id, tenant_id, quote_number, quote_date, expiry_date,
                         customer_id, customer_name, customer_email,
@@ -933,17 +1109,34 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                         $17, $18, $19, $20, $21, $22
                     )
                 """,
-                    new_id, ctx['tenant_id'], new_number, new_date, new_expiry,
-                    str(quote['customer_id']), quote['customer_name'], quote['customer_email'],
-                    quote['reference'], quote['subject'],
-                    quote['subtotal'], quote['discount_type'], quote['discount_value'], quote['discount_amount'],
-                    quote['tax_amount'], quote['total_amount'],
-                    quote['notes'], quote['terms'], quote['footer'], quote['opening_text'], quote['closing_text'], ctx['user_id']
+                    new_id,
+                    ctx["tenant_id"],
+                    new_number,
+                    new_date,
+                    new_expiry,
+                    str(quote["customer_id"]),
+                    quote["customer_name"],
+                    quote["customer_email"],
+                    quote["reference"],
+                    quote["subject"],
+                    quote["subtotal"],
+                    quote["discount_type"],
+                    quote["discount_value"],
+                    quote["discount_amount"],
+                    quote["tax_amount"],
+                    quote["total_amount"],
+                    quote["notes"],
+                    quote["terms"],
+                    quote["footer"],
+                    quote["opening_text"],
+                    quote["closing_text"],
+                    ctx["user_id"],
                 )
 
                 # Copy items
                 for item in items:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO quote_items (
                             id, quote_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
@@ -953,11 +1146,20 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
                     """,
-                        uuid_module.uuid4(), new_id,
-                        item['item_id'], item['description'],
-                        item['quantity'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item['tax_id'], item['tax_rate'], item['tax_amount'], item['line_total'],
-                        item['group_name'], item['sort_order']
+                        uuid_module.uuid4(),
+                        new_id,
+                        item["item_id"],
+                        item["description"],
+                        item["quantity"],
+                        item["unit"],
+                        item["unit_price"],
+                        item["discount_percent"],
+                        item["tax_id"],
+                        item["tax_rate"],
+                        item["tax_amount"],
+                        item["line_total"],
+                        item["group_name"],
+                        item["sort_order"],
                     )
 
                 return QuoteResponse(
@@ -966,8 +1168,8 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
                     data={
                         "id": str(new_id),
                         "quote_number": new_number,
-                        "original_quote_number": quote['quote_number']
-                    }
+                        "original_quote_number": quote["quote_number"],
+                    },
                 )
 
     except HTTPException:
@@ -981,8 +1183,11 @@ async def duplicate_quote(request: Request, quote_id: str, body: DuplicateQuoteR
 # CONVERSION ENDPOINTS
 # ============================================================================
 
+
 @router.post("/{quote_id}/to-invoice", response_model=QuoteResponse)
-async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInvoiceRequest = None):
+async def convert_to_invoice(
+    request: Request, quote_id: str, body: ConvertToInvoiceRequest = None
+):
     """Convert quote to invoice."""
     try:
         ctx = get_user_context(request)
@@ -991,23 +1196,33 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get quote
-                quote = await conn.fetchrow("""
+                quote = await conn.fetchrow(
+                    """
                     SELECT * FROM quotes
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
 
-                if quote['status'] not in ('sent', 'accepted', 'viewed'):
-                    raise HTTPException(status_code=400, detail=f"Cannot convert quote with status '{quote['status']}'")
+                if quote["status"] not in ("sent", "accepted", "viewed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot convert quote with status '{quote['status']}'",
+                    )
 
                 # Get items
                 items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
                 if body and body.item_ids:
-                    items_query += f" AND id = ANY($2)"
-                    items = await conn.fetch(items_query, uuid_module.UUID(quote_id),
-                        [uuid_module.UUID(id) for id in body.item_ids])
+                    items_query += " AND id = ANY($2)"
+                    items = await conn.fetch(
+                        items_query,
+                        uuid_module.UUID(quote_id),
+                        [uuid_module.UUID(id) for id in body.item_ids],
+                    )
                 else:
                     items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
 
@@ -1016,21 +1231,29 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
 
                 # Generate invoice number
                 invoice_number = await conn.fetchval(
-                    "SELECT generate_sales_invoice_number($1, 'INV')",
-                    ctx['tenant_id']
+                    "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
                 )
 
                 # Create invoice
                 invoice_id = uuid_module.uuid4()
-                invoice_date = body.invoice_date if body and body.invoice_date else date.today()
-                due_date = body.due_date if body and body.due_date else (invoice_date + timedelta(days=30))
+                invoice_date = (
+                    body.invoice_date if body and body.invoice_date else date.today()
+                )
+                due_date = (
+                    body.due_date
+                    if body and body.due_date
+                    else (invoice_date + timedelta(days=30))
+                )
 
                 # Recalculate totals for selected items
-                subtotal = sum(item['line_total'] - item['tax_amount'] for item in items)
-                tax_total = sum(item['tax_amount'] for item in items)
+                subtotal = sum(
+                    item["line_total"] - item["tax_amount"] for item in items
+                )
+                tax_total = sum(item["tax_amount"] for item in items)
                 total = subtotal + tax_total
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO sales_invoices (
                         id, tenant_id, invoice_number, invoice_date, due_date,
                         customer_id, customer_name,
@@ -1043,15 +1266,24 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
                         'draft', $11, $12
                     )
                 """,
-                    invoice_id, ctx['tenant_id'], invoice_number, invoice_date, due_date,
-                    str(quote['customer_id']), quote['customer_name'],
-                    subtotal, tax_total, total,
-                    uuid_module.UUID(quote_id), ctx['user_id']
+                    invoice_id,
+                    ctx["tenant_id"],
+                    invoice_number,
+                    invoice_date,
+                    due_date,
+                    str(quote["customer_id"]),
+                    quote["customer_name"],
+                    subtotal,
+                    tax_total,
+                    total,
+                    uuid_module.UUID(quote_id),
+                    ctx["user_id"],
                 )
 
                 # Copy items to invoice_items
                 for item in items:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO sales_invoice_items (
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
@@ -1060,22 +1292,35 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                     """,
-                        uuid_module.uuid4(), invoice_id,
-                        item['item_id'], item['description'],
-                        item['quantity'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item.get('tax_code', 'PPN'), item['tax_rate'], item['tax_amount'],
-                        item['line_total'] - item.get('tax_amount', 0), item['line_total']
+                        uuid_module.uuid4(),
+                        invoice_id,
+                        item["item_id"],
+                        item["description"],
+                        item["quantity"],
+                        item["unit"],
+                        item["unit_price"],
+                        item["discount_percent"],
+                        item.get("tax_code", "PPN"),
+                        item["tax_rate"],
+                        item["tax_amount"],
+                        item["line_total"] - item.get("tax_amount", 0),
+                        item["line_total"],
                     )
 
                 # Update quote status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE quotes SET
                         status = 'converted',
                         converted_to_type = 'invoice',
                         converted_to_id = $3,
                         converted_at = NOW()
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'], invoice_id)
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                    invoice_id,
+                )
 
                 return QuoteResponse(
                     success=True,
@@ -1083,19 +1328,23 @@ async def convert_to_invoice(request: Request, quote_id: str, body: ConvertToInv
                     data={
                         "quote_id": quote_id,
                         "invoice_id": str(invoice_id),
-                        "invoice_number": invoice_number
-                    }
+                        "invoice_number": invoice_number,
+                    },
                 )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error converting quote to invoice: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to convert quote to invoice")
+        raise HTTPException(
+            status_code=500, detail="Failed to convert quote to invoice"
+        )
 
 
 @router.post("/{quote_id}/to-order", response_model=QuoteResponse)
-async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertToOrderRequest = None):
+async def convert_to_sales_order(
+    request: Request, quote_id: str, body: ConvertToOrderRequest = None
+):
     """Convert quote to sales order."""
     try:
         ctx = get_user_context(request)
@@ -1104,23 +1353,33 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get quote
-                quote = await conn.fetchrow("""
+                quote = await conn.fetchrow(
+                    """
                     SELECT * FROM quotes
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'])
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
 
-                if quote['status'] not in ('sent', 'accepted', 'viewed'):
-                    raise HTTPException(status_code=400, detail=f"Cannot convert quote with status '{quote['status']}'")
+                if quote["status"] not in ("sent", "accepted", "viewed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot convert quote with status '{quote['status']}'",
+                    )
 
                 # Get items
                 items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
                 if body and body.item_ids:
-                    items_query += f" AND id = ANY($2)"
-                    items = await conn.fetch(items_query, uuid_module.UUID(quote_id),
-                        [uuid_module.UUID(id) for id in body.item_ids])
+                    items_query += " AND id = ANY($2)"
+                    items = await conn.fetch(
+                        items_query,
+                        uuid_module.UUID(quote_id),
+                        [uuid_module.UUID(id) for id in body.item_ids],
+                    )
                 else:
                     items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
 
@@ -1129,20 +1388,24 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
 
                 # Generate SO number
                 so_number = await conn.fetchval(
-                    "SELECT generate_sales_order_number($1, 'SO')",
-                    ctx['tenant_id']
+                    "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
                 )
 
                 # Create sales order
                 so_id = uuid_module.uuid4()
-                order_date = body.order_date if body and body.order_date else date.today()
+                order_date = (
+                    body.order_date if body and body.order_date else date.today()
+                )
 
                 # Recalculate totals for selected items
-                subtotal = sum(item['line_total'] - item['tax_amount'] for item in items)
-                tax_total = sum(item['tax_amount'] for item in items)
+                subtotal = sum(
+                    item["line_total"] - item["tax_amount"] for item in items
+                )
+                tax_total = sum(item["tax_amount"] for item in items)
                 total = subtotal + tax_total
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO sales_orders (
                         id, tenant_id, order_number, order_date, expected_ship_date,
                         customer_id, customer_name,
@@ -1155,16 +1418,24 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
                         'draft', $11, $12
                     )
                 """,
-                    so_id, ctx['tenant_id'], so_number, order_date,
+                    so_id,
+                    ctx["tenant_id"],
+                    so_number,
+                    order_date,
                     body.expected_ship_date if body else None,
-                    str(quote['customer_id']), quote['customer_name'],
-                    subtotal, tax_total, total,
-                    uuid_module.UUID(quote_id), ctx['user_id']
+                    str(quote["customer_id"]),
+                    quote["customer_name"],
+                    subtotal,
+                    tax_total,
+                    total,
+                    uuid_module.UUID(quote_id),
+                    ctx["user_id"],
                 )
 
                 # Copy items to sales_order_items
                 for item in items:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO sales_order_items (
                             id, sales_order_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
@@ -1173,21 +1444,34 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
                         )
                     """,
-                        uuid_module.uuid4(), so_id,
-                        item['item_id'], item['description'],
-                        item['quantity'], item['unit'], item['unit_price'], item['discount_percent'],
-                        item['tax_id'], item['tax_rate'], item['tax_amount'], item['line_total']
+                        uuid_module.uuid4(),
+                        so_id,
+                        item["item_id"],
+                        item["description"],
+                        item["quantity"],
+                        item["unit"],
+                        item["unit_price"],
+                        item["discount_percent"],
+                        item["tax_id"],
+                        item["tax_rate"],
+                        item["tax_amount"],
+                        item["line_total"],
                     )
 
                 # Update quote status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE quotes SET
                         status = 'converted',
                         converted_to_type = 'sales_order',
                         converted_to_id = $3,
                         converted_at = NOW()
                     WHERE id = $1 AND tenant_id = $2
-                """, uuid_module.UUID(quote_id), ctx['tenant_id'], so_id)
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                    so_id,
+                )
 
                 return QuoteResponse(
                     success=True,
@@ -1195,15 +1479,17 @@ async def convert_to_sales_order(request: Request, quote_id: str, body: ConvertT
                     data={
                         "quote_id": quote_id,
                         "sales_order_id": str(so_id),
-                        "order_number": so_number
-                    }
+                        "order_number": so_number,
+                    },
                 )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error converting quote to sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to convert quote to sales order")
+        raise HTTPException(
+            status_code=500, detail="Failed to convert quote to sales order"
+        )
 
 
 # =============================================================================
@@ -1284,7 +1570,9 @@ async def get_quote_pdf(
             _logo_data = None
             _logo_filename = tenant_info.get("logo_url")
             if _logo_filename:
-                _logo_path = _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                _logo_path = (
+                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                )
                 if _logo_path.exists():
                     with open(_logo_path, "rb") as _lf:
                         _logo_b64 = base64.b64encode(_lf.read()).decode()
@@ -1295,9 +1583,15 @@ async def get_quote_pdf(
             quote_data = {
                 "id": str(quote["id"]),
                 "quote_number": quote["quote_number"],
-                "quote_date": quote["quote_date"].isoformat() if quote["quote_date"] else None,
-                "expiry_date": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
-                "customer_id": str(quote["customer_id"]) if quote["customer_id"] else None,
+                "quote_date": quote["quote_date"].isoformat()
+                if quote["quote_date"]
+                else None,
+                "expiry_date": quote["expiry_date"].isoformat()
+                if quote["expiry_date"]
+                else None,
+                "customer_id": str(quote["customer_id"])
+                if quote["customer_id"]
+                else None,
                 "customer_name": quote["customer_name"],
                 "customer_email": quote["customer_email"],
                 "reference": quote["reference"],
@@ -1360,6 +1654,7 @@ async def get_quote_pdf(
         # Upload to storage and return presigned URL
         from ..services.storage_service import get_storage_service
         from datetime import timedelta
+
         storage = get_storage_service()
         file_path = f"{ctx['tenant_id']}/quotes/{quote_id}.pdf"
 
@@ -1385,7 +1680,5 @@ async def get_quote_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error generating PDF for quote {quote_id}: {e}", exc_info=True
-        )
+        logger.error(f"Error generating PDF for quote {quote_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate PDF")

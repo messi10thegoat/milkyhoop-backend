@@ -3,7 +3,6 @@ Payroll Payments Router — Settlement (salary, PPh 21, BPJS)
 """
 
 from fastapi import APIRouter, HTTPException, Request
-from typing import Optional
 from uuid import UUID
 import logging
 import asyncpg
@@ -16,22 +15,16 @@ from ..services.payroll_calc import (
     COA_HUTANG_BPJS_ER,
 )
 from ..services.resolve_account import resolve_account_id
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

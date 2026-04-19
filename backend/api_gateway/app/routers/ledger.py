@@ -23,24 +23,18 @@ from ..schemas.ledger import (
     LedgerSummaryResponse,
     TypeSummary,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -80,7 +74,9 @@ async def list_ledger_accounts(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
+            )
 
             conditions = ["coa.tenant_id = $1", "coa.is_active = TRUE"]
             params = [ctx["tenant_id"], as_of_date]
@@ -171,7 +167,9 @@ async def get_ledger_summary(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
+            )
 
             rows = await conn.fetch(
                 """
@@ -201,13 +199,17 @@ async def get_ledger_summary(
 
             by_type = {}
             totals = {
-                "ASSET": 0, "RECEIVABLE": 0,
-                "LIABILITY": 0, "PAYABLE": 0,
+                "ASSET": 0,
+                "RECEIVABLE": 0,
+                "LIABILITY": 0,
+                "PAYABLE": 0,
                 "EQUITY": 0,
-                "REVENUE": 0, "OTHER_INCOME": 0,
+                "REVENUE": 0,
+                "OTHER_INCOME": 0,
                 "INCOME": 0,
                 "COGS": 0,
-                "EXPENSE": 0, "OTHER_EXPENSE": 0,
+                "EXPENSE": 0,
+                "OTHER_EXPENSE": 0,
             }
 
             for row in rows:
@@ -216,7 +218,13 @@ async def get_ledger_summary(
                 total_credit = row["total_credit"] or Decimal("0")
 
                 # Calculate balance based on normal balance
-                if account_type in ("ASSET", "RECEIVABLE", "EXPENSE", "COGS", "OTHER_EXPENSE"):
+                if account_type in (
+                    "ASSET",
+                    "RECEIVABLE",
+                    "EXPENSE",
+                    "COGS",
+                    "OTHER_EXPENSE",
+                ):
                     balance = total_debit - total_credit
                 else:
                     balance = total_credit - total_debit
@@ -233,13 +241,18 @@ async def get_ledger_summary(
             # Accounting equation check: Assets = Liabilities + Equity
             total_assets = totals["ASSET"] + totals["RECEIVABLE"]
             total_liabilities = totals["LIABILITY"] + totals["PAYABLE"]
-            total_revenue = totals.get("REVENUE", 0) + totals.get("OTHER_INCOME", 0) + totals.get("INCOME", 0)
-            total_expenses = totals.get("EXPENSE", 0) + totals.get("COGS", 0) + totals.get("OTHER_EXPENSE", 0)
+            total_revenue = (
+                totals.get("REVENUE", 0)
+                + totals.get("OTHER_INCOME", 0)
+                + totals.get("INCOME", 0)
+            )
+            total_expenses = (
+                totals.get("EXPENSE", 0)
+                + totals.get("COGS", 0)
+                + totals.get("OTHER_EXPENSE", 0)
+            )
             is_balanced = total_assets == (
-                total_liabilities
-                + totals["EQUITY"]
-                + total_revenue
-                - total_expenses
+                total_liabilities + totals["EQUITY"] + total_revenue - total_expenses
             )
 
             return LedgerSummaryResponse(
@@ -279,7 +292,9 @@ async def get_account_ledger(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
+            )
 
             # Get account info
             account = await conn.fetchrow(
@@ -448,7 +463,9 @@ async def get_account_balance(
             as_of_date = date.today()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
+            )
 
             row = await conn.fetchrow(
                 """

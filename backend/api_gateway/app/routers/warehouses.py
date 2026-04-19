@@ -3,19 +3,16 @@ Warehouses Router
 =================
 Multi-warehouse/location management endpoints.
 """
-from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.warehouses import (
     CreateWarehouseRequest,
     CreateWarehouseResponse,
     DeleteWarehouseResponse,
-    ItemStockByWarehouseResponse,
     LowStockResponse,
     UpdateWarehouseRequest,
     UpdateWarehouseResponse,
@@ -29,15 +26,13 @@ from ..schemas.warehouses import (
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -53,6 +48,7 @@ def get_user_context(request: Request) -> dict:
 # ENDPOINTS
 # ============================================================================
 
+
 @router.get("", response_model=WarehouseListResponse)
 async def list_warehouses(
     request: Request,
@@ -67,14 +63,18 @@ async def list_warehouses(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["tenant_id = $1"]
         params = [ctx["tenant_id"]]
         param_idx = 2
 
         if search:
-            where_clauses.append(f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})")
+            where_clauses.append(
+                f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+            )
             params.append(f"%{search}%")
             param_idx += 1
 
@@ -91,7 +91,9 @@ async def list_warehouses(
         where_sql = " AND ".join(where_clauses)
 
         # Count total
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM warehouses WHERE {where_sql}", *params)
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM warehouses WHERE {where_sql}", *params
+        )
 
         # Fetch warehouses
         rows = await conn.fetch(
@@ -101,7 +103,9 @@ async def list_warehouses(
             ORDER BY is_default DESC, name ASC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         data = [WarehouseData(**dict(row)) for row in rows]
@@ -116,11 +120,14 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
 
         if not row:
@@ -136,15 +143,20 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check code uniqueness
         existing = await conn.fetchval(
             "SELECT id FROM warehouses WHERE tenant_id = $1 AND code = $2",
-            ctx["tenant_id"], body.code
+            ctx["tenant_id"],
+            body.code,
         )
         if existing:
-            raise HTTPException(status_code=400, detail=f"Warehouse code '{body.code}' already exists")
+            raise HTTPException(
+                status_code=400, detail=f"Warehouse code '{body.code}' already exists"
+            )
 
         row = await conn.fetchrow(
             """
@@ -155,28 +167,45 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
             """,
-            ctx["tenant_id"], body.code, body.name, body.address, body.city,
-            body.province, body.postal_code, body.country, body.phone, body.email,
-            body.manager_name, body.is_default, body.is_active, body.is_branch,
-            body.branch_code, ctx.get("user_id")
+            ctx["tenant_id"],
+            body.code,
+            body.name,
+            body.address,
+            body.city,
+            body.province,
+            body.postal_code,
+            body.country,
+            body.phone,
+            body.email,
+            body.manager_name,
+            body.is_default,
+            body.is_active,
+            body.is_branch,
+            body.branch_code,
+            ctx.get("user_id"),
         )
 
         return CreateWarehouseResponse(data=WarehouseData(**dict(row)))
 
 
 @router.patch("/{warehouse_id}", response_model=UpdateWarehouseResponse)
-async def update_warehouse(request: Request, warehouse_id: UUID, body: UpdateWarehouseRequest):
+async def update_warehouse(
+    request: Request, warehouse_id: UUID, body: UpdateWarehouseRequest
+):
     """Update warehouse details"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check exists
         existing = await conn.fetchrow(
             "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
@@ -185,19 +214,37 @@ async def update_warehouse(request: Request, warehouse_id: UUID, body: UpdateWar
         if body.code and body.code != existing["code"]:
             code_exists = await conn.fetchval(
                 "SELECT id FROM warehouses WHERE tenant_id = $1 AND code = $2 AND id != $3",
-                ctx["tenant_id"], body.code, warehouse_id
+                ctx["tenant_id"],
+                body.code,
+                warehouse_id,
             )
             if code_exists:
-                raise HTTPException(status_code=400, detail=f"Warehouse code '{body.code}' already exists")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Warehouse code '{body.code}' already exists",
+                )
 
         # Build update
         updates = []
         params = []
         param_idx = 1
 
-        for field in ["code", "name", "address", "city", "province", "postal_code",
-                      "country", "phone", "email", "manager_name", "is_default",
-                      "is_active", "is_branch", "branch_code"]:
+        for field in [
+            "code",
+            "name",
+            "address",
+            "city",
+            "province",
+            "postal_code",
+            "country",
+            "phone",
+            "email",
+            "manager_name",
+            "is_default",
+            "is_active",
+            "is_branch",
+            "branch_code",
+        ]:
             value = getattr(body, field, None)
             if value is not None:
                 updates.append(f"{field} = ${param_idx}")
@@ -215,7 +262,7 @@ async def update_warehouse(request: Request, warehouse_id: UUID, body: UpdateWar
             WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
         return UpdateWarehouseResponse(data=WarehouseData(**dict(row)))
@@ -228,12 +275,15 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check exists and has no stock
         existing = await conn.fetchrow(
             "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
@@ -241,17 +291,17 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
         # Check for stock
         stock_count = await conn.fetchval(
             "SELECT COUNT(*) FROM warehouse_stock WHERE warehouse_id = $1 AND quantity > 0",
-            warehouse_id
+            warehouse_id,
         )
         if stock_count > 0:
             raise HTTPException(
                 status_code=400,
-                detail="Cannot delete warehouse with existing stock. Transfer stock first."
+                detail="Cannot delete warehouse with existing stock. Transfer stock first.",
             )
 
         await conn.execute(
             "UPDATE warehouses SET is_active = false, updated_at = NOW() WHERE id = $1",
-            warehouse_id
+            warehouse_id,
         )
 
         return DeleteWarehouseResponse()
@@ -270,12 +320,15 @@ async def get_warehouse_stock(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Verify warehouse
         wh = await conn.fetchrow(
             "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
         if not wh:
             raise HTTPException(status_code=404, detail="Warehouse not found")
@@ -292,7 +345,7 @@ async def get_warehouse_stock(
             JOIN products i ON ws.item_id = i.id
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 {where_extra}
             """,
-            *params
+            *params,
         )
 
         rows = await conn.fetch(
@@ -308,14 +361,16 @@ async def get_warehouse_stock(
             ORDER BY i.nama_produk ASC
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
             """,
-            *params, limit, skip
+            *params,
+            limit,
+            skip,
         )
 
         return WarehouseStockResponse(
             data=[dict(row) for row in rows],
             total=total,
             warehouse_id=warehouse_id,
-            warehouse_name=wh["name"]
+            warehouse_name=wh["name"],
         )
 
 
@@ -326,11 +381,14 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         wh = await conn.fetchrow(
             "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
         if not wh:
             raise HTTPException(status_code=404, detail="Warehouse not found")
@@ -345,7 +403,8 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
             JOIN products p ON ws.item_id = p.id
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 AND ws.quantity > 0
             """,
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
 
         return WarehouseStockValueResponse(
@@ -353,7 +412,7 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
             warehouse_name=wh["name"],
             total_items=row["total_items"],
             total_quantity=row["total_quantity"],
-            total_value=row["total_value"]
+            total_value=row["total_value"],
         )
 
 
@@ -368,7 +427,9 @@ async def get_low_stock_items(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_extra = ""
         params = [ctx["tenant_id"]]
@@ -393,7 +454,8 @@ async def get_low_stock_items(
             ORDER BY shortage DESC
             LIMIT ${len(params) + 1}
             """,
-            *params, limit
+            *params,
+            limit,
         )
 
         return LowStockResponse(data=[dict(row) for row in rows], total=len(rows))
@@ -406,18 +468,20 @@ async def set_default_warehouse(request: Request, warehouse_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"]
+            warehouse_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
         await conn.execute(
-            "UPDATE warehouses SET is_default = true WHERE id = $1",
-            warehouse_id
+            "UPDATE warehouses SET is_default = true WHERE id = $1", warehouse_id
         )
 
         return {"success": True, "message": "Warehouse set as default"}

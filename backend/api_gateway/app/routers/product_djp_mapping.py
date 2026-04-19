@@ -11,29 +11,25 @@ import logging
 import asyncpg
 
 from ..schemas.product_djp_mapping import (
-    ProductDJPMappingCreate, ProductDJPMappingBulk,
-    ProductDJPMappingResponse, ProductDJPMappingListResponse,
+    ProductDJPMappingCreate,
+    ProductDJPMappingBulk,
+    ProductDJPMappingResponse,
+    ProductDJPMappingListResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     if not user.get("tenant_id"):
@@ -50,11 +46,13 @@ async def get_unmapped_count(conn, tenant_id: str) -> int:
                SELECT 1 FROM product_djp_mapping pdm
                WHERE pdm.product_id = p.id AND pdm.tenant_id = p.tenant_id
            )""",
-        tenant_id
+        tenant_id,
     )
 
 
-async def fetch_enriched_mapping(conn, mapping_id: str, tenant_id: str) -> Optional[dict]:
+async def fetch_enriched_mapping(
+    conn, mapping_id: str, tenant_id: str
+) -> Optional[dict]:
     """Fetch a single mapping with JOINed product + DJP data."""
     row = await conn.fetchrow(
         """SELECT
@@ -72,7 +70,8 @@ async def fetch_enriched_mapping(conn, mapping_id: str, tenant_id: str) -> Optio
            JOIN djp_kode_barang_jasa dkbj ON dkbj.id = pdm.djp_kode_barang_jasa_id
            JOIN djp_satuan_ukur dsu ON dsu.id = pdm.djp_satuan_ukur_id
            WHERE pdm.id = $1 AND pdm.tenant_id = $2""",
-        mapping_id, tenant_id
+        mapping_id,
+        tenant_id,
     )
     if row is None:
         return None
@@ -108,7 +107,8 @@ async def list_product_djp_mappings(
                            WHERE pdm.product_id = p.id AND pdm.tenant_id = p.tenant_id
                        )
                        ORDER BY p.nama_produk""",
-                    ctx["tenant_id"], f"%{search}%"
+                    ctx["tenant_id"],
+                    f"%{search}%",
                 )
             else:
                 rows = await conn.fetch(
@@ -120,21 +120,24 @@ async def list_product_djp_mappings(
                            WHERE pdm.product_id = p.id AND pdm.tenant_id = p.tenant_id
                        )
                        ORDER BY p.nama_produk""",
-                    ctx["tenant_id"]
+                    ctx["tenant_id"],
                 )
 
-            data = [{
-                "id": "",
-                "product_id": str(r["product_id"]),
-                "product_name": r["product_name"],
-                "djp_kode_barang_jasa_id": "",
-                "kode_barang_jasa": "",
-                "nama_barang_jasa": "",
-                "jenis": "",
-                "djp_satuan_ukur_id": "",
-                "kode_satuan": "",
-                "nama_satuan": "",
-            } for r in rows]
+            data = [
+                {
+                    "id": "",
+                    "product_id": str(r["product_id"]),
+                    "product_name": r["product_name"],
+                    "djp_kode_barang_jasa_id": "",
+                    "kode_barang_jasa": "",
+                    "nama_barang_jasa": "",
+                    "jenis": "",
+                    "djp_satuan_ukur_id": "",
+                    "kode_satuan": "",
+                    "nama_satuan": "",
+                }
+                for r in rows
+            ]
 
             return {"data": data, "unmapped_count": unmapped_count, "total": len(data)}
 
@@ -167,13 +170,18 @@ async def list_product_djp_mappings(
                 JOIN djp_satuan_ukur dsu ON dsu.id = pdm.djp_satuan_ukur_id
                 WHERE {where}
                 ORDER BY p.nama_produk""",
-            *params
+            *params,
         )
 
         data = []
         for r in rows:
             d = dict(r)
-            for k in ("id", "product_id", "djp_kode_barang_jasa_id", "djp_satuan_ukur_id"):
+            for k in (
+                "id",
+                "product_id",
+                "djp_kode_barang_jasa_id",
+                "djp_satuan_ukur_id",
+            ):
                 d[k] = str(d[k])
             data.append(d)
 
@@ -181,7 +189,9 @@ async def list_product_djp_mappings(
 
 
 @router.post("", response_model=ProductDJPMappingResponse, status_code=201)
-async def create_product_djp_mapping(request: Request, payload: ProductDJPMappingCreate):
+async def create_product_djp_mapping(
+    request: Request, payload: ProductDJPMappingCreate
+):
     """Create or update (upsert) a product DJP mapping."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -190,26 +200,36 @@ async def create_product_djp_mapping(request: Request, payload: ProductDJPMappin
         # Validate product exists for tenant
         product_exists = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)",
-            payload.product_id, ctx["tenant_id"]
+            payload.product_id,
+            ctx["tenant_id"],
         )
         if not product_exists:
-            raise HTTPException(status_code=404, detail=f"Product dengan ID {payload.product_id} tidak ditemukan")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product dengan ID {payload.product_id} tidak ditemukan",
+            )
 
         # Validate DJP kode barang/jasa exists
         kode_exists = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM djp_kode_barang_jasa WHERE id = $1)",
-            payload.djp_kode_barang_jasa_id
+            payload.djp_kode_barang_jasa_id,
         )
         if not kode_exists:
-            raise HTTPException(status_code=400, detail=f"Kode barang/jasa dengan ID {payload.djp_kode_barang_jasa_id} tidak ditemukan")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Kode barang/jasa dengan ID {payload.djp_kode_barang_jasa_id} tidak ditemukan",
+            )
 
         # Validate DJP satuan ukur exists
         satuan_exists = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM djp_satuan_ukur WHERE id = $1)",
-            payload.djp_satuan_ukur_id
+            payload.djp_satuan_ukur_id,
         )
         if not satuan_exists:
-            raise HTTPException(status_code=400, detail=f"Satuan ukur dengan ID {payload.djp_satuan_ukur_id} tidak ditemukan")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Satuan ukur dengan ID {payload.djp_satuan_ukur_id} tidak ditemukan",
+            )
 
         # Upsert
         row = await conn.fetchrow(
@@ -231,12 +251,17 @@ async def create_product_djp_mapping(request: Request, payload: ProductDJPMappin
         mapping_id = str(row["id"])
         result = await fetch_enriched_mapping(conn, mapping_id, ctx["tenant_id"])
         if result is None:
-            raise HTTPException(status_code=500, detail="Mapping created but failed to fetch enriched data")
+            raise HTTPException(
+                status_code=500,
+                detail="Mapping created but failed to fetch enriched data",
+            )
         return result
 
 
 @router.post("/bulk")
-async def bulk_create_product_djp_mapping(request: Request, payload: ProductDJPMappingBulk):
+async def bulk_create_product_djp_mapping(
+    request: Request, payload: ProductDJPMappingBulk
+):
     """Bulk upsert product DJP mappings in a single transaction."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -255,33 +280,53 @@ async def bulk_create_product_djp_mapping(request: Request, payload: ProductDJPM
                     # Validate product
                     product_exists = await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)",
-                        m.product_id, ctx["tenant_id"]
+                        m.product_id,
+                        ctx["tenant_id"],
                     )
                     if not product_exists:
-                        errors.append({"index": i, "product_id": m.product_id, "error": "Product tidak ditemukan"})
+                        errors.append(
+                            {
+                                "index": i,
+                                "product_id": m.product_id,
+                                "error": "Product tidak ditemukan",
+                            }
+                        )
                         continue
 
                     # Validate DJP refs
                     kode_exists = await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM djp_kode_barang_jasa WHERE id = $1)",
-                        m.djp_kode_barang_jasa_id
+                        m.djp_kode_barang_jasa_id,
                     )
                     if not kode_exists:
-                        errors.append({"index": i, "product_id": m.product_id, "error": "Kode barang/jasa tidak ditemukan"})
+                        errors.append(
+                            {
+                                "index": i,
+                                "product_id": m.product_id,
+                                "error": "Kode barang/jasa tidak ditemukan",
+                            }
+                        )
                         continue
 
                     satuan_exists = await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM djp_satuan_ukur WHERE id = $1)",
-                        m.djp_satuan_ukur_id
+                        m.djp_satuan_ukur_id,
                     )
                     if not satuan_exists:
-                        errors.append({"index": i, "product_id": m.product_id, "error": "Satuan ukur tidak ditemukan"})
+                        errors.append(
+                            {
+                                "index": i,
+                                "product_id": m.product_id,
+                                "error": "Satuan ukur tidak ditemukan",
+                            }
+                        )
                         continue
 
                     # Check if mapping already exists
                     existing = await conn.fetchval(
                         "SELECT id FROM product_djp_mapping WHERE tenant_id = $1 AND product_id = $2",
-                        ctx["tenant_id"], m.product_id
+                        ctx["tenant_id"],
+                        m.product_id,
                     )
 
                     await conn.execute(
@@ -305,7 +350,9 @@ async def bulk_create_product_djp_mapping(request: Request, payload: ProductDJPM
                         created += 1
 
                 except Exception as e:
-                    errors.append({"index": i, "product_id": m.product_id, "error": str(e)})
+                    errors.append(
+                        {"index": i, "product_id": m.product_id, "error": str(e)}
+                    )
 
     return {"created": created, "updated": updated, "errors": errors}
 
@@ -319,7 +366,8 @@ async def delete_product_djp_mapping(request: Request, mapping_id: str):
     async with pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM product_djp_mapping WHERE id = $1 AND tenant_id = $2",
-            mapping_id, ctx["tenant_id"]
+            mapping_id,
+            ctx["tenant_id"],
         )
 
         if result == "DELETE 0":

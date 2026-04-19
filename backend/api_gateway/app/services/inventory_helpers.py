@@ -21,9 +21,8 @@ from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
 
-async def resolve_inventory_accounts(
-    conn, tenant_id: str, product_id: UUID
-) -> dict:
+
+async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> dict:
     """
     Resolve COGS and Inventory GL accounts.
     Priority: product-level → tenant default.
@@ -31,7 +30,7 @@ async def resolve_inventory_accounts(
     """
     product_accounts = await conn.fetchrow(
         "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
-        product_id
+        product_id,
     )
 
     cogs_acct = product_accounts["cogs_account_id"] if product_accounts else None
@@ -40,33 +39,31 @@ async def resolve_inventory_accounts(
     if not cogs_acct:
         cogs_acct = await conn.fetchval(
             "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '5-10100' AND is_active = true",
-            tenant_id
+            tenant_id,
         )
     if not inv_acct:
         inv_acct = await conn.fetchval(
             "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10600' AND is_active = true",
-            tenant_id
+            tenant_id,
         )
 
     return {"cogs_account_id": cogs_acct, "inventory_account_id": inv_acct}
 
-async def get_cost_for_sale(
-    conn, tenant_id: str, product_id: UUID
-) -> dict:
+
+async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
     """
     Get unit cost for a sale using WAC with fallback to purchase_price.
     Returns {"unit_cost": Decimal, "cost_source": str}.
     """
     avg_cost = await conn.fetchval(
-        "SELECT get_weighted_average_cost($1, $2)",
-        tenant_id, product_id
+        "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
     )
     cost_source = "WEIGHTED_AVG"
 
     if not avg_cost or avg_cost == 0:
         avg_cost = await conn.fetchval(
             "SELECT COALESCE(purchase_price_amount, purchase_price, 0) FROM products WHERE id = $1",
-            product_id
+            product_id,
         )
         cost_source = "PURCHASE_PRICE"
 
@@ -74,6 +71,7 @@ async def get_cost_for_sale(
         "unit_cost": Decimal(str(avg_cost)) if avg_cost else Decimal("0"),
         "cost_source": cost_source,
     }
+
 
 async def record_inventory_outbound(
     conn,
@@ -105,6 +103,7 @@ async def record_inventory_outbound(
     }
     """
     from datetime import date as date_type
+
     movement_date = receipt_date or date_type.today()
 
     # 1. Get weighted average cost
@@ -122,15 +121,24 @@ async def record_inventory_outbound(
     # 2. Get current balance
     current_balance = await conn.fetchval(
         "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
-        tenant_id, product_id
+        tenant_id,
+        product_id,
     )
     new_balance = float(current_balance) - quantity
+    if new_balance < 0:
+        import logging
+
+        logging.getLogger("inventory").warning(
+            f"NEGATIVE INVENTORY: product_id={product_id} balance={new_balance} warehouse={warehouse_id}"
+        )
 
     # Get average_cost snapshot
-    avg_cost_snapshot = await conn.fetchval(
-        "SELECT get_weighted_average_cost($1, $2)",
-        tenant_id, product_id
-    ) or unit_cost
+    avg_cost_snapshot = (
+        await conn.fetchval(
+            "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
+        )
+        or unit_cost
+    )
 
     # 3. Insert inventory_ledger (trigger handles warehouse_stock)
     ledger_id = uuid4()
@@ -150,11 +158,23 @@ async def record_inventory_outbound(
             $15, $16, $17
         )
         """,
-        ledger_id, tenant_id, product_id, product_code, product_name,
-        movement_date, source_type, source_id, source_number,
-        quantity, new_balance,
-        unit_cost, total_cost, avg_cost_snapshot,
-        warehouse_id, user_id, notes,
+        ledger_id,
+        tenant_id,
+        product_id,
+        product_code,
+        product_name,
+        movement_date,
+        source_type,
+        source_id,
+        source_number,
+        quantity,
+        new_balance,
+        unit_cost,
+        total_cost,
+        avg_cost_snapshot,
+        warehouse_id,
+        user_id,
+        notes,
     )
 
     # 4. Create COGS journal (if cost > 0)
@@ -181,12 +201,15 @@ async def record_inventory_outbound(
                     total_debit, total_credit, status, created_by
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'DRAFT', $9)
                 """,
-                journal_id, tenant_id,
+                journal_id,
+                tenant_id,
                 f"COGS-{source_number}",
                 movement_date,
                 f"HPP {source_number}",
-                journal_source_type, source_id,
-                total_cost, user_id,
+                journal_source_type,
+                source_id,
+                total_cost,
+                user_id,
             )
 
             await conn.execute(
@@ -195,20 +218,23 @@ async def record_inventory_outbound(
                 VALUES ($1, $2, 'HPP Barang Dagang', $3, 0, 1),
                        ($1, $4, 'Persediaan Barang Dagang', 0, $3, 2)
                 """,
-                journal_id, hpp_acct, total_cost, inv_acct,
+                journal_id,
+                hpp_acct,
+                total_cost,
+                inv_acct,
             )
 
-    # 5. Link journal to ledger
+            # 5. Link journal to ledger
 
             # Post the journal (triggers hash chain: Law 20)
             await conn.execute(
-                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                journal_id
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
             )
     if journal_id:
         await conn.execute(
             "UPDATE inventory_ledger SET journal_id = $1 WHERE id = $2",
-            journal_id, ledger_id
+            journal_id,
+            ledger_id,
         )
 
     return {
@@ -218,6 +244,7 @@ async def record_inventory_outbound(
         "total_cost": total_cost,
         "cost_source": cost_source,
     }
+
 
 async def record_inventory_inbound(
     conn,
@@ -243,6 +270,7 @@ async def record_inventory_inbound(
     Returns {"ledger_id": uuid, "new_average_cost": Decimal}.
     """
     from datetime import date as date_type
+
     if movement_date is None:
         movement_date = date_type.today()
 
@@ -256,7 +284,8 @@ async def record_inventory_inbound(
         SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
         FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2
         """,
-        tenant_id, product_id
+        tenant_id,
+        product_id,
     )
     current_balance = Decimal(str(balance_row["balance"]))
     new_balance = current_balance + quantity_dec
@@ -268,7 +297,8 @@ async def record_inventory_inbound(
             COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
         FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2
         """,
-        tenant_id, product_id
+        tenant_id,
+        product_id,
     )
 
     if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
@@ -296,18 +326,29 @@ async def record_inventory_inbound(
             $15, $16, $17
         )
         """,
-        ledger_id, tenant_id, product_id, product_code, product_name,
-        movement_date, source_type, source_id, source_number,
-        quantity_dec, new_balance,
-        unit_cost_dec, total_cost, new_avg_cost,
-        warehouse_id, user_id, notes,
+        ledger_id,
+        tenant_id,
+        product_id,
+        product_code,
+        product_name,
+        movement_date,
+        source_type,
+        source_id,
+        source_number,
+        quantity_dec,
+        new_balance,
+        unit_cost_dec,
+        total_cost,
+        new_avg_cost,
+        warehouse_id,
+        user_id,
+        notes,
     )
 
     return {
         "ledger_id": ledger_id,
         "new_average_cost": new_avg_cost,
     }
-
 
 
 async def record_inventory_reversal(
@@ -351,7 +392,9 @@ async def record_inventory_reversal(
         WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3
         ORDER BY created_at
         """,
-        tenant_id, source_type, source_id,
+        tenant_id,
+        source_type,
+        source_id,
     )
 
     if not original_entries:
@@ -371,16 +414,16 @@ async def record_inventory_reversal(
         unit_cost = Decimal(str(entry["unit_cost"] or 0))
 
         # Mirror: swap quantity_in and quantity_out
-        rev_qty_in = orig_qty_out    # if original was outbound, reversal restores stock
-        rev_qty_out = orig_qty_in    # if original was inbound, reversal removes stock
+        rev_qty_in = orig_qty_out  # if original was outbound, reversal restores stock
+        rev_qty_out = orig_qty_in  # if original was inbound, reversal removes stock
 
         quantity_reversed = orig_qty_in if orig_qty_in > 0 else orig_qty_out
 
         # Determine movement_type
         if orig_qty_in > 0:
-            movement_type = "PURCHASE_RETURN"   # Reversing inbound (purchase void)
+            movement_type = "PURCHASE_RETURN"  # Reversing inbound (purchase void)
         else:
-            movement_type = "VOID_REVERSAL"     # Reversing outbound (restoring stock)
+            movement_type = "VOID_REVERSAL"  # Reversing outbound (restoring stock)
 
         # Calculate current running balance
         balance_row = await conn.fetchrow(
@@ -389,15 +432,19 @@ async def record_inventory_reversal(
             FROM inventory_ledger
             WHERE tenant_id = $1 AND product_id = $2
             """,
-            tenant_id, product_id,
+            tenant_id,
+            product_id,
         )
-        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+        current_balance = (
+            Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+        )
         new_balance = current_balance + rev_qty_in - rev_qty_out
 
         # WAC snapshot — no recalc on outbound (milkyhoop-inventory Rule 3)
         avg_cost = await conn.fetchval(
             "SELECT get_weighted_average_cost($1, $2)",
-            tenant_id, product_id,
+            tenant_id,
+            product_id,
         )
         avg_cost = Decimal(str(avg_cost)) if avg_cost else unit_cost
 
@@ -421,19 +468,33 @@ async def record_inventory_reversal(
                 $17, $18, $19, $20, $21
             )
             """,
-            ledger_id, tenant_id, product_id,
-            entry["product_code"], entry["product_name"],
-            movement_type, movement_date,
-            void_source_type, source_id, entry["source_number"],
-            rev_qty_in, rev_qty_out, new_balance,
-            unit_cost, total_cost, avg_cost,
-            entry["warehouse_id"], reversal_journal_id, created_by,
+            ledger_id,
+            tenant_id,
+            product_id,
+            entry["product_code"],
+            entry["product_name"],
+            movement_type,
+            movement_date,
+            void_source_type,
+            source_id,
+            entry["source_number"],
+            rev_qty_in,
+            rev_qty_out,
+            new_balance,
+            unit_cost,
+            total_cost,
+            avg_cost,
+            entry["warehouse_id"],
+            reversal_journal_id,
+            created_by,
             f"{notes_prefix} - inventory reversal",
             entry["batch_id"],
         )
 
         # Reverse batch quantities if batch_id present
-        batch_id = entry.get("batch_id") or entry["batch_id"] if entry["batch_id"] else None
+        batch_id = (
+            entry.get("batch_id") or entry["batch_id"] if entry["batch_id"] else None
+        )
         if batch_id:
             if orig_qty_in > 0:
                 # Was inbound (purchase) — reverse = reduce stock
@@ -449,32 +510,42 @@ async def record_inventory_reversal(
             # Update batch_warehouse_stock
             wh_id = entry.get("warehouse_id")
             if wh_id:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE batch_warehouse_stock
                     SET quantity = quantity + $3,
                         last_movement_date = NOW(), updated_at = NOW()
                     WHERE batch_id = $1 AND warehouse_id = $2
-                """, batch_id, wh_id, float(batch_delta))
+                """,
+                    batch_id,
+                    wh_id,
+                    float(batch_delta),
+                )
 
             # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
 
             # Mark depleted if needed
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE item_batches SET status = 'depleted'
                 WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
-            """, batch_id)
+            """,
+                batch_id,
+            )
 
             logger.info(
                 f"Batch reversal: batch_id={batch_id} delta={batch_delta} "
                 f"warehouse={wh_id}"
             )
 
-        results.append({
-            "product_id": product_id,
-            "ledger_id": ledger_id,
-            "quantity_reversed": quantity_reversed,
-            "direction": "outbound" if rev_qty_out > 0 else "inbound",
-        })
+        results.append(
+            {
+                "product_id": product_id,
+                "ledger_id": ledger_id,
+                "quantity_reversed": quantity_reversed,
+                "direction": "outbound" if rev_qty_out > 0 else "inbound",
+            }
+        )
 
         logger.info(
             f"Inventory reversal: {void_source_type} product={product_id} "

@@ -67,23 +67,16 @@ from ..schemas.bank_reconciliation import (
     TransactionItem,
     MatchSuggestion,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create database connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -822,8 +815,8 @@ async def import_statement(
                     raise HTTPException(
                         status_code=400,
                         detail=f"Session sudah punya {existing_counts['total']} baris statement "
-                               f"({existing_counts['matched']} sudah di-match). "
-                               "Tidak bisa import ulang. Buat session baru.",
+                        f"({existing_counts['matched']} sudah di-match). "
+                        "Tidak bisa import ulang. Buat session baru.",
                     )
                 # No matched lines — safe to clear and re-import
                 await conn.execute(
@@ -837,6 +830,7 @@ async def import_statement(
 
                 # Reset workflow state to MATCHING so auto-match runs again
                 import json as _json
+
                 wf_row = await conn.fetchrow(
                     """SELECT id, data FROM chat_workflow_state
                        WHERE status = 'active'
@@ -844,7 +838,11 @@ async def import_statement(
                     str(session_id),
                 )
                 if wf_row:
-                    wf_data = _json.loads(wf_row["data"]) if isinstance(wf_row["data"], str) else wf_row["data"]
+                    wf_data = (
+                        _json.loads(wf_row["data"])
+                        if isinstance(wf_row["data"], str)
+                        else wf_row["data"]
+                    )
                     wf_data["reviewed_count"] = 0
                     wf_data.pop("review_complete", None)
                     wf_data.pop("match_result", None)
@@ -856,7 +854,9 @@ async def import_statement(
                         _json.dumps(wf_data),
                         wf_row["id"],
                     )
-                    logger.info(f"Re-import: reset workflow {wf_row['id']} to MATCHING state")
+                    logger.info(
+                        f"Re-import: reset workflow {wf_row['id']} to MATCHING state"
+                    )
 
             # Parse file based on format
             if file_format == "csv":
@@ -989,17 +989,21 @@ async def import_statement(
 
                         # Skip balance markers (SALDO AWAL/AKHIR)
                         if amount == 0:
-                            balance_markers.append({
-                                "description": description,
-                                "date": tx_date,
-                                "running_balance": running_balance,
-                            })
+                            balance_markers.append(
+                                {
+                                    "description": description,
+                                    "date": tx_date,
+                                    "running_balance": running_balance,
+                                }
+                            )
                             lines_skipped += 1
                             continue
 
                         # Insert line
                         line_id = uuid.uuid4()
-                        logger.info(f"IMPORT DEBUG: row {line_number} date={tx_date} amt={amount} type={'credit' if is_credit else 'debit'} sess={session_id} tenant={ctx['tenant_id']}")
+                        logger.info(
+                            f"IMPORT DEBUG: row {line_number} date={tx_date} amt={amount} type={'credit' if is_credit else 'debit'} sess={session_id} tenant={ctx['tenant_id']}"
+                        )
                         await conn.execute(
                             """
                             INSERT INTO bank_statement_lines_v2 (
@@ -1089,8 +1093,14 @@ async def import_statement(
                         elif debit_column and credit_column:
                             debit = row.get(debit_column, 0)
                             credit = row.get(credit_column, 0)
-                            debit = Decimal(str(debit)) if pd.notna(debit) else Decimal('0')
-                            credit = Decimal(str(credit)) if pd.notna(credit) else Decimal('0')
+                            debit = (
+                                Decimal(str(debit)) if pd.notna(debit) else Decimal("0")
+                            )
+                            credit = (
+                                Decimal(str(credit))
+                                if pd.notna(credit)
+                                else Decimal("0")
+                            )
                             if credit > 0:
                                 amount = int(credit)
                                 is_credit = True
@@ -1114,11 +1124,13 @@ async def import_statement(
 
                         # Skip balance markers (SALDO AWAL/AKHIR)
                         if amount == 0:
-                            balance_markers.append({
-                                "description": description,
-                                "date": tx_date,
-                                "running_balance": running_balance,
-                            })
+                            balance_markers.append(
+                                {
+                                    "description": description,
+                                    "date": tx_date,
+                                    "running_balance": running_balance,
+                                }
+                            )
                             lines_skipped += 1
                             continue
 
@@ -1187,11 +1199,13 @@ async def import_statement(
 
                             # Skip balance markers (amount=0)
                             if amount == 0:
-                                balance_markers.append({
-                                    "description": description,
-                                    "date": tx_date,
-                                    "running_balance": None,
-                                })
+                                balance_markers.append(
+                                    {
+                                        "description": description,
+                                        "date": tx_date,
+                                        "running_balance": None,
+                                    }
+                                )
                                 lines_skipped += 1
                                 continue
 
@@ -1242,7 +1256,9 @@ async def import_statement(
                     session_id,
                     Decimal(str(begin_bal)),
                 )
-                logger.info(f"IMPORT: Saved beginning balance {begin_bal} from marker: {first_marker.get('description')}")
+                logger.info(
+                    f"IMPORT: Saved beginning balance {begin_bal} from marker: {first_marker.get('description')}"
+                )
 
                 if len(balance_markers) > 1:
                     last_marker = balance_markers[-1]
@@ -1254,7 +1270,9 @@ async def import_statement(
                         session_id,
                         Decimal(str(end_bal)),
                     )
-                    logger.info(f"IMPORT: Saved ending balance {end_bal} from marker: {last_marker.get('description')}")
+                    logger.info(
+                        f"IMPORT: Saved ending balance {end_bal} from marker: {last_marker.get('description')}"
+                    )
 
             # Update session stats
             await update_reconciliation_session_stats(conn, session_id)
@@ -1378,7 +1396,7 @@ async def list_statement_lines(
                         line_number=row["line_number"],
                         transaction_date=str(row["transaction_date"]),
                         description=row["description"] or "",
-                        reference=row['reference'],
+                        reference=row["reference"],
                         amount=row["amount"],
                         is_credit=row["is_credit"],
                         running_balance=row["running_balance"],
@@ -1542,7 +1560,7 @@ async def list_transactions(
                         transaction_type=row["transaction_type"] or "other",
                         transaction_date=str(row["transaction_date"]),
                         description=row["description"],
-                        reference=row['reference_number'],
+                        reference=row["reference_number"],
                         amount=row["amount"],
                         is_credit=row["is_credit"],
                         source_type=row["source_type"] or "manual",
@@ -1579,7 +1597,6 @@ async def create_match(
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-
             async with conn.transaction():
                 session = await conn.fetchrow(
                     "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
@@ -1603,7 +1620,9 @@ async def create_match(
                 )
 
                 if not statement_line:
-                    raise HTTPException(status_code=404, detail="Statement line not found")
+                    raise HTTPException(
+                        status_code=404, detail="Statement line not found"
+                    )
 
                 if statement_line["match_status"] == "matched":
                     raise HTTPException(
@@ -1854,7 +1873,7 @@ async def auto_match(
                 # Law 13: Advisory lock on auto-match
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"RECON_AUTO_MATCH:{str(session_id)}"
+                    f"RECON_AUTO_MATCH:{str(session_id)}",
                 )
 
                 # Get unmatched statement lines
@@ -2027,7 +2046,9 @@ async def auto_match(
 
                             # Remove from available transactions
                             uncleared_txs = [
-                                tx for tx in uncleared_txs if tx["id"] != best_match["id"]
+                                tx
+                                for tx in uncleared_txs
+                                if tx["id"] != best_match["id"]
                             ]
                         else:
                             # Add suggestion
@@ -2080,7 +2101,9 @@ async def get_session_summary(request: Request, session_id: UUID):
         if unmatched > 0:
             completion_blockers.append(f"{unmatched} baris belum dicocokkan")
         if abs(Decimal(str(difference))) > 100:
-            completion_blockers.append(f"Selisih Rp {int(abs(Decimal(str(difference)))):,}".replace(",", "."))
+            completion_blockers.append(
+                f"Selisih Rp {int(abs(Decimal(str(difference)))):,}".replace(",", ".")
+            )
         can_complete = len(completion_blockers) == 0
 
         return {
@@ -2128,7 +2151,8 @@ async def agentic_reconcile(
             # Validate session
             session = await conn.fetchrow(
                 "SELECT * FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
-                session_id, ctx["tenant_id"],
+                session_id,
+                ctx["tenant_id"],
             )
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -2141,24 +2165,26 @@ async def agentic_reconcile(
 
         # Add matched items as actions
         for i in range(auto_match_result.matches_created):
-            actions.append({
-                "action_type": "match",
-                "status": "completed",
-            })
+            actions.append(
+                {
+                    "action_type": "match",
+                    "status": "completed",
+                }
+            )
 
         # Add suggestions as proposed actions
         for suggestion in auto_match_result.suggestions:
-            actions.append({
-                "action_type": "match",
-                "status": "suggested",
-                "statement_line_id": suggestion.statement_line_id,
-                "suggested_transaction_ids": suggestion.suggested_transaction_ids,
-                "confidence": suggestion.confidence,
-            })
+            actions.append(
+                {
+                    "action_type": "match",
+                    "status": "suggested",
+                    "statement_line_id": suggestion.statement_line_id,
+                    "suggested_transaction_ids": suggestion.suggested_transaction_ids,
+                    "confidence": suggestion.confidence,
+                }
+            )
 
-        summary = (
-            f"Auto-match selesai: {auto_match_result.matches_created} transaksi berhasil dicocokkan"
-        )
+        summary = f"Auto-match selesai: {auto_match_result.matches_created} transaksi berhasil dicocokkan"
         if auto_match_result.suggestions:
             summary += f", {len(auto_match_result.suggestions)} saran cocok"
 
@@ -2175,7 +2201,9 @@ async def agentic_reconcile(
         raise
     except Exception as e:
         logger.error(f"Error in agentic reconcile: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gagal menjalankan agentic reconcile: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Gagal menjalankan agentic reconcile: {str(e)}"
+        )
 
 
 @router.post(
@@ -2245,7 +2273,7 @@ async def create_transaction_from_line(
                 # Law 13: Advisory lock on create transaction from line
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"RECON_TX_FROM_LINE:{body.statement_line_id}"
+                    f"RECON_TX_FROM_LINE:{body.statement_line_id}",
                 )
 
                 # Create transaction
@@ -2346,9 +2374,10 @@ async def create_transaction_from_line(
 # Creates bank_txn + journal (Iron Laws: 5, 13, 20, BankSync Rule 1)
 # ─────────────────────────────────────────────────────────────
 
+
 class CategorizeRequest(BaseModel):
     statement_line_id: str
-    account_id: str          # CoA UUID for category (expense/income)
+    account_id: str  # CoA UUID for category (expense/income)
     description: Optional[str] = None
     contact_id: Optional[str] = None
 
@@ -2361,7 +2390,7 @@ async def categorize_statement_line(
 ):
     """
     Categorize an unmatched statement line by creating a bank transaction + journal.
-    
+
     Iron Law compliance:
     - Law 5: Period check before posting
     - Law 13: Advisory lock (RECON_CATEGORIZE:{statement_line_id})
@@ -2381,12 +2410,15 @@ async def categorize_statement_line(
                 # 1. Validate session
                 session = await conn.fetchrow(
                     "SELECT status, account_id FROM reconciliation_sessions WHERE id = $1 AND tenant_id = $2",
-                    session_id, ctx["tenant_id"],
+                    session_id,
+                    ctx["tenant_id"],
                 )
                 if not session:
                     raise HTTPException(status_code=404, detail="Session not found")
                 if session["status"] != "in_progress":
-                    raise HTTPException(status_code=400, detail="Session not in progress")
+                    raise HTTPException(
+                        status_code=400, detail="Session not in progress"
+                    )
 
                 bank_account_id = session["account_id"]
 
@@ -2395,32 +2427,45 @@ async def categorize_statement_line(
                     """SELECT id, date, description, reference, amount, type, match_status
                        FROM bank_statement_lines_v2
                        WHERE id = $1 AND session_id = $2""",
-                    UUID(body.statement_line_id), session_id,
+                    UUID(body.statement_line_id),
+                    session_id,
                 )
                 if not stmt_line:
-                    raise HTTPException(status_code=404, detail="Statement line not found")
+                    raise HTTPException(
+                        status_code=404, detail="Statement line not found"
+                    )
                 if stmt_line["match_status"] == "matched":
-                    raise HTTPException(status_code=400, detail="Statement line already matched")
+                    raise HTTPException(
+                        status_code=400, detail="Statement line already matched"
+                    )
 
                 # 3. Get bank account + CoA (BankSync Rule 2)
                 bank = await conn.fetchrow(
                     "SELECT id, account_name, coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                    bank_account_id, ctx["tenant_id"],
+                    bank_account_id,
+                    ctx["tenant_id"],
                 )
                 if not bank:
-                    raise HTTPException(status_code=404, detail="Bank account not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank account not found"
+                    )
                 if not bank["coa_id"]:
-                    raise HTTPException(status_code=400, detail="Bank account has no linked CoA")
+                    raise HTTPException(
+                        status_code=400, detail="Bank account has no linked CoA"
+                    )
 
                 bank_coa_id = bank["coa_id"]
 
                 # 4. Validate category account exists
                 category_account = await conn.fetchrow(
                     "SELECT id, account_code, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                    UUID(body.account_id), ctx["tenant_id"],
+                    UUID(body.account_id),
+                    ctx["tenant_id"],
                 )
                 if not category_account:
-                    raise HTTPException(status_code=404, detail="Category account not found")
+                    raise HTTPException(
+                        status_code=404, detail="Category account not found"
+                    )
 
                 # 5. Advisory lock (Law 13)
                 await conn.execute(
@@ -2434,7 +2479,8 @@ async def categorize_statement_line(
                     """SELECT id, period_name, status FROM fiscal_periods
                        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
                        ORDER BY start_date DESC LIMIT 1""",
-                    ctx["tenant_id"], tx_date,
+                    ctx["tenant_id"],
+                    tx_date,
                 )
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
@@ -2444,13 +2490,15 @@ async def categorize_statement_line(
 
                 # 7. Generate transaction number
                 from datetime import datetime as dt
+
                 now = dt.utcnow()
                 prefix = f"BT-{now.strftime('%y%m')}-"
                 last_num = await conn.fetchval(
                     """SELECT transaction_number FROM bank_transactions
                        WHERE tenant_id = $1 AND transaction_number LIKE $2
                        ORDER BY transaction_number DESC LIMIT 1""",
-                    ctx["tenant_id"], prefix + "%",
+                    ctx["tenant_id"],
+                    prefix + "%",
                 )
                 seq = 1
                 if last_num:
@@ -2462,7 +2510,11 @@ async def categorize_statement_line(
 
                 abs_amount = abs(stmt_line["amount"])
                 is_credit = (stmt_line["type"] or "").lower() == "credit"
-                description = body.description or stmt_line["description"] or f"Categorized: {category_account['name']}"
+                description = (
+                    body.description
+                    or stmt_line["description"]
+                    or f"Categorized: {category_account['name']}"
+                )
 
                 # Determine sign for bank_txn amount
                 signed_amount = abs_amount if is_credit else -abs_amount
@@ -2485,7 +2537,10 @@ async def categorize_statement_line(
                         'DRAFT', 'RECONCILIATION', 'categorize', $10,
                         $11
                     )""",
-                    tx_id, ctx["tenant_id"], bank_account_id, tx_date,
+                    tx_id,
+                    ctx["tenant_id"],
+                    bank_account_id,
+                    tx_date,
                     "deposit" if is_credit else "withdrawal",
                     signed_amount,
                     str(session_id),
@@ -2506,9 +2561,15 @@ async def categorize_statement_line(
                         description, source_type, source_id, trace_id,
                         status, total_debit, total_credit, created_by
                     ) VALUES ($1, $2, $3, $4, $5, 'RECONCILIATION_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9)""",
-                    journal_id, ctx["tenant_id"], journal_number, tx_date,
-                    description, tx_id, str(trace_id),
-                    abs_amount, ctx["user_id"],
+                    journal_id,
+                    ctx["tenant_id"],
+                    journal_number,
+                    tx_date,
+                    description,
+                    tx_id,
+                    str(trace_id),
+                    abs_amount,
+                    ctx["user_id"],
                 )
 
                 # 10. INSERT journal_lines — BankSync Rule 2 (CoA from bank_accounts)
@@ -2517,13 +2578,19 @@ async def categorize_statement_line(
                     await conn.execute(
                         """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                            VALUES ($1, $2, 1, $3, $4, 0, $5)""",
-                        uuid.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Deposit - {description}",
                     )
                     await conn.execute(
                         """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                            VALUES ($1, $2, 2, $3, 0, $4, $5)""",
-                        uuid.uuid4(), journal_id, UUID(body.account_id), abs_amount,
+                        uuid.uuid4(),
+                        journal_id,
+                        UUID(body.account_id),
+                        abs_amount,
                         f"Deposit - {description}",
                     )
                 else:
@@ -2531,13 +2598,19 @@ async def categorize_statement_line(
                     await conn.execute(
                         """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                            VALUES ($1, $2, 1, $3, $4, 0, $5)""",
-                        uuid.uuid4(), journal_id, UUID(body.account_id), abs_amount,
+                        uuid.uuid4(),
+                        journal_id,
+                        UUID(body.account_id),
+                        abs_amount,
                         f"Withdrawal - {description}",
                     )
                     await conn.execute(
                         """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                            VALUES ($1, $2, 2, $3, 0, $4, $5)""",
-                        uuid.uuid4(), journal_id, bank_coa_id, abs_amount,
+                        uuid.uuid4(),
+                        journal_id,
+                        bank_coa_id,
+                        abs_amount,
                         f"Withdrawal - {description}",
                     )
 
@@ -2552,7 +2625,9 @@ async def categorize_statement_line(
                     """UPDATE bank_transactions
                        SET status = 'POSTED', journal_id = $2, posted_by = $3, posted_at = NOW()
                        WHERE id = $1""",
-                    tx_id, journal_id, ctx["user_id"],
+                    tx_id,
+                    journal_id,
+                    ctx["user_id"],
                 )
 
                 # 13. Match statement line + create reconciliation_matches
@@ -2562,15 +2637,20 @@ async def categorize_statement_line(
                         id, tenant_id, session_id, statement_line_id, transaction_id,
                         match_type, confidence, created_by, created_at
                     ) VALUES ($1, $2, $3, $4, $5, 'one_to_one', 'auto_categorized', $6, NOW())""",
-                    match_id, ctx["tenant_id"], session_id,
-                    UUID(body.statement_line_id), tx_id, ctx["user_id"],
+                    match_id,
+                    ctx["tenant_id"],
+                    session_id,
+                    UUID(body.statement_line_id),
+                    tx_id,
+                    ctx["user_id"],
                 )
 
                 await conn.execute(
                     """UPDATE bank_transactions
                        SET is_cleared = true, cleared_at = NOW(), matched_statement_line_id = $2
                        WHERE id = $1""",
-                    tx_id, UUID(body.statement_line_id),
+                    tx_id,
+                    UUID(body.statement_line_id),
                 )
 
                 await conn.execute(
@@ -2603,7 +2683,9 @@ async def categorize_statement_line(
         raise
     except Exception as e:
         logger.error(f"Error categorizing statement: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to categorize statement: {str(e)[:200]}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to categorize statement: {str(e)[:200]}"
+        )
 
 
 @router.post("/sessions/{session_id}/complete", response_model=CompleteResponse)
@@ -2624,7 +2706,9 @@ async def complete_session(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx['tenant_id'])
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
 
             # Verify session
             session = await conn.fetchrow(
@@ -2668,7 +2752,7 @@ async def complete_session(
                 # Law 13: Advisory lock on session completion
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"RECON_COMPLETE:{str(session_id)}"
+                    f"RECON_COMPLETE:{str(session_id)}",
                 )
 
                 # Law 5: Check period is open for adjustment journals
@@ -2678,12 +2762,13 @@ async def complete_session(
                     WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
                     ORDER BY start_date DESC LIMIT 1
                     """,
-                    ctx["tenant_id"], datetime.utcnow().date()
+                    ctx["tenant_id"],
+                    datetime.utcnow().date(),
                 )
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Cannot create adjustment journals in {period['status'].lower()} period"
+                        detail=f"Cannot create adjustment journals in {period['status'].lower()} period",
                     )
 
                 now = datetime.utcnow()
@@ -2691,7 +2776,8 @@ async def complete_session(
 
                 # Get bank account COA entry
                 bank_account = await conn.fetchrow(
-                    "SELECT coa_id FROM bank_accounts WHERE id = $1", session["account_id"]
+                    "SELECT coa_id FROM bank_accounts WHERE id = $1",
+                    session["account_id"],
                 )
 
                 # Create adjustments and journal entries

@@ -684,10 +684,16 @@ class BillsService:
                         "bonus_qty": int(item["bonus_qty"])
                         if item.get("bonus_qty")
                         else 0,
-                        "tax_code_id": str(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                        "tax_code_id": str(item["tax_code_id"])
+                        if item.get("tax_code_id")
+                        else None,
                         "tax_code_name": item.get("tax_code_name") or "",
-                        "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
-                        "tax_amount": float(item["tax_amount"]) if item.get("tax_amount") else 0,
+                        "tax_rate": float(item["tax_rate"])
+                        if item.get("tax_rate")
+                        else 0,
+                        "tax_amount": float(item["tax_amount"])
+                        if item.get("tax_amount")
+                        else 0,
                         "dpp": float(item["dpp"]) if item.get("dpp") else 0,
                     }
                     for item in items
@@ -2065,7 +2071,8 @@ class BillsService:
                 # Clean up document_tax_lines on void
                 await conn.execute(
                     "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
-                    bill_id, tenant_id,
+                    bill_id,
+                    tenant_id,
                 )
 
                 logger.info(f"Bill voided: {bill_id}, reason: {reason}")
@@ -2432,8 +2439,11 @@ class BillsService:
                     }
 
                 # If any item has per-item tax, use 0 for header tax (avoid double-counting)
-                has_per_item_tax = any(item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0 for item in items)
-                header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", bill["tax_rate"] or 0)
+                has_per_item_tax = any(
+                    item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0
+                    for item in items
+                )
+                header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", 0)
                 calc = BillCalculator.calculate(
                     items=items,
                     invoice_discount_percent=Decimal(
@@ -2544,8 +2554,14 @@ class BillsService:
                     # Per-item tax calculation
                     item_tax_code_id = item.get("tax_code_id")
                     item_tax_rate = float(item.get("tax_rate") or 0)
-                    item_dpp = float(item_calc["subtotal"])  # DPP = subtotal after discount
-                    item_tax_amount = round(item_dpp * item_tax_rate / 100) if item_tax_rate > 0 else 0
+                    item_dpp = float(
+                        item_calc["subtotal"]
+                    )  # DPP = subtotal after discount
+                    item_tax_amount = (
+                        round(item_dpp * item_tax_rate / 100)
+                        if item_tax_rate > 0
+                        else 0
+                    )
 
                     # Convert exp_date string to date if provided
                     # Accepts both YYYY-MM and YYYY-MM-DD formats
@@ -2605,7 +2621,9 @@ class BillsService:
                     new_grand = float(calc["grand_total"]) + float(item_tax_total)
                     await conn.execute(
                         "UPDATE bills SET tax_amount = $1, grand_total = $2, amount = $2 WHERE id = $3",
-                        float(item_tax_total), new_grand, bill_id,
+                        float(item_tax_total),
+                        new_grand,
+                        bill_id,
                     )
                     calc["tax_amount"] = float(item_tax_total)
                     calc["grand_total"] = new_grand
@@ -2615,40 +2633,218 @@ class BillsService:
                 journal_id = None
 
                 if status == "posted":
-                    if self.accounting:
-                        ap_result = await self.accounting.create_payable(
-                            tenant_id=tenant_id,
-                            supplier_name=vendor_name,
-                            supplier_id=vendor_id,
-                            bill_number=invoice_number,
-                            bill_date=issue_date,
-                            due_date=due_date,
-                            amount=Decimal(calc["grand_total"]),
-                            source_type="BILL",
-                            source_id=bill_id,
+                    # ====================================================================
+                    # INLINE BILL POSTING (Law 1, 6, 13, 16, 20, 23, 27 + ARAP Rule 1)
+                    # - Proper tax split (Dr Inventory net + Dr PPN Masukan + Cr AP)
+                    # - DTL write for tax report traceability (Law 16 + /milkyhoop-tax)
+                    # - Subcontract routing: bills tied to production_subcontracts → WIP
+                    # - Single transaction (Law 23)
+                    # ====================================================================
+                    # Law 13: advisory lock
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"BILL_POST:{str(bill_id)}",
+                    )
+
+                    grand_total_dec = Decimal(str(calc["grand_total"]))
+                    tax_amount_dec = Decimal(str(calc["tax_amount"]))
+                    subtotal_dec = grand_total_dec - tax_amount_dec
+
+                    # Check if this bill is linked to a production subcontract
+                    is_subcontract_bill = await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
+                        bill_id,
+                    )
+                    debit_account_code = "1-10650" if is_subcontract_bill else "1-10600"
+
+                    # Law 27: resolve accounts
+                    ap_acct_id = await resolve_account_id(conn, tenant_id, "2-10100")
+                    debit_acct_id = await resolve_account_id(
+                        conn, tenant_id, debit_account_code
+                    )
+                    vat_input_acct_id = None
+                    if tax_amount_dec > 0:
+                        vat_input_acct_id = await resolve_account_id(
+                            conn, tenant_id, "1-10800"
                         )
 
-                        if not ap_result.get("success"):
-                            raise ValueError(
-                                f"AP creation failed: {ap_result.get('error')}"
-                            )
+                    if not ap_acct_id:
+                        raise ValueError("Akun Utang Usaha (2-10100) tidak ditemukan")
+                    if not debit_acct_id:
+                        raise ValueError(f"Akun {debit_account_code} tidak ditemukan")
 
-                        ap_id = ap_result.get("ap_id")
-                        journal_id = ap_result.get("journal_id")
+                    # Generate journal number
+                    journal_number_v2 = (
+                        await conn.fetchval(
+                            "SELECT get_next_journal_number($1, 'PJ')", tenant_id
+                        )
+                        or f"PJ-{issue_date.strftime('%y%m')}-AUTO"
+                    )
 
+                    # Law 20: Create journal DRAFT → POSTED (triggers hash chain)
+                    journal_id = uuid_module.uuid4()
+                    trace_id_v2 = uuid_module.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, trace_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'BILL', $6, $7, 'DRAFT', $8, $8, $9)
+                        """,
+                        journal_id,
+                        tenant_id,
+                        journal_number_v2,
+                        issue_date,
+                        f"Bill dari {vendor_name} - {invoice_number}",
+                        bill_id,
+                        str(trace_id_v2),
+                        grand_total_dec,
+                        user_id,
+                    )
+
+                    # Line 1: Dr Inventory / WIP (net subtotal)
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 1, $3, $4, 0, $5)
+                        """,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        debit_acct_id,
+                        subtotal_dec,
+                        f"{'WIP subkontrak' if is_subcontract_bill else 'Pembelian'} - {vendor_name}",
+                    )
+
+                    # Line 2: Dr PPN Masukan (if tax > 0)
+                    ppn_journal_line_id = None
+                    line_num_v2 = 2
+                    if tax_amount_dec > 0 and vat_input_acct_id:
+                        ppn_journal_line_id = uuid_module.uuid4()
                         await conn.execute(
                             """
-                            UPDATE bills
-                            SET ap_id = $1, journal_id = $2, posted_at = NOW(), posted_by = $3,
-                                status = 'posted', operational_status = 'RECEIVED', accounting_status = 'POSTED'
-                            WHERE id = $4
-                        """,
-                            ap_id,
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, 0, 'PPN Masukan')
+                            """,
+                            ppn_journal_line_id,
                             journal_id,
-                            user_id,
+                            line_num_v2,
+                            vat_input_acct_id,
+                            tax_amount_dec,
+                        )
+                        line_num_v2 += 1
+
+                    # Line 3: Cr Utang Usaha (grand_total)
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_num_v2,
+                        ap_acct_id,
+                        grand_total_dec,
+                        f"Hutang ke {vendor_name}",
+                    )
+
+                    # Law 20: POST (hash chain trigger)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        journal_id,
+                    )
+
+                    # Create AP record (ARAP Rule 1 — same transaction)
+                    ap_id = uuid_module.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO accounts_payable (
+                            id, tenant_id, supplier_id, supplier_name,
+                            bill_number, bill_date, due_date,
+                            amount, amount_paid, status,
+                            description, source_type, source_id, currency
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'OPEN', $9, 'BILL', $10, 'IDR')
+                        """,
+                        ap_id,
+                        tenant_id,
+                        vendor_id,
+                        vendor_name,
+                        invoice_number,
+                        issue_date,
+                        due_date,
+                        grand_total_dec,
+                        f"AP for {invoice_number}",
+                        bill_id,
+                    )
+
+                    # Update bill status
+                    await conn.execute(
+                        """
+                        UPDATE bills
+                        SET ap_id = $1, journal_id = $2, posted_at = NOW(), posted_by = $3,
+                            status = 'posted', status_v2 = 'posted',
+                            operational_status = 'RECEIVED', accounting_status = 'POSTED'
+                        WHERE id = $4
+                        """,
+                        str(ap_id),
+                        str(journal_id),
+                        user_id,
+                        bill_id,
+                    )
+
+                    # DTL writes for tax report (Law 16, /milkyhoop-tax Rule 3+10)
+                    if tax_amount_dec > 0:
+                        taxable_items_dtl = await conn.fetch(
+                            "SELECT id, tax_code_id, tax_rate, tax_amount, dpp FROM bill_items WHERE bill_id = $1 AND COALESCE(tax_amount, 0) > 0",
                             bill_id,
                         )
-
+                        if taxable_items_dtl:
+                            for ti in taxable_items_dtl:
+                                _tcid = ti["tax_code_id"]
+                                # Fallback: resolve by rate if tax_code_id is NULL
+                                if (
+                                    not _tcid
+                                    and ti["tax_rate"]
+                                    and float(ti["tax_rate"]) > 0
+                                ):
+                                    _tcid = await conn.fetchval(
+                                        "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Masukan%%') DESC LIMIT 1",
+                                        tenant_id,
+                                        ti["tax_rate"],
+                                    )
+                                if not _tcid:
+                                    continue
+                                tc_coa = await conn.fetchval(
+                                    "SELECT coa_id FROM tax_codes WHERE id = $1",
+                                    _tcid,
+                                )
+                                dpp_val = (
+                                    float(ti["dpp"] or 0)
+                                    or float(ti["tax_amount"])
+                                    / float(ti["tax_rate"] or 1)
+                                    * 100
+                                )
+                                await conn.execute(
+                                    """
+                                    INSERT INTO document_tax_lines
+                                    (id, tenant_id, document_type, document_id, line_item_id, tax_code_id,
+                                     direction, base_amount, tax_amount, coa_id, journal_line_id)
+                                    VALUES ($1, $2, 'BILL', $3, $4, $5, 'input', $6, $7, $8, $9)
+                                    """,
+                                    uuid_module.uuid4(),
+                                    tenant_id,
+                                    bill_id,
+                                    ti["id"],
+                                    _tcid,
+                                    dpp_val,
+                                    float(ti["tax_amount"]),
+                                    tc_coa or vat_input_acct_id,
+                                    ppn_journal_line_id,
+                                )
+                    # (inventory ledger block continues below — unchanged)
+                    if (
+                        self.accounting or True
+                    ):  # harmless guard to preserve indentation
                         # UPDATE INVENTORY for inventory-tracked items
                         # Get bill items with product details
                         bill_items_for_inv = await conn.fetch(
@@ -2927,9 +3123,15 @@ class BillsService:
                 subtotal = grand_total - bill_tax
 
                 # 3. Resolve accounts (Law 27 — no hardcoded codes)
+                # Check if this bill is linked to a production subcontract → route to WIP
+                is_sc_bill = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
+                    bill_id,
+                )
+                debit_code = "1-10650" if is_sc_bill else "1-10600"
                 ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
                 inventory_account_id = await resolve_account_id(
-                    conn, tenant_id, "1-10600"
+                    conn, tenant_id, debit_code
                 )
                 vat_input_account_id = None
                 if bill_tax > 0:
@@ -3096,7 +3298,8 @@ class BillsService:
                         for ti in taxable_items:
                             if ti["tax_code_id"]:
                                 tc_coa = await conn.fetchval(
-                                    "SELECT coa_id FROM tax_codes WHERE id = $1", ti["tax_code_id"],
+                                    "SELECT coa_id FROM tax_codes WHERE id = $1",
+                                    ti["tax_code_id"],
                                 )
                                 await conn.execute(
                                     """
@@ -3105,8 +3308,11 @@ class BillsService:
                                      direction, base_amount, tax_amount, coa_id, journal_line_id)
                                     VALUES ($1, $2, 'BILL', $3, $4, $5, 'input', $6, $7, $8, $9)
                                     """,
-                                    uuid_module.uuid4(), tenant_id, bill_id,
-                                    ti["id"], ti["tax_code_id"],
+                                    uuid_module.uuid4(),
+                                    tenant_id,
+                                    bill_id,
+                                    ti["id"],
+                                    ti["tax_code_id"],
                                     float(ti["dpp"] or ti["tax_amount"]),
                                     float(ti["tax_amount"]),
                                     tc_coa or vat_input_account_id,
@@ -3124,10 +3330,14 @@ class BillsService:
                              direction, base_amount, tax_amount, coa_id, journal_line_id)
                             VALUES ($1, $2, 'BILL', $3, $4, 'input', $5, $6, $7, $8)
                             """,
-                            uuid_module.uuid4(), tenant_id, bill_id,
+                            uuid_module.uuid4(),
+                            tenant_id,
+                            bill_id,
                             bill["tax_code_id"],
-                            dpp_amount, bill_tax,
-                            vat_input_account_id, ppn_journal_line_id,
+                            dpp_amount,
+                            bill_tax,
+                            vat_input_account_id,
+                            ppn_journal_line_id,
                         )
                     logger.info(f"document_tax_lines created for bill {bill_id}")
 
@@ -3384,8 +3594,13 @@ class BillsService:
 
                 if items:
                     # If any item has per-item tax, use 0 for header tax (avoid double-counting)
-                    has_per_item_tax = any(item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0 for item in items)
-                    header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", bill["tax_rate"] or 0)
+                    has_per_item_tax = any(
+                        item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0
+                        for item in items
+                    )
+                    header_tax_rate = (
+                        0 if has_per_item_tax else request.get("tax_rate", 0)
+                    )
 
                     calc = BillCalculator.calculate(
                         items=items,
@@ -3429,8 +3644,14 @@ class BillsService:
                         # Per-item tax calculation
                         item_tax_code_id = item.get("tax_code_id")
                         item_tax_rate = float(item.get("tax_rate") or 0)
-                        item_dpp = float(item_calc["subtotal"])  # DPP = subtotal after discount
-                        item_tax_amount = round(item_dpp * item_tax_rate / 100) if item_tax_rate > 0 else 0
+                        item_dpp = float(
+                            item_calc["subtotal"]
+                        )  # DPP = subtotal after discount
+                        item_tax_amount = (
+                            round(item_dpp * item_tax_rate / 100)
+                            if item_tax_rate > 0
+                            else 0
+                        )
 
                         await conn.execute(
                             """
@@ -3472,7 +3693,9 @@ class BillsService:
                     )
                     if float(item_tax_total) > 0:
                         calc["tax_amount"] = float(item_tax_total)
-                        calc["grand_total"] = float(calc["grand_total"]) + float(item_tax_total)
+                        calc["grand_total"] = float(calc["grand_total"]) + float(
+                            item_tax_total
+                        )
 
                 # Build update query
                 updates = ["updated_at = NOW()"]
@@ -3742,10 +3965,14 @@ class BillsService:
                     if item["exp_date"]
                     else None,
                     "bonus_qty": int(item["bonus_qty"] or 0),
-                    "tax_code_id": str(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                    "tax_code_id": str(item["tax_code_id"])
+                    if item.get("tax_code_id")
+                    else None,
                     "tax_code_name": item.get("tax_code_name") or "",
                     "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
-                    "tax_amount": float(item["tax_amount"]) if item.get("tax_amount") else 0,
+                    "tax_amount": float(item["tax_amount"])
+                    if item.get("tax_amount")
+                    else 0,
                     "dpp": float(item["dpp"]) if item.get("dpp") else 0,
                 }
                 for item in items

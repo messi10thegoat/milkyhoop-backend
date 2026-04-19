@@ -67,7 +67,6 @@ from ..services.pdf_service import get_pdf_service
 from ..services.storage_service import get_storage_service
 
 # Import centralized config
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -130,18 +129,13 @@ BILLS_SYSTEM_PRESETS = [
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 # Global accounting facade instance

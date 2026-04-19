@@ -1,0 +1,1764 @@
+{
+  "summary": {
+    "total": 167,
+    "pass": 135,
+    "fail": 0,
+    "warn": 13,
+    "slow": 19,
+    "error": 0,
+    "pass_rate": 80.8
+  },
+  "scenarios": {
+    "S01_morning_check": {
+      "pass": 15,
+      "fail": 0,
+      "warn": 2,
+      "slow": 3,
+      "error": 0
+    },
+    "S02_order_processing": {
+      "pass": 14,
+      "fail": 0,
+      "warn": 1,
+      "slow": 1,
+      "error": 0
+    },
+    "S03_payment_day": {
+      "pass": 16,
+      "fail": 0,
+      "warn": 0,
+      "slow": 4,
+      "error": 0
+    },
+    "S04_production_cost": {
+      "pass": 14,
+      "fail": 0,
+      "warn": 0,
+      "slow": 1,
+      "error": 0
+    },
+    "S05_end_of_day": {
+      "pass": 14,
+      "fail": 0,
+      "warn": 1,
+      "slow": 0,
+      "error": 0
+    },
+    "S06_inventory_problem": {
+      "pass": 9,
+      "fail": 0,
+      "warn": 3,
+      "slow": 0,
+      "error": 0
+    },
+    "S07_customer_mgmt": {
+      "pass": 10,
+      "fail": 0,
+      "warn": 3,
+      "slow": 5,
+      "error": 0
+    },
+    "S08_monthly_closing": {
+      "pass": 16,
+      "fail": 0,
+      "warn": 0,
+      "slow": 1,
+      "error": 0
+    },
+    "S09_troubleshoot": {
+      "pass": 12,
+      "fail": 0,
+      "warn": 3,
+      "slow": 1,
+      "error": 0
+    },
+    "S10_quick_fire": {
+      "pass": 15,
+      "fail": 0,
+      "warn": 0,
+      "slow": 3,
+      "error": 0
+    }
+  },
+  "patterns": {
+    "ENTITY_FROM_OWN_RESPONSE": 1,
+    "ENTITY_CARRY_FORWARD": 8,
+    "TEMPORAL_FAIL": 1,
+    "UNSUPPORTED_GRACEFUL": 2,
+    "NUMERICAL_REASONING": 2,
+    "AGENT_LOOP_SLOW": 15,
+    "OTHER": 3
+  },
+  "results": [
+    {
+      "scenario": "S01_morning_check",
+      "turn": 1,
+      "query": "pagi, gimana kondisi hari ini?",
+      "status": "PASS",
+      "latency_ms": 4985,
+      "note": "greeting + general status",
+      "message_type": "TEXT",
+      "response": "Pagi! Hari ini kondisi kas kita bagus banget, lho.\n\n*   **Kas Masuk:** Rp 39.765.107\n*   **Kas Keluar:** Rp 25.887.402\n*   **Net Flow:** Rp 13.877.705 (Artinya, kas kita bertambah positif hari ini 👍)\n*   **Total Pengeluaran:** Rp 7.477.370\n\nSejauh ini belum ada transaksi penjualan yang tercatat hari ini ya."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 2,
+      "query": "stok kain drill masih berapa?",
+      "status": "PASS",
+      "latency_ms": 2511,
+      "note": "konveksi item",
+      "message_type": "TEXT",
+      "response": "Barang 'kain drill' tidak ditemukan."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 3,
+      "query": "oh iya kain katun juga cek dong",
+      "status": "PASS",
+      "latency_ms": 2784,
+      "note": "follow-up item",
+      "message_type": "TEXT",
+      "response": "Barang 'kain katun' tidak ditemukan."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 4,
+      "query": "yang mana yang udah mau habis?",
+      "status": "PASS",
+      "latency_ms": 3777,
+      "note": "self-ref from bot answer",
+      "message_type": "TEXT",
+      "response": "Wah, untuk saat ini belum ada produk yang stoknya menipis nih. Semuanya masih aman terkendali. 👍"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 5,
+      "query": "udah ada order masuk belum hari ini?",
+      "status": "WARN(kw)",
+      "latency_ms": 3950,
+      "note": "today sales",
+      "message_type": "TEXT",
+      "response": "Ada 4 pesanan masuk hari ini, Sintia. Ini detailnya:\n\n*   INV-2604-0029 (Sintia): Rp 125.000 (sudah dibayar sebagian)\n*   INV-2604-0028 (Sintia): Rp 125.000 (sudah diposting)\n*   INV-2604-0027 (Sintia): Rp 125.000 (sudah diposting)\n*   INV-2604-0026 (Sintia Runtuwene): Rp 5.208.000 (sudah lunas)\n\nSemua pesanan hari ini dari pelanggan bernama Sintia ya."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 6,
+      "query": "piutang siapa yang belum bayar?",
+      "status": "PASS",
+      "latency_ms": 3375,
+      "note": "AR check",
+      "message_type": "TEXT",
+      "response": "Ada 7 total piutang, dengan rincian: 3 masih draft, 2 sudah diposting, 1 terbayar sebagian, dan 1 sudah lunas. Total piutang yang belum terbayar adalah Rp 175.000.\n\nUntungnya, saat ini belum ada piutang yang jatuh tempo ya. ✅"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 7,
+      "query": "yang paling lama nunggak siapa?",
+      "status": "PASS",
+      "latency_ms": 5571,
+      "note": "follow-up AR",
+      "message_type": "TEXT",
+      "response": "Sejauh ini belum ada yang nunggak pembayaran, kok. Total outstanding-nya juga Rp 175.000. ✅"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 8,
+      "query": "hubungin dia bisa ga?",
+      "status": "SLOW(8238ms)",
+      "latency_ms": 8238,
+      "note": "unsupported — graceful",
+      "message_type": "TEXT",
+      "response": "Saya tidak bisa menghubungi pelanggan secara langsung. Namun, Anda bisa menghubungi mereka melalui email atau telepon yang terdaftar. \n\nMau saya bantu cari informasi kontak pelanggan tersebut?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 9,
+      "query": "ok, hutang kita ke supplier berapa total?",
+      "status": "PASS",
+      "latency_ms": 6149,
+      "note": "switch to AP",
+      "message_type": "TEXT",
+      "response": "Total hutang kita ke supplier per 13 April 2026 itu Rp 1.722.805.\n\nDari jumlah itu, ada Rp 1.622.805 yang belum dibayar dan Rp 100.000 yang dibayar sebagian. Total ada 5 tagihan dari 2 supplier.\n\nUntungnya, semua tagihan ini belum jatuh tempo, jadi masih aman kok. 👍"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 10,
+      "query": "yang jatuh tempo minggu ini?",
+      "status": "PASS",
+      "latency_ms": 6404,
+      "note": "temporal",
+      "message_type": "TEXT",
+      "response": "Wah, minggu ini nggak ada yang jatuh tempo nih. Total tagihan yang ada sekarang Rp 1.722.805, dan semuanya masih aman, belum ada yang lewat jatuh tempo. ✅"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 11,
+      "query": "supplier kain ABC tagih lagi ga?",
+      "status": "PASS",
+      "latency_ms": 5242,
+      "note": "specific vendor — may not exist",
+      "message_type": "TEXT",
+      "response": "Supplier kain ABC tidak ditemukan dalam data kami. Mungkin ada kesalahan penulisan nama atau supplier tersebut belum terdaftar. \n\nMau saya bantu cari supplier lain atau buatkan data baru untuk kain ABC?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 12,
+      "query": "brp sih hutang kita ke mereka?",
+      "status": "PASS",
+      "latency_ms": 5716,
+      "note": "pronoun carry",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama vendor yang ingin dicek."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 13,
+      "query": "fakturnya nomor berapa?",
+      "status": "PASS",
+      "latency_ms": 5140,
+      "note": "detail from context",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama tagihan yang ingin dicek."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 14,
+      "query": "bayar sebagian 5 juta dulu bisa ga?",
+      "status": "PASS",
+      "latency_ms": 8027,
+      "note": "partial payment",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan pembayaran faktur pembelian sebesar Rp5.000.000. Boleh tahu Vendor ID, Bill ID, Bank Account ID, dan tanggal pembayarannya?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 15,
+      "query": "dari rekening BCA",
+      "status": "PASS",
+      "latency_ms": 7281,
+      "note": "bank slot",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan pembayaran faktur pembelian sebesar Rp 5.000.000 ke BCA. Boleh tahu Vendor ID dan Bill ID-nya, Kak?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 16,
+      "query": "batal deh",
+      "status": "SLOW(6593ms)",
+      "latency_ms": 6593,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Baik, saya batalkan proses pembayaran tersebut. Jika ada yang ingin dilakukan selanjutnya, silakan beri tahu saya."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 17,
+      "query": "ok sekarang stok poloshirt hitam brp?",
+      "status": "PASS",
+      "latency_ms": 3400,
+      "note": "topic switch",
+      "message_type": "TEXT",
+      "response": "Untuk melihat stok poloshirt hitam, Anda bisa mengeceknya di menu \"Stok Barang\". Apakah Anda ingin saya pandu cara melihatnya?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 18,
+      "query": "yg putih?",
+      "status": "WARN(kw)",
+      "latency_ms": 5889,
+      "note": "variant",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama barang yang ingin dicek."
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 19,
+      "query": "yg merah?",
+      "status": "SLOW(20132ms)",
+      "latency_ms": 20132,
+      "note": "variant",
+      "message_type": "TEXT",
+      "response": "Stok untuk **Poloshirt Hitam + Bordir** saat ini adalah **42 pcs**. \n\nMau saya bantu dengan hal lain terkait produk ini?"
+    },
+    {
+      "scenario": "S01_morning_check",
+      "turn": 20,
+      "query": "total semua warna poloshirt berapa?",
+      "status": "PASS",
+      "latency_ms": 6007,
+      "note": "aggregation",
+      "message_type": "TEXT",
+      "response": "Total poloshirt hitam ada 42 pcs. 📦 Stoknya masih aman nih."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 1,
+      "query": "ada order baru dari toko maju",
+      "status": "PASS",
+      "latency_ms": 5160,
+      "note": "start order",
+      "message_type": "TEXT",
+      "response": "Mari kita catat order baru dari Toko Maju. Apakah Anda sudah memiliki detail produk dan jumlah yang dipesan?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 2,
+      "query": "poloshirt hitam 200 pcs, putih 100 pcs",
+      "status": "PASS",
+      "latency_ms": 6037,
+      "note": "multi-item",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk produk poloshirt sebanyak 300 pcs. Boleh tahu nama pelanggan dan ID pelanggannya, serta tanggal faktur dan tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 3,
+      "query": "harga 85rb per pcs",
+      "status": "PASS",
+      "latency_ms": 4454,
+      "note": "price",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan daftarkan faktur penjualan untuk 300 pcs poloshirt seharga Rp85.000 per pcs. Boleh tahu nama pelanggan dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 4,
+      "query": "eh tunggu, harganya 80rb deng bukan 85",
+      "status": "PASS",
+      "latency_ms": 4804,
+      "note": "correction",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk 300 pcs poloshirt seharga Rp 80.000 per pcs. Boleh tahu nama pelanggan dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 5,
+      "query": "delivery date 2 minggu lagi",
+      "status": "PASS",
+      "latency_ms": 3247,
+      "note": "date slot",
+      "message_type": "TEXT",
+      "response": "Jadi, kita akan mencatat faktur penjualan untuk 300 pcs poloshirt dengan harga Rp 80.000 per pcs. Tanggal jatuh tempo akan ditetapkan dua minggu dari sekarang.\n\nBoleh tahu nama pelanggan dan ID pelanggannya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 6,
+      "query": "buatkan faktur penjualannya",
+      "status": "PASS",
+      "latency_ms": 6903,
+      "note": "create",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk 300 pcs poloshirt dengan harga satuan Rp80.000. Boleh tahu nama pelanggan dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 7,
+      "query": "batal dulu",
+      "status": "SLOW(6158ms)",
+      "latency_ms": 6158,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan membatalkan pencatatan faktur penjualan ini. Jika Anda ingin melanjutkan atau melakukan hal lain, silakan beri tahu saya."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 8,
+      "query": "terus cek stok kain hitam cukup ga buat 200 pcs?",
+      "status": "PASS",
+      "latency_ms": 5709,
+      "note": "cross-module",
+      "message_type": "TEXT",
+      "response": "Wah, untuk \"Kerah Hitam Wangky\" saat ini stoknya 0 pcs ya. Jadi, belum cukup nih buat 200 pcs.\n\nMungkin perlu segera diorder lagi stoknya."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 9,
+      "query": "berapa meter kain yang dibutuhin buat 200 poloshirt?",
+      "status": "PASS",
+      "latency_ms": 5764,
+      "note": "calc — may not handle",
+      "message_type": "TEXT",
+      "response": "Untuk membuat 200 poloshirt, kita perlu tahu dulu berapa meter kain yang dibutuhkan per satu poloshirt. Dari data yang ada, informasi ini belum tersedia.\n\nTapi, kalau kamu mau cek stok poloshirt yang ada sekarang, kita punya **42 pcs** \"Poloshirt Hitam + Bordir\" (BRG-0008). Stoknya masih aman nih. 📦"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 10,
+      "query": "stok kain putih juga cek",
+      "status": "PASS",
+      "latency_ms": 6247,
+      "note": "stock check",
+      "message_type": "TEXT",
+      "response": "Oke, siap!\n\nUntuk kain putih, stoknya **42 pcs**. Ini masuk kategori \"Produk Jadi\" ya.\n\nStoknya masih aman nih. 👍"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 11,
+      "query": "kayaknya kurang, pesan ke supplier dong",
+      "status": "PASS",
+      "latency_ms": 7300,
+      "note": "transition to purchasing",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur pembelian baru. Boleh tahu nama vendor dan tanggal jatuh temponya, serta detail barang atau jasa yang dibeli, termasuk jumlah dan harganya?"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 12,
+      "query": "supplier kain yang biasa siapa namanya?",
+      "status": "PASS",
+      "latency_ms": 6684,
+      "note": "vendor lookup",
+      "message_type": "TEXT",
+      "response": "Ini dia supplier kain yang biasa kita pakai:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n\n(+1 lainnya)\n\nDari data yang ada, Knitto Textile Holis punya saldo utang yang lumayan nih, Rp 1.482.805. Mungkin perlu dicek lagi ya transaksinya sama mereka."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 13,
+      "query": "eh cek dulu faktur pembelian terakhir dari mereka",
+      "status": "PASS",
+      "latency_ms": 7651,
+      "note": "historical",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Ini dia daftar faktur pembelian terakhir dari mereka:\n\n*   BILL-2604-0037 dari Knitto, total Rp 150.000 (sudah dibayar sebagian Rp 50.000)\n*   BILL-2604-0036 dari Knitto Textile Holis, total Rp 111.000 (belum dibayar)\n*   BILL-2604-0035 dari Knitto, total Rp 150.000 (belum dibayar)\n*   BILL-2604-0034 dari Knitto Textile Holis, total Rp 111.000 (belum dibayar)\n*   BILL-2604-0033 dari Kni"
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 14,
+      "query": "harga per meter berapa ya biasanya?",
+      "status": "WARN(kw)",
+      "latency_ms": 4721,
+      "note": "price from history",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama barang yang ingin dicek."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 15,
+      "query": "sekalian cek stok benang putih",
+      "status": "PASS",
+      "latency_ms": 7138,
+      "note": "stock mid-flow",
+      "message_type": "TEXT",
+      "response": "Waduh, untuk benang putih, stoknya lagi kosong nih. 😥 Perlu segera diorder lagi ya."
+    },
+    {
+      "scenario": "S02_order_processing",
+      "turn": 16,
+      "query": "kalau mau bikin 100 poloshirt putih butuh berapa gulung?",
+      "status": "PASS",
+      "latency_ms": 10023,
+      "note": "production calc",
+      "message_type": "TEXT",
+      "response": "Untuk menghitung berapa gulung kain yang dibutuhkan untuk 100 poloshirt putih, kita perlu tahu berapa meter kain yang dibutuhkan untuk satu poloshirt. \n\nMisalkan satu poloshirt membutuhkan 1,5 meter kain, maka untuk 100 poloshirt kita butuh:\n\n100 poloshirt x 1,5 meter = 150 meter kain.\n\nJika satu gulung kain berisi 50 meter, maka kita butuh:\n\n150 meter ÷ 50 meter/gulung = 3 gulung kain.\n\nJadi, kam"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 1,
+      "query": "hari ini mau bayar-bayar supplier",
+      "status": "PASS",
+      "latency_ms": 5536,
+      "note": "intent",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Untuk bayar-bayar supplier hari ini, total yang perlu disiapkan itu Rp 1.722.805.\n\nIni rinciannya:\n*   Ada Rp 1.622.805 yang belum dibayar.\n*   Ada juga Rp 100.000 yang pembayarannya baru sebagian.\n*   Total ada 5 tagihan dari 2 supplier.\n\nDari data yang ada, hutang kita masih terkendali kok, karena semua tagihan belum jatuh tempo. Jadi, masih ada waktu buat atur pembayarannya ya. 👍"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 2,
+      "query": "cek hutang yang jatuh tempo hari ini",
+      "status": "PASS",
+      "latency_ms": 4091,
+      "note": "due today",
+      "message_type": "TEXT",
+      "response": "Hai! Untuk hutang yang jatuh tempo hari ini, nggak ada yang tercatat ya. Total hutang yang perlu dibayar saat ini Rp 1.722.805.\n\nSemoga lancar terus ya pembayarannya! 😊"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 3,
+      "query": "urutkan dari yang paling urgent",
+      "status": "PASS",
+      "latency_ms": 3440,
+      "note": "sort",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Berdasarkan data per 13 April 2026, total tagihanmu saat ini Rp 1.722.805.\n\nUntuk urusan *urgent*, nggak ada tagihan yang jatuh tempo atau *overdue* nih. Jadi, semua aman terkendali. 👍"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 4,
+      "query": "saldo BCA berapa?",
+      "status": "PASS",
+      "latency_ms": 4082,
+      "note": "bank",
+      "message_type": "TEXT",
+      "response": "Saldo BCA Pengeluaran saat ini Rp 0 ya."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 5,
+      "query": "saldo Mandiri?",
+      "status": "PASS",
+      "latency_ms": 2479,
+      "note": "bank",
+      "message_type": "TEXT",
+      "response": "Rekening Mandiri tidak ditemukan."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 6,
+      "query": "total uang kita di semua bank berapa?",
+      "status": "PASS",
+      "latency_ms": 2631,
+      "note": "total cash",
+      "message_type": "TEXT",
+      "response": "**Total Saldo Semua Rekening**: Rp 11.744.160\n(Berdasarkan 2 data)"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 7,
+      "query": "cukup ga buat bayar semua yang jatuh tempo?",
+      "status": "PASS",
+      "latency_ms": 7317,
+      "note": "comparison",
+      "message_type": "TEXT",
+      "response": "Halo! Untuk pertanyaanmu soal pembayaran yang jatuh tempo, ini rinciannya:\n\nTotal yang perlu dibayar adalah Rp 1.722.805. Dari jumlah itu, ada Rp 1.622.805 yang belum dibayar dan Rp 100.000 dibayar sebagian. Untungnya, belum ada yang jatuh tempo sama sekali nih. ✅\n\n**Insight:**\nHutangmu masih terkendali kok, karena semua tagihan belum jatuh tempo. Jadi, masih ada waktu buat diselesaikan."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 8,
+      "query": "kalau ga cukup bayar yang mana dulu?",
+      "status": "PASS",
+      "latency_ms": 5943,
+      "note": "advisory",
+      "message_type": "TEXT",
+      "response": "Oke, kalau soal pembayaran yang belum lunas, totalnya ada Rp 1.722.805. Rinciannya, yang belum dibayar penuh itu Rp 1.622.805, dan ada juga yang baru dibayar sebagian sebesar Rp 100.000.\n\nNah, kabar baiknya, semua tagihan ini belum jatuh tempo kok, jadi masih ada waktu. 👍"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 9,
+      "query": "ok bayar yang terbesar dulu",
+      "status": "PASS",
+      "latency_ms": 4350,
+      "note": "payment",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan memproses pembayaran untuk transaksi terbesar terlebih dahulu. Mohon tunggu sebentar."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 10,
+      "query": "dari BCA ya",
+      "status": "PASS",
+      "latency_ms": 7933,
+      "note": "bank slot",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan pembayaran faktur pembelian Anda dengan bank BCA. Boleh tahu Vendor ID, Bill ID, Bank Account ID, Jumlah Bayar, dan Tanggal pembayarannya?"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 11,
+      "query": "batal",
+      "status": "SLOW(7733ms)",
+      "latency_ms": 7733,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Proses pembayaran dibatalkan. Jika ada yang ingin dilakukan selanjutnya, silakan beri tahu saya."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 12,
+      "query": "sisa hutang jatuh tempo berapa?",
+      "status": "PASS",
+      "latency_ms": 5667,
+      "note": "post-action",
+      "message_type": "TEXT",
+      "response": "Halo! Untuk sisa hutang yang jatuh tempo, saat ini **Rp 0**.\n\n✅ **Info Tambahan:**\nSemua tagihanmu masih aman, belum ada yang jatuh tempo. Total hutang yang belum dibayar ada Rp 1.622.805, dan sebagian kecil Rp 100.000 masih dalam status pembayaran parsial."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 13,
+      "query": "besok ada yang jatuh tempo lagi?",
+      "status": "PASS",
+      "latency_ms": 6122,
+      "note": "temporal",
+      "message_type": "TEXT",
+      "response": "Tidak ada tagihan yang jatuh tempo besok. Semua tagihanmu masih dalam keadaan aman. Jika ada yang ingin kamu lakukan selanjutnya, silakan beri tahu!"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 14,
+      "query": "total hutang kita keseluruhan berapa sih?",
+      "status": "PASS",
+      "latency_ms": 6286,
+      "note": "total AP",
+      "message_type": "TEXT",
+      "response": "Total hutang kita keseluruhan saat ini Rp 1.722.805. Ini terdiri dari hutang yang belum dibayar sebesar Rp 1.622.805 dan sisanya Rp 100.000 masih dalam status pembayaran parsial.\n\nSecara keseluruhan, hutang kita masih terkendali ya, karena semua tagihan belum ada yang jatuh tempo. ✅"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 15,
+      "query": "bandingkan sama piutang",
+      "status": "SLOW(25562ms)",
+      "latency_ms": 25562,
+      "note": "comparison",
+      "message_type": "TEXT",
+      "response": "Berikut adalah perbandingan antara total hutang dan piutang kita:\n\n### Total Hutang\n- **Total Hutang**: Rp 1.722.805\n- **Detail**: \n  - Hutang belum dibayar: Rp 1.622.805\n  - Hutang dibayar sebagian: Rp 100.000\n\n### Total Piutang\n- **Total Piutang**: Rp 175.000\n- **Detail**:\n  - Piutang dari pelanggan Sintia:\n    - Invoice INV-2604-0027: Rp 75.000 (belum dibayar)\n    - Invoice INV-2604-0028: Rp 75"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 16,
+      "query": "kita net positif atau negatif?",
+      "status": "PASS",
+      "latency_ms": 8669,
+      "note": "analysis",
+      "message_type": "TEXT",
+      "response": "Untuk periode April 2026, perusahaan kita **net negatif**.\n\nIni terlihat dari laba periode berjalan yang tercatat minus Rp 3.118.100. Total ekuitas kita jadi Rp 13.091.900, padahal modal awalnya Rp 16.210.000.\n\n⚠️ Perlu kita perhatikan lebih lanjut ya, kenapa bisa rugi di periode ini. Mungkin ada pengeluaran yang lebih besar dari pemasukan, atau ada faktor lain yang perlu kita telusuri."
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 17,
+      "query": "siapa pelanggan yang piutangnya paling gede?",
+      "status": "PASS",
+      "latency_ms": 5257,
+      "note": "switch to AR",
+      "message_type": "TEXT",
+      "response": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 175.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 18,
+      "query": "udah jatuh tempo belum?",
+      "status": "SLOW(25240ms)",
+      "latency_ms": 25240,
+      "note": "follow-up",
+      "message_type": "TEXT",
+      "response": "Semua piutang dari pelanggan Sintia masih dalam status **belum jatuh tempo**. \n\n### Detail Piutang\n- **Total Piutang**: Rp 175.000\n- **Invoice**:\n  - **INV-2604-0027**: Rp 75.000 (jatuh tempo 10 Mei 2026)\n  - **INV-2604-0028**: Rp 75.000 (jatuh tempo 10 Mei 2026)\n  - **INV-2604-0029**: Rp 25.000 (jatuh tempo 10 Mei 2026)\n\nSemua invoice tersebut jatuh tempo pada **10 Mei 2026**. Jika ada yang ingin"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 19,
+      "query": "tagih dia dong kirim reminder",
+      "status": "SLOW(14142ms)",
+      "latency_ms": 14142,
+      "note": "unsupported",
+      "message_type": "TEXT",
+      "response": "Saat ini, saya tidak bisa mengirim reminder secara langsung. Namun, saya bisa bantu untuk membuat draft pesan reminder yang bisa kamu kirimkan ke pelanggan Sintia. \n\nBerikut adalah contoh pesan yang bisa kamu gunakan:\n\n---\n\n**Subject:** Reminder Pembayaran Invoice\n\nHalo Sintia,\n\nKami ingin mengingatkan bahwa Anda memiliki beberapa invoice yang jatuh tempo pada tanggal 10 Mei 2026. Total piutang An"
+    },
+    {
+      "scenario": "S03_payment_day",
+      "turn": 20,
+      "query": "ok bot ga bisa kirim WA ya noted",
+      "status": "PASS",
+      "latency_ms": 3819,
+      "note": "acknowledgment",
+      "message_type": "TEXT",
+      "response": "Iya, betul. Saya adalah chatbot yang dirancang untuk membantu Anda mengelola keuangan bisnis. Saya tidak memiliki kemampuan untuk mengirim pesan WhatsApp secara langsung.\n\nApakah ada hal lain yang bisa saya bantu terkait pengelolaan keuangan Anda? Misalnya, membuat invoice, mencatat pengeluaran, atau melihat laporan keuangan?"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 1,
+      "query": "biaya produksi bulan ini berapa total?",
+      "status": "PASS",
+      "latency_ms": 2571,
+      "note": "expense",
+      "message_type": "TEXT",
+      "response": "**Total Pengeluaran Bulan Ini**: Rp 850.000\n(Berdasarkan 1 data)"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 2,
+      "query": "rinciannya per kategori dong",
+      "status": "PASS",
+      "latency_ms": 5046,
+      "note": "breakdown",
+      "message_type": "TEXT",
+      "response": "Oke, ini rincian pengeluaran per kategori ya:\n\n*   **Ongkos Kirim:** Rp 735.000 (1 transaksi)\n*   **Pengiriman Poloshirt:** Rp 750.000 (1 transaksi)\n*   **Lain-lain:** Rp 100.000 (2 transaksi)\n\nTotal ada 5 transaksi yang tercatat.\n\nDari data yang ada, ada transaksi pengiriman poloshirt yang statusnya `void`. Mungkin perlu dicek lagi kenapa ini terjadi dan apakah ada transaksi pengganti yang benar."
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 3,
+      "query": "kain berapa benang berapa sablon berapa",
+      "status": "PASS",
+      "latency_ms": 4781,
+      "note": "multi-cat",
+      "message_type": "TEXT",
+      "response": "Hai! Ini dia info yang kamu cari soal kain, benang, dan sablon:\n\n*   **Ongkos kirim kain April**: Rp 735.000\n*   **Pengiriman 30 pcs poloshirt ke Sintia Runtuwene**: Rp 750.000 (status void)\n*   **Pengiriman 30 pcs poloshirt ke Sintia Runtuwene**: Rp 735.000 (status void)\n*   **E2E R3v2**: Rp 50.000\n*   **E2E R3v3**: Rp 50.000\n\nSayangnya, data yang ada belum merinci detail soal benang atau sablonn"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 4,
+      "query": "bordir bulan ini ada berapa kali?",
+      "status": "PASS",
+      "latency_ms": 4922,
+      "note": "cat count",
+      "message_type": "TEXT",
+      "response": "Selama bulan ini, ada **5 transaksi** yang tercatat, tetapi tidak ada transaksi spesifik yang menyebutkan bordir. \n\nJika ada transaksi bordir yang belum dicatat, mungkin perlu diperiksa lagi. Apakah ada yang ingin Anda lakukan selanjutnya?"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 5,
+      "query": "total biaya bordir?",
+      "status": "PASS",
+      "latency_ms": 4159,
+      "note": "cat total",
+      "message_type": "TEXT",
+      "response": "Hai! Untuk total biaya bordir, ini rinciannya ya:\n\n*   EXP-2604-0015: Rp 50.000\n*   EXP-2604-0014: Rp 50.000\n\nTotal biaya bordir yang tercatat sejauh ini adalah Rp 100.000.\n\nAda lagi yang bisa dibantu?"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 6,
+      "query": "vendor bordir kita siapa aja?",
+      "status": "PASS",
+      "latency_ms": 3728,
+      "note": "vendor by cat",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Vendor bordir kita ada beberapa nih:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nSemuanya masih aktif kok. Ada yang mau dicek lebih detail soal vendor-vendor ini?"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 7,
+      "query": "yang paling murah?",
+      "status": "PASS",
+      "latency_ms": 6263,
+      "note": "ranking",
+      "message_type": "TEXT",
+      "response": "**Vendor Berdasarkan Hutang (Terbesar)** (Top 6)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Knitto Textile Holis | Rp 1.482.805 |\n| 2 | Noneng | Rp 240.000 |\n| 3 | PT Top Tri Land | Rp 0 |\n| 4 | Toptriland Label | Rp 0 |\n| 5 | SYM TEST VENDOR | Rp 0 |\n| 6 | TEST BILL TAX FIX | Rp 0 |\n\n_Total 6 item dihitung_"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 8,
+      "query": "hmm kalau dibanding bulan lalu gimana?",
+      "status": "PASS",
+      "latency_ms": 11771,
+      "note": "temporal compare",
+      "message_type": "TEXT",
+      "response": "Berikut perbandingan total biaya bordir antara bulan ini dan bulan lalu:\n\n### Bulan Ini (April 2026)\n- **Total Biaya Bordir**: Rp 100.000\n- **Jumlah Transaksi**: 5\n\n### Bulan Lalu (Maret 2026)\n- **Total Biaya Bordir**: Rp 0\n- **Jumlah Transaksi**: 0\n\n### Analisis\n- **Perubahan**: Ada peningkatan biaya bordir sebesar Rp 100.000 dibandingkan bulan lalu yang tidak ada biaya bordir sama sekali.\n\nAda y"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 9,
+      "query": "biaya naik atau turun?",
+      "status": "PASS",
+      "latency_ms": 7670,
+      "note": "trend",
+      "message_type": "TEXT",
+      "response": "Biaya bordir mengalami **kenaikan** sebesar **Rp 100.000** dibandingkan bulan lalu, yang sebelumnya tidak ada biaya bordir sama sekali. \n\nApakah ada yang ingin Anda lakukan selanjutnya?"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 10,
+      "query": "kategori mana yang naik paling banyak?",
+      "status": "PASS",
+      "latency_ms": 7711,
+      "note": "cat trend",
+      "message_type": "TEXT",
+      "response": "Belum ada data transaksi untuk kategori yang naik paling banyak nih. 🤔"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 11,
+      "query": "oh kain naik ya, supplier mana yang naikin harga?",
+      "status": "PASS",
+      "latency_ms": 4940,
+      "note": "cross-module",
+      "message_type": "TEXT",
+      "response": "Barang 'kain' tidak ditemukan."
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 12,
+      "query": "cek faktur pembelian kain bulan ini vs bulan lalu",
+      "status": "PASS",
+      "latency_ms": 6315,
+      "note": "historical",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Ini dia data faktur pembelian kain untuk bulan ini (April 2026) dan bulan lalu (Maret 2026):\n\n**Faktur Pembelian Kain April 2026:**\n\n*   Total ada 10 faktur pembelian kain dengan total nilai Rp 1.032.000.\n*   Mayoritas faktur masih berstatus \"DRAFT\" atau \"UNPOSTED\".\n\n**Faktur Pembelian Kain Maret 2026:**\n\n*   Belum ada data faktur pembelian kain untuk bulan Maret 2026 yang tercatat.\n\nSe"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 13,
+      "query": "selisihnya berapa?",
+      "status": "SLOW(56803ms)",
+      "latency_ms": 56803,
+      "note": "calc",
+      "message_type": "TEXT",
+      "response": "Selisihnya Rp 2.055.805 ya. Itu dari total tagihan Rp 4.034.645 di bulan April 2026 ini."
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 14,
+      "query": "mau ganti supplier bisa ga cek vendor kain yang lain",
+      "status": "PASS",
+      "latency_ms": 6418,
+      "note": "vendor search",
+      "message_type": "TEXT",
+      "response": "Tentu, ini daftar vendor kain yang bisa kita pertimbangkan:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nKita punya 6 vendor kain yang terdaftar. Kalau mau lihat detail lebih lanjut atau ada vendor lain yang terlintas, kabari aja ya!"
+    },
+    {
+      "scenario": "S04_production_cost",
+      "turn": 15,
+      "query": "ada berapa vendor kain di sistem?",
+      "status": "PASS",
+      "latency_ms": 7332,
+      "note": "vendor count",
+      "message_type": "TEXT",
+      "response": "Ada 6 vendor kain di sistem kita. Ini daftarnya:\n\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nDari data yang ada, vendor Knitto Textile Holis dan Noneng punya saldo terutang (AP balance). Mungkin perlu dicek lagi ya untuk vendor-vendor ini."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 1,
+      "query": "rekap penjualan hari ini dong",
+      "status": "PASS",
+      "latency_ms": 3738,
+      "note": "daily recap",
+      "message_type": "TEXT",
+      "response": "Oke, siap! Hari ini ada 7 transaksi total ya.\n\n*   2 transaksi sudah terposting ✅\n*   1 transaksi masih parsial\n*   1 transaksi sudah dibayar ✅\n*   3 transaksi masih draft\n\nTotal outstanding-nya Rp 175.000 nih."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 2,
+      "query": "ada berapa faktur dibuat?",
+      "status": "PASS",
+      "latency_ms": 3668,
+      "note": "count",
+      "message_type": "TEXT",
+      "response": "Ada 4 faktur yang dibuat. Ini daftarnya:\n\n*   INV-2604-0029\n*   INV-2604-0028\n*   INV-2604-0027\n*   INV-2604-0026\n\nDari data ini, terlihat ada 3 faktur yang statusnya belum lunas (partial dan posted). Mungkin bisa dicek lagi ya untuk yang ini."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 3,
+      "query": "total omzet?",
+      "status": "PASS",
+      "latency_ms": 1980,
+      "note": "total sales",
+      "message_type": "TEXT",
+      "response": "Total omzet kamu sejauh ini Rp 175.000 ya. 📊"
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 4,
+      "query": "bandingkan sama kemarin",
+      "status": "PASS",
+      "latency_ms": 11463,
+      "note": "temporal",
+      "message_type": "TEXT",
+      "response": "Hari ini, total omzet kamu adalah **Rp 175.000**. \n\nKemarin, total omzet kamu mencapai **Rp 5.208.000**. \n\nJadi, ada penurunan omzet sebesar **Rp 5.033.000** dibandingkan dengan kemarin. Mungkin bisa dicari tahu penyebabnya ya."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 5,
+      "query": "naik atau turun?",
+      "status": "PASS",
+      "latency_ms": 7619,
+      "note": "trend",
+      "message_type": "TEXT",
+      "response": "Omzet hari ini mengalami penurunan dibandingkan dengan kemarin. Tadi total omzet kemarin Rp 5.208.000, sedangkan hari ini hanya Rp 175.000. Jadi, ada penurunan yang signifikan."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 6,
+      "query": "customer siapa yang paling banyak order?",
+      "status": "PASS",
+      "latency_ms": 3547,
+      "note": "ranking",
+      "message_type": "TEXT",
+      "response": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 175.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 7,
+      "query": "dia beli apa aja?",
+      "status": "WARN(kw)",
+      "latency_ms": 4643,
+      "note": "self-ref 'dia'",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 8,
+      "query": "pengeluaran hari ini berapa?",
+      "status": "PASS",
+      "latency_ms": 6683,
+      "note": "expense",
+      "message_type": "TEXT",
+      "response": "Pengeluaran hari ini Rp 850.000 ya."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 9,
+      "query": "biaya terbesar untuk apa?",
+      "status": "PASS",
+      "latency_ms": 5791,
+      "note": "ranking",
+      "message_type": "TEXT",
+      "response": "Berdasarkan data yang ada, belum ada transaksi yang tercatat untuk bulan ini, jadi belum bisa diketahui biaya terbesarnya untuk apa ya. 😊"
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 10,
+      "query": "laba kotor hari ini berapa kira-kira?",
+      "status": "PASS",
+      "latency_ms": 6883,
+      "note": "profit calc",
+      "message_type": "TEXT",
+      "response": "Halo! Untuk laba kotor hari ini, angkanya tercatat Rp -632.358.\n\n📊 **Insight:**\nPerlu diperhatikan nih, laba kotor kita negatif (-11.51%). Ini artinya biaya pokok penjualan (HPP) lebih besar dari pendapatan penjualan. Mungkin kita perlu cek lagi harga pokok barang atau strategi penetapan harga jualnya ya."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 11,
+      "query": "piutang yang masuk hari ini ada?",
+      "status": "PASS",
+      "latency_ms": 6968,
+      "note": "receipts",
+      "message_type": "TEXT",
+      "response": "Ada beberapa piutang yang masuk hari ini, totalnya 5 transaksi:\n\n*   RCV-2026-0042 dari Sintia Runtuwene sebesar Rp 50.000 (1 invoice)\n*   CN-2604-0009 dari Settlement sebesar Rp 50.000\n*   CN-2604-0008 dari Settlement sebesar Rp 50.000\n*   CN-2604-0007 dari Settlement sebesar Rp 50.000\n*   RCV-2026-0041 dari Sintia Runtuwene sebesar Rp 5.208.000 (1 invoice)\n\nSemua transaksi ini berstatus 'posted'"
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 12,
+      "query": "siapa yang bayar?",
+      "status": "PASS",
+      "latency_ms": 6557,
+      "note": "self-ref",
+      "message_type": "TEXT",
+      "response": "Ini dia yang bayar:\n\n*   Sintia Runtuwene (2 transaksi)\n*   Settlement (3 transaksi)\n\nAda 5 total pembayaran yang tercatat."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 13,
+      "query": "berapa?",
+      "status": "PASS",
+      "latency_ms": 6563,
+      "note": "ultra-short",
+      "message_type": "TEXT",
+      "response": "Ada 7 total pesanan, dengan 2 pesanan sudah diposting dan 1 pesanan sudah dibayar. Total outstanding-nya Rp 175.000."
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 14,
+      "query": "sisa piutang total sekarang?",
+      "status": "PASS",
+      "latency_ms": 6746,
+      "note": "current AR",
+      "message_type": "TEXT",
+      "response": "Sisa piutang kita totalnya Rp 175.000 ya. 📊\n\nDari total 7 piutang, ada 3 yang masih draft, 2 sudah terposting, 1 parsial, dan 1 sudah lunas. Untungnya, belum ada yang jatuh tempo nih. ✅"
+    },
+    {
+      "scenario": "S05_end_of_day",
+      "turn": 15,
+      "query": "ok closing. posisi keuangan kita gimana?",
+      "status": "PASS",
+      "latency_ms": 4558,
+      "note": "financial health",
+      "message_type": "TEXT",
+      "response": "Tentu, saya bisa bantu. Anda ingin melihat laporan posisi keuangan untuk periode kapan?"
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 1,
+      "query": "stok kain yang di bawah minimum ada ga?",
+      "status": "PASS",
+      "latency_ms": 3187,
+      "note": "low stock",
+      "message_type": "TEXT",
+      "response": "Nggak ada kain yang stoknya di bawah minimum nih. Stoknya aman semua. 👍"
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 2,
+      "query": "wah banyak juga, mana yang paling urgent?",
+      "status": "PASS",
+      "latency_ms": 3848,
+      "note": "self-ref",
+      "message_type": "TEXT",
+      "response": "Belum ada item yang masuk kategori urgent nih. Kalau ada yang perlu diwaspadai, nanti aku kabari ya!"
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 3,
+      "query": "kain drill tinggal berapa?",
+      "status": "PASS",
+      "latency_ms": 3018,
+      "note": "specific item",
+      "message_type": "TEXT",
+      "response": "Barang 'kain drill' tidak ditemukan."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 4,
+      "query": "order yang pending butuh berapa meter drill?",
+      "status": "PASS",
+      "latency_ms": 3217,
+      "note": "cross-ref",
+      "message_type": "TEXT",
+      "response": "Belum ada order yang pending nih. Kalau ada yang masuk, nanti aku kabari ya!"
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 5,
+      "query": "jadi kurang berapa?",
+      "status": "WARN(kw)",
+      "latency_ms": 3003,
+      "note": "calc from context",
+      "message_type": "TEXT",
+      "response": "Belum ada transaksi nih."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 6,
+      "query": "supplier drill siapa?",
+      "status": "PASS",
+      "latency_ms": 2588,
+      "note": "vendor for material",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama vendor yang ingin dicek."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 7,
+      "query": "bisa kirim berapa hari?",
+      "status": "PASS",
+      "latency_ms": 6685,
+      "note": "lead time — unsupported",
+      "message_type": "TEXT",
+      "response": "Saya perlu tahu nama vendor atau supplier untuk mengecek informasi pengiriman. Silakan sebutkan namanya."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 8,
+      "query": "ok pesan 1000 meter drill",
+      "status": "PASS",
+      "latency_ms": 3055,
+      "note": "create PO",
+      "message_type": "TEXT",
+      "response": "Baik, pesanan Anda untuk 1000 meter drill telah dicatat. Apakah ada hal lain yang bisa saya bantu?"
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 9,
+      "query": "harga berapa per meter?",
+      "status": "WARN(kw)",
+      "latency_ms": 6239,
+      "note": "price",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama barang yang ingin dicek."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 10,
+      "query": "cek harga terakhir beli",
+      "status": "PASS",
+      "latency_ms": 4968,
+      "note": "historical price",
+      "message_type": "TEXT",
+      "response": "Barang 'drill' tidak ditemukan."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 11,
+      "query": "masih sama ga harganya?",
+      "status": "WARN(kw)",
+      "latency_ms": 4892,
+      "note": "price comparison",
+      "message_type": "TEXT",
+      "response": "Barang 'drill' tidak ditemukan."
+    },
+    {
+      "scenario": "S06_inventory_problem",
+      "turn": 12,
+      "query": "total PO jadi berapa?",
+      "status": "PASS",
+      "latency_ms": 5124,
+      "note": "total calc",
+      "message_type": "TEXT",
+      "response": "**Total Pembelian Bulan Ini**: Rp 4.034.645\n(Berdasarkan 1 data)"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 1,
+      "query": "pelanggan kita ada berapa total?",
+      "status": "PASS",
+      "latency_ms": 2744,
+      "note": "count",
+      "message_type": "TEXT",
+      "response": "**Jumlah Pelanggan Aktif**: 2\n(Berdasarkan 2 data)"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 2,
+      "query": "yang aktif berapa?",
+      "status": "PASS",
+      "latency_ms": 2549,
+      "note": "active count",
+      "message_type": "TEXT",
+      "response": "**Jumlah Pelanggan Aktif**: 2\n(Berdasarkan 2 data)"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 3,
+      "query": "yang paling banyak order siapa?",
+      "status": "PASS",
+      "latency_ms": 2588,
+      "note": "top customer",
+      "message_type": "TEXT",
+      "response": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 175.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 4,
+      "query": "detail pelanggan itu dong",
+      "status": "PASS",
+      "latency_ms": 3422,
+      "note": "self-ref 'itu'",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 5,
+      "query": "total transaksi dia berapa tahun ini?",
+      "status": "WARN(kw)",
+      "latency_ms": 3360,
+      "note": "tx total",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 6,
+      "query": "piutang dia berapa?",
+      "status": "WARN(kw)",
+      "latency_ms": 3098,
+      "note": "customer AR",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 7,
+      "query": "payment terms-nya berapa hari?",
+      "status": "WARN(kw)",
+      "latency_ms": 7444,
+      "note": "may not be stored",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 8,
+      "query": "ada yang telat bayar?",
+      "status": "PASS",
+      "latency_ms": 6632,
+      "note": "overdue",
+      "message_type": "TEXT",
+      "response": "Nggak ada yang telat bayar kok, aman! 👍\n\nTotal tagihan yang belum lunas ada Rp 175.000, tapi semuanya masih dalam tenggat waktu."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 9,
+      "query": "daftar pelanggan yang overdue",
+      "status": "SLOW(22660ms)",
+      "latency_ms": 22660,
+      "note": "overdue list",
+      "message_type": "TEXT",
+      "response": "Hai! Untuk pelanggan yang *overdue* saat ini belum ada ya. 📊\n\nDari data yang ada, total pelanggan yang *overdue* ada 0. Total *outstanding* juga Rp 0."
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 10,
+      "query": "ok ada pelanggan baru mau didaftarin",
+      "status": "PASS",
+      "latency_ms": 7745,
+      "note": "create customer",
+      "message_type": "TEXT",
+      "response": "Tentu, mari kita mulai proses pendaftaran pelanggan baru. Apakah Anda ingin saya memandu Anda melalui langkah-langkahnya, atau Anda lebih suka saya langsung mengarahkan Anda ke formulir pendaftaran?"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 11,
+      "query": "namanya CV Seragam Jaya dari Semarang",
+      "status": "SLOW(16558ms)",
+      "latency_ms": 16558,
+      "note": "details",
+      "message_type": "DIRECT_ACTION_PREVIEW",
+      "response": "### Buat Pelanggan\n\n| Field | Value |\n|-------|-------|\n| Nama Pelanggan | CV Seragam Jaya |\n| Nama Perusahaan | CV Seragam Jaya |\n| Alamat | Semarang |"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 12,
+      "query": "telepon 024-1234567",
+      "status": "SLOW(25508ms)",
+      "latency_ms": 25508,
+      "note": "phone slot",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan daftarkan pelanggan baru dengan nomor telepon 024-1234567. Boleh tahu nama lengkap pelanggannya?"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 13,
+      "query": "batal deh ga jadi",
+      "status": "SLOW(16398ms)",
+      "latency_ms": 16398,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Tidak masalah, pendaftaran pelanggan baru dibatalkan. Jika ada yang lain yang ingin Anda lakukan, silakan beri tahu saya!"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 14,
+      "query": "mereka mau order seragam sekolah 500 pcs",
+      "status": "PASS",
+      "latency_ms": 9220,
+      "note": "immediate order",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk seragam sekolah sebanyak 500 pcs. Boleh tahu nama pelanggannya dan tanggal faktur serta jatuh temponya?"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 15,
+      "query": "harga 95rb per pcs",
+      "status": "PASS",
+      "latency_ms": 7336,
+      "note": "price",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk 500 pcs seragam sekolah dengan harga satuan Rp95.000. Boleh tahu nama pelanggan dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 16,
+      "query": "buatkan faktur penjualannya",
+      "status": "PASS",
+      "latency_ms": 7825,
+      "note": "create invoice",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk 500 pcs seragam sekolah dengan harga satuan Rp95.000. Boleh tahu nama pelanggan dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 17,
+      "query": "batal",
+      "status": "SLOW(6272ms)",
+      "latency_ms": 6272,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Pendaftaran faktur penjualan dibatalkan. Jika ada hal lain yang ingin Anda lakukan, silakan beri tahu saya!"
+    },
+    {
+      "scenario": "S07_customer_mgmt",
+      "turn": 18,
+      "query": "sisa piutang dia berapa?",
+      "status": "PASS",
+      "latency_ms": 5099,
+      "note": "remaining AR",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 1,
+      "query": "udah akhir bulan nih bantu tutup buku dong",
+      "status": "PASS",
+      "latency_ms": 67,
+      "note": "opening",
+      "message_type": "TEXT",
+      "response": "Periode mana yang mau ditutup? Format: YYYY-MM (contoh: 2026-03)."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 2,
+      "query": "laba rugi bulan ini gimana?",
+      "status": "PASS",
+      "latency_ms": 3667,
+      "note": "P&L",
+      "message_type": "TEXT",
+      "response": "Halo! Untuk laba rugi bulan April 2026, begini kondisinya:\n\n*   **Total Pendapatan:** Rp 5.495.000\n*   **Harga Pokok Penjualan (HPP):** Rp 6.127.358\n*   **Laba Kotor:** Rp -632.358 (rugi)\n*   **Total Beban:** Rp -799.258\n*   **Laba Bersih:** Rp 166.900\n\nSecara keseluruhan, bulan April ini kita mencatat laba bersih sebesar Rp 166.900.\n\n⚠️ **Insight:**\nMeskipun ada laba bersih, laba kotor kita negat"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 3,
+      "query": "pendapatan total berapa?",
+      "status": "PASS",
+      "latency_ms": 3649,
+      "note": "revenue",
+      "message_type": "TEXT",
+      "response": "Total pendapatan kamu bulan April 2026 itu Rp 5.495.000.\n\nIni dari pendapatan penjualan ya, soalnya pendapatan lainnya Rp 0."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 4,
+      "query": "beban terbesar apa?",
+      "status": "PASS",
+      "latency_ms": 3007,
+      "note": "top expense",
+      "message_type": "TEXT",
+      "response": "Beban terbesarnya bulan ini Rp 850.000, dari 3 transaksi. 📦 Stoknya masih aman nih."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 5,
+      "query": "margin bruto berapa persen?",
+      "status": "PASS",
+      "latency_ms": 4866,
+      "note": "gross margin",
+      "message_type": "TEXT",
+      "response": "Margin bruto dihitung dengan rumus:\n\n\\[ \\text{Margin Bruto} = \\left( \\frac{\\text{Laba Kotor}}{\\text{Total Pendapatan}} \\right) \\times 100 \\]\n\nDari data yang ada:\n- **Laba Kotor:** Rp -632.358\n- **Total Pendapatan:** Rp 5.495.000\n\nJadi, margin bruto bulan ini adalah:\n\n\\[ \\text{Margin Bruto} = \\left( \\frac{-632.358}{5.495.000} \\right) \\times 100 \\approx -11,5\\% \\]\n\nArtinya, margin bruto kita negatif"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 6,
+      "query": "bandingkan sama bulan lalu",
+      "status": "PASS",
+      "latency_ms": 10117,
+      "note": "compare",
+      "message_type": "TEXT",
+      "response": "Berikut adalah perbandingan laba rugi bulan April 2026 dengan bulan Maret 2026:\n\n### April 2026\n- **Total Pendapatan:** Rp 5.495.000\n- **Harga Pokok Penjualan (HPP):** Rp 6.127.358\n- **Laba Kotor:** Rp -632.358\n- **Total Beban:** Rp -799.258\n- **Laba Bersih:** Rp 166.900\n- **Margin Laba Kotor:** -11,51%\n- **Margin Laba Bersih:** 3,04%\n\n### Maret 2026\n- **Total Pendapatan:** Rp 5.495.000\n- **Harga "
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 7,
+      "query": "neraca gimana?",
+      "status": "PASS",
+      "latency_ms": 7357,
+      "note": "balance sheet",
+      "message_type": "TEXT",
+      "response": "Oke, ini dia neraca per 30 April 2026:\n\n*   **Total Aset:** Rp 14.632.705\n*   **Total Kewajiban:** Rp 2.460.805\n*   **Total Ekuitas:** Rp 13.091.900\n\n⚠️ **Penting nih:** Neraca kita belum seimbang ya. Total aset (Rp 14.632.705) belum sama dengan total kewajiban ditambah ekuitas (Rp 2.460.805 + Rp 13.091.900 = Rp 15.552.705).\n\nSelain itu, ada **laba periode berjalan yang negatif** sebesar Rp 3.118."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 8,
+      "query": "aset lancar berapa?",
+      "status": "PASS",
+      "latency_ms": 6539,
+      "note": "current assets",
+      "message_type": "TEXT",
+      "response": "Per tanggal 30 April 2026, total aset lancar kamu ada Rp 14.632.705. Ini terdiri dari kas sebesar Rp 14.632.705, sementara komponen aset lancar lainnya seperti bank, persediaan, piutang usaha, beban dibayar dimuka, dan uang muka pembelian tercatat Rp 0."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 9,
+      "query": "kewajiban berapa?",
+      "status": "PASS",
+      "latency_ms": 6619,
+      "note": "liabilities",
+      "message_type": "TEXT",
+      "response": "Total kewajiban per 30 April 2026 itu Rp 2.460.805. Ini terdiri dari hutang usaha sebesar Rp 2.460.805, dan nggak ada kewajiban jangka panjang lainnya.\n\n⚠️ Perlu diperhatikan nih, laba periode berjalan tercatat minus Rp 3.118.100. Ini bisa jadi sinyal buat kita evaluasi lagi performa bisnisnya ya."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 10,
+      "query": "ekuitas naik atau turun?",
+      "status": "PASS",
+      "latency_ms": 7336,
+      "note": "equity trend",
+      "message_type": "TEXT",
+      "response": "Hai! Untuk periode 30 April 2026, ekuitas kamu tercatat sebesar Rp 13.091.900.\n\n⚠️ Kalau dilihat dari laba periode berjalan yang negatif sebesar Rp 3.118.100, ini yang bikin ekuitasnya jadi turun ya. Mungkin perlu dicek lagi pengeluaran atau pendapatan di periode ini."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 11,
+      "query": "arus kas bulan ini gimana?",
+      "status": "PASS",
+      "latency_ms": 6221,
+      "note": "cash flow",
+      "message_type": "TEXT",
+      "response": "Arus kas bulan April 2026 ini masih nol ya. Baik dari sisi investasi maupun pendanaan, belum ada transaksi yang tercatat. Jadi, kas awal periode sama dengan kas akhir periode."
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 12,
+      "query": "stok opname — total nilai persediaan berapa?",
+      "status": "PASS",
+      "latency_ms": 6433,
+      "note": "inventory value",
+      "message_type": "TEXT",
+      "response": "**Total Stok Semua Item Aktif**: 42.50\n(Berdasarkan 6 data)"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 13,
+      "query": "hutang piutang summary dong",
+      "status": "SLOW(31038ms)",
+      "latency_ms": 31038,
+      "note": "AR/AP summary",
+      "message_type": "TEXT",
+      "response": "Berikut adalah ringkasan hutang dan piutang per 13 April 2026:\n\n### Piutang (AR Outstanding)\n- **Total Piutang:** Rp 175.000\n- **Jumlah Faktur:**\n  - Draft: 3\n  - Posted: 2\n  - Partial: 1\n  - Paid: 1\n  - Overdue: 0\n\n### Utang (AP Outstanding)\n- **Total Utang:** Rp 1.722.805\n- **Jumlah Tagihan:**\n  - Total: 5\n  - Unpaid: 4 (Rp 1.622.805)\n  - Partial: 1 (Rp 100.000)\n  - Overdue: 0\n\n### Insight\n- **P"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 14,
+      "query": "net-nya kita plus atau minus?",
+      "status": "PASS",
+      "latency_ms": 8330,
+      "note": "net position",
+      "message_type": "TEXT",
+      "response": "Net cash flow kita positif, Rp 13.877.705. Ini didapat dari kas masuk Rp 39.765.107 dikurangi kas keluar Rp 25.887.402.\n\nSecara keseluruhan, kondisi keuangan kita terlihat sehat ya. 👍"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 15,
+      "query": "ok cetak semua laporan",
+      "status": "PASS",
+      "latency_ms": 4285,
+      "note": "print — unsupported",
+      "message_type": "TEXT",
+      "response": "Tentu, laporan apa saja yang ingin Anda lihat?"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 16,
+      "query": "export ke excel bisa?",
+      "status": "PASS",
+      "latency_ms": 6078,
+      "note": "export — unsupported",
+      "message_type": "TEXT",
+      "response": "Tentu, ini dia data tersebut dalam format tabel markdown:\n\n| Deskripsi       | Jumlah (Rp)    |\n| --------------- | -------------- |\n| Kas Masuk       | 39.765.107     |\n| Kas Keluar      | 25.887.402     |\n| **Net Cash Flow** | **13.877.705** |"
+    },
+    {
+      "scenario": "S08_monthly_closing",
+      "turn": 17,
+      "query": "ya udah ringkasan aja deh yang penting-penting",
+      "status": "PASS",
+      "latency_ms": 10991,
+      "note": "summary",
+      "message_type": "TEXT",
+      "response": "Oke, ini ringkasan pentingnya ya:\n\n*   **Kas Masuk:** Rp 39.765.107\n*   **Kas Keluar:** Rp 25.887.402\n*   **Arus Kas Bersih:** Rp 13.877.705 ✅\n*   **Total Pengeluaran:** Rp 7.477.370\n\nSecara keseluruhan, arus kas kita positif nih, bagus! 👍"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 1,
+      "query": "eh ada masalah nih",
+      "status": "PASS",
+      "latency_ms": 4384,
+      "note": "problem start",
+      "message_type": "TEXT",
+      "response": "Coba ceritakan lebih lanjut tentang masalah yang Anda hadapi. Saya siap membantu!"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 2,
+      "query": "customer komplain barang salah kirim",
+      "status": "PASS",
+      "latency_ms": 3137,
+      "note": "complaint context",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama pelanggan yang ingin dicek."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 3,
+      "query": "cek faktur terakhir ke toko maju",
+      "status": "PASS",
+      "latency_ms": 2926,
+      "note": "invoice lookup",
+      "message_type": "TEXT",
+      "response": "Pelanggan 'toko maju' tidak ditemukan."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 4,
+      "query": "isinya apa aja?",
+      "status": "WARN(kw)",
+      "latency_ms": 2221,
+      "note": "self-ref: invoice content",
+      "message_type": "TEXT",
+      "response": "Mohon sebutkan nama faktur yang ingin dicek."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 5,
+      "query": "harusnya poloshirt hitam tapi yang dikirim putih",
+      "status": "PASS",
+      "latency_ms": 2951,
+      "note": "context",
+      "message_type": "TEXT",
+      "response": "Gagal mengambil data: Client error '404 Not Found' for url 'http://localhost:8000/api/sales-invoices/73157f97-c89e-4f97-b1"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 6,
+      "query": "stok poloshirt hitam masih ada ga?",
+      "status": "PASS",
+      "latency_ms": 3535,
+      "note": "stock check",
+      "message_type": "TEXT",
+      "response": "Ada 42 pcs poloshirt hitam yang siap dijual. 📦 Stoknya masih aman nih."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 7,
+      "query": "berapa?",
+      "status": "PASS",
+      "latency_ms": 5483,
+      "note": "ultra-short",
+      "message_type": "TEXT",
+      "response": "Halo! Untuk Poloshirt Hitam + Bordir (BRG-0008), harga jualnya Rp 155.000 per pcs ya.\n\nStoknya saat ini ada 42 pcs. 📦 Stoknya masih aman nih."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 8,
+      "query": "ok kirim pengganti catat retur dulu",
+      "status": "PASS",
+      "latency_ms": 2823,
+      "note": "return — may not support",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan mencatat retur terlebih dahulu. Apakah ada detail lain yang perlu saya ketahui mengenai retur ini?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 9,
+      "query": "void faktur yang salah bisa ga?",
+      "status": "PASS",
+      "latency_ms": 6107,
+      "note": "void invoice",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan pembatalan faktur penjualan. Boleh tahu ID faktur penjualannya dan apa alasannya?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 10,
+      "query": "batal deh jangan void",
+      "status": "WARN(kw)",
+      "latency_ms": 9784,
+      "note": "cancel void",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan mencatat retur untuk penggantian barang. Mari kita mulai dengan mencatat detail retur. \n\nBerapa jumlah poloshirt hitam yang akan diretur?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 11,
+      "query": "bikin faktur baru yang benar",
+      "status": "PASS",
+      "latency_ms": 6863,
+      "note": "new invoice",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan bantu daftarkan faktur penjualan baru. Boleh tahu nama pelanggannya dan tanggal faktur serta tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 12,
+      "query": "poloshirt hitam 200 pcs 80rb",
+      "status": "PASS",
+      "latency_ms": 8010,
+      "note": "item details",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan daftarkan faktur penjualan untuk poloshirt hitam sebanyak 200 pcs. Boleh tahu ID dan nama pelanggannya, serta tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 13,
+      "query": "ke toko maju",
+      "status": "SLOW(12957ms)",
+      "latency_ms": 12957,
+      "note": "customer slot",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk poloshirt hitam sebanyak 200 pcs senilai Rp80.000,00 kepada toko maju. Boleh tahu ID pelanggan dan tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 14,
+      "query": "batal",
+      "status": "WARN(kw)",
+      "latency_ms": 6280,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan daftarkan faktur penjualan untuk toko maju, dengan nama produk poloshirt hitam sebanyak 200 pcs seharga Rp 80.000. Boleh tahu ID Pelanggan dan tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 15,
+      "query": "total stok poloshirt semua warna berapa?",
+      "status": "PASS",
+      "latency_ms": 6927,
+      "note": "aggregation",
+      "message_type": "TEXT",
+      "response": "Total stok poloshirt ada 6 pcs, ya. Dari jumlah itu, 2 pcs masih ready stok, dan sisanya 4 pcs lagi habis."
+    },
+    {
+      "scenario": "S09_troubleshoot",
+      "turn": 16,
+      "query": "hutang ke vendor benang jatuh tempo hari ini ga?",
+      "status": "PASS",
+      "latency_ms": 6536,
+      "note": "topic switch",
+      "message_type": "TEXT",
+      "response": "Vendor 'benang' tidak ditemukan."
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 1,
+      "query": "piutang?",
+      "status": "PASS",
+      "latency_ms": 4021,
+      "note": "single word",
+      "message_type": "TEXT",
+      "response": "Oke, ini dia info soal piutang kita:\n\n*   Total ada 7 piutang.\n*   Yang masih draf ada 3.\n*   Yang sudah diposting ada 2.\n*   Ada 1 yang pembayarannya parsial.\n*   Yang sudah lunas ada 1.\n\nTotal outstanding kita Rp 175.000, tapi untungnya belum ada yang jatuh tempo (overdue). ✅"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 2,
+      "query": "hutang?",
+      "status": "PASS",
+      "latency_ms": 3341,
+      "note": "single word",
+      "message_type": "TEXT",
+      "response": "Oke, ini dia info soal hutang kita per 13 April 2026:\n\n*   Total hutang yang belum dibayar: Rp 1.622.805\n*   Ada juga hutang yang dibayar sebagian: Rp 100.000\n*   Jadi, total hutang outstanding kita saat ini Rp 1.722.805.\n*   Ada 4 tagihan yang belum dibayar dan 1 yang dibayar sebagian, total ada 5 tagihan.\n*   Semua tagihan ini belum jatuh tempo, jadi masih aman kok. 👍"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 3,
+      "query": "mana lebih gede?",
+      "status": "PASS",
+      "latency_ms": 6748,
+      "note": "comparison",
+      "message_type": "TEXT",
+      "response": "Total piutang kita sebesar Rp 175.000, sedangkan total hutang outstanding kita Rp 1.722.805. \n\nJadi, **hutang** kita lebih besar dibandingkan **piutang**. \n\nMau saya bantu dengan hal lain?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 4,
+      "query": "stok?",
+      "status": "PASS",
+      "latency_ms": 3447,
+      "note": "single word",
+      "message_type": "TEXT",
+      "response": "Ada 6 item barang yang tercatat, dan saat ini 2 item yang masih ada stoknya. Sementara itu, ada 4 item yang stoknya sudah habis. 📦 Stoknya masih aman nih untuk yang ada."
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 5,
+      "query": "yg habis?",
+      "status": "PASS",
+      "latency_ms": 3918,
+      "note": "follow-up",
+      "message_type": "TEXT",
+      "response": "Ini dia barang yang stoknya habis:\n\n*   Kerah Hitam Wangky (Aksesori)\n*   Manset Hitam Wangky (Aksesori)\n*   Label (Aksesori)\n*   Benang Jahit Hitam 1 Lusin (Aksesori)\n\nSemuanya habis nih, perlu segera diorder lagi ya."
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 6,
+      "query": "BCA brp?",
+      "status": "PASS",
+      "latency_ms": 3299,
+      "note": "abbreviation",
+      "message_type": "TEXT",
+      "response": "Hai! BCA Pengeluaran punya nomor rekening 8492840281. Saldo terakhirnya saat ini Rp 0 ya."
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 7,
+      "query": "cukup buat byr hutang?",
+      "status": "PASS",
+      "latency_ms": 5771,
+      "note": "calc",
+      "message_type": "TEXT",
+      "response": "Wah, kalau buat bayar utang sih, saldo total kita saat ini ada Rp 11.744.160. 💰\n\nDari sisi cash flow, ada insight nih:\n⚠️ Saldo kita saat ini Rp 11.744.160, yang diperkirakan cukup untuk ~999 hari operasional. Ada piutang yang bisa dikejar untuk tambah kas?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 8,
+      "query": "faktur terakhir?",
+      "status": "PASS",
+      "latency_ms": 5708,
+      "note": "recent",
+      "message_type": "TEXT",
+      "response": "Ini dia faktur terakhir yang tercatat:\n\n*   **INV-2604-0029** - Pelanggan: Sintia, Tanggal: 10 April 2026, Total: Rp 125.000, Status: Pembayaran sebagian.\n*   **INV-2604-0028** - Pelanggan: Sintia, Tanggal: 10 April 2026, Total: Rp 125.000, Status: Terposting.\n*   **INV-2604-0027** - Pelanggan: Sintia, Tanggal: 10 April 2026, Total: Rp 125.000, Status: Terposting.\n*   **INV-2604-0026** - Pelanggan"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 9,
+      "query": "buat faktur ke sintia poloshirt 50 pcs 90rb",
+      "status": "PASS",
+      "latency_ms": 6735,
+      "note": "full create",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk Sintia dengan produk poloshirt sebanyak 50 pcs. Boleh tahu ID Pelanggan Sintia, tanggal faktur, dan kapan jatuh temponya?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 10,
+      "query": "eh cancel",
+      "status": "SLOW(9131ms)",
+      "latency_ms": 9131,
+      "note": "cancel",
+      "message_type": "TEXT",
+      "response": "Baik, saya batalkan pembuatan faktur tersebut. Jika ada yang ingin dilakukan selanjutnya, silakan beri tahu ya!"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 11,
+      "query": "buat ke toko maju aja",
+      "status": "PASS",
+      "latency_ms": 6879,
+      "note": "restart",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk toko maju dengan produk poloshirt sejumlah 50 pcs seharga Rp90.000 per pcs, total Rp4.500.000. Kapan tanggal jatuh temponya?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 12,
+      "query": "poloshirt hitam 100 pcs",
+      "status": "SLOW(8150ms)",
+      "latency_ms": 8150,
+      "note": "item slot",
+      "message_type": "TEXT",
+      "response": "Siap, saya akan daftarkan faktur penjualan untuk Toko Maju dengan produk Poloshirt Hitam sebanyak 100 pcs seharga Rp90.000 per pcs, total Rp4.500.000. Kapan tanggal jatuh tempo faktur ini?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 13,
+      "query": "harga 80rb",
+      "status": "PASS",
+      "latency_ms": 7255,
+      "note": "price slot",
+      "message_type": "TEXT",
+      "response": "Baik, saya akan daftarkan faktur penjualan untuk Toko Maju dengan produk Poloshirt Hitam sebanyak 100 pcs seharga Rp 90.000 per pcs. Kapan tanggal jatuh tempo pembayaran faktur ini?"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 14,
+      "query": "batal",
+      "status": "SLOW(5915ms)",
+      "latency_ms": 5915,
+      "note": "cancel again",
+      "message_type": "TEXT",
+      "response": "Pembuatan faktur sudah dibatalkan. Jika ada yang ingin dilakukan selanjutnya, silakan beri tahu!"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 15,
+      "query": "piutang toko maju skrg brp?",
+      "status": "PASS",
+      "latency_ms": 6435,
+      "note": "post-action",
+      "message_type": "TEXT",
+      "response": "Pelanggan 'toko maju' tidak ditemukan."
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 16,
+      "query": "total omzet bulan ini?",
+      "status": "PASS",
+      "latency_ms": 6074,
+      "note": "total sales",
+      "message_type": "TEXT",
+      "response": "**Total Penjualan Outstanding Bulan Ini**: Rp 175.000\n(Berdasarkan 1 data)"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 17,
+      "query": "udah target belum?",
+      "status": "PASS",
+      "latency_ms": 7751,
+      "note": "unsupported",
+      "message_type": "TEXT",
+      "response": "Bulan ini, total pendapatan Anda mencapai **Rp 5.495.000**. Dengan pengeluaran sebesar **Rp 5.328.100**, laba bersih Anda adalah **Rp 166.900**. \n\nJika ada yang ingin Anda lakukan selanjutnya, silakan beri tahu!"
+    },
+    {
+      "scenario": "S10_quick_fire",
+      "turn": 18,
+      "query": "ok thx",
+      "status": "PASS",
+      "latency_ms": 3491,
+      "note": "closing",
+      "message_type": "TEXT",
+      "response": "Sama-sama! Ada lagi yang bisa saya bantu?"
+    }
+  ]
+}

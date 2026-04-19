@@ -11,16 +11,14 @@ Iron Laws compliance:
 - Law 25: Decimal precision (no float truncation)
 - Law 27: resolve_account_id for account resolution
 """
-from datetime import date
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
 import uuid as uuid_module
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.fixed_assets import (
     AssetCategoryCreate,
     AssetCategoryUpdate,
@@ -41,7 +39,6 @@ from ..schemas.fixed_assets import (
     DisposeAssetResponse,
     SellAssetRequest,
     SellAssetResponse,
-    CalculateDepreciationRequest,
     CalculateDepreciationItem,
     CalculateDepreciationResponse,
     PostDepreciationRequest,
@@ -56,22 +53,17 @@ from ..schemas.fixed_assets import (
     MaintenanceDueItem,
     MaintenanceDueResponse,
     AssetStatus,
-    DisposalMethod,
-    DepreciationStatus,
 )
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -106,6 +98,7 @@ async def check_period_is_open(conn, tenant_id: str, journal_date) -> None:
 # ASSET CATEGORIES
 # ============================================================================
 
+
 @router.get("/categories", response_model=AssetCategoryListResponse)
 async def list_asset_categories(
     request: Request,
@@ -118,7 +111,9 @@ async def list_asset_categories(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["ac.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -132,8 +127,7 @@ async def list_asset_categories(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM asset_categories ac WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM asset_categories ac WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -150,7 +144,9 @@ async def list_asset_categories(
             ORDER BY ac.name
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
-            *params, skip, limit
+            *params,
+            skip,
+            limit,
         )
 
         items = [AssetCategoryResponse(**dict(row)) for row in rows]
@@ -164,15 +160,20 @@ async def create_asset_category(request: Request, data: AssetCategoryCreate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         if data.code:
             exists = await conn.fetchval(
                 "SELECT 1 FROM asset_categories WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], data.code
+                ctx["tenant_id"],
+                data.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail="Category code already exists")
+                raise HTTPException(
+                    status_code=400, detail="Category code already exists"
+                )
 
         row = await conn.fetchrow(
             """
@@ -183,26 +184,37 @@ async def create_asset_category(request: Request, data: AssetCategoryCreate):
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             """,
-            ctx["tenant_id"], data.name, data.code, data.depreciation_method.value,
-            data.useful_life_months, data.salvage_value_percent, data.asset_account_id,
-            data.depreciation_account_id, data.accumulated_depreciation_account_id
+            ctx["tenant_id"],
+            data.name,
+            data.code,
+            data.depreciation_method.value,
+            data.useful_life_months,
+            data.salvage_value_percent,
+            data.asset_account_id,
+            data.depreciation_account_id,
+            data.accumulated_depreciation_account_id,
         )
 
         return AssetCategoryResponse(**dict(row))
 
 
 @router.patch("/categories/{category_id}", response_model=AssetCategoryResponse)
-async def update_asset_category(request: Request, category_id: UUID, data: AssetCategoryUpdate):
+async def update_asset_category(
+    request: Request, category_id: UUID, data: AssetCategoryUpdate
+):
     """Update asset category"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM asset_categories WHERE id = $1 AND tenant_id = $2",
-            category_id, ctx["tenant_id"]
+            category_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Category not found")
@@ -212,7 +224,9 @@ async def update_asset_category(request: Request, category_id: UUID, data: Asset
             return AssetCategoryResponse(**dict(existing))
 
         if "depreciation_method" in update_data:
-            update_data["depreciation_method"] = update_data["depreciation_method"].value
+            update_data["depreciation_method"] = update_data[
+                "depreciation_method"
+            ].value
 
         set_clauses = []
         params = []
@@ -229,7 +243,7 @@ async def update_asset_category(request: Request, category_id: UUID, data: Asset
             WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
         return AssetCategoryResponse(**dict(row))
@@ -242,17 +256,18 @@ async def delete_asset_category(request: Request, category_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check for assets using this category
         count = await conn.fetchval(
-            "SELECT COUNT(*) FROM fixed_assets WHERE category_id = $1",
-            category_id
+            "SELECT COUNT(*) FROM fixed_assets WHERE category_id = $1", category_id
         )
         if count > 0:
             await conn.execute(
                 "UPDATE asset_categories SET is_active = false, updated_at = NOW() WHERE id = $1",
-                category_id
+                category_id,
             )
             return {"message": "Category deactivated (has assets)"}
 
@@ -263,6 +278,7 @@ async def delete_asset_category(request: Request, category_id: UUID):
 # ============================================================================
 # FIXED ASSETS CRUD
 # ============================================================================
+
 
 @router.get("", response_model=FixedAssetListResponse)
 async def list_fixed_assets(
@@ -279,7 +295,9 @@ async def list_fixed_assets(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["fa.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -303,13 +321,17 @@ async def list_fixed_assets(
         if search:
             words = search.strip().split()
             if len(words) == 1:
-                where_clauses.append(f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})")
+                where_clauses.append(
+                    f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})"
+                )
                 params.append(f"%{words[0]}%")
                 param_idx += 1
             else:
                 word_conds = []
                 for word in words:
-                    where_clauses.append(f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})")
+                    where_clauses.append(
+                        f"(fa.asset_number ILIKE ${param_idx} OR fa.name ILIKE ${param_idx})"
+                    )
                     params.append(f"%{word}%")
                     param_idx += 1
             param_idx += 1
@@ -317,8 +339,7 @@ async def list_fixed_assets(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM fixed_assets fa WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM fixed_assets fa WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -332,7 +353,9 @@ async def list_fixed_assets(
             ORDER BY fa.asset_number
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
-            *params, skip, limit
+            *params,
+            skip,
+            limit,
         )
 
         items = [FixedAssetResponse(**dict(row)) for row in rows]
@@ -346,7 +369,9 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         fa = await conn.fetchrow(
             """
@@ -357,7 +382,8 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
             LEFT JOIN warehouses w ON fa.warehouse_id = w.id
             WHERE fa.id = $1 AND fa.tenant_id = $2
             """,
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -366,7 +392,7 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
             """
             SELECT * FROM asset_depreciations WHERE asset_id = $1 ORDER BY depreciation_date
             """,
-            asset_id
+            asset_id,
         )
 
         maintenance = await conn.fetch(
@@ -376,13 +402,17 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
             LEFT JOIN vendors v ON am.vendor_id = v.id
             WHERE am.asset_id = $1 ORDER BY am.maintenance_date DESC
             """,
-            asset_id
+            asset_id,
         )
 
         return FixedAssetDetailResponse(
             **dict(fa),
-            depreciation_history=[AssetDepreciationResponse(**dict(d)) for d in depreciations],
-            maintenance_history=[AssetMaintenanceResponse(**dict(m)) for m in maintenance],
+            depreciation_history=[
+                AssetDepreciationResponse(**dict(d)) for d in depreciations
+            ],
+            maintenance_history=[
+                AssetMaintenanceResponse(**dict(m)) for m in maintenance
+            ],
         )
 
 
@@ -393,15 +423,16 @@ async def create_fixed_asset(request: Request, data: FixedAssetCreate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Seed accounts if needed
         await conn.execute("SELECT seed_fixed_asset_accounts($1)", ctx["tenant_id"])
 
         # Generate asset number
         asset_number = await conn.fetchval(
-            "SELECT generate_asset_number($1)",
-            ctx["tenant_id"]
+            "SELECT generate_asset_number($1)", ctx["tenant_id"]
         )
 
         row = await conn.fetchrow(
@@ -416,12 +447,26 @@ async def create_fixed_asset(request: Request, data: FixedAssetCreate):
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             RETURNING *
             """,
-            ctx["tenant_id"], asset_number, data.name, data.description, data.category_id,
-            data.purchase_date, data.purchase_price, data.vendor_id, data.bill_id,
-            data.warehouse_id, data.location_detail, data.depreciation_method.value,
-            data.useful_life_months, data.salvage_value, data.depreciation_start_date,
-            data.purchase_price, data.asset_account_id, data.depreciation_account_id,
-            data.accumulated_depreciation_account_id, ctx.get("user_id")
+            ctx["tenant_id"],
+            asset_number,
+            data.name,
+            data.description,
+            data.category_id,
+            data.purchase_date,
+            data.purchase_price,
+            data.vendor_id,
+            data.bill_id,
+            data.warehouse_id,
+            data.location_detail,
+            data.depreciation_method.value,
+            data.useful_life_months,
+            data.salvage_value,
+            data.depreciation_start_date,
+            data.purchase_price,
+            data.asset_account_id,
+            data.depreciation_account_id,
+            data.accumulated_depreciation_account_id,
+            ctx.get("user_id"),
         )
 
         return FixedAssetResponse(**dict(row))
@@ -434,11 +479,14 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -454,7 +502,7 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
                 LEFT JOIN warehouses w ON fa.warehouse_id = w.id
                 WHERE fa.id = $1
                 """,
-                asset_id
+                asset_id,
             )
             return FixedAssetResponse(**dict(fa))
 
@@ -472,7 +520,7 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
             UPDATE fixed_assets SET {', '.join(set_clauses)}
             WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
             """,
-            *params
+            *params,
         )
 
         row = await conn.fetchrow(
@@ -484,7 +532,7 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
             LEFT JOIN warehouses w ON fa.warehouse_id = w.id
             WHERE fa.id = $1
             """,
-            asset_id
+            asset_id,
         )
 
         return FixedAssetResponse(**dict(row))
@@ -497,11 +545,14 @@ async def delete_fixed_asset(request: Request, asset_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -517,8 +568,11 @@ async def delete_fixed_asset(request: Request, asset_id: UUID):
 # ACTIVATE ASSET
 # ============================================================================
 
+
 @router.post("/{asset_id}/activate", response_model=ActivateAssetResponse)
-async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateAssetRequest):
+async def activate_fixed_asset(
+    request: Request, asset_id: UUID, data: ActivateAssetRequest
+):
     """
     Activate asset - creates journal entry and depreciation schedule:
     Dr. Aset Tetap (1-20100)          purchase_price
@@ -528,11 +582,14 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         fa = await conn.fetchrow(
             "SELECT * FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -541,11 +598,15 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
             raise HTTPException(status_code=400, detail="Asset is already activated")
 
         # Law 27: resolve accounts via helper
-        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
+        asset_account = fa["asset_account_id"] or await resolve_account_id(
+            conn, ctx["tenant_id"], "1-20100"
+        )
 
         async with conn.transaction():
             # Law 13: Advisory lock
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"FIXED_ASSET:{asset_id}")
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", f"FIXED_ASSET:{asset_id}"
+            )
 
             # Law 5: Period check
             await check_period_is_open(conn, ctx["tenant_id"], fa["purchase_date"])
@@ -559,7 +620,7 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 DO UPDATE SET last_number = journal_sequences.last_number + 1
                 RETURNING last_number
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             journal_number = f"JV-{fa['purchase_date'].year}-{seq['last_number']:05d}"
             journal_id = uuid_module.uuid4()
@@ -573,9 +634,14 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                     source_type, source_id, status, total_debit, total_credit, created_by
                 ) VALUES ($1, $2, $3, $4, $5, 'FIXED_ASSET', $6, 'DRAFT', $7, $7, $8)
                 """,
-                journal_id, ctx["tenant_id"], journal_number, fa["purchase_date"],
+                journal_id,
+                ctx["tenant_id"],
+                journal_number,
+                fa["purchase_date"],
                 f"Asset Purchase - {fa['name']} ({fa['asset_number']})",
-                asset_id, purchase_price, ctx.get("user_id")
+                asset_id,
+                purchase_price,
+                ctx.get("user_id"),
             )
 
             # Law 20: Step 2 — INSERT journal_lines
@@ -585,8 +651,11 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1, $2, 1, $3, $4, 0, $5)
                 """,
-                uuid_module.uuid4(), journal_id, asset_account, purchase_price,
-                f"Asset Purchase - {fa['asset_number']}"
+                uuid_module.uuid4(),
+                journal_id,
+                asset_account,
+                purchase_price,
+                f"Asset Purchase - {fa['asset_number']}",
             )
 
             # Cr. Payment account
@@ -595,12 +664,17 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1, $2, 2, $3, 0, $4, $5)
                 """,
-                uuid_module.uuid4(), journal_id, data.payment_account_id, purchase_price,
-                f"Asset Purchase - {fa['asset_number']}"
+                uuid_module.uuid4(),
+                journal_id,
+                data.payment_account_id,
+                purchase_price,
+                f"Asset Purchase - {fa['asset_number']}",
             )
 
             # Law 20: Step 3 — UPDATE to POSTED
-            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+            )
 
             # Update asset status
             await conn.execute(
@@ -608,13 +682,12 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
                 UPDATE fixed_assets SET status = 'active', updated_at = NOW()
                 WHERE id = $1
                 """,
-                asset_id
+                asset_id,
             )
 
             # Generate depreciation schedule
             schedule_count = await conn.fetchval(
-                "SELECT generate_depreciation_schedule($1)",
-                asset_id
+                "SELECT generate_depreciation_schedule($1)", asset_id
             )
 
             return ActivateAssetResponse(
@@ -631,14 +704,19 @@ async def activate_fixed_asset(request: Request, asset_id: UUID, data: ActivateA
 # DEPRECIATION
 # ============================================================================
 
-@router.get("/{asset_id}/depreciation-schedule", response_model=DepreciationScheduleResponse)
+
+@router.get(
+    "/{asset_id}/depreciation-schedule", response_model=DepreciationScheduleResponse
+)
 async def get_depreciation_schedule(request: Request, asset_id: UUID):
     """Get asset depreciation schedule"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         fa = await conn.fetchrow(
             """
@@ -647,14 +725,15 @@ async def get_depreciation_schedule(request: Request, asset_id: UUID):
             LEFT JOIN asset_categories ac ON fa.category_id = ac.id
             WHERE fa.id = $1 AND fa.tenant_id = $2
             """,
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
 
         schedule = await conn.fetch(
             "SELECT * FROM asset_depreciations WHERE asset_id = $1 ORDER BY depreciation_date",
-            asset_id
+            asset_id,
         )
 
         scheduled = [s for s in schedule if s["status"] == "scheduled"]
@@ -679,21 +758,28 @@ async def get_depreciation_due(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_depreciation_due($1, $2, $3)",
-            ctx["tenant_id"], year, month
+            ctx["tenant_id"],
+            year,
+            month,
         )
 
-        items = [CalculateDepreciationItem(
-            asset_id=row["asset_id"],
-            asset_number=row["asset_number"],
-            asset_name=row["asset_name"],
-            depreciation_amount=row["depreciation_amount"],
-            accumulated_amount=row["accumulated_amount"],
-            book_value=row["book_value"],
-        ) for row in rows]
+        items = [
+            CalculateDepreciationItem(
+                asset_id=row["asset_id"],
+                asset_number=row["asset_number"],
+                asset_name=row["asset_name"],
+                depreciation_amount=row["depreciation_amount"],
+                accumulated_amount=row["accumulated_amount"],
+                book_value=row["book_value"],
+            )
+            for row in rows
+        ]
 
         return CalculateDepreciationResponse(
             year=year,
@@ -715,7 +801,9 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Get scheduled depreciations for period
         depreciations = await conn.fetch(
@@ -729,7 +817,9 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
             AND ad.period_month = $3
             AND ad.status = 'scheduled'
             """,
-            ctx["tenant_id"], data.year, data.month
+            ctx["tenant_id"],
+            data.year,
+            data.month,
         )
 
         if not depreciations:
@@ -743,8 +833,10 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
             )
 
         # Law 27: resolve default accounts via helper
-        depreciation_expense = await resolve_account_id(conn, ctx["tenant_id"], '5-30100')
-        accumulated_dep = await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
+        depreciation_expense = await resolve_account_id(
+            conn, ctx["tenant_id"], "5-30100"
+        )
+        accumulated_dep = await resolve_account_id(conn, ctx["tenant_id"], "1-20200")
 
         results = []
         posted = 0
@@ -755,10 +847,15 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
             try:
                 async with conn.transaction():
                     # Law 13: Advisory lock
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPRECIATION:{dep['asset_id']}")
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"DEPRECIATION:{dep['asset_id']}",
+                    )
 
                     # Law 5: Period check
-                    await check_period_is_open(conn, ctx["tenant_id"], dep["depreciation_date"])
+                    await check_period_is_open(
+                        conn, ctx["tenant_id"], dep["depreciation_date"]
+                    )
 
                     # Generate journal number
                     seq = await conn.fetchrow(
@@ -769,14 +866,16 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         DO UPDATE SET last_number = journal_sequences.last_number + 1
                         RETURNING last_number
                         """,
-                        ctx["tenant_id"]
+                        ctx["tenant_id"],
                     )
                     journal_number = f"JV-{data.year}-{seq['last_number']:05d}"
                     journal_id = uuid_module.uuid4()
                     dep_amount = Decimal(str(dep["depreciation_amount"]))
 
                     dep_account = dep["depreciation_account_id"] or depreciation_expense
-                    accum_account = dep["accumulated_depreciation_account_id"] or accumulated_dep
+                    accum_account = (
+                        dep["accumulated_depreciation_account_id"] or accumulated_dep
+                    )
 
                     # Law 20: Step 1 — INSERT as DRAFT
                     await conn.execute(
@@ -786,9 +885,14 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                             source_type, source_id, status, total_debit, total_credit, created_by
                         ) VALUES ($1, $2, $3, $4, $5, 'DEPRECIATION', $6, 'DRAFT', $7, $7, $8)
                         """,
-                        journal_id, ctx["tenant_id"], journal_number, dep["depreciation_date"],
+                        journal_id,
+                        ctx["tenant_id"],
+                        journal_number,
+                        dep["depreciation_date"],
                         f"Depreciation - {dep['asset_name']} ({data.year}/{data.month})",
-                        dep["id"], dep_amount, ctx.get("user_id")
+                        dep["id"],
+                        dep_amount,
+                        ctx.get("user_id"),
                     )
 
                     # Law 20: Step 2 — INSERT journal_lines
@@ -798,8 +902,11 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, dep_account, dep_amount,
-                        f"Depreciation - {dep['asset_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        dep_account,
+                        dep_amount,
+                        f"Depreciation - {dep['asset_number']}",
                     )
 
                     # Cr. Akumulasi Penyusutan
@@ -808,12 +915,18 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        uuid_module.uuid4(), journal_id, accum_account, dep_amount,
-                        f"Accumulated Depreciation - {dep['asset_number']}"
+                        uuid_module.uuid4(),
+                        journal_id,
+                        accum_account,
+                        dep_amount,
+                        f"Accumulated Depreciation - {dep['asset_number']}",
                     )
 
                     # Law 20: Step 3 — UPDATE to POSTED
-                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        journal_id,
+                    )
 
                     # Update depreciation record
                     await conn.execute(
@@ -821,27 +934,32 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
                         UPDATE asset_depreciations SET status = 'posted', journal_id = $2, posted_at = NOW()
                         WHERE id = $1
                         """,
-                        dep["id"], journal_id
+                        dep["id"],
+                        journal_id,
                     )
 
-                    results.append(PostDepreciationResult(
-                        asset_id=dep["asset_id"],
-                        asset_number=dep["asset_number"],
-                        depreciation_amount=dep_amount,
-                        journal_id=journal_id,
-                        success=True,
-                    ))
+                    results.append(
+                        PostDepreciationResult(
+                            asset_id=dep["asset_id"],
+                            asset_number=dep["asset_number"],
+                            depreciation_amount=dep_amount,
+                            journal_id=journal_id,
+                            success=True,
+                        )
+                    )
                     posted += 1
                     total_depreciation += dep_amount
 
             except Exception as e:
-                results.append(PostDepreciationResult(
-                    asset_id=dep["asset_id"],
-                    asset_number=dep["asset_number"],
-                    depreciation_amount=dep["depreciation_amount"],
-                    success=False,
-                    error=str(e),
-                ))
+                results.append(
+                    PostDepreciationResult(
+                        asset_id=dep["asset_id"],
+                        asset_number=dep["asset_number"],
+                        depreciation_amount=dep["depreciation_amount"],
+                        success=False,
+                        error=str(e),
+                    )
+                )
                 failed += 1
 
         return PostDepreciationResponse(
@@ -858,8 +976,11 @@ async def post_depreciation(request: Request, data: PostDepreciationRequest):
 # DISPOSE/SELL ASSET
 # ============================================================================
 
+
 @router.post("/{asset_id}/dispose", response_model=DisposeAssetResponse)
-async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAssetRequest):
+async def dispose_fixed_asset(
+    request: Request, asset_id: UUID, data: DisposeAssetRequest
+):
     """
     Dispose asset (scrapped, donated, lost) - creates journal:
     Dr. Akumulasi Penyusutan (1-20200)    accumulated_depreciation
@@ -870,22 +991,31 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         fa = await conn.fetchrow(
             "SELECT * FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
 
         if fa["status"] not in ("active", "fully_depreciated"):
-            raise HTTPException(status_code=400, detail="Asset cannot be disposed in current status")
+            raise HTTPException(
+                status_code=400, detail="Asset cannot be disposed in current status"
+            )
 
         # Law 27: resolve accounts via helper
-        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
-        accumulated_dep = fa["accumulated_depreciation_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
-        loss_account = await resolve_account_id(conn, ctx["tenant_id"], '8-20200')
+        asset_account = fa["asset_account_id"] or await resolve_account_id(
+            conn, ctx["tenant_id"], "1-20100"
+        )
+        accumulated_dep = fa[
+            "accumulated_depreciation_account_id"
+        ] or await resolve_account_id(conn, ctx["tenant_id"], "1-20200")
+        loss_account = await resolve_account_id(conn, ctx["tenant_id"], "8-20200")
 
         book_value = Decimal(str(fa["current_value"]))
         purchase_price = Decimal(str(fa["purchase_price"]))
@@ -893,7 +1023,10 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
 
         async with conn.transaction():
             # Law 13: Advisory lock
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ASSET_DISPOSAL:{asset_id}")
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"ASSET_DISPOSAL:{asset_id}",
+            )
 
             # Law 5: Period check
             await check_period_is_open(conn, ctx["tenant_id"], data.disposal_date)
@@ -907,7 +1040,7 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                 DO UPDATE SET last_number = journal_sequences.last_number + 1
                 RETURNING last_number
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             journal_number = f"JV-{data.disposal_date.year}-{seq['last_number']:05d}"
             journal_id = uuid_module.uuid4()
@@ -920,9 +1053,14 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                     source_type, source_id, status, total_debit, total_credit, created_by
                 ) VALUES ($1, $2, $3, $4, $5, 'ASSET_DISPOSAL', $6, 'DRAFT', $7, $7, $8)
                 """,
-                journal_id, ctx["tenant_id"], journal_number, data.disposal_date,
+                journal_id,
+                ctx["tenant_id"],
+                journal_number,
+                data.disposal_date,
                 f"Asset Disposal - {fa['name']} ({fa['asset_number']})",
-                asset_id, purchase_price, ctx.get("user_id")
+                asset_id,
+                purchase_price,
+                ctx.get("user_id"),
             )
 
             # Law 20: Step 2 — INSERT journal_lines
@@ -935,8 +1073,12 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, accumulated_dep, accum_dep_amount,
-                    f"Accumulated Depreciation - {fa['asset_number']}"
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    accumulated_dep,
+                    accum_dep_amount,
+                    f"Accumulated Depreciation - {fa['asset_number']}",
                 )
                 line_number += 1
 
@@ -947,8 +1089,12 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, loss_account, book_value,
-                    f"Loss on Disposal - {fa['asset_number']}"
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    loss_account,
+                    book_value,
+                    f"Loss on Disposal - {fa['asset_number']}",
                 )
                 line_number += 1
 
@@ -958,12 +1104,18 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, $4, 0, $5, $6)
                 """,
-                uuid_module.uuid4(), journal_id, line_number, asset_account, purchase_price,
-                f"Asset Disposal - {fa['asset_number']}"
+                uuid_module.uuid4(),
+                journal_id,
+                line_number,
+                asset_account,
+                purchase_price,
+                f"Asset Disposal - {fa['asset_number']}",
             )
 
             # Law 20: Step 3 — UPDATE to POSTED
-            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+            )
 
             # Update asset
             await conn.execute(
@@ -977,8 +1129,11 @@ async def dispose_fixed_asset(request: Request, asset_id: UUID, data: DisposeAss
                     updated_at = NOW()
                 WHERE id = $1
                 """,
-                asset_id, data.disposal_date, data.disposal_method.value,
-                journal_id, -book_value
+                asset_id,
+                data.disposal_date,
+                data.disposal_method.value,
+                journal_id,
+                -book_value,
             )
 
             return DisposeAssetResponse(
@@ -1007,17 +1162,22 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         fa = await conn.fetchrow(
             "SELECT * FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
 
         if fa["status"] not in ("active", "fully_depreciated"):
-            raise HTTPException(status_code=400, detail="Asset cannot be sold in current status")
+            raise HTTPException(
+                status_code=400, detail="Asset cannot be sold in current status"
+            )
 
         book_value = Decimal(str(fa["current_value"]))
         sale_price = Decimal(str(data.sale_price))
@@ -1026,10 +1186,14 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
         accum_dep_amount = Decimal(str(fa["accumulated_depreciation"]))
 
         # Law 27: resolve accounts via helper
-        asset_account = fa["asset_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20100')
-        accumulated_dep = fa["accumulated_depreciation_account_id"] or await resolve_account_id(conn, ctx["tenant_id"], '1-20200')
-        gain_account = await resolve_account_id(conn, ctx["tenant_id"], '8-10200')
-        loss_account = await resolve_account_id(conn, ctx["tenant_id"], '8-20200')
+        asset_account = fa["asset_account_id"] or await resolve_account_id(
+            conn, ctx["tenant_id"], "1-20100"
+        )
+        accumulated_dep = fa[
+            "accumulated_depreciation_account_id"
+        ] or await resolve_account_id(conn, ctx["tenant_id"], "1-20200")
+        gain_account = await resolve_account_id(conn, ctx["tenant_id"], "8-10200")
+        loss_account = await resolve_account_id(conn, ctx["tenant_id"], "8-20200")
 
         # Calculate total_debit for balanced entry
         total_debit = sale_price + accum_dep_amount
@@ -1038,7 +1202,9 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
 
         async with conn.transaction():
             # Law 13: Advisory lock
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ASSET_SALE:{asset_id}")
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", f"ASSET_SALE:{asset_id}"
+            )
 
             # Law 5: Period check
             await check_period_is_open(conn, ctx["tenant_id"], data.sale_date)
@@ -1052,7 +1218,7 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                 DO UPDATE SET last_number = journal_sequences.last_number + 1
                 RETURNING last_number
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
             journal_number = f"JV-{data.sale_date.year}-{seq['last_number']:05d}"
             journal_id = uuid_module.uuid4()
@@ -1070,9 +1236,15 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     source_type, source_id, status, total_debit, total_credit, created_by
                 ) VALUES ($1, $2, $3, $4, $5, 'ASSET_SALE', $6, 'DRAFT', $7, $8, $9)
                 """,
-                journal_id, ctx["tenant_id"], journal_number, data.sale_date,
+                journal_id,
+                ctx["tenant_id"],
+                journal_number,
+                data.sale_date,
                 f"Asset Sale - {fa['name']} ({fa['asset_number']})",
-                asset_id, total_debit, total_credit, ctx.get("user_id")
+                asset_id,
+                total_debit,
+                total_credit,
+                ctx.get("user_id"),
             )
 
             # Law 20: Step 2 — INSERT journal_lines
@@ -1084,8 +1256,12 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, $4, $5, 0, $6)
                 """,
-                uuid_module.uuid4(), journal_id, line_number, data.receivable_account_id, sale_price,
-                f"Asset Sale - {fa['asset_number']}"
+                uuid_module.uuid4(),
+                journal_id,
+                line_number,
+                data.receivable_account_id,
+                sale_price,
+                f"Asset Sale - {fa['asset_number']}",
             )
             line_number += 1
 
@@ -1096,8 +1272,12 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, accumulated_dep, accum_dep_amount,
-                    f"Accumulated Depreciation - {fa['asset_number']}"
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    accumulated_dep,
+                    accum_dep_amount,
+                    f"Accumulated Depreciation - {fa['asset_number']}",
                 )
                 line_number += 1
 
@@ -1108,8 +1288,12 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, loss_account, abs(gain_loss),
-                    f"Loss on Sale - {fa['asset_number']}"
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    loss_account,
+                    abs(gain_loss),
+                    f"Loss on Sale - {fa['asset_number']}",
                 )
                 line_number += 1
 
@@ -1119,8 +1303,12 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1, $2, $3, $4, 0, $5, $6)
                 """,
-                uuid_module.uuid4(), journal_id, line_number, asset_account, purchase_price,
-                f"Asset Sale - {fa['asset_number']}"
+                uuid_module.uuid4(),
+                journal_id,
+                line_number,
+                asset_account,
+                purchase_price,
+                f"Asset Sale - {fa['asset_number']}",
             )
             line_number += 1
 
@@ -1131,12 +1319,18 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid_module.uuid4(), journal_id, line_number, gain_account, gain_loss,
-                    f"Gain on Sale - {fa['asset_number']}"
+                    uuid_module.uuid4(),
+                    journal_id,
+                    line_number,
+                    gain_account,
+                    gain_loss,
+                    f"Gain on Sale - {fa['asset_number']}",
                 )
 
             # Law 20: Step 3 — UPDATE to POSTED
-            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
+            )
 
             # Update asset
             await conn.execute(
@@ -1151,7 +1345,11 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
                     updated_at = NOW()
                 WHERE id = $1
                 """,
-                asset_id, data.sale_date, sale_price, journal_id, gain_loss
+                asset_id,
+                data.sale_date,
+                sale_price,
+                journal_id,
+                gain_loss,
             )
 
             return SellAssetResponse(
@@ -1169,6 +1367,7 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
 # REPORTS
 # ============================================================================
 
+
 @router.get("/register", response_model=AssetRegisterResponse)
 async def get_asset_register(request: Request, status: Optional[AssetStatus] = None):
     """Get asset register report"""
@@ -1176,11 +1375,14 @@ async def get_asset_register(request: Request, status: Optional[AssetStatus] = N
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_asset_register($1, $2)",
-            ctx["tenant_id"], status.value if status else None
+            ctx["tenant_id"],
+            status.value if status else None,
         )
 
         items = [AssetRegisterItem(**dict(row)) for row in rows]
@@ -1189,7 +1391,9 @@ async def get_asset_register(request: Request, status: Optional[AssetStatus] = N
             items=items,
             total_purchase_price=sum(Decimal(str(i.purchase_price)) for i in items),
             total_current_value=sum(Decimal(str(i.current_value)) for i in items),
-            total_accumulated_depreciation=sum(Decimal(str(i.accumulated_depreciation)) for i in items),
+            total_accumulated_depreciation=sum(
+                Decimal(str(i.accumulated_depreciation)) for i in items
+            ),
             asset_count=len(items),
         )
 
@@ -1201,11 +1405,12 @@ async def get_assets_by_category(request: Request):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
-            "SELECT * FROM get_assets_by_category($1)",
-            ctx["tenant_id"]
+            "SELECT * FROM get_assets_by_category($1)", ctx["tenant_id"]
         )
 
         return AssetsByCategoryResponse(
@@ -1220,11 +1425,12 @@ async def get_assets_by_location(request: Request):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
-            "SELECT * FROM get_assets_by_location($1)",
-            ctx["tenant_id"]
+            "SELECT * FROM get_assets_by_location($1)", ctx["tenant_id"]
         )
 
         return AssetsByLocationResponse(
@@ -1236,6 +1442,7 @@ async def get_assets_by_location(request: Request):
 # MAINTENANCE
 # ============================================================================
 
+
 @router.get("/{asset_id}/maintenance")
 async def get_asset_maintenance(request: Request, asset_id: UUID):
     """Get asset maintenance history"""
@@ -1243,7 +1450,9 @@ async def get_asset_maintenance(request: Request, asset_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             """
@@ -1253,25 +1462,32 @@ async def get_asset_maintenance(request: Request, asset_id: UUID):
             WHERE am.asset_id = $1
             ORDER BY am.maintenance_date DESC
             """,
-            asset_id
+            asset_id,
         )
 
         return [AssetMaintenanceResponse(**dict(row)) for row in rows]
 
 
-@router.post("/{asset_id}/maintenance", response_model=AssetMaintenanceResponse, status_code=201)
-async def log_asset_maintenance(request: Request, asset_id: UUID, data: AssetMaintenanceCreate):
+@router.post(
+    "/{asset_id}/maintenance", response_model=AssetMaintenanceResponse, status_code=201
+)
+async def log_asset_maintenance(
+    request: Request, asset_id: UUID, data: AssetMaintenanceCreate
+):
     """Log maintenance for asset"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Verify asset exists
         fa = await conn.fetchval(
             "SELECT 1 FROM fixed_assets WHERE id = $1 AND tenant_id = $2",
-            asset_id, ctx["tenant_id"]
+            asset_id,
+            ctx["tenant_id"],
         )
         if not fa:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -1284,34 +1500,40 @@ async def log_asset_maintenance(request: Request, asset_id: UUID, data: AssetMai
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             """,
-            asset_id, data.maintenance_date, data.description, data.cost,
-            data.vendor_id, data.bill_id,
+            asset_id,
+            data.maintenance_date,
+            data.description,
+            data.cost,
+            data.vendor_id,
+            data.bill_id,
             data.maintenance_type.value if data.maintenance_type else None,
-            data.next_maintenance_date
+            data.next_maintenance_date,
         )
 
         vendor_name = None
         if data.vendor_id:
             vendor_name = await conn.fetchval(
-                "SELECT name FROM vendors WHERE id = $1",
-                data.vendor_id
+                "SELECT name FROM vendors WHERE id = $1", data.vendor_id
             )
 
         return AssetMaintenanceResponse(**dict(row), vendor_name=vendor_name)
 
 
 @router.get("/maintenance-due", response_model=MaintenanceDueResponse)
-async def get_maintenance_due(request: Request, days_ahead: int = Query(30, ge=1, le=365)):
+async def get_maintenance_due(
+    request: Request, days_ahead: int = Query(30, ge=1, le=365)
+):
     """Get assets with upcoming maintenance"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
-            "SELECT * FROM get_maintenance_due($1, $2)",
-            ctx["tenant_id"], days_ahead
+            "SELECT * FROM get_maintenance_due($1, $2)", ctx["tenant_id"], days_ahead
         )
 
         return MaintenanceDueResponse(

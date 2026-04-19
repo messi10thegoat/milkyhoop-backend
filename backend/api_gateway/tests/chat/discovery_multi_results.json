@@ -1,0 +1,1417 @@
+{
+  "timestamp": "2026-04-14T09:06:29.989811",
+  "total_turns": 47,
+  "passed": 14,
+  "failed": 33,
+  "groups_total": 20,
+  "groups_passed": 3,
+  "avg_latency_ms": 1262,
+  "p90_latency_ms": 2440,
+  "max_latency_ms": 19248,
+  "results": [
+    {
+      "id": "M01a",
+      "text": "siapa saja yang punya piutang",
+      "status": "PASS",
+      "latency_ms": 1008,
+      "intent": "query_ar_invoices",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/sales-invoices",
+      "issues": [],
+      "response_preview": "Ini dia daftar pelanggan yang punya piutang:  *   Sintia (3 faktur)  Total ada 3 faktur yang belum lunas ya.",
+      "full_response": "Ini dia daftar pelanggan yang punya piutang:\n\n*   Sintia (3 faktur)\n\nTotal ada 3 faktur yang belum lunas ya."
+    },
+    {
+      "id": "M01b",
+      "text": "totalnya berapa",
+      "status": "FAIL",
+      "latency_ms": 19248,
+      "intent": "",
+      "model": "gpt-4o-mini",
+      "endpoint": "",
+      "issues": [
+        "DOMAIN_LEAK: prev=piutang, curr mentions hutang",
+        "SLOW: 19248ms"
+      ],
+      "response_preview": "Total pendapatan bulan ini mencapai **Rp 5.495.000** dengan pengeluaran sebesar **Rp 5.475.600**, sehingga laba bersihny",
+      "full_response": "Total pendapatan bulan ini mencapai **Rp 5.495.000** dengan pengeluaran sebesar **Rp 5.475.600**, sehingga laba bersihnya adalah **Rp 19.400**. \n\nSaldo kas dan bank saat ini adalah **Rp 11.321.660**. \n\nMau cek detail lebih lanjut tentang piutang atau hutang?"
+    },
+    {
+      "id": "M01c",
+      "text": "yang paling besar siapa",
+      "status": "FAIL",
+      "latency_ms": 2284,
+      "intent": "",
+      "model": "llm_router+calc_engine",
+      "endpoint": "",
+      "issues": [
+        "DOMAIN_LEAK: prev=hutang, curr mentions piutang"
+      ],
+      "response_preview": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)  | No | Nama | Harga | |---:|------|------:| | 1 | Sintia Runtuwene",
+      "full_response": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 150.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+    },
+    {
+      "id": "M02a",
+      "text": "hutang kita berapa",
+      "status": "PASS",
+      "latency_ms": 1334,
+      "intent": "query_ap_outstanding",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bills",
+      "issues": [],
+      "response_preview": "Oke, ini dia rincian hutang kita:  *   **Knitto:**     *   BILL-2604-0035: Rp 150.000 (belum dibayar)     *   BILL-2604-",
+      "full_response": "Oke, ini dia rincian hutang kita:\n\n*   **Knitto:**\n    *   BILL-2604-0035: Rp 150.000 (belum dibayar)\n    *   BILL-2604-0033: Rp 150.000 (belum dibayar)\n    *   BILL-2604-0037: Rp 100.000 (sudah dibayar sebagian)\n*   **Knitto Textile Holis:**\n    *   BILL-2604-0034: Rp 111.000 (belum dibayar)\n    *   BILL-2604-0032: Rp 111.000 (belum dibayar)\n*   **Noneng:**\n    *   BILL-2604-0029: Rp 240.000 (belum dibayar)\n\nTotal hutang yang belum dibayar adalah Rp 762.000, dan ada Rp 100.000 yang sudah dibaya"
+    },
+    {
+      "id": "M02b",
+      "text": "rinciannya dong",
+      "status": "PASS",
+      "latency_ms": 1,
+      "intent": "",
+      "model": "gpt-4o-mini",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "Mohon sebutkan nama faktur yang ingin dicek.",
+      "full_response": "Mohon sebutkan nama faktur yang ingin dicek."
+    },
+    {
+      "id": "M02c",
+      "text": "tampilkan dalam tabel",
+      "status": "PASS",
+      "latency_ms": 2,
+      "intent": "",
+      "model": "pipeline",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "Mau tabel tentang apa? Misalnya: 'tampilkan hutang dalam tabel' atau 'tabel piutang per pelanggan'",
+      "full_response": "Mau tabel tentang apa? Misalnya: 'tampilkan hutang dalam tabel' atau 'tabel piutang per pelanggan'"
+    },
+    {
+      "id": "M03a",
+      "text": "ada berapa barang aktif",
+      "status": "PASS",
+      "latency_ms": 2678,
+      "intent": "",
+      "model": "llm_router+calc_engine",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "**Jumlah Item Aktif**: 7 (Berdasarkan 7 data)",
+      "full_response": "**Jumlah Item Aktif**: 7\n(Berdasarkan 7 data)"
+    },
+    {
+      "id": "M03b",
+      "text": "yang paling mahal apa",
+      "status": "PASS",
+      "latency_ms": 2603,
+      "intent": "",
+      "model": "llm_router+calc_engine",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "**Item Berdasarkan Harga Jual (Termahal)** (Top 1)  | No | Nama | Harga | |---:|------|------:| | 1 | Poloshirt Hitam + ",
+      "full_response": "**Item Berdasarkan Harga Jual (Termahal)** (Top 1)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Poloshirt Hitam + Bordir | Rp 155.000 |\n\n_Total 1 item dihitung_"
+    },
+    {
+      "id": "M03c",
+      "text": "stoknya berapa",
+      "status": "PASS",
+      "latency_ms": 3,
+      "intent": "",
+      "model": "gpt-4o-mini",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "Mohon sebutkan nama barang yang ingin dicek.",
+      "full_response": "Mohon sebutkan nama barang yang ingin dicek."
+    },
+    {
+      "id": "M04a",
+      "text": "data pelanggan Sintia",
+      "status": "PASS",
+      "latency_ms": 1437,
+      "intent": "query_customer_detail",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/customers/79230c31-db71-4211-97d2-ee36bb38c021",
+      "issues": [],
+      "response_preview": "Hai! Ini dia data pelanggan Sintia Runtuwene:  *   **Email:** sintia@gmail.com *   **Alamat:** Manado *   **Poin:** 1.00",
+      "full_response": "Hai! Ini dia data pelanggan Sintia Runtuwene:\n\n*   **Email:** sintia@gmail.com\n*   **Alamat:** Manado\n*   **Poin:** 1.000 poin\n*   **Total Transaksi:** 4 transaksi\n*   **Nilai Transaksi:** Rp 5.583.000\n*   **Saldo Tertunggak:** Rp 150.000\n*   **Transaksi Terakhir:** 10 April 2026\n\nSintia ini punya poin yang lumayan banyak nih, dan total nilai transaksinya juga sudah cukup besar. Mungkin bisa jadi pertimbangan buat program loyalitas khusus ya! 👍"
+    },
+    {
+      "id": "M04b",
+      "text": "piutangnya berapa",
+      "status": "FAIL",
+      "latency_ms": 1360,
+      "intent": "query_ar_outstanding",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/sales-invoices",
+      "issues": [
+        "INTENT: got=query_ar_outstanding expected=query_customer_ar"
+      ],
+      "response_preview": "Oke, ini dia rincian piutang yang ada:  *   **INV-2604-0029** (Sintia): Rp 25.000 (sudah terbayar Rp 100.000) *   **INV-",
+      "full_response": "Oke, ini dia rincian piutang yang ada:\n\n*   **INV-2604-0029** (Sintia): Rp 25.000 (sudah terbayar Rp 100.000)\n*   **INV-2604-0028** (Sintia): Rp 75.000 (baru terbayar Rp 50.000)\n*   **INV-2604-0027** (Sintia): Rp 50.000 (sudah terbayar Rp 75.000)\n\nTotal piutang yang belum lunas saat ini ada Rp 150.000. Semuanya dari pelanggan Sintia ya."
+    },
+    {
+      "id": "M05a",
+      "text": "data vendor PT",
+      "status": "FAIL",
+      "latency_ms": 2137,
+      "intent": "query_vendors_list",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/vendors",
+      "issues": [
+        "INTENT: got=query_vendors_list expected=query_vendor_detail"
+      ],
+      "response_preview": "Ini dia daftar vendor yang ada:  *   Toko Doa Ibu Textil *   PT Top Tri Land *   Toptriland Label *   Knitto Textile Hol",
+      "full_response": "Ini dia daftar vendor yang ada:\n\n*   Toko Doa Ibu Textil\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nAda 7 vendor totalnya.\n\n**Insight:**\nDari data yang ada, vendor \"Knitto Textile Holis\" punya saldo terutang sebesar Rp 1.482.805,0. Sementara itu, \"Noneng\" punya saldo terutang Rp 240.000,0. Vendor lain saldo terutangnya masih Rp 0. Mungkin perlu dicek lagi ya status pembayaran ke vendor-vendor ini."
+    },
+    {
+      "id": "M05b",
+      "text": "hutangnya berapa",
+      "status": "FAIL",
+      "latency_ms": 1124,
+      "intent": "query_ap_outstanding",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bills",
+      "issues": [
+        "INTENT: got=query_ap_outstanding expected=query_vendor_ap"
+      ],
+      "response_preview": "Oke, ini dia daftar hutang yang perlu kamu perhatikan ya:  *   **Knitto Textile Holis** (BILL-2604-0036): Rp 111.000 (be",
+      "full_response": "Oke, ini dia daftar hutang yang perlu kamu perhatikan ya:\n\n*   **Knitto Textile Holis** (BILL-2604-0036): Rp 111.000 (belum dibayar)\n*   **Knitto Textile Holis** (BILL-2604-0034): Rp 111.000 (belum dibayar)\n*   **Knitto Textile Holis** (BILL-2604-0032): Rp 111.000 (belum dibayar)\n*   **Noneng** (BILL-2604-0029): Rp 240.000 (belum dibayar)\n*   **Knitto** (BILL-2604-0035): Rp 150.000 (belum dibayar)\n    (+ 2 lainnya)\n\nTotal hutang yang belum terbayar saat ini ada Rp 833.000. Mayoritas hutang ini m"
+    },
+    {
+      "id": "M06a",
+      "text": "daftar rekening bank",
+      "status": "PASS",
+      "latency_ms": 904,
+      "intent": "query_bank_accounts_list",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bank-accounts",
+      "issues": [],
+      "response_preview": "Ini dia daftar rekening bank kita:  *   BCA Pengeluaran (8492840281) - Saldo Rp 4.552.500 *   Kas BCA (8295032185) - Sal",
+      "full_response": "Ini dia daftar rekening bank kita:\n\n*   BCA Pengeluaran (8492840281) - Saldo Rp 4.552.500\n*   Kas BCA (8295032185) - Saldo Rp 6.769.160\n\nKas BCA ini rekening utama ya, soalnya ditandai sebagai default. ✅"
+    },
+    {
+      "id": "M06b",
+      "text": "saldo masing-masing berapa",
+      "status": "PASS",
+      "latency_ms": 1721,
+      "intent": "query_bank_accounts_list",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bank-accounts",
+      "issues": [],
+      "response_preview": "Oke, ini dia saldo masing-masing rekening kamu:  *   BCA Pengeluaran: Rp 4.552.500 *   Kas BCA: Rp 6.769.160  Total sald",
+      "full_response": "Oke, ini dia saldo masing-masing rekening kamu:\n\n*   BCA Pengeluaran: Rp 4.552.500\n*   Kas BCA: Rp 6.769.160\n\nTotal saldo kamu ada Rp 11.321.660."
+    },
+    {
+      "id": "M06c",
+      "text": "total semuanya",
+      "status": "FAIL",
+      "latency_ms": 10547,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: Server disconnected without sending a response."
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M07a",
+      "text": "daftar faktur penjualan",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M07b",
+      "text": "yang belum lunas mana saja",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M08a",
+      "text": "ringkasan pengeluaran",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M08b",
+      "text": "yang terbesar apa",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M09a",
+      "text": "total piutang",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M09b",
+      "text": "total hutang",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M09c",
+      "text": "saldo kas",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M10a",
+      "text": "daftar barang beserta stoknya",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M10b",
+      "text": "tampilkan dalam tabel yang rapi",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M11a",
+      "text": "daftar tagihan pembelian",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M11b",
+      "text": "per vendor mana yang paling besar",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M12a",
+      "text": "cek stok Kain Taslan",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M12b",
+      "text": "di gudang mana saja",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M13a",
+      "text": "berapa rata-rata harga jual",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M13b",
+      "text": "kalau harga beli",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M13c",
+      "text": "total stok semua barang",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M14a",
+      "text": "ringkasan keuangan hari ini",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M14b",
+      "text": "faktur yang jatuh tempo",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M15a",
+      "text": "minta rekapan dalam tabel stok yang menipis atau habis",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M15b",
+      "text": "yang stoknya nol apa saja",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M16a",
+      "text": "siapa saja pelanggan kita",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M16b",
+      "text": "ada berapa total",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M17a",
+      "text": "daftar semua vendor",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M17b",
+      "text": "berapa yang aktif",
+      "status": "FAIL",
+      "latency_ms": 3,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M18a",
+      "text": "ringkasan penjualan bulan ini",
+      "status": "FAIL",
+      "latency_ms": 4,
+      "intent": "-",
+      "model": "?",
+      "endpoint": "",
+      "issues": [
+        "ERROR: "
+      ],
+      "response_preview": "",
+      "full_response": ""
+    },
+    {
+      "id": "M18b",
+      "text": "berapa yang sudah dibayar",
+      "status": "FAIL",
+      "latency_ms": 1806,
+      "intent": "query_bill_payments_list",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bill-payments",
+      "issues": [
+        "INTENT: got=query_bill_payments_list expected=query_receive_payments*|calc_sum_received*"
+      ],
+      "response_preview": "Oke, ini dia daftar pembayaran yang sudah masuk ya:  *   PAY-202604-0005 ke Knitto Textile Holis sebesar Rp 50.000 *   V",
+      "full_response": "Oke, ini dia daftar pembayaran yang sudah masuk ya:\n\n*   PAY-202604-0005 ke Knitto Textile Holis sebesar Rp 50.000\n*   VC-2604-0006 ke Settlement sebesar Rp 45.000\n*   VC-2604-0005 ke Settlement sebesar Rp 45.000\n*   VC-2604-0004 ke Settlement sebesar Rp 45.000\n*   PAY-202604-0004 ke Noneng sebesar Rp 360.000\n*   PAY-202604-0003 ke Knitto Textile Holis sebesar Rp 1.568.840\n\nTotal pembayaran yang sudah masuk ada 6 transaksi."
+    },
+    {
+      "id": "M19a",
+      "text": "ringkasan pembelian bulan ini",
+      "status": "PASS",
+      "latency_ms": 2440,
+      "intent": "",
+      "model": "llm_router+calc_engine",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "**Total Pembelian Bulan Ini**: Rp 4.034.645 (Berdasarkan 1 data)",
+      "full_response": "**Total Pembelian Bulan Ini**: Rp 4.034.645\n(Berdasarkan 1 data)"
+    },
+    {
+      "id": "M19b",
+      "text": "berapa yang sudah kita bayar",
+      "status": "PASS",
+      "latency_ms": 2377,
+      "intent": "",
+      "model": "llm_router+calc_engine",
+      "endpoint": "",
+      "issues": [],
+      "response_preview": "**Total Dibayar Bulan Ini**: Rp 2.113.840 (Berdasarkan 1 data)",
+      "full_response": "**Total Dibayar Bulan Ini**: Rp 2.113.840\n(Berdasarkan 1 data)"
+    },
+    {
+      "id": "M20a",
+      "text": "saldo kas dan bank sekarang",
+      "status": "PASS",
+      "latency_ms": 825,
+      "intent": "query_cash_balance",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/kasbank/stats",
+      "issues": [],
+      "response_preview": "Hai! Untuk saldo kas dan bank kamu sekarang totalnya Rp 11.321.660 ya.  Dari data yang ada, saldo kas kamu saat ini Rp 0",
+      "full_response": "Hai! Untuk saldo kas dan bank kamu sekarang totalnya Rp 11.321.660 ya.\n\nDari data yang ada, saldo kas kamu saat ini Rp 0, dan saldo bank Rp 11.321.660.\n\n**Insight:**\n⚠️ Saldo kas dan bank kamu perlu perhatian nih. Dengan total saldo Rp 11.321.660, ini cukup untuk sekitar 999 hari operasional. Ada piutang yang bisa dikejar untuk menambah kas?"
+    },
+    {
+      "id": "M20b",
+      "text": "piutang yang belum masuk",
+      "status": "PASS",
+      "latency_ms": 1582,
+      "intent": "query_ar_outstanding",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/sales-invoices",
+      "issues": [],
+      "response_preview": "Oke, ini dia daftar piutang yang belum masuk ya:  *   **INV-2604-0029** atas nama Sintia, total Rp 125.000, sudah dibaya",
+      "full_response": "Oke, ini dia daftar piutang yang belum masuk ya:\n\n*   **INV-2604-0029** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 100.000.\n*   **INV-2604-0028** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 50.000.\n*   **INV-2604-0027** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 75.000.\n\nSemua faktur ini dari pelanggan yang sama, Sintia, dan jatuh tempo di tanggal yang sama juga. Mungkin bisa jadi bahan pertimbangan buat follow-up ya."
+    },
+    {
+      "id": "M20c",
+      "text": "hutang yang harus dibayar",
+      "status": "FAIL",
+      "latency_ms": 1791,
+      "intent": "query_ap_outstanding",
+      "model": "gemini-2.5-flash-lite",
+      "endpoint": "/api/bills",
+      "issues": [
+        "DOMAIN_LEAK: prev=piutang, curr mentions hutang"
+      ],
+      "response_preview": "Oke, ini dia daftar hutang yang perlu dibayar ya:  *   **BILL-2604-0037** dari **Knitto**: Rp 100.000 (sudah terbayar se",
+      "full_response": "Oke, ini dia daftar hutang yang perlu dibayar ya:\n\n*   **BILL-2604-0037** dari **Knitto**: Rp 100.000 (sudah terbayar sebagian)\n*   **BILL-2604-0036** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0035** dari **Knitto**: Rp 150.000\n*   **BILL-2604-0034** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0033** dari **Knitto**: Rp 150.000\n*   **BILL-2604-0032** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0029** dari **Noneng**: Rp 240.000\n*   Dan 1 lagi lainnya.\n"
+    }
+  ],
+  "group_results": [
+    {
+      "group": "M01",
+      "desc": "AR flow + pronoun",
+      "turns": [
+        {
+          "id": "M01a",
+          "text": "siapa saja yang punya piutang",
+          "status": "PASS",
+          "latency_ms": 1008,
+          "intent": "query_ar_invoices",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/sales-invoices",
+          "issues": [],
+          "response_preview": "Ini dia daftar pelanggan yang punya piutang:  *   Sintia (3 faktur)  Total ada 3 faktur yang belum lunas ya.",
+          "full_response": "Ini dia daftar pelanggan yang punya piutang:\n\n*   Sintia (3 faktur)\n\nTotal ada 3 faktur yang belum lunas ya."
+        },
+        {
+          "id": "M01b",
+          "text": "totalnya berapa",
+          "status": "FAIL",
+          "latency_ms": 19248,
+          "intent": "",
+          "model": "gpt-4o-mini",
+          "endpoint": "",
+          "issues": [
+            "DOMAIN_LEAK: prev=piutang, curr mentions hutang",
+            "SLOW: 19248ms"
+          ],
+          "response_preview": "Total pendapatan bulan ini mencapai **Rp 5.495.000** dengan pengeluaran sebesar **Rp 5.475.600**, sehingga laba bersihny",
+          "full_response": "Total pendapatan bulan ini mencapai **Rp 5.495.000** dengan pengeluaran sebesar **Rp 5.475.600**, sehingga laba bersihnya adalah **Rp 19.400**. \n\nSaldo kas dan bank saat ini adalah **Rp 11.321.660**. \n\nMau cek detail lebih lanjut tentang piutang atau hutang?"
+        },
+        {
+          "id": "M01c",
+          "text": "yang paling besar siapa",
+          "status": "FAIL",
+          "latency_ms": 2284,
+          "intent": "",
+          "model": "llm_router+calc_engine",
+          "endpoint": "",
+          "issues": [
+            "DOMAIN_LEAK: prev=hutang, curr mentions piutang"
+          ],
+          "response_preview": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)  | No | Nama | Harga | |---:|------|------:| | 1 | Sintia Runtuwene",
+          "full_response": "**Pelanggan Berdasarkan Piutang (Terbesar)** (Top 2)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Sintia Runtuwene | Rp 150.000 |\n| 2 | PT Maju Jaya | Rp 0 |\n\n_Total 2 item dihitung_"
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M02",
+      "desc": "AP flow + drill down",
+      "turns": [
+        {
+          "id": "M02a",
+          "text": "hutang kita berapa",
+          "status": "PASS",
+          "latency_ms": 1334,
+          "intent": "query_ap_outstanding",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bills",
+          "issues": [],
+          "response_preview": "Oke, ini dia rincian hutang kita:  *   **Knitto:**     *   BILL-2604-0035: Rp 150.000 (belum dibayar)     *   BILL-2604-",
+          "full_response": "Oke, ini dia rincian hutang kita:\n\n*   **Knitto:**\n    *   BILL-2604-0035: Rp 150.000 (belum dibayar)\n    *   BILL-2604-0033: Rp 150.000 (belum dibayar)\n    *   BILL-2604-0037: Rp 100.000 (sudah dibayar sebagian)\n*   **Knitto Textile Holis:**\n    *   BILL-2604-0034: Rp 111.000 (belum dibayar)\n    *   BILL-2604-0032: Rp 111.000 (belum dibayar)\n*   **Noneng:**\n    *   BILL-2604-0029: Rp 240.000 (belum dibayar)\n\nTotal hutang yang belum dibayar adalah Rp 762.000, dan ada Rp 100.000 yang sudah dibaya"
+        },
+        {
+          "id": "M02b",
+          "text": "rinciannya dong",
+          "status": "PASS",
+          "latency_ms": 1,
+          "intent": "",
+          "model": "gpt-4o-mini",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "Mohon sebutkan nama faktur yang ingin dicek.",
+          "full_response": "Mohon sebutkan nama faktur yang ingin dicek."
+        },
+        {
+          "id": "M02c",
+          "text": "tampilkan dalam tabel",
+          "status": "PASS",
+          "latency_ms": 2,
+          "intent": "",
+          "model": "pipeline",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "Mau tabel tentang apa? Misalnya: 'tampilkan hutang dalam tabel' atau 'tabel piutang per pelanggan'",
+          "full_response": "Mau tabel tentang apa? Misalnya: 'tampilkan hutang dalam tabel' atau 'tabel piutang per pelanggan'"
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "group": "M03",
+      "desc": "Items count + rank + follow-up",
+      "turns": [
+        {
+          "id": "M03a",
+          "text": "ada berapa barang aktif",
+          "status": "PASS",
+          "latency_ms": 2678,
+          "intent": "",
+          "model": "llm_router+calc_engine",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "**Jumlah Item Aktif**: 7 (Berdasarkan 7 data)",
+          "full_response": "**Jumlah Item Aktif**: 7\n(Berdasarkan 7 data)"
+        },
+        {
+          "id": "M03b",
+          "text": "yang paling mahal apa",
+          "status": "PASS",
+          "latency_ms": 2603,
+          "intent": "",
+          "model": "llm_router+calc_engine",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "**Item Berdasarkan Harga Jual (Termahal)** (Top 1)  | No | Nama | Harga | |---:|------|------:| | 1 | Poloshirt Hitam + ",
+          "full_response": "**Item Berdasarkan Harga Jual (Termahal)** (Top 1)\n\n| No | Nama | Harga |\n|---:|------|------:|\n| 1 | Poloshirt Hitam + Bordir | Rp 155.000 |\n\n_Total 1 item dihitung_"
+        },
+        {
+          "id": "M03c",
+          "text": "stoknya berapa",
+          "status": "PASS",
+          "latency_ms": 3,
+          "intent": "",
+          "model": "gpt-4o-mini",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "Mohon sebutkan nama barang yang ingin dicek.",
+          "full_response": "Mohon sebutkan nama barang yang ingin dicek."
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "group": "M04",
+      "desc": "Customer detail + AR",
+      "turns": [
+        {
+          "id": "M04a",
+          "text": "data pelanggan Sintia",
+          "status": "PASS",
+          "latency_ms": 1437,
+          "intent": "query_customer_detail",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/customers/79230c31-db71-4211-97d2-ee36bb38c021",
+          "issues": [],
+          "response_preview": "Hai! Ini dia data pelanggan Sintia Runtuwene:  *   **Email:** sintia@gmail.com *   **Alamat:** Manado *   **Poin:** 1.00",
+          "full_response": "Hai! Ini dia data pelanggan Sintia Runtuwene:\n\n*   **Email:** sintia@gmail.com\n*   **Alamat:** Manado\n*   **Poin:** 1.000 poin\n*   **Total Transaksi:** 4 transaksi\n*   **Nilai Transaksi:** Rp 5.583.000\n*   **Saldo Tertunggak:** Rp 150.000\n*   **Transaksi Terakhir:** 10 April 2026\n\nSintia ini punya poin yang lumayan banyak nih, dan total nilai transaksinya juga sudah cukup besar. Mungkin bisa jadi pertimbangan buat program loyalitas khusus ya! 👍"
+        },
+        {
+          "id": "M04b",
+          "text": "piutangnya berapa",
+          "status": "FAIL",
+          "latency_ms": 1360,
+          "intent": "query_ar_outstanding",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/sales-invoices",
+          "issues": [
+            "INTENT: got=query_ar_outstanding expected=query_customer_ar"
+          ],
+          "response_preview": "Oke, ini dia rincian piutang yang ada:  *   **INV-2604-0029** (Sintia): Rp 25.000 (sudah terbayar Rp 100.000) *   **INV-",
+          "full_response": "Oke, ini dia rincian piutang yang ada:\n\n*   **INV-2604-0029** (Sintia): Rp 25.000 (sudah terbayar Rp 100.000)\n*   **INV-2604-0028** (Sintia): Rp 75.000 (baru terbayar Rp 50.000)\n*   **INV-2604-0027** (Sintia): Rp 50.000 (sudah terbayar Rp 75.000)\n\nTotal piutang yang belum lunas saat ini ada Rp 150.000. Semuanya dari pelanggan Sintia ya."
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M05",
+      "desc": "Vendor detail + AP",
+      "turns": [
+        {
+          "id": "M05a",
+          "text": "data vendor PT",
+          "status": "FAIL",
+          "latency_ms": 2137,
+          "intent": "query_vendors_list",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/vendors",
+          "issues": [
+            "INTENT: got=query_vendors_list expected=query_vendor_detail"
+          ],
+          "response_preview": "Ini dia daftar vendor yang ada:  *   Toko Doa Ibu Textil *   PT Top Tri Land *   Toptriland Label *   Knitto Textile Hol",
+          "full_response": "Ini dia daftar vendor yang ada:\n\n*   Toko Doa Ibu Textil\n*   PT Top Tri Land\n*   Toptriland Label\n*   Knitto Textile Holis\n*   SYM TEST VENDOR\n*   TEST BILL TAX FIX\n*   Noneng\n\nAda 7 vendor totalnya.\n\n**Insight:**\nDari data yang ada, vendor \"Knitto Textile Holis\" punya saldo terutang sebesar Rp 1.482.805,0. Sementara itu, \"Noneng\" punya saldo terutang Rp 240.000,0. Vendor lain saldo terutangnya masih Rp 0. Mungkin perlu dicek lagi ya status pembayaran ke vendor-vendor ini."
+        },
+        {
+          "id": "M05b",
+          "text": "hutangnya berapa",
+          "status": "FAIL",
+          "latency_ms": 1124,
+          "intent": "query_ap_outstanding",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bills",
+          "issues": [
+            "INTENT: got=query_ap_outstanding expected=query_vendor_ap"
+          ],
+          "response_preview": "Oke, ini dia daftar hutang yang perlu kamu perhatikan ya:  *   **Knitto Textile Holis** (BILL-2604-0036): Rp 111.000 (be",
+          "full_response": "Oke, ini dia daftar hutang yang perlu kamu perhatikan ya:\n\n*   **Knitto Textile Holis** (BILL-2604-0036): Rp 111.000 (belum dibayar)\n*   **Knitto Textile Holis** (BILL-2604-0034): Rp 111.000 (belum dibayar)\n*   **Knitto Textile Holis** (BILL-2604-0032): Rp 111.000 (belum dibayar)\n*   **Noneng** (BILL-2604-0029): Rp 240.000 (belum dibayar)\n*   **Knitto** (BILL-2604-0035): Rp 150.000 (belum dibayar)\n    (+ 2 lainnya)\n\nTotal hutang yang belum terbayar saat ini ada Rp 833.000. Mayoritas hutang ini m"
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M06",
+      "desc": "Bank list + balance + total",
+      "turns": [
+        {
+          "id": "M06a",
+          "text": "daftar rekening bank",
+          "status": "PASS",
+          "latency_ms": 904,
+          "intent": "query_bank_accounts_list",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bank-accounts",
+          "issues": [],
+          "response_preview": "Ini dia daftar rekening bank kita:  *   BCA Pengeluaran (8492840281) - Saldo Rp 4.552.500 *   Kas BCA (8295032185) - Sal",
+          "full_response": "Ini dia daftar rekening bank kita:\n\n*   BCA Pengeluaran (8492840281) - Saldo Rp 4.552.500\n*   Kas BCA (8295032185) - Saldo Rp 6.769.160\n\nKas BCA ini rekening utama ya, soalnya ditandai sebagai default. ✅"
+        },
+        {
+          "id": "M06b",
+          "text": "saldo masing-masing berapa",
+          "status": "PASS",
+          "latency_ms": 1721,
+          "intent": "query_bank_accounts_list",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bank-accounts",
+          "issues": [],
+          "response_preview": "Oke, ini dia saldo masing-masing rekening kamu:  *   BCA Pengeluaran: Rp 4.552.500 *   Kas BCA: Rp 6.769.160  Total sald",
+          "full_response": "Oke, ini dia saldo masing-masing rekening kamu:\n\n*   BCA Pengeluaran: Rp 4.552.500\n*   Kas BCA: Rp 6.769.160\n\nTotal saldo kamu ada Rp 11.321.660."
+        },
+        {
+          "id": "M06c",
+          "text": "total semuanya",
+          "status": "FAIL",
+          "latency_ms": 10547,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: Server disconnected without sending a response."
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M07",
+      "desc": "Invoice list + unpaid filter",
+      "turns": [
+        {
+          "id": "M07a",
+          "text": "daftar faktur penjualan",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M07b",
+          "text": "yang belum lunas mana saja",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M08",
+      "desc": "Expense summary + top",
+      "turns": [
+        {
+          "id": "M08a",
+          "text": "ringkasan pengeluaran",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M08b",
+          "text": "yang terbesar apa",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M09",
+      "desc": "Domain switch: AR -> AP -> Bank",
+      "turns": [
+        {
+          "id": "M09a",
+          "text": "total piutang",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M09b",
+          "text": "total hutang",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M09c",
+          "text": "saldo kas",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M10",
+      "desc": "Items list + reformat",
+      "turns": [
+        {
+          "id": "M10a",
+          "text": "daftar barang beserta stoknya",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M10b",
+          "text": "tampilkan dalam tabel yang rapi",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M11",
+      "desc": "Bills + vendor drill",
+      "turns": [
+        {
+          "id": "M11a",
+          "text": "daftar tagihan pembelian",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M11b",
+          "text": "per vendor mana yang paling besar",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M12",
+      "desc": "Stock check + warehouse",
+      "turns": [
+        {
+          "id": "M12a",
+          "text": "cek stok Kain Taslan",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M12b",
+          "text": "di gudang mana saja",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M13",
+      "desc": "Calc chain: avg sell -> avg buy -> sum stock",
+      "turns": [
+        {
+          "id": "M13a",
+          "text": "berapa rata-rata harga jual",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M13b",
+          "text": "kalau harga beli",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M13c",
+          "text": "total stok semua barang",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M14",
+      "desc": "Dashboard + overdue drill",
+      "turns": [
+        {
+          "id": "M14a",
+          "text": "ringkasan keuangan hari ini",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M14b",
+          "text": "faktur yang jatuh tempo",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M15",
+      "desc": "Low stock rekapan (bug we fixed)",
+      "turns": [
+        {
+          "id": "M15a",
+          "text": "minta rekapan dalam tabel stok yang menipis atau habis",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M15b",
+          "text": "yang stoknya nol apa saja",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M16",
+      "desc": "Customer list + count",
+      "turns": [
+        {
+          "id": "M16a",
+          "text": "siapa saja pelanggan kita",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M16b",
+          "text": "ada berapa total",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M17",
+      "desc": "Vendor list + count",
+      "turns": [
+        {
+          "id": "M17a",
+          "text": "daftar semua vendor",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M17b",
+          "text": "berapa yang aktif",
+          "status": "FAIL",
+          "latency_ms": 3,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M18",
+      "desc": "Sales summary + payment check",
+      "turns": [
+        {
+          "id": "M18a",
+          "text": "ringkasan penjualan bulan ini",
+          "status": "FAIL",
+          "latency_ms": 4,
+          "intent": "-",
+          "model": "?",
+          "endpoint": "",
+          "issues": [
+            "ERROR: "
+          ],
+          "response_preview": "",
+          "full_response": ""
+        },
+        {
+          "id": "M18b",
+          "text": "berapa yang sudah dibayar",
+          "status": "FAIL",
+          "latency_ms": 1806,
+          "intent": "query_bill_payments_list",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bill-payments",
+          "issues": [
+            "INTENT: got=query_bill_payments_list expected=query_receive_payments*|calc_sum_received*"
+          ],
+          "response_preview": "Oke, ini dia daftar pembayaran yang sudah masuk ya:  *   PAY-202604-0005 ke Knitto Textile Holis sebesar Rp 50.000 *   V",
+          "full_response": "Oke, ini dia daftar pembayaran yang sudah masuk ya:\n\n*   PAY-202604-0005 ke Knitto Textile Holis sebesar Rp 50.000\n*   VC-2604-0006 ke Settlement sebesar Rp 45.000\n*   VC-2604-0005 ke Settlement sebesar Rp 45.000\n*   VC-2604-0004 ke Settlement sebesar Rp 45.000\n*   PAY-202604-0004 ke Noneng sebesar Rp 360.000\n*   PAY-202604-0003 ke Knitto Textile Holis sebesar Rp 1.568.840\n\nTotal pembayaran yang sudah masuk ada 6 transaksi."
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "group": "M19",
+      "desc": "Purchase summary + payment check",
+      "turns": [
+        {
+          "id": "M19a",
+          "text": "ringkasan pembelian bulan ini",
+          "status": "PASS",
+          "latency_ms": 2440,
+          "intent": "",
+          "model": "llm_router+calc_engine",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "**Total Pembelian Bulan Ini**: Rp 4.034.645 (Berdasarkan 1 data)",
+          "full_response": "**Total Pembelian Bulan Ini**: Rp 4.034.645\n(Berdasarkan 1 data)"
+        },
+        {
+          "id": "M19b",
+          "text": "berapa yang sudah kita bayar",
+          "status": "PASS",
+          "latency_ms": 2377,
+          "intent": "",
+          "model": "llm_router+calc_engine",
+          "endpoint": "",
+          "issues": [],
+          "response_preview": "**Total Dibayar Bulan Ini**: Rp 2.113.840 (Berdasarkan 1 data)",
+          "full_response": "**Total Dibayar Bulan Ini**: Rp 2.113.840\n(Berdasarkan 1 data)"
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "group": "M20",
+      "desc": "Financial health: bank -> AR -> AP",
+      "turns": [
+        {
+          "id": "M20a",
+          "text": "saldo kas dan bank sekarang",
+          "status": "PASS",
+          "latency_ms": 825,
+          "intent": "query_cash_balance",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/kasbank/stats",
+          "issues": [],
+          "response_preview": "Hai! Untuk saldo kas dan bank kamu sekarang totalnya Rp 11.321.660 ya.  Dari data yang ada, saldo kas kamu saat ini Rp 0",
+          "full_response": "Hai! Untuk saldo kas dan bank kamu sekarang totalnya Rp 11.321.660 ya.\n\nDari data yang ada, saldo kas kamu saat ini Rp 0, dan saldo bank Rp 11.321.660.\n\n**Insight:**\n⚠️ Saldo kas dan bank kamu perlu perhatian nih. Dengan total saldo Rp 11.321.660, ini cukup untuk sekitar 999 hari operasional. Ada piutang yang bisa dikejar untuk menambah kas?"
+        },
+        {
+          "id": "M20b",
+          "text": "piutang yang belum masuk",
+          "status": "PASS",
+          "latency_ms": 1582,
+          "intent": "query_ar_outstanding",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/sales-invoices",
+          "issues": [],
+          "response_preview": "Oke, ini dia daftar piutang yang belum masuk ya:  *   **INV-2604-0029** atas nama Sintia, total Rp 125.000, sudah dibaya",
+          "full_response": "Oke, ini dia daftar piutang yang belum masuk ya:\n\n*   **INV-2604-0029** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 100.000.\n*   **INV-2604-0028** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 50.000.\n*   **INV-2604-0027** atas nama Sintia, total Rp 125.000, sudah dibayar Rp 75.000.\n\nSemua faktur ini dari pelanggan yang sama, Sintia, dan jatuh tempo di tanggal yang sama juga. Mungkin bisa jadi bahan pertimbangan buat follow-up ya."
+        },
+        {
+          "id": "M20c",
+          "text": "hutang yang harus dibayar",
+          "status": "FAIL",
+          "latency_ms": 1791,
+          "intent": "query_ap_outstanding",
+          "model": "gemini-2.5-flash-lite",
+          "endpoint": "/api/bills",
+          "issues": [
+            "DOMAIN_LEAK: prev=piutang, curr mentions hutang"
+          ],
+          "response_preview": "Oke, ini dia daftar hutang yang perlu dibayar ya:  *   **BILL-2604-0037** dari **Knitto**: Rp 100.000 (sudah terbayar se",
+          "full_response": "Oke, ini dia daftar hutang yang perlu dibayar ya:\n\n*   **BILL-2604-0037** dari **Knitto**: Rp 100.000 (sudah terbayar sebagian)\n*   **BILL-2604-0036** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0035** dari **Knitto**: Rp 150.000\n*   **BILL-2604-0034** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0033** dari **Knitto**: Rp 150.000\n*   **BILL-2604-0032** dari **Knitto Textile Holis**: Rp 111.000\n*   **BILL-2604-0029** dari **Noneng**: Rp 240.000\n*   Dan 1 lagi lainnya.\n"
+        }
+      ],
+      "status": "FAIL"
+    }
+  ]
+}

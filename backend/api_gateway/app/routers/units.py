@@ -342,8 +342,8 @@ async def list_all_conversions(request: Request):
             rows = await conn.fetch(
                 """
                 SELECT uc.id, uc.product_id,
-                       COALESCE(p.nama_produk, p.name, '') AS product_name,
-                       COALESCE(p.kode_produk, p.sku, '') AS product_code,
+                       COALESCE(p.nama_produk, '') AS product_name,
+                       COALESCE(p.sku, '') AS product_code,
                        uc.base_unit, uc.conversion_unit, uc.conversion_factor,
                        uc.sales_price, uc.purchase_price
                 FROM unit_conversions uc
@@ -620,6 +620,7 @@ DEFAULT_UNITS = [
     ("Dus", "dus"),
 ]
 
+
 @router.post("/seed")
 async def seed_default_units(request: Request):
     """Seed default Indonesian units for tenant."""
@@ -631,15 +632,22 @@ async def seed_default_units(request: Request):
             for name, abbr in DEFAULT_UNITS:
                 exists = await conn.fetchval(
                     "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = $2",
-                    ctx["tenant_id"], abbr,
+                    ctx["tenant_id"],
+                    abbr,
                 )
                 if not exists:
                     await conn.execute(
                         "INSERT INTO product_units (tenant_id, name, abbreviation, is_system) VALUES ($1, $2, $3, true)",
-                        ctx["tenant_id"], name, abbr,
+                        ctx["tenant_id"],
+                        name,
+                        abbr,
                     )
                     created += 1
-            return {"success": True, "message": f"{created} satuan default dibuat", "data": {"created": created, "total": len(DEFAULT_UNITS)}}
+            return {
+                "success": True,
+                "message": f"{created} satuan default dibuat",
+                "data": {"created": created, "total": len(DEFAULT_UNITS)},
+            }
     except Exception as e:
         logger.error(f"Error seeding units: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat satuan default")

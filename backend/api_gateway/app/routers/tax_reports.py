@@ -13,7 +13,6 @@ Iron Law compliance:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional
 from decimal import Decimal
 from datetime import date
 import logging
@@ -31,7 +30,6 @@ from ..schemas.tax_reports import (
     PPhTransaction,
     PPhCrossCheck,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,14 +45,11 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
-_pool: Optional[asyncpg.Pool] = None
-
-
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(settings.DATABASE_URL, min_size=2, max_size=5)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def _parse_period(period: str) -> tuple[date, date]:
@@ -220,10 +215,22 @@ async def get_ppn_report(
         )
 
         # Wave 4: Build lookup by journal_line_id for per-transaction DPP enrichment
+        # Aggregate base_amount and tax_amount per journal_line_id (multiple DTL rows
+        # can share the same journal_line_id, e.g. 3 bill items → 1 PPN journal line)
         dtl_by_jl = {}
         for d in dtl_rows:
-            if d["journal_line_id"]:
-                dtl_by_jl[d["journal_line_id"]] = d
+            jl_id = d["journal_line_id"]
+            if jl_id:
+                if jl_id in dtl_by_jl:
+                    existing = dtl_by_jl[jl_id]
+                    existing["base_amount"] = float(existing["base_amount"]) + float(
+                        d["base_amount"]
+                    )
+                    existing["tax_amount"] = float(existing["tax_amount"]) + float(
+                        d["tax_amount"]
+                    )
+                else:
+                    dtl_by_jl[jl_id] = dict(d)
 
         # Enrich keluaran transactions with DPP from DTL
         for idx, txn in enumerate(keluaran_txns):
@@ -466,7 +473,7 @@ async def get_pph_report(
               AND direction = 'cut'
         """,
             tenant_id,
-            period.replace("-", ""),
+            period,
         )
 
         wtr_total = Decimal(str(wtr_total_row or 0))

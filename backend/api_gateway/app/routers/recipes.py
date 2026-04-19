@@ -8,7 +8,6 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.recipes import (
     CreateMenuCategoryRequest,
     CreateMenuItemRequest,
@@ -32,24 +31,16 @@ from ..schemas.recipes import (
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     tenant_id = user.get("tenant_id")
@@ -63,6 +54,7 @@ def get_user_context(request: Request) -> dict:
 # HEALTH CHECK
 # =============================================================================
 
+
 @router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "recipes"}
@@ -72,11 +64,10 @@ async def health_check():
 # MENU CATEGORIES
 # =============================================================================
 
+
 @router.get("/categories", response_model=MenuCategoryListResponse)
 async def list_menu_categories(
-    request: Request,
-    is_active: Optional[bool] = None,
-    parent_id: Optional[UUID] = None
+    request: Request, is_active: Optional[bool] = None, parent_id: Optional[UUID] = None
 ):
     """List menu categories."""
     ctx = get_user_context(request)
@@ -101,7 +92,8 @@ async def list_menu_categories(
 
         where_sql = " AND ".join(where_clauses)
 
-        rows = await conn.fetch(f"""
+        rows = await conn.fetch(
+            f"""
             SELECT
                 mc.id, mc.id as code_placeholder, mc.name, mc.description,
                 mc.parent_category_id, pc.name as parent_name,
@@ -111,28 +103,32 @@ async def list_menu_categories(
             LEFT JOIN menu_categories pc ON pc.id = mc.parent_category_id
             WHERE {where_sql}
             ORDER BY mc.display_order, mc.name
-        """, *params)
+        """,
+            *params,
+        )
 
-        items = [{
-            "id": str(r["id"]),
-            "code": r["code"],
-            "name": r["name"],
-            "description": r["description"],
-            "parent_category_id": str(r["parent_category_id"]) if r["parent_category_id"] else None,
-            "parent_name": r["parent_name"],
-            "display_order": r["display_order"],
-            "is_active": r["is_active"],
-            "item_count": r["item_count"]
-        } for r in rows]
+        items = [
+            {
+                "id": str(r["id"]),
+                "code": r["code"],
+                "name": r["name"],
+                "description": r["description"],
+                "parent_category_id": str(r["parent_category_id"])
+                if r["parent_category_id"]
+                else None,
+                "parent_name": r["parent_name"],
+                "display_order": r["display_order"],
+                "is_active": r["is_active"],
+                "item_count": r["item_count"],
+            }
+            for r in rows
+        ]
 
         return MenuCategoryListResponse(items=items, total=len(items))
 
 
 @router.post("/categories", response_model=RecipeResponse)
-async def create_menu_category(
-    request: Request,
-    data: CreateMenuCategoryRequest
-):
+async def create_menu_category(request: Request, data: CreateMenuCategoryRequest):
     """Create a menu category."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -143,12 +139,16 @@ async def create_menu_category(
         # Check duplicate code
         exists = await conn.fetchval(
             "SELECT 1 FROM menu_categories WHERE tenant_id = $1 AND code = $2",
-            ctx["tenant_id"], data.code
+            ctx["tenant_id"],
+            data.code,
         )
         if exists:
-            raise HTTPException(status_code=400, detail=f"Category code {data.code} already exists")
+            raise HTTPException(
+                status_code=400, detail=f"Category code {data.code} already exists"
+            )
 
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO menu_categories (
                 tenant_id, code, name, description,
                 parent_category_id, display_order, is_active, created_by
@@ -156,23 +156,24 @@ async def create_menu_category(
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id
         """,
-            ctx["tenant_id"], data.code, data.name, data.description,
-            data.parent_category_id, data.display_order, data.is_active,
-            ctx["user_id"]
+            ctx["tenant_id"],
+            data.code,
+            data.name,
+            data.description,
+            data.parent_category_id,
+            data.display_order,
+            data.is_active,
+            ctx["user_id"],
         )
 
         return RecipeResponse(
-            success=True,
-            message="Menu category created",
-            data={"id": str(row["id"])}
+            success=True, message="Menu category created", data={"id": str(row["id"])}
         )
 
 
 @router.put("/categories/{category_id}", response_model=RecipeResponse)
 async def update_menu_category(
-    request: Request,
-    category_id: UUID,
-    data: UpdateMenuCategoryRequest
+    request: Request, category_id: UUID, data: UpdateMenuCategoryRequest
 ):
     """Update a menu category."""
     ctx = get_user_context(request)
@@ -183,7 +184,8 @@ async def update_menu_category(
 
         existing = await conn.fetchrow(
             "SELECT id FROM menu_categories WHERE id = $1 AND tenant_id = $2",
-            category_id, ctx["tenant_id"]
+            category_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Category not found")
@@ -201,11 +203,14 @@ async def update_menu_category(
             raise HTTPException(status_code=400, detail="No fields to update")
 
         params.append(category_id)
-        await conn.execute(f"""
+        await conn.execute(
+            f"""
             UPDATE menu_categories
             SET {', '.join(updates)}, updated_at = NOW()
             WHERE id = ${param_idx}
-        """, *params)
+        """,
+            *params,
+        )
 
         return RecipeResponse(success=True, message="Category updated")
 
@@ -214,6 +219,7 @@ async def update_menu_category(
 # RECIPES
 # =============================================================================
 
+
 @router.get("", response_model=RecipeListResponse)
 async def list_recipes_root(
     request: Request,
@@ -221,7 +227,7 @@ async def list_recipes_root(
     search: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
 ):
     """List recipes (root endpoint)."""
     return await list_recipes_internal(request, category, search, status, limit, offset)
@@ -234,7 +240,7 @@ async def list_recipes(
     search: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
 ):
     """List recipes."""
     return await list_recipes_internal(request, category, search, status, limit, offset)
@@ -246,7 +252,7 @@ async def list_recipes_internal(
     search: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
 ):
     """Internal function to list recipes."""
     ctx = get_user_context(request)
@@ -265,7 +271,9 @@ async def list_recipes_internal(
             param_idx += 1
 
         if search:
-            where_clauses.append(f"(r.recipe_name ILIKE ${param_idx} OR r.recipe_code ILIKE ${param_idx})")
+            where_clauses.append(
+                f"(r.recipe_name ILIKE ${param_idx} OR r.recipe_code ILIKE ${param_idx})"
+            )
             params.append(f"%{search}%")
             param_idx += 1
 
@@ -281,7 +289,8 @@ async def list_recipes_internal(
         )
 
         params.extend([limit, offset])
-        rows = await conn.fetch(f"""
+        rows = await conn.fetch(
+            f"""
             SELECT
                 r.id,
                 r.recipe_code as code,
@@ -299,28 +308,33 @@ async def list_recipes_internal(
             WHERE {where_sql}
             ORDER BY r.recipe_name
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
-        """, *params)
+        """,
+            *params,
+        )
 
-        items = [{
-            "id": str(r["id"]),
-            "code": r["code"],
-            "name": r["name"],
-            "category_name": r["category_name"],
-            "output_quantity": float(r["output_quantity"]) if r["output_quantity"] else None,
-            "output_unit": r["output_unit"],
-            "prep_time_minutes": r["prep_time_minutes"],
-            "cook_time_minutes": r["cook_time_minutes"],
-            "total_time_minutes": r["total_time_minutes"],
-            "difficulty_level": None,
-            "ingredient_count": r["ingredient_count"],
-            "total_cost": r["total_cost"],
-            "is_active": r["status"] == "active"
-        } for r in rows]
+        items = [
+            {
+                "id": str(r["id"]),
+                "code": r["code"],
+                "name": r["name"],
+                "category_name": r["category_name"],
+                "output_quantity": float(r["output_quantity"])
+                if r["output_quantity"]
+                else None,
+                "output_unit": r["output_unit"],
+                "prep_time_minutes": r["prep_time_minutes"],
+                "cook_time_minutes": r["cook_time_minutes"],
+                "total_time_minutes": r["total_time_minutes"],
+                "difficulty_level": None,
+                "ingredient_count": r["ingredient_count"],
+                "total_cost": r["total_cost"],
+                "is_active": r["status"] == "active",
+            }
+            for r in rows
+        ]
 
         return RecipeListResponse(
-            items=items,
-            total=total,
-            has_more=(offset + len(items)) < total
+            items=items, total=total, has_more=(offset + len(items)) < total
         )
 
 
@@ -333,19 +347,24 @@ async def get_recipe(request: Request, recipe_id: UUID):
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        recipe = await conn.fetchrow("""
+        recipe = await conn.fetchrow(
+            """
             SELECT
                 r.*, mc.name as category_name
             FROM recipes r
             LEFT JOIN menu_categories mc ON mc.id = r.category_id
             WHERE r.id = $1 AND r.tenant_id = $2
-        """, recipe_id, ctx["tenant_id"])
+        """,
+            recipe_id,
+            ctx["tenant_id"],
+        )
 
         if not recipe:
             raise HTTPException(status_code=404, detail="Recipe not found")
 
         # Get ingredients
-        ingredients = await conn.fetch("""
+        ingredients = await conn.fetch(
+            """
             SELECT
                 ri.id, ri.product_id, p.nama_produk as product_name, p.code as product_code,
                 ri.quantity, ri.unit, p.unit_cost,
@@ -355,18 +374,25 @@ async def get_recipe(request: Request, recipe_id: UUID):
             JOIN products p ON p.id = ri.product_id
             WHERE ri.recipe_id = $1
             ORDER BY ri.id
-        """, recipe_id)
+        """,
+            recipe_id,
+        )
 
         # Get instructions
-        instructions = await conn.fetch("""
+        instructions = await conn.fetch(
+            """
             SELECT id, step_number, instruction, duration_minutes, temperature, notes
             FROM recipe_instructions
             WHERE recipe_id = $1
             ORDER BY step_number
-        """, recipe_id)
+        """,
+            recipe_id,
+        )
 
         total_cost = sum(i["line_cost"] for i in ingredients)
-        output_qty = float(recipe["output_quantity"]) if recipe["output_quantity"] else 1.0
+        output_qty = (
+            float(recipe["output_quantity"]) if recipe["output_quantity"] else 1.0
+        )
         cost_per_portion = int(total_cost / output_qty)
 
         return RecipeDetailResponse(
@@ -381,32 +407,39 @@ async def get_recipe(request: Request, recipe_id: UUID):
             output_unit=recipe["output_unit"],
             prep_time_minutes=recipe["prep_time_minutes"],
             cook_time_minutes=recipe["cook_time_minutes"],
-            total_time_minutes=recipe["prep_time_minutes"] + recipe["cook_time_minutes"],
+            total_time_minutes=recipe["prep_time_minutes"]
+            + recipe["cook_time_minutes"],
             difficulty_level=recipe["difficulty_level"],
-            ingredients=[{
-                "id": str(i["id"]),
-                "product_id": str(i["product_id"]),
-                "product_name": i["product_name"],
-                "product_code": i["product_code"],
-                "quantity": i["quantity"],
-                "unit": i["unit"],
-                "unit_cost": i["unit_cost"],
-                "line_cost": i["line_cost"],
-                "is_optional": i["is_optional"],
-                "notes": i["notes"]
-            } for i in ingredients],
-            instructions=[{
-                "id": str(i["id"]),
-                "step_number": i["step_number"],
-                "instruction": i["instruction"],
-                "duration_minutes": i["duration_minutes"],
-                "temperature": i["temperature"],
-                "notes": i["notes"]
-            } for i in instructions],
+            ingredients=[
+                {
+                    "id": str(i["id"]),
+                    "product_id": str(i["product_id"]),
+                    "product_name": i["product_name"],
+                    "product_code": i["product_code"],
+                    "quantity": i["quantity"],
+                    "unit": i["unit"],
+                    "unit_cost": i["unit_cost"],
+                    "line_cost": i["line_cost"],
+                    "is_optional": i["is_optional"],
+                    "notes": i["notes"],
+                }
+                for i in ingredients
+            ],
+            instructions=[
+                {
+                    "id": str(i["id"]),
+                    "step_number": i["step_number"],
+                    "instruction": i["instruction"],
+                    "duration_minutes": i["duration_minutes"],
+                    "temperature": i["temperature"],
+                    "notes": i["notes"],
+                }
+                for i in instructions
+            ],
             total_cost=total_cost,
             cost_per_portion=cost_per_portion,
             is_active=recipe["is_active"],
-            created_at=recipe["created_at"]
+            created_at=recipe["created_at"],
         )
 
 
@@ -423,13 +456,17 @@ async def create_recipe(request: Request, data: CreateRecipeRequest):
             # Check duplicate code
             exists = await conn.fetchval(
                 "SELECT 1 FROM recipes WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], data.code
+                ctx["tenant_id"],
+                data.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Recipe code {data.code} already exists")
+                raise HTTPException(
+                    status_code=400, detail=f"Recipe code {data.code} already exists"
+                )
 
             # Create recipe
-            recipe = await conn.fetchrow("""
+            recipe = await conn.fetchrow(
+                """
                 INSERT INTO recipes (
                     tenant_id, code, name, description, category_id,
                     output_quantity, output_unit, prep_time_minutes,
@@ -438,52 +475,63 @@ async def create_recipe(request: Request, data: CreateRecipeRequest):
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING id
             """,
-                ctx["tenant_id"], data.code, data.name, data.description,
-                data.category_id, data.output_quantity, data.output_unit,
-                data.prep_time_minutes, data.cook_time_minutes,
-                data.difficulty_level, ctx["user_id"]
+                ctx["tenant_id"],
+                data.code,
+                data.name,
+                data.description,
+                data.category_id,
+                data.output_quantity,
+                data.output_unit,
+                data.prep_time_minutes,
+                data.cook_time_minutes,
+                data.difficulty_level,
+                ctx["user_id"],
             )
 
             recipe_id = recipe["id"]
 
             # Add ingredients
             for ing in data.ingredients:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO recipe_ingredients (
                         recipe_id, product_id, quantity, unit, is_optional, notes
                     )
                     VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                    recipe_id, ing.product_id, ing.quantity,
-                    ing.unit, ing.is_optional, ing.notes
+                    recipe_id,
+                    ing.product_id,
+                    ing.quantity,
+                    ing.unit,
+                    ing.is_optional,
+                    ing.notes,
                 )
 
             # Add instructions
             for inst in data.instructions:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO recipe_instructions (
                         recipe_id, step_number, instruction,
                         duration_minutes, temperature, notes
                     )
                     VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                    recipe_id, inst.step_number, inst.instruction,
-                    inst.duration_minutes, inst.temperature, inst.notes
+                    recipe_id,
+                    inst.step_number,
+                    inst.instruction,
+                    inst.duration_minutes,
+                    inst.temperature,
+                    inst.notes,
                 )
 
             return RecipeResponse(
-                success=True,
-                message="Recipe created",
-                data={"id": str(recipe_id)}
+                success=True, message="Recipe created", data={"id": str(recipe_id)}
             )
 
 
 @router.put("/recipes/{recipe_id}", response_model=RecipeResponse)
-async def update_recipe(
-    request: Request,
-    recipe_id: UUID,
-    data: UpdateRecipeRequest
-):
+async def update_recipe(request: Request, recipe_id: UUID, data: UpdateRecipeRequest):
     """Update recipe details."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -493,7 +541,8 @@ async def update_recipe(
 
         existing = await conn.fetchrow(
             "SELECT id FROM recipes WHERE id = $1 AND tenant_id = $2",
-            recipe_id, ctx["tenant_id"]
+            recipe_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Recipe not found")
@@ -511,20 +560,21 @@ async def update_recipe(
             raise HTTPException(status_code=400, detail="No fields to update")
 
         params.append(recipe_id)
-        await conn.execute(f"""
+        await conn.execute(
+            f"""
             UPDATE recipes
             SET {', '.join(updates)}, updated_at = NOW()
             WHERE id = ${param_idx}
-        """, *params)
+        """,
+            *params,
+        )
 
         return RecipeResponse(success=True, message="Recipe updated")
 
 
 @router.post("/recipes/{recipe_id}/ingredients", response_model=RecipeResponse)
 async def add_recipe_ingredient(
-    request: Request,
-    recipe_id: UUID,
-    data: RecipeIngredientInput
+    request: Request, recipe_id: UUID, data: RecipeIngredientInput
 ):
     """Add ingredient to recipe."""
     ctx = get_user_context(request)
@@ -535,34 +585,38 @@ async def add_recipe_ingredient(
 
         recipe = await conn.fetchrow(
             "SELECT id FROM recipes WHERE id = $1 AND tenant_id = $2",
-            recipe_id, ctx["tenant_id"]
+            recipe_id,
+            ctx["tenant_id"],
         )
         if not recipe:
             raise HTTPException(status_code=404, detail="Recipe not found")
 
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO recipe_ingredients (
                 recipe_id, product_id, quantity, unit, is_optional, notes
             )
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
         """,
-            recipe_id, data.product_id, data.quantity,
-            data.unit, data.is_optional, data.notes
+            recipe_id,
+            data.product_id,
+            data.quantity,
+            data.unit,
+            data.is_optional,
+            data.notes,
         )
 
         return RecipeResponse(
-            success=True,
-            message="Ingredient added",
-            data={"id": str(row["id"])}
+            success=True, message="Ingredient added", data={"id": str(row["id"])}
         )
 
 
-@router.delete("/recipes/{recipe_id}/ingredients/{ingredient_id}", response_model=RecipeResponse)
+@router.delete(
+    "/recipes/{recipe_id}/ingredients/{ingredient_id}", response_model=RecipeResponse
+)
 async def remove_recipe_ingredient(
-    request: Request,
-    recipe_id: UUID,
-    ingredient_id: UUID
+    request: Request, recipe_id: UUID, ingredient_id: UUID
 ):
     """Remove ingredient from recipe."""
     ctx = get_user_context(request)
@@ -571,12 +625,17 @@ async def remove_recipe_ingredient(
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        deleted = await conn.fetchval("""
+        deleted = await conn.fetchval(
+            """
             DELETE FROM recipe_ingredients
             WHERE id = $1 AND recipe_id = $2
             AND recipe_id IN (SELECT id FROM recipes WHERE tenant_id = $3)
             RETURNING id
-        """, ingredient_id, recipe_id, ctx["tenant_id"])
+        """,
+            ingredient_id,
+            recipe_id,
+            ctx["tenant_id"],
+        )
 
         if not deleted:
             raise HTTPException(status_code=404, detail="Ingredient not found")
@@ -586,9 +645,7 @@ async def remove_recipe_ingredient(
 
 @router.post("/recipes/{recipe_id}/instructions", response_model=RecipeResponse)
 async def add_recipe_instruction(
-    request: Request,
-    recipe_id: UUID,
-    data: RecipeInstructionInput
+    request: Request, recipe_id: UUID, data: RecipeInstructionInput
 ):
     """Add instruction to recipe."""
     ctx = get_user_context(request)
@@ -599,12 +656,14 @@ async def add_recipe_instruction(
 
         recipe = await conn.fetchrow(
             "SELECT id FROM recipes WHERE id = $1 AND tenant_id = $2",
-            recipe_id, ctx["tenant_id"]
+            recipe_id,
+            ctx["tenant_id"],
         )
         if not recipe:
             raise HTTPException(status_code=404, detail="Recipe not found")
 
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO recipe_instructions (
                 recipe_id, step_number, instruction,
                 duration_minutes, temperature, notes
@@ -612,20 +671,23 @@ async def add_recipe_instruction(
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
         """,
-            recipe_id, data.step_number, data.instruction,
-            data.duration_minutes, data.temperature, data.notes
+            recipe_id,
+            data.step_number,
+            data.instruction,
+            data.duration_minutes,
+            data.temperature,
+            data.notes,
         )
 
         return RecipeResponse(
-            success=True,
-            message="Instruction added",
-            data={"id": str(row["id"])}
+            success=True, message="Instruction added", data={"id": str(row["id"])}
         )
 
 
 # =============================================================================
 # RECIPE COSTING
 # =============================================================================
+
 
 @router.get("/recipes/{recipe_id}/costing", response_model=RecipeCostingResponse)
 async def get_recipe_costing(request: Request, recipe_id: UUID):
@@ -636,16 +698,21 @@ async def get_recipe_costing(request: Request, recipe_id: UUID):
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        recipe = await conn.fetchrow("""
+        recipe = await conn.fetchrow(
+            """
             SELECT id, name, output_quantity
             FROM recipes
             WHERE id = $1 AND tenant_id = $2
-        """, recipe_id, ctx["tenant_id"])
+        """,
+            recipe_id,
+            ctx["tenant_id"],
+        )
 
         if not recipe:
             raise HTTPException(status_code=404, detail="Recipe not found")
 
-        ingredients = await conn.fetch("""
+        ingredients = await conn.fetch(
+            """
             SELECT
                 p.nama_produk as ingredient_name,
                 ri.quantity, ri.unit, p.unit_cost,
@@ -653,23 +720,33 @@ async def get_recipe_costing(request: Request, recipe_id: UUID):
             FROM recipe_ingredients ri
             JOIN products p ON p.id = ri.product_id
             WHERE ri.recipe_id = $1
-        """, recipe_id)
+        """,
+            recipe_id,
+        )
 
         total_cost = sum(i["line_cost"] for i in ingredients)
-        output_qty = float(recipe["output_quantity"]) if recipe["output_quantity"] else 1.0
+        output_qty = (
+            float(recipe["output_quantity"]) if recipe["output_quantity"] else 1.0
+        )
         cost_per_portion = int(total_cost / output_qty)
 
         breakdown = []
         for ing in ingredients:
-            cost_percent = Decimal(str(ing["line_cost"])) / Decimal(str(total_cost)) * 100 if total_cost > 0 else Decimal("0")
-            breakdown.append({
-                "ingredient_name": ing["ingredient_name"],
-                "quantity": ing["quantity"],
-                "unit": ing["unit"],
-                "unit_cost": ing["unit_cost"],
-                "line_cost": ing["line_cost"],
-                "cost_percent": round(cost_percent, 2)
-            })
+            cost_percent = (
+                Decimal(str(ing["line_cost"])) / Decimal(str(total_cost)) * 100
+                if total_cost > 0
+                else Decimal("0")
+            )
+            breakdown.append(
+                {
+                    "ingredient_name": ing["ingredient_name"],
+                    "quantity": ing["quantity"],
+                    "unit": ing["unit"],
+                    "unit_cost": ing["unit_cost"],
+                    "line_cost": ing["line_cost"],
+                    "cost_percent": round(cost_percent, 2),
+                }
+            )
 
         # Calculate suggested prices for different food cost targets
         suggested_30 = int(cost_per_portion / 0.30) if cost_per_portion > 0 else 0
@@ -684,13 +761,14 @@ async def get_recipe_costing(request: Request, recipe_id: UUID):
             total_cost=total_cost,
             cost_per_portion=cost_per_portion,
             suggested_price_30_percent=suggested_30,
-            suggested_price_25_percent=suggested_25
+            suggested_price_25_percent=suggested_25,
         )
 
 
 # =============================================================================
 # MODIFIER GROUPS
 # =============================================================================
+
 
 @router.get("/modifiers", response_model=ModifierGroupListResponse)
 async def list_modifier_groups(request: Request):
@@ -701,42 +779,47 @@ async def list_modifier_groups(request: Request):
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        groups = await conn.fetch("""
+        groups = await conn.fetch(
+            """
             SELECT id, code, name, selection_type,
                    min_selections, max_selections, is_required
             FROM recipe_modifier_groups
             WHERE tenant_id = $1
             ORDER BY name
-        """, ctx["tenant_id"])
+        """,
+            ctx["tenant_id"],
+        )
 
         items = []
         for g in groups:
-            options = await conn.fetch("""
+            options = await conn.fetch(
+                """
                 SELECT id, name, price_adjustment, is_default, is_available
                 FROM recipe_modifier_options
                 WHERE modifier_group_id = $1
                 ORDER BY display_order
-            """, g["id"])
+            """,
+                g["id"],
+            )
 
-            items.append({
-                "id": str(g["id"]),
-                "code": g["code"],
-                "name": g["name"],
-                "selection_type": g["selection_type"],
-                "min_selections": g["min_selections"],
-                "max_selections": g["max_selections"],
-                "is_required": g["is_required"],
-                "options": [dict(o) for o in options]
-            })
+            items.append(
+                {
+                    "id": str(g["id"]),
+                    "code": g["code"],
+                    "name": g["name"],
+                    "selection_type": g["selection_type"],
+                    "min_selections": g["min_selections"],
+                    "max_selections": g["max_selections"],
+                    "is_required": g["is_required"],
+                    "options": [dict(o) for o in options],
+                }
+            )
 
         return ModifierGroupListResponse(items=items, total=len(items))
 
 
 @router.post("/modifiers", response_model=RecipeResponse)
-async def create_modifier_group(
-    request: Request,
-    data: CreateModifierGroupRequest
-):
+async def create_modifier_group(request: Request, data: CreateModifierGroupRequest):
     """Create a modifier group."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -744,7 +827,8 @@ async def create_modifier_group(
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO recipe_modifier_groups (
                 tenant_id, code, name, selection_type,
                 min_selections, max_selections, is_required, created_by
@@ -752,23 +836,24 @@ async def create_modifier_group(
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id
         """,
-            ctx["tenant_id"], data.code, data.name, data.selection_type,
-            data.min_selections, data.max_selections, data.is_required,
-            ctx["user_id"]
+            ctx["tenant_id"],
+            data.code,
+            data.name,
+            data.selection_type,
+            data.min_selections,
+            data.max_selections,
+            data.is_required,
+            ctx["user_id"],
         )
 
         return RecipeResponse(
-            success=True,
-            message="Modifier group created",
-            data={"id": str(row["id"])}
+            success=True, message="Modifier group created", data={"id": str(row["id"])}
         )
 
 
 @router.post("/modifiers/{group_id}/options", response_model=RecipeResponse)
 async def add_modifier_option(
-    request: Request,
-    group_id: UUID,
-    data: ModifierOptionInput
+    request: Request, group_id: UUID, data: ModifierOptionInput
 ):
     """Add option to modifier group."""
     ctx = get_user_context(request)
@@ -779,19 +864,24 @@ async def add_modifier_option(
 
         group = await conn.fetchrow(
             "SELECT id FROM recipe_modifier_groups WHERE id = $1 AND tenant_id = $2",
-            group_id, ctx["tenant_id"]
+            group_id,
+            ctx["tenant_id"],
         )
         if not group:
             raise HTTPException(status_code=404, detail="Modifier group not found")
 
         # Get next display order
-        max_order = await conn.fetchval("""
+        max_order = await conn.fetchval(
+            """
             SELECT COALESCE(MAX(display_order), 0)
             FROM recipe_modifier_options
             WHERE modifier_group_id = $1
-        """, group_id)
+        """,
+            group_id,
+        )
 
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO recipe_modifier_options (
                 modifier_group_id, name, price_adjustment,
                 is_default, is_available, display_order
@@ -799,20 +889,23 @@ async def add_modifier_option(
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
         """,
-            group_id, data.name, data.price_adjustment,
-            data.is_default, data.is_available, max_order + 1
+            group_id,
+            data.name,
+            data.price_adjustment,
+            data.is_default,
+            data.is_available,
+            max_order + 1,
         )
 
         return RecipeResponse(
-            success=True,
-            message="Modifier option added",
-            data={"id": str(row["id"])}
+            success=True, message="Modifier option added", data={"id": str(row["id"])}
         )
 
 
 # =============================================================================
 # MENU ITEMS
 # =============================================================================
+
 
 @router.get("/menu-items", response_model=MenuItemListResponse)
 async def list_menu_items(
@@ -821,7 +914,7 @@ async def list_menu_items(
     search: Optional[str] = None,
     is_available: Optional[bool] = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
 ):
     """List menu items."""
     ctx = get_user_context(request)
@@ -840,7 +933,9 @@ async def list_menu_items(
             param_idx += 1
 
         if search:
-            where_clauses.append(f"(mi.name ILIKE ${param_idx} OR mi.code ILIKE ${param_idx})")
+            where_clauses.append(
+                f"(mi.name ILIKE ${param_idx} OR mi.code ILIKE ${param_idx})"
+            )
             params.append(f"%{search}%")
             param_idx += 1
 
@@ -856,7 +951,8 @@ async def list_menu_items(
         )
 
         params.extend([limit, offset])
-        rows = await conn.fetch(f"""
+        rows = await conn.fetch(
+            f"""
             SELECT
                 mi.id, mi.code, mi.name, mi.description,
                 mc.name as category_name, mi.base_price,
@@ -873,33 +969,39 @@ async def list_menu_items(
             WHERE {where_sql}
             ORDER BY mi.display_order, mi.name
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
-        """, *params)
+        """,
+            *params,
+        )
 
         items = []
         for r in rows:
             food_cost = r["food_cost"] or 0
             base_price = r["base_price"] or 0
-            food_cost_percent = Decimal(str(food_cost)) / Decimal(str(base_price)) * 100 if base_price > 0 else Decimal("0")
+            food_cost_percent = (
+                Decimal(str(food_cost)) / Decimal(str(base_price)) * 100
+                if base_price > 0
+                else Decimal("0")
+            )
 
-            items.append({
-                "id": str(r["id"]),
-                "code": r["code"],
-                "name": r["name"],
-                "description": r["description"],
-                "category_name": r["category_name"],
-                "base_price": r["base_price"],
-                "price_with_tax": r["price_with_tax"],
-                "recipe_name": r["recipe_name"],
-                "food_cost": food_cost,
-                "food_cost_percent": round(food_cost_percent, 2),
-                "is_available": r["is_available"],
-                "display_order": r["display_order"]
-            })
+            items.append(
+                {
+                    "id": str(r["id"]),
+                    "code": r["code"],
+                    "name": r["name"],
+                    "description": r["description"],
+                    "category_name": r["category_name"],
+                    "base_price": r["base_price"],
+                    "price_with_tax": r["price_with_tax"],
+                    "recipe_name": r["recipe_name"],
+                    "food_cost": food_cost,
+                    "food_cost_percent": round(food_cost_percent, 2),
+                    "is_available": r["is_available"],
+                    "display_order": r["display_order"],
+                }
+            )
 
         return MenuItemListResponse(
-            items=items,
-            total=total,
-            has_more=(offset + len(items)) < total
+            items=items, total=total, has_more=(offset + len(items)) < total
         )
 
 
@@ -916,12 +1018,16 @@ async def create_menu_item(request: Request, data: CreateMenuItemRequest):
             # Check duplicate code
             exists = await conn.fetchval(
                 "SELECT 1 FROM menu_items WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], data.code
+                ctx["tenant_id"],
+                data.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Menu item code {data.code} already exists")
+                raise HTTPException(
+                    status_code=400, detail=f"Menu item code {data.code} already exists"
+                )
 
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 INSERT INTO menu_items (
                     tenant_id, code, name, description, category_id,
                     recipe_id, base_price, tax_rate, is_taxable,
@@ -930,26 +1036,38 @@ async def create_menu_item(request: Request, data: CreateMenuItemRequest):
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 RETURNING id
             """,
-                ctx["tenant_id"], data.code, data.name, data.description,
-                data.category_id, data.recipe_id, data.base_price,
-                data.tax_rate, data.is_taxable, data.display_order,
-                data.image_url, ctx["user_id"]
+                ctx["tenant_id"],
+                data.code,
+                data.name,
+                data.description,
+                data.category_id,
+                data.recipe_id,
+                data.base_price,
+                data.tax_rate,
+                data.is_taxable,
+                data.display_order,
+                data.image_url,
+                ctx["user_id"],
             )
 
             menu_item_id = row["id"]
 
             # Link modifier groups
             for group_id in data.modifier_group_ids:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO menu_item_modifiers (menu_item_id, modifier_group_id)
                     VALUES ($1, $2)
                     ON CONFLICT DO NOTHING
-                """, menu_item_id, group_id)
+                """,
+                    menu_item_id,
+                    group_id,
+                )
 
             return RecipeResponse(
                 success=True,
                 message="Menu item created",
-                data={"id": str(menu_item_id)}
+                data={"id": str(menu_item_id)},
             )
 
 
@@ -962,14 +1080,18 @@ async def get_menu_item(request: Request, item_id: UUID):
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
-        item = await conn.fetchrow("""
+        item = await conn.fetchrow(
+            """
             SELECT
                 mi.*, mc.name as category_name, r.name as recipe_name
             FROM menu_items mi
             LEFT JOIN menu_categories mc ON mc.id = mi.category_id
             LEFT JOIN recipes r ON r.id = mi.recipe_id
             WHERE mi.id = $1 AND mi.tenant_id = $2
-        """, item_id, ctx["tenant_id"])
+        """,
+            item_id,
+            ctx["tenant_id"],
+        )
 
         if not item:
             raise HTTPException(status_code=404, detail="Menu item not found")
@@ -977,46 +1099,64 @@ async def get_menu_item(request: Request, item_id: UUID):
         # Calculate food cost
         food_cost = 0
         if item["recipe_id"]:
-            food_cost = await conn.fetchval("""
+            food_cost = (
+                await conn.fetchval(
+                    """
                 SELECT COALESCE(SUM(ri.quantity * p.unit_cost)::BIGINT / NULLIF(r.output_quantity, 0), 0)
                 FROM recipe_ingredients ri
                 JOIN products p ON p.id = ri.product_id
                 JOIN recipes r ON r.id = ri.recipe_id
                 WHERE ri.recipe_id = $1
-            """, item["recipe_id"]) or 0
+            """,
+                    item["recipe_id"],
+                )
+                or 0
+            )
 
         # Get modifier groups
-        modifier_groups = await conn.fetch("""
+        modifier_groups = await conn.fetch(
+            """
             SELECT rmg.id, rmg.code, rmg.name, rmg.selection_type,
                    rmg.min_selections, rmg.max_selections, rmg.is_required
             FROM recipe_modifier_groups rmg
             JOIN menu_item_modifiers mim ON mim.modifier_group_id = rmg.id
             WHERE mim.menu_item_id = $1
-        """, item_id)
+        """,
+            item_id,
+        )
 
         groups_with_options = []
         for g in modifier_groups:
-            options = await conn.fetch("""
+            options = await conn.fetch(
+                """
                 SELECT id, name, price_adjustment, is_default, is_available
                 FROM recipe_modifier_options
                 WHERE modifier_group_id = $1
                 ORDER BY display_order
-            """, g["id"])
+            """,
+                g["id"],
+            )
 
-            groups_with_options.append({
-                "id": str(g["id"]),
-                "code": g["code"],
-                "name": g["name"],
-                "selection_type": g["selection_type"],
-                "min_selections": g["min_selections"],
-                "max_selections": g["max_selections"],
-                "is_required": g["is_required"],
-                "options": [dict(o) for o in options]
-            })
+            groups_with_options.append(
+                {
+                    "id": str(g["id"]),
+                    "code": g["code"],
+                    "name": g["name"],
+                    "selection_type": g["selection_type"],
+                    "min_selections": g["min_selections"],
+                    "max_selections": g["max_selections"],
+                    "is_required": g["is_required"],
+                    "options": [dict(o) for o in options],
+                }
+            )
 
         base_price = item["base_price"] or 0
         price_with_tax = int(base_price * (1 + float(item["tax_rate"])))
-        food_cost_percent = Decimal(str(food_cost)) / Decimal(str(base_price)) * 100 if base_price > 0 else Decimal("0")
+        food_cost_percent = (
+            Decimal(str(food_cost)) / Decimal(str(base_price)) * 100
+            if base_price > 0
+            else Decimal("0")
+        )
         gross_margin = base_price - food_cost
 
         return MenuItemDetailResponse(
@@ -1038,15 +1178,13 @@ async def get_menu_item(request: Request, item_id: UUID):
             gross_margin=gross_margin,
             modifier_groups=groups_with_options,
             is_available=item["is_available"],
-            image_url=item["image_url"]
+            image_url=item["image_url"],
         )
 
 
 @router.put("/menu-items/{item_id}", response_model=RecipeResponse)
 async def update_menu_item(
-    request: Request,
-    item_id: UUID,
-    data: UpdateMenuItemRequest
+    request: Request, item_id: UUID, data: UpdateMenuItemRequest
 ):
     """Update menu item."""
     ctx = get_user_context(request)
@@ -1057,7 +1195,8 @@ async def update_menu_item(
 
         existing = await conn.fetchrow(
             "SELECT id FROM menu_items WHERE id = $1 AND tenant_id = $2",
-            item_id, ctx["tenant_id"]
+            item_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Menu item not found")
@@ -1065,7 +1204,9 @@ async def update_menu_item(
         async with conn.transaction():
             # Handle modifier groups separately
             modifier_group_ids = data.modifier_group_ids
-            update_data = data.model_dump(exclude_unset=True, exclude={"modifier_group_ids"})
+            update_data = data.model_dump(
+                exclude_unset=True, exclude={"modifier_group_ids"}
+            )
 
             if update_data:
                 updates = []
@@ -1078,22 +1219,28 @@ async def update_menu_item(
                     param_idx += 1
 
                 params.append(item_id)
-                await conn.execute(f"""
+                await conn.execute(
+                    f"""
                     UPDATE menu_items
                     SET {', '.join(updates)}, updated_at = NOW()
                     WHERE id = ${param_idx}
-                """, *params)
+                """,
+                    *params,
+                )
 
             # Update modifier groups if provided
             if modifier_group_ids is not None:
                 await conn.execute(
-                    "DELETE FROM menu_item_modifiers WHERE menu_item_id = $1",
-                    item_id
+                    "DELETE FROM menu_item_modifiers WHERE menu_item_id = $1", item_id
                 )
                 for group_id in modifier_group_ids:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO menu_item_modifiers (menu_item_id, modifier_group_id)
                         VALUES ($1, $2)
-                    """, item_id, group_id)
+                    """,
+                        item_id,
+                        group_id,
+                    )
 
         return RecipeResponse(success=True, message="Menu item updated")

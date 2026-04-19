@@ -7,7 +7,7 @@ import uuid
 import logging
 import asyncpg
 from datetime import date
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from enum import Enum
@@ -19,18 +19,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 # Connection pool
-_pool: asyncpg.Pool = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 async def get_db_connection():
@@ -42,6 +37,7 @@ async def get_db_connection():
 # ============================================================
 # Pydantic Models
 # ============================================================
+
 
 class AccountingSettingsResponse(BaseModel):
     id: str
@@ -98,6 +94,7 @@ class CreateSnapshotResponse(BaseModel):
 # Endpoints
 # ============================================================
 
+
 @router.get("/accounting", response_model=AccountingSettingsDetailResponse)
 async def get_accounting_settings(request: Request):
     """Get tenant accounting settings (read-only, does not create)."""
@@ -118,8 +115,8 @@ async def get_accounting_settings(request: Request):
 
             if not row:
                 raise HTTPException(
-                    status_code=404, 
-                    detail="Accounting settings not found. Use POST to create."
+                    status_code=404,
+                    detail="Accounting settings not found. Use POST to create.",
                 )
 
             return AccountingSettingsDetailResponse(
@@ -134,8 +131,12 @@ async def get_accounting_settings(request: Request):
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
-                    created_at=row["created_at"].isoformat() if row["created_at"] else "",
-                    updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+                    created_at=row["created_at"].isoformat()
+                    if row["created_at"]
+                    else "",
+                    updated_at=row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else "",
                 ),
             )
         finally:
@@ -149,7 +150,9 @@ async def get_accounting_settings(request: Request):
 
 
 @router.post("/accounting", response_model=AccountingSettingsDetailResponse)
-async def create_accounting_settings(request: Request, data: CreateAccountingSettingsRequest):
+async def create_accounting_settings(
+    request: Request, data: CreateAccountingSettingsRequest
+):
     """Create tenant accounting settings."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -169,19 +172,22 @@ async def create_accounting_settings(request: Request, data: CreateAccountingSet
             if existing:
                 raise HTTPException(
                     status_code=409,
-                    detail="Accounting settings already exist. Use PATCH to update."
+                    detail="Accounting settings already exist. Use PATCH to update.",
                 )
 
             new_id = str(uuid.uuid4())
             await conn.execute(
                 """
                 INSERT INTO accounting_settings (
-                    id, tenant_id, default_report_basis, 
+                    id, tenant_id, default_report_basis,
                     fiscal_year_start_month, base_currency_code
                 ) VALUES ($1, $2, $3, $4, $5)
                 """,
-                new_id, tenant_id, data.default_report_basis,
-                data.fiscal_year_start_month, data.base_currency_code,
+                new_id,
+                tenant_id,
+                data.default_report_basis,
+                data.fiscal_year_start_month,
+                data.base_currency_code,
             )
 
             row = await conn.fetchrow(
@@ -201,8 +207,12 @@ async def create_accounting_settings(request: Request, data: CreateAccountingSet
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
-                    created_at=row["created_at"].isoformat() if row["created_at"] else "",
-                    updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+                    created_at=row["created_at"].isoformat()
+                    if row["created_at"]
+                    else "",
+                    updated_at=row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else "",
                 ),
             )
         finally:
@@ -212,11 +222,15 @@ async def create_accounting_settings(request: Request, data: CreateAccountingSet
         raise
     except Exception as e:
         logger.error(f"Create accounting settings error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create accounting settings")
+        raise HTTPException(
+            status_code=500, detail="Failed to create accounting settings"
+        )
 
 
 @router.patch("/accounting", response_model=AccountingSettingsDetailResponse)
-async def update_accounting_settings(request: Request, data: UpdateAccountingSettingsRequest):
+async def update_accounting_settings(
+    request: Request, data: UpdateAccountingSettingsRequest
+):
     """Update tenant accounting settings."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -236,7 +250,7 @@ async def update_accounting_settings(request: Request, data: UpdateAccountingSet
             if not existing:
                 raise HTTPException(
                     status_code=404,
-                    detail="Accounting settings not found. Use POST to create."
+                    detail="Accounting settings not found. Use POST to create.",
                 )
 
             updates = []
@@ -304,8 +318,12 @@ async def update_accounting_settings(request: Request, data: UpdateAccountingSet
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
-                    created_at=row["created_at"].isoformat() if row["created_at"] else "",
-                    updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+                    created_at=row["created_at"].isoformat()
+                    if row["created_at"]
+                    else "",
+                    updated_at=row["updated_at"].isoformat()
+                    if row["updated_at"]
+                    else "",
                 ),
             )
         finally:
@@ -315,7 +333,9 @@ async def update_accounting_settings(request: Request, data: UpdateAccountingSet
         raise
     except Exception as e:
         logger.error(f"Update accounting settings error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update accounting settings")
+        raise HTTPException(
+            status_code=500, detail="Failed to update accounting settings"
+        )
 
 
 @router.post("/aging-snapshot", response_model=CreateSnapshotResponse)

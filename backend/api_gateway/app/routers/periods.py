@@ -6,7 +6,7 @@ Endpoints for managing accounting periods including close/reopen operations.
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 import logging
 import asyncpg
 from datetime import datetime
@@ -25,25 +25,19 @@ from ..schemas.periods import (
     DraftJournalInfo,
     TrialBalanceSnapshotResponse,
 )
-from ..config import settings
-from ..services.resolve_account import resolve_account, resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -523,7 +517,6 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 ctx["user_id"],
             )
 
-
             # Law 13: Advisory lock for period close journal creation
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -545,18 +538,25 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     continue
                 atype = row["account_type"]
                 if atype in ("INCOME", "REVENUE"):
-                    income_accounts.append((row["account_id"], row["account_code"], balance))
+                    income_accounts.append(
+                        (row["account_id"], row["account_code"], balance)
+                    )
                 elif atype == "EXPENSE":
-                    expense_accounts.append((row["account_id"], row["account_code"], balance))
+                    expense_accounts.append(
+                        (row["account_id"], row["account_code"], balance)
+                    )
 
             if income_accounts or expense_accounts:
                 # Get Retained Earnings account
-                retained_earnings = await resolve_account(conn, ctx["tenant_id"], '3-20000')
+                retained_earnings = await resolve_account(
+                    conn, ctx["tenant_id"], "3-20000"
+                )
 
                 if retained_earnings:
-                    total_income = sum(b for _, _, b in income_accounts)
-                    total_expense = sum(b for _, _, b in expense_accounts)
-                    net_income = total_income - total_expense
+                    total_income_dr = sum(abs(b) for _, _, b in income_accounts)
+                    total_expense_cr = sum(abs(b) for _, _, b in expense_accounts)
+                    # RE amount = DR side minus CR side so far; positive means CR RE
+                    re_amount = total_income_dr - total_expense_cr
 
                     # Generate closing journal number
                     clo_seq = await conn.fetchval(
@@ -565,7 +565,7 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     )
                     clo_number = f"CLO-{period['end_date'].strftime('%Y%m')}-{str(clo_seq).zfill(3)}"
 
-                    closing_total = sum(abs(b) for _, _, b in income_accounts) + sum(abs(b) for _, _, b in expense_accounts)
+                    closing_total = max(total_income_dr, total_expense_cr)
 
                     closing_journal_id = await conn.fetchval(
                         """
@@ -598,8 +598,11 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                                 debit, credit, memo
                             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5)
                             """,
-                            closing_journal_id, acct_id, line_num,
-                            abs(balance), f"Close {code} to Retained Earnings",
+                            closing_journal_id,
+                            acct_id,
+                            line_num,
+                            abs(balance),
+                            f"Close {code} to Retained Earnings",
                         )
                         line_num += 1
 
@@ -612,13 +615,18 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                                 debit, credit, memo
                             ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
                             """,
-                            closing_journal_id, acct_id, line_num,
-                            abs(balance), f"Close {code} to Retained Earnings",
+                            closing_journal_id,
+                            acct_id,
+                            line_num,
+                            abs(balance),
+                            f"Close {code} to Retained Earnings",
                         )
                         line_num += 1
 
                     # Retained Earnings entry (balancing entry)
-                    if net_income >= 0:
+                    # re_amount > 0 means more DR than CR so far → CR RE to balance
+                    # re_amount < 0 means more CR than DR so far → DR RE to balance
+                    if re_amount >= 0:
                         await conn.execute(
                             """
                             INSERT INTO journal_lines (
@@ -626,8 +634,11 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                                 debit, credit, memo
                             ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
                             """,
-                            closing_journal_id, retained_earnings["id"], line_num,
-                            net_income, "Net income to Retained Earnings",
+                            closing_journal_id,
+                            retained_earnings["id"],
+                            line_num,
+                            re_amount,
+                            "Net income to Retained Earnings",
                         )
                     else:
                         await conn.execute(
@@ -637,8 +648,11 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                                 debit, credit, memo
                             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5)
                             """,
-                            closing_journal_id, retained_earnings["id"], line_num,
-                            abs(net_income), "Net loss to Retained Earnings",
+                            closing_journal_id,
+                            retained_earnings["id"],
+                            line_num,
+                            abs(re_amount),
+                            "Net loss to Retained Earnings",
                         )
 
                     # Law 20: Finalize DRAFT -> POSTED after all lines inserted
@@ -650,7 +664,9 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                         closing_journal_id,
                     )
 
-                    logger.info(f"Created closing journal {clo_number} with {line_num} lines")
+                    logger.info(
+                        f"Created closing journal {clo_number} with {line_num} lines"
+                    )
 
             # Close the period
             await conn.execute(

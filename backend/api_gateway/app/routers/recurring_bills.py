@@ -4,14 +4,13 @@ Recurring Bills Router
 Auto-generate bills on schedule (mirror of recurring invoices).
 """
 from datetime import date
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from dateutil.relativedelta import relativedelta
 
-from ..config import settings
 from ..schemas.recurring_bills import (
     RecurringBillCreate,
     RecurringBillUpdate,
@@ -30,20 +29,16 @@ from ..schemas.recurring_bills import (
     ProcessDueBillsResponse,
     RecurringBillStats,
     RecurringBillStatus,
-    RecurringFrequency,
 )
 
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -74,6 +69,7 @@ def calculate_next_date(current_date: date, frequency: str, interval: int = 1) -
 # RECURRING BILL CRUD
 # ============================================================================
 
+
 @router.get("", response_model=RecurringBillListResponse)
 async def list_recurring_bills(
     request: Request,
@@ -87,7 +83,9 @@ async def list_recurring_bills(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["rb.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -106,8 +104,7 @@ async def list_recurring_bills(
         where_sql = " AND ".join(where_clauses)
 
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM recurring_bills rb WHERE {where_sql}",
-            *params
+            f"SELECT COUNT(*) FROM recurring_bills rb WHERE {where_sql}", *params
         )
 
         rows = await conn.fetch(
@@ -119,7 +116,9 @@ async def list_recurring_bills(
             ORDER BY rb.next_bill_date ASC
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
-            *params, skip, limit
+            *params,
+            skip,
+            limit,
         )
 
         items = [RecurringBillResponse(**dict(row)) for row in rows]
@@ -137,23 +136,29 @@ async def get_due_recurring_bills(
     check_date = as_of_date or date.today()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM get_due_recurring_bills($1, $2)",
-            ctx["tenant_id"], check_date
+            ctx["tenant_id"],
+            check_date,
         )
 
-        items = [DueRecurringBillItem(
-            id=row["id"],
-            template_name=row["template_name"],
-            vendor_id=row["vendor_id"],
-            vendor_name=row["vendor_name"],
-            next_bill_date=row["next_bill_date"],
-            frequency=row["frequency"],
-            total_amount=row["total_amount"],
-            auto_post=row["auto_post"],
-        ) for row in rows]
+        items = [
+            DueRecurringBillItem(
+                id=row["id"],
+                template_name=row["template_name"],
+                vendor_id=row["vendor_id"],
+                vendor_name=row["vendor_name"],
+                next_bill_date=row["next_bill_date"],
+                frequency=row["frequency"],
+                total_amount=row["total_amount"],
+                auto_post=row["auto_post"],
+            )
+            for row in rows
+        ]
 
         total_amount = sum(i.total_amount for i in items)
 
@@ -171,11 +176,12 @@ async def get_recurring_bill_stats(request: Request):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
-            "SELECT * FROM get_recurring_bill_stats($1)",
-            ctx["tenant_id"]
+            "SELECT * FROM get_recurring_bill_stats($1)", ctx["tenant_id"]
         )
 
         return RecurringBillStats(**dict(row))
@@ -188,7 +194,9 @@ async def get_recurring_bill(request: Request, recurring_bill_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rb = await conn.fetchrow(
             """
@@ -197,7 +205,8 @@ async def get_recurring_bill(request: Request, recurring_bill_id: UUID):
             JOIN vendors v ON rb.vendor_id = v.id
             WHERE rb.id = $1 AND rb.tenant_id = $2
             """,
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not rb:
             raise HTTPException(status_code=404, detail="Recurring bill not found")
@@ -215,12 +224,12 @@ async def get_recurring_bill(request: Request, recurring_bill_id: UUID):
             WHERE rbi.recurring_bill_id = $1
             ORDER BY rbi.sort_order
             """,
-            recurring_bill_id
+            recurring_bill_id,
         )
 
         return RecurringBillDetailResponse(
             **dict(rb),
-            items=[RecurringBillItemResponse(**dict(item)) for item in items]
+            items=[RecurringBillItemResponse(**dict(item)) for item in items],
         )
 
 
@@ -231,12 +240,15 @@ async def create_recurring_bill(request: Request, data: RecurringBillCreate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Validate vendor
         vendor = await conn.fetchrow(
             "SELECT id, name, code FROM vendors WHERE id = $1 AND tenant_id = $2",
-            data.vendor_id, ctx["tenant_id"]
+            data.vendor_id,
+            ctx["tenant_id"],
         )
         if not vendor:
             raise HTTPException(status_code=400, detail="Vendor not found")
@@ -252,11 +264,22 @@ async def create_recurring_bill(request: Request, data: RecurringBillCreate):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING *
                 """,
-                ctx["tenant_id"], data.template_name, data.vendor_id,
-                data.frequency.value, data.interval_count,
-                data.start_date, data.end_date, data.start_date, data.due_days,
-                data.subtotal, data.discount_amount, data.tax_amount, data.total_amount,
-                data.auto_post, data.notes, ctx.get("user_id")
+                ctx["tenant_id"],
+                data.template_name,
+                data.vendor_id,
+                data.frequency.value,
+                data.interval_count,
+                data.start_date,
+                data.end_date,
+                data.start_date,
+                data.due_days,
+                data.subtotal,
+                data.discount_amount,
+                data.tax_amount,
+                data.total_amount,
+                data.auto_post,
+                data.notes,
+                ctx.get("user_id"),
             )
 
             # Insert items
@@ -268,26 +291,36 @@ async def create_recurring_bill(request: Request, data: RecurringBillCreate):
                         account_id, cost_center_id, tax_id, tax_amount, line_total, sort_order
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     """,
-                    row["id"], item.item_id, item.description, item.quantity, item.unit_price,
-                    item.account_id, item.cost_center_id, item.tax_id, item.tax_amount,
-                    item.line_total, i
+                    row["id"],
+                    item.item_id,
+                    item.description,
+                    item.quantity,
+                    item.unit_price,
+                    item.account_id,
+                    item.cost_center_id,
+                    item.tax_id,
+                    item.tax_amount,
+                    item.line_total,
+                    i,
                 )
 
             return RecurringBillResponse(
-                **dict(row),
-                vendor_name=vendor["name"],
-                vendor_code=vendor["code"]
+                **dict(row), vendor_name=vendor["name"], vendor_code=vendor["code"]
             )
 
 
 @router.patch("/{recurring_bill_id}", response_model=RecurringBillResponse)
-async def update_recurring_bill(request: Request, recurring_bill_id: UUID, data: RecurringBillUpdate):
+async def update_recurring_bill(
+    request: Request, recurring_bill_id: UUID, data: RecurringBillUpdate
+):
     """Update recurring bill"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             """
@@ -296,7 +329,8 @@ async def update_recurring_bill(request: Request, recurring_bill_id: UUID, data:
             JOIN vendors v ON rb.vendor_id = v.id
             WHERE rb.id = $1 AND rb.tenant_id = $2
             """,
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Recurring bill not found")
@@ -321,14 +355,14 @@ async def update_recurring_bill(request: Request, recurring_bill_id: UUID, data:
                     UPDATE recurring_bills SET {', '.join(set_clauses)}
                     WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
                     """,
-                    *params
+                    *params,
                 )
 
             # Update items if provided
             if data.items is not None:
                 await conn.execute(
                     "DELETE FROM recurring_bill_items WHERE recurring_bill_id = $1",
-                    recurring_bill_id
+                    recurring_bill_id,
                 )
                 for i, item in enumerate(data.items):
                     await conn.execute(
@@ -338,10 +372,17 @@ async def update_recurring_bill(request: Request, recurring_bill_id: UUID, data:
                             account_id, cost_center_id, tax_id, tax_amount, line_total, sort_order
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                         """,
-                        recurring_bill_id, item.item_id, item.description,
-                        item.quantity, item.unit_price, item.account_id,
-                        item.cost_center_id, item.tax_id, item.tax_amount,
-                        item.line_total, i
+                        recurring_bill_id,
+                        item.item_id,
+                        item.description,
+                        item.quantity,
+                        item.unit_price,
+                        item.account_id,
+                        item.cost_center_id,
+                        item.tax_id,
+                        item.tax_amount,
+                        item.line_total,
+                        i,
                     )
 
         row = await conn.fetchrow(
@@ -351,7 +392,7 @@ async def update_recurring_bill(request: Request, recurring_bill_id: UUID, data:
             JOIN vendors v ON rb.vendor_id = v.id
             WHERE rb.id = $1
             """,
-            recurring_bill_id
+            recurring_bill_id,
         )
 
         return RecurringBillResponse(**dict(row))
@@ -364,25 +405,34 @@ async def delete_recurring_bill(request: Request, recurring_bill_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM recurring_bills WHERE id = $1 AND tenant_id = $2",
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Recurring bill not found")
 
         if existing["bills_generated"] > 0:
-            raise HTTPException(status_code=400, detail="Cannot delete recurring bill with generated bills")
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete recurring bill with generated bills",
+            )
 
-        await conn.execute("DELETE FROM recurring_bills WHERE id = $1", recurring_bill_id)
+        await conn.execute(
+            "DELETE FROM recurring_bills WHERE id = $1", recurring_bill_id
+        )
         return {"message": "Recurring bill deleted"}
 
 
 # ============================================================================
 # STATUS TRANSITIONS
 # ============================================================================
+
 
 @router.post("/{recurring_bill_id}/pause", response_model=RecurringBillResponse)
 async def pause_recurring_bill(request: Request, recurring_bill_id: UUID):
@@ -391,7 +441,9 @@ async def pause_recurring_bill(request: Request, recurring_bill_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -399,13 +451,20 @@ async def pause_recurring_bill(request: Request, recurring_bill_id: UUID):
             WHERE id = $1 AND tenant_id = $2 AND status = 'active'
             RETURNING *
             """,
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Recurring bill not found or not active")
+            raise HTTPException(
+                status_code=404, detail="Recurring bill not found or not active"
+            )
 
-        vendor = await conn.fetchrow("SELECT name, code FROM vendors WHERE id = $1", row["vendor_id"])
-        return RecurringBillResponse(**dict(row), vendor_name=vendor["name"], vendor_code=vendor["code"])
+        vendor = await conn.fetchrow(
+            "SELECT name, code FROM vendors WHERE id = $1", row["vendor_id"]
+        )
+        return RecurringBillResponse(
+            **dict(row), vendor_name=vendor["name"], vendor_code=vendor["code"]
+        )
 
 
 @router.post("/{recurring_bill_id}/resume", response_model=RecurringBillResponse)
@@ -415,7 +474,9 @@ async def resume_recurring_bill(request: Request, recurring_bill_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             """
@@ -423,32 +484,45 @@ async def resume_recurring_bill(request: Request, recurring_bill_id: UUID):
             WHERE id = $1 AND tenant_id = $2 AND status = 'paused'
             RETURNING *
             """,
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Recurring bill not found or not paused")
+            raise HTTPException(
+                status_code=404, detail="Recurring bill not found or not paused"
+            )
 
-        vendor = await conn.fetchrow("SELECT name, code FROM vendors WHERE id = $1", row["vendor_id"])
-        return RecurringBillResponse(**dict(row), vendor_name=vendor["name"], vendor_code=vendor["code"])
+        vendor = await conn.fetchrow(
+            "SELECT name, code FROM vendors WHERE id = $1", row["vendor_id"]
+        )
+        return RecurringBillResponse(
+            **dict(row), vendor_name=vendor["name"], vendor_code=vendor["code"]
+        )
 
 
 # ============================================================================
 # GENERATE BILLS
 # ============================================================================
 
+
 @router.post("/{recurring_bill_id}/generate", response_model=GenerateBillResponse)
-async def generate_bill(request: Request, recurring_bill_id: UUID, data: GenerateBillRequest = None):
+async def generate_bill(
+    request: Request, recurring_bill_id: UUID, data: GenerateBillRequest = None
+):
     """Generate bill from recurring template"""
     ctx = get_user_context(request)
     pool = await get_pool()
     data = data or GenerateBillRequest()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rb = await conn.fetchrow(
-            "SELECT * FROM recurring_bills WHERE id = $1 AND tenant_id = $2",
-            recurring_bill_id, ctx["tenant_id"]
+            "SELECT rb.*, v.name as vendor_name FROM recurring_bills rb JOIN vendors v ON rb.vendor_id = v.id WHERE rb.id = $1 AND rb.tenant_id = $2",
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not rb:
             raise HTTPException(status_code=404, detail="Recurring bill not found")
@@ -458,58 +532,69 @@ async def generate_bill(request: Request, recurring_bill_id: UUID, data: Generat
 
         bill_date = data.bill_date or rb["next_bill_date"]
         due_date = bill_date + relativedelta(days=rb["due_days"])
-        should_post = data.post_immediately if data.post_immediately is not None else rb["auto_post"]
+        should_post = (
+            data.post_immediately
+            if data.post_immediately is not None
+            else rb["auto_post"]
+        )
 
         async with conn.transaction():
             # Generate bill number
-            seq = await conn.fetchrow(
-                """
-                INSERT INTO bill_sequences (tenant_id, last_number)
-                VALUES ($1, 1)
-                ON CONFLICT (tenant_id)
-                DO UPDATE SET last_number = bill_sequences.last_number + 1
-                RETURNING last_number
-                """,
-                ctx["tenant_id"]
+            bill_number = await conn.fetchval(
+                "SELECT generate_bill_number($1, 'BILL')", ctx["tenant_id"]
             )
-            bill_number = f"BILL-{bill_date.year}-{seq['last_number']:05d}"
 
             # Create bill
             bill = await conn.fetchrow(
                 """
                 INSERT INTO bills (
-                    tenant_id, bill_number, vendor_id, bill_date, due_date,
-                    subtotal, discount_amount, tax_amount, total_amount,
+                    tenant_id, invoice_number, vendor_id, vendor_name, issue_date, due_date,
+                    subtotal, tax_amount, amount, grand_total,
                     status, recurring_bill_id, is_recurring, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, true, $12)
                 RETURNING *
                 """,
-                ctx["tenant_id"], bill_number, rb["vendor_id"], bill_date, due_date,
-                rb["subtotal"], rb["discount_amount"], rb["tax_amount"], rb["total_amount"],
-                "draft", recurring_bill_id, ctx.get("user_id")
+                ctx["tenant_id"],
+                bill_number,
+                rb["vendor_id"],
+                rb.get("vendor_name", ""),
+                bill_date,
+                due_date,
+                rb["subtotal"],
+                rb["tax_amount"],
+                rb["total_amount"],
+                "draft",
+                recurring_bill_id,
+                ctx.get("user_id"),
             )
 
             # Copy items
             items = await conn.fetch(
                 "SELECT * FROM recurring_bill_items WHERE recurring_bill_id = $1 ORDER BY sort_order",
-                recurring_bill_id
+                recurring_bill_id,
             )
             for item in items:
                 await conn.execute(
                     """
                     INSERT INTO bill_items (
-                        bill_id, item_id, description, quantity, unit_price,
-                        account_id, cost_center_id, tax_id, tax_amount, line_total
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        bill_id, product_id, description, quantity, unit_price,
+                        subtotal, total, line_number
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
-                    bill["id"], item["item_id"], item["description"],
-                    item["quantity"], item["unit_price"], item["account_id"],
-                    item["cost_center_id"], item["tax_id"], item["tax_amount"],
-                    item["line_total"]
+                    bill["id"],
+                    item["item_id"],
+                    item["description"],
+                    item["quantity"],
+                    item["unit_price"],
+                    item["line_total"],
+                    item["line_total"],
+                    item["sort_order"],
                 )
 
             # Update recurring bill
-            next_date = calculate_next_date(bill_date, rb["frequency"], rb["interval_count"])
+            next_date = calculate_next_date(
+                bill_date, rb["frequency"], rb["interval_count"]
+            )
             new_status = rb["status"]
             if rb["end_date"] and next_date > rb["end_date"]:
                 new_status = "completed"
@@ -524,7 +609,10 @@ async def generate_bill(request: Request, recurring_bill_id: UUID, data: Generat
                     updated_at = NOW()
                 WHERE id = $1
                 """,
-                recurring_bill_id, next_date, bill_date, new_status
+                recurring_bill_id,
+                next_date,
+                bill_date,
+                new_status,
             )
 
             # Post bill if needed (create AP journal)
@@ -533,8 +621,7 @@ async def generate_bill(request: Request, recurring_bill_id: UUID, data: Generat
                 # TODO: Call bill posting logic to create AP journal
                 bill_status = "posted"
                 await conn.execute(
-                    "UPDATE bills SET status = 'posted' WHERE id = $1",
-                    bill["id"]
+                    "UPDATE bills SET status = 'posted' WHERE id = $1", bill["id"]
                 )
 
             return GenerateBillResponse(
@@ -557,11 +644,14 @@ async def process_due_bills(request: Request, data: ProcessDueBillsRequest = Non
     check_date = data.as_of_date or date.today()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         due_bills = await conn.fetch(
             "SELECT * FROM get_due_recurring_bills($1, $2)",
-            ctx["tenant_id"], check_date
+            ctx["tenant_id"],
+            check_date,
         )
 
         results = []
@@ -575,21 +665,13 @@ async def process_due_bills(request: Request, data: ProcessDueBillsRequest = Non
                 bill_date = rb["next_bill_date"]
 
                 async with conn.transaction():
-                    seq = await conn.fetchrow(
-                        """
-                        INSERT INTO bill_sequences (tenant_id, last_number)
-                        VALUES ($1, 1)
-                        ON CONFLICT (tenant_id)
-                        DO UPDATE SET last_number = bill_sequences.last_number + 1
-                        RETURNING last_number
-                        """,
-                        ctx["tenant_id"]
+                    bill_number = await conn.fetchval(
+                        "SELECT generate_bill_number($1, 'BILL')", ctx["tenant_id"]
                     )
-                    bill_number = f"BILL-{bill_date.year}-{seq['last_number']:05d}"
 
                     rb_full = await conn.fetchrow(
-                        "SELECT * FROM recurring_bills WHERE id = $1",
-                        rb["id"]
+                        "SELECT rb.*, v.name as vendor_name FROM recurring_bills rb JOIN vendors v ON rb.vendor_id = v.id WHERE rb.id = $1",
+                        rb["id"],
                     )
 
                     due_date = bill_date + relativedelta(days=rb_full["due_days"])
@@ -597,29 +679,39 @@ async def process_due_bills(request: Request, data: ProcessDueBillsRequest = Non
                     bill = await conn.fetchrow(
                         """
                         INSERT INTO bills (
-                            tenant_id, bill_number, vendor_id, bill_date, due_date,
-                            subtotal, discount_amount, tax_amount, total_amount,
+                            tenant_id, invoice_number, vendor_id, vendor_name, issue_date, due_date,
+                            subtotal, tax_amount, amount, grand_total,
                             status, recurring_bill_id, is_recurring, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, true, $12)
                         RETURNING id
                         """,
-                        ctx["tenant_id"], bill_number, rb_full["vendor_id"], bill_date, due_date,
-                        rb_full["subtotal"], rb_full["discount_amount"], rb_full["tax_amount"],
-                        rb_full["total_amount"], "draft", rb["id"], ctx.get("user_id")
+                        ctx["tenant_id"],
+                        bill_number,
+                        rb_full["vendor_id"],
+                        rb.get("vendor_name", rb_full.get("vendor_name", "")),
+                        bill_date,
+                        due_date,
+                        rb_full["subtotal"],
+                        rb_full["tax_amount"],
+                        rb_full["total_amount"],
+                        "draft",
+                        rb["id"],
+                        ctx.get("user_id"),
                     )
 
                     # Copy items
                     await conn.execute(
                         """
                         INSERT INTO bill_items (
-                            bill_id, item_id, description, quantity, unit_price,
-                            account_id, cost_center_id, tax_id, tax_amount, line_total
+                            bill_id, product_id, description, quantity, unit_price,
+                            subtotal, total, line_number
                         )
                         SELECT $1, item_id, description, quantity, unit_price,
-                            account_id, cost_center_id, tax_id, tax_amount, line_total
+                            line_total, line_total, sort_order
                         FROM recurring_bill_items WHERE recurring_bill_id = $2
                         """,
-                        bill["id"], rb["id"]
+                        bill["id"],
+                        rb["id"],
                     )
 
                     # Update recurring bill
@@ -637,25 +729,32 @@ async def process_due_bills(request: Request, data: ProcessDueBillsRequest = Non
                             bills_generated = bills_generated + 1, status = $4, updated_at = NOW()
                         WHERE id = $1
                         """,
-                        rb["id"], next_date, bill_date, new_status
+                        rb["id"],
+                        next_date,
+                        bill_date,
+                        new_status,
                     )
 
-                results.append(ProcessDueBillsResult(
-                    recurring_bill_id=rb["id"],
-                    template_name=rb["template_name"],
-                    bill_id=bill["id"],
-                    bill_number=bill_number,
-                    success=True,
-                ))
+                results.append(
+                    ProcessDueBillsResult(
+                        recurring_bill_id=rb["id"],
+                        template_name=rb["template_name"],
+                        bill_id=bill["id"],
+                        bill_number=bill_number,
+                        success=True,
+                    )
+                )
                 successful += 1
 
             except Exception as e:
-                results.append(ProcessDueBillsResult(
-                    recurring_bill_id=rb["id"],
-                    template_name=rb["template_name"],
-                    success=False,
-                    error=str(e),
-                ))
+                results.append(
+                    ProcessDueBillsResult(
+                        recurring_bill_id=rb["id"],
+                        template_name=rb["template_name"],
+                        success=False,
+                        error=str(e),
+                    )
+                )
                 failed += 1
 
         return ProcessDueBillsResponse(
@@ -673,7 +772,9 @@ async def get_recurring_bill_history(request: Request, recurring_bill_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rb = await conn.fetchrow(
             """
@@ -682,25 +783,28 @@ async def get_recurring_bill_history(request: Request, recurring_bill_id: UUID):
             JOIN vendors v ON rb.vendor_id = v.id
             WHERE rb.id = $1 AND rb.tenant_id = $2
             """,
-            recurring_bill_id, ctx["tenant_id"]
+            recurring_bill_id,
+            ctx["tenant_id"],
         )
         if not rb:
             raise HTTPException(status_code=404, detail="Recurring bill not found")
 
         rows = await conn.fetch(
-            "SELECT * FROM get_recurring_bill_history($1)",
-            recurring_bill_id
+            "SELECT * FROM get_recurring_bill_history($1)", recurring_bill_id
         )
 
-        bills = [GeneratedBillItem(
-            bill_id=row["bill_id"],
-            bill_number=row["bill_number"],
-            bill_date=row["bill_date"],
-            due_date=row["due_date"],
-            total_amount=row["total_amount"],
-            status=row["status"],
-            paid_amount=row["paid_amount"],
-        ) for row in rows]
+        bills = [
+            GeneratedBillItem(
+                bill_id=row["bill_id"],
+                bill_number=row["bill_number"],
+                bill_date=row["bill_date"],
+                due_date=row["due_date"],
+                total_amount=row["total_amount"],
+                status=row["status"],
+                paid_amount=row["paid_amount"],
+            )
+            for row in rows
+        ]
 
         return GeneratedBillsResponse(
             recurring_bill=RecurringBillResponse(**dict(rb)),

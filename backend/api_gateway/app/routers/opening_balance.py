@@ -12,7 +12,7 @@ Key Features:
 """
 
 import json
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 from decimal import Decimal
@@ -35,33 +35,24 @@ from ..schemas.opening_balance import (
     OpeningBalanceData,
     OpeningBalanceSummary,
 )
-from ..config import settings
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/opening-balance", tags=["opening-balance"])
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -71,17 +62,17 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
-async def get_account_by_code(conn: Connection, tenant_id: str, code: str) -> Optional[dict]:
+
+async def get_account_by_code(
+    conn: Connection, tenant_id: str, code: str
+) -> Optional[dict]:
     """Get account by code."""
     query = """
         SELECT id, account_code as code, name, account_type as type, normal_balance
@@ -102,15 +93,13 @@ async def get_opening_balance_equity_account(conn: Connection, tenant_id: str) -
     if not account:
         raise HTTPException(
             status_code=400,
-            detail="Opening Balance Equity account (3-50000) not found. Please run migrations."
+            detail="Opening Balance Equity account (3-50000) not found. Please run migrations.",
         )
     return dict(account)
 
 
 async def validate_opening_balance_request(
-    conn: Connection,
-    tenant_id: str,
-    request: CreateOpeningBalanceRequest
+    conn: Connection, tenant_id: str, request: CreateOpeningBalanceRequest
 ) -> ValidationResult:
     """Validate opening balance request before processing."""
     errors = []
@@ -123,7 +112,9 @@ async def validate_opening_balance_request(
     for line in request.accounts:
         account = await get_account_by_code(conn, tenant_id, line.account_code)
         if not account:
-            errors.append(f"Account code '{line.account_code}' not found in Chart of Accounts")
+            errors.append(
+                f"Account code '{line.account_code}' not found in Chart of Accounts"
+            )
             continue
 
         total_debit += line.debit
@@ -131,7 +122,9 @@ async def validate_opening_balance_request(
 
         # Warn if both debit and credit provided for same account
         if line.debit > 0 and line.credit > 0:
-            warnings.append(f"Account '{line.account_code}' has both debit and credit amounts")
+            warnings.append(
+                f"Account '{line.account_code}' has both debit and credit amounts"
+            )
 
     imbalance = total_debit - total_credit
     equity_adjustment = abs(imbalance)
@@ -142,8 +135,10 @@ async def validate_opening_balance_request(
         ar_total = sum(ar.amount for ar in request.ar_balances)
         # Find AR control account in the accounts list
         ar_control = next(
-            (a for a in request.accounts if a.account_code == '1-10300'),  # Law 27: request validation
-            None
+            (
+                a for a in request.accounts if a.account_code == "1-10300"
+            ),  # Law 27: request validation
+            None,
         )
         if ar_control:
             ar_control_amount = ar_control.debit - ar_control.credit
@@ -153,7 +148,9 @@ async def validate_opening_balance_request(
                     f"AR subledger total ({ar_total}) doesn't match AR control account ({ar_control_amount})"
                 )
         else:
-            warnings.append("AR balances provided but AR control account (1-10300) not in accounts list")
+            warnings.append(
+                "AR balances provided but AR control account (1-10300) not in accounts list"
+            )
 
     # Check AP subledger totals if provided
     ap_control_match = None
@@ -161,8 +158,10 @@ async def validate_opening_balance_request(
         ap_total = sum(ap.amount for ap in request.ap_balances)
         # Find AP control account in the accounts list
         ap_control = next(
-            (a for a in request.accounts if a.account_code == '2-10100'),  # Law 27: request validation
-            None
+            (
+                a for a in request.accounts if a.account_code == "2-10100"
+            ),  # Law 27: request validation
+            None,
         )
         if ap_control:
             ap_control_amount = ap_control.credit - ap_control.debit
@@ -172,7 +171,9 @@ async def validate_opening_balance_request(
                     f"AP subledger total ({ap_total}) doesn't match AP control account ({ap_control_amount})"
                 )
         else:
-            warnings.append("AP balances provided but AP control account (2-10100) not in accounts list")
+            warnings.append(
+                "AP balances provided but AP control account (2-10100) not in accounts list"
+            )
 
     # Check inventory totals if provided
     inventory_control_match = None
@@ -183,8 +184,10 @@ async def validate_opening_balance_request(
         )
         # Find inventory control account
         inv_control = next(
-            (a for a in request.accounts if a.account_code == '1-10400'),  # Law 27: request validation
-            None
+            (
+                a for a in request.accounts if a.account_code == "1-10400"
+            ),  # Law 27: request validation
+            None,
         )
         if inv_control:
             inv_control_amount = inv_control.debit - inv_control.credit
@@ -204,13 +207,14 @@ async def validate_opening_balance_request(
         ap_control_match=ap_control_match,
         inventory_control_match=inventory_control_match,
         errors=errors,
-        warnings=warnings
+        warnings=warnings,
     )
 
 
 # =============================================================================
 # ENDPOINTS
 # =============================================================================
+
 
 @router.get("/summary", response_model=OpeningBalanceSummaryResponse)
 async def get_opening_balance_summary(request: Request):
@@ -249,7 +253,7 @@ async def get_opening_balance_summary(request: Request):
                     ar_total=0,
                     ap_total=0,
                     inventory_total=0,
-                    last_updated=None
+                    last_updated=None,
                 )
             )
 
@@ -270,7 +274,9 @@ async def get_opening_balance_summary(request: Request):
                 ar_total=totals.get("ar_total", 0),
                 ap_total=totals.get("ap_total", 0),
                 inventory_total=totals.get("inventory_total", 0),
-                last_updated=record["updated_at"].isoformat() if record["updated_at"] else None
+                last_updated=record["updated_at"].isoformat()
+                if record["updated_at"]
+                else None,
             )
         )
 
@@ -278,7 +284,7 @@ async def get_opening_balance_summary(request: Request):
 @router.get("", response_model=OpeningBalanceListResponse)
 async def list_opening_balance_history(
     request: Request,
-    include_superseded: bool = Query(False, description="Include superseded records")
+    include_superseded: bool = Query(False, description="Include superseded records"),
 ):
     """
     List opening balance records.
@@ -315,44 +321,58 @@ async def list_opening_balance_history(
             accounts = snapshot.get("accounts", [])
             totals = snapshot.get("totals", {})
 
-            data.append(OpeningBalanceData(
-                id=str(rec["id"]),
-                tenant_id=rec["tenant_id"],
-                opening_date=rec["opening_date"],
-                description=rec["description"],
-                status=rec["status"],
-                gl_journal_id=str(rec["gl_journal_id"]) if rec["gl_journal_id"] else None,
-                ar_journal_id=str(rec["ar_journal_id"]) if rec["ar_journal_id"] else None,
-                ap_journal_id=str(rec["ap_journal_id"]) if rec["ap_journal_id"] else None,
-                inventory_journal_id=str(rec["inventory_journal_id"]) if rec["inventory_journal_id"] else None,
-                accounts=[
-                    AccountBalanceItem(
-                        account_code=a["code"],
-                        account_name=a["name"],
-                        account_type=a["type"],
-                        debit=a["debit"],
-                        credit=a["credit"]
-                    ) for a in accounts
-                ],
-                total_debit=totals.get("debit", 0),
-                total_credit=totals.get("credit", 0),
-                equity_adjustment=totals.get("equity_adjustment", 0),
-                ar_count=totals.get("ar_count"),
-                ar_total=totals.get("ar_total"),
-                ap_count=totals.get("ap_count"),
-                ap_total=totals.get("ap_total"),
-                inventory_count=totals.get("inventory_count"),
-                inventory_total=totals.get("inventory_total"),
-                created_at=rec["created_at"].isoformat() if rec["created_at"] else None,
-                created_by=str(rec["created_by"]),
-                superseded_at=rec["superseded_at"].isoformat() if rec["superseded_at"] else None,
-                superseded_by=str(rec["superseded_by"]) if rec["superseded_by"] else None
-            ))
+            data.append(
+                OpeningBalanceData(
+                    id=str(rec["id"]),
+                    tenant_id=rec["tenant_id"],
+                    opening_date=rec["opening_date"],
+                    description=rec["description"],
+                    status=rec["status"],
+                    gl_journal_id=str(rec["gl_journal_id"])
+                    if rec["gl_journal_id"]
+                    else None,
+                    ar_journal_id=str(rec["ar_journal_id"])
+                    if rec["ar_journal_id"]
+                    else None,
+                    ap_journal_id=str(rec["ap_journal_id"])
+                    if rec["ap_journal_id"]
+                    else None,
+                    inventory_journal_id=str(rec["inventory_journal_id"])
+                    if rec["inventory_journal_id"]
+                    else None,
+                    accounts=[
+                        AccountBalanceItem(
+                            account_code=a["code"],
+                            account_name=a["name"],
+                            account_type=a["type"],
+                            debit=a["debit"],
+                            credit=a["credit"],
+                        )
+                        for a in accounts
+                    ],
+                    total_debit=totals.get("debit", 0),
+                    total_credit=totals.get("credit", 0),
+                    equity_adjustment=totals.get("equity_adjustment", 0),
+                    ar_count=totals.get("ar_count"),
+                    ar_total=totals.get("ar_total"),
+                    ap_count=totals.get("ap_count"),
+                    ap_total=totals.get("ap_total"),
+                    inventory_count=totals.get("inventory_count"),
+                    inventory_total=totals.get("inventory_total"),
+                    created_at=rec["created_at"].isoformat()
+                    if rec["created_at"]
+                    else None,
+                    created_by=str(rec["created_by"]),
+                    superseded_at=rec["superseded_at"].isoformat()
+                    if rec["superseded_at"]
+                    else None,
+                    superseded_by=str(rec["superseded_by"])
+                    if rec["superseded_by"]
+                    else None,
+                )
+            )
 
-        return OpeningBalanceListResponse(
-            data=data,
-            total=len(data)
-        )
+        return OpeningBalanceListResponse(data=data, total=len(data))
 
 
 @router.get("/{record_id}", response_model=OpeningBalanceResponse)
@@ -377,7 +397,9 @@ async def get_opening_balance_detail(request: Request, record_id: UUID):
         rec = await conn.fetchrow(query, tenant_id, record_id)
 
         if not rec:
-            raise HTTPException(status_code=404, detail="Opening balance record not found")
+            raise HTTPException(
+                status_code=404, detail="Opening balance record not found"
+            )
 
         snapshot = rec["balance_snapshot"]
         if isinstance(snapshot, str):
@@ -393,18 +415,27 @@ async def get_opening_balance_detail(request: Request, record_id: UUID):
                 opening_date=rec["opening_date"],
                 description=rec["description"],
                 status=rec["status"],
-                gl_journal_id=str(rec["gl_journal_id"]) if rec["gl_journal_id"] else None,
-                ar_journal_id=str(rec["ar_journal_id"]) if rec["ar_journal_id"] else None,
-                ap_journal_id=str(rec["ap_journal_id"]) if rec["ap_journal_id"] else None,
-                inventory_journal_id=str(rec["inventory_journal_id"]) if rec["inventory_journal_id"] else None,
+                gl_journal_id=str(rec["gl_journal_id"])
+                if rec["gl_journal_id"]
+                else None,
+                ar_journal_id=str(rec["ar_journal_id"])
+                if rec["ar_journal_id"]
+                else None,
+                ap_journal_id=str(rec["ap_journal_id"])
+                if rec["ap_journal_id"]
+                else None,
+                inventory_journal_id=str(rec["inventory_journal_id"])
+                if rec["inventory_journal_id"]
+                else None,
                 accounts=[
                     AccountBalanceItem(
                         account_code=a["code"],
                         account_name=a["name"],
                         account_type=a["type"],
                         debit=a["debit"],
-                        credit=a["credit"]
-                    ) for a in accounts
+                        credit=a["credit"],
+                    )
+                    for a in accounts
                 ],
                 total_debit=totals.get("debit", 0),
                 total_credit=totals.get("credit", 0),
@@ -417,17 +448,18 @@ async def get_opening_balance_detail(request: Request, record_id: UUID):
                 inventory_total=totals.get("inventory_total"),
                 created_at=rec["created_at"].isoformat() if rec["created_at"] else None,
                 created_by=str(rec["created_by"]),
-                superseded_at=rec["superseded_at"].isoformat() if rec["superseded_at"] else None,
-                superseded_by=str(rec["superseded_by"]) if rec["superseded_by"] else None
+                superseded_at=rec["superseded_at"].isoformat()
+                if rec["superseded_at"]
+                else None,
+                superseded_by=str(rec["superseded_by"])
+                if rec["superseded_by"]
+                else None,
             )
         )
 
 
 @router.post("/validate", response_model=ValidateOpeningBalanceResponse)
-async def validate_opening_balance(
-    request: Request,
-    body: CreateOpeningBalanceRequest
-):
+async def validate_opening_balance(request: Request, body: CreateOpeningBalanceRequest):
     """
     Validate opening balance request without creating.
 
@@ -446,10 +478,7 @@ async def validate_opening_balance(
 
 
 @router.post("", response_model=CreateOpeningBalanceResponse)
-async def create_opening_balance(
-    request: Request,
-    body: CreateOpeningBalanceRequest
-):
+async def create_opening_balance(request: Request, body: CreateOpeningBalanceRequest):
     """
     Create opening balance entries.
 
@@ -474,12 +503,12 @@ async def create_opening_balance(
         # Check if active opening balance already exists
         existing = await conn.fetchval(
             "SELECT id FROM opening_balance_records WHERE tenant_id = $1 AND status = 'ACTIVE'",
-            tenant_id
+            tenant_id,
         )
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail="Active opening balance already exists. Use PUT to supersede it."
+                detail="Active opening balance already exists. Use PUT to supersede it.",
             )
 
         # Validate request
@@ -487,17 +516,13 @@ async def create_opening_balance(
         if not validation.is_valid:
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "message": "Validation failed",
-                    "errors": validation.errors
-                }
+                detail={"message": "Validation failed", "errors": validation.errors},
             )
 
         async with conn.transaction():
             # Law 13: Advisory lock on opening balance creation
             await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                f"OPENING:{tenant_id}"
+                "SELECT pg_advisory_xact_lock(hashtext($1))", f"OPENING:{tenant_id}"
             )
 
             # Law 5: Check period is open for the opening balance date
@@ -507,12 +532,13 @@ async def create_opening_balance(
                 WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
                 ORDER BY start_date DESC LIMIT 1
                 """,
-                tenant_id, body.opening_date
+                tenant_id,
+                body.opening_date,
             )
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post opening balance to {period['status'].lower()} period"
+                    detail=f"Cannot post opening balance to {period['status'].lower()} period",
                 )
 
             # Get Opening Balance Equity account
@@ -528,29 +554,35 @@ async def create_opening_balance(
                     continue
 
                 if line.debit > 0:
-                    journal_lines.append({
-                        "account_id": str(account["id"]),
-                        "account_code": account["code"],
-                        "account_name": account["name"],
-                        "debit": line.debit,
-                        "credit": 0
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(account["id"]),
+                            "account_code": account["code"],
+                            "account_name": account["name"],
+                            "debit": line.debit,
+                            "credit": 0,
+                        }
+                    )
                 if line.credit > 0:
-                    journal_lines.append({
-                        "account_id": str(account["id"]),
-                        "account_code": account["code"],
-                        "account_name": account["name"],
-                        "debit": 0,
-                        "credit": line.credit
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(account["id"]),
+                            "account_code": account["code"],
+                            "account_name": account["name"],
+                            "debit": 0,
+                            "credit": line.credit,
+                        }
+                    )
 
-                account_snapshot.append({
-                    "code": account["code"],
-                    "name": account["name"],
-                    "type": account["type"],
-                    "debit": line.debit,
-                    "credit": line.credit
-                })
+                account_snapshot.append(
+                    {
+                        "code": account["code"],
+                        "name": account["name"],
+                        "type": account["type"],
+                        "debit": line.debit,
+                        "credit": line.credit,
+                    }
+                )
 
             # Add equity adjustment if needed
             equity_adjustment = 0
@@ -558,30 +590,40 @@ async def create_opening_balance(
                 equity_adjustment = abs(validation.imbalance)
                 if validation.imbalance > 0:
                     # Debit > Credit, need credit to equity
-                    journal_lines.append({
-                        "account_id": str(ob_equity["id"]),
-                        "account_code": ob_equity["code"],
-                        "account_name": ob_equity["name"],
-                        "debit": 0,
-                        "credit": validation.imbalance
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(ob_equity["id"]),
+                            "account_code": ob_equity["code"],
+                            "account_name": ob_equity["name"],
+                            "debit": 0,
+                            "credit": validation.imbalance,
+                        }
+                    )
                 else:
                     # Credit > Debit, need debit to equity
-                    journal_lines.append({
-                        "account_id": str(ob_equity["id"]),
-                        "account_code": ob_equity["code"],
-                        "account_name": ob_equity["name"],
-                        "debit": abs(validation.imbalance),
-                        "credit": 0
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(ob_equity["id"]),
+                            "account_code": ob_equity["code"],
+                            "account_name": ob_equity["name"],
+                            "debit": abs(validation.imbalance),
+                            "credit": 0,
+                        }
+                    )
 
-                account_snapshot.append({
-                    "code": ob_equity["code"],
-                    "name": ob_equity["name"],
-                    "type": ob_equity["type"],
-                    "debit": abs(validation.imbalance) if validation.imbalance < 0 else 0,
-                    "credit": validation.imbalance if validation.imbalance > 0 else 0
-                })
+                account_snapshot.append(
+                    {
+                        "code": ob_equity["code"],
+                        "name": ob_equity["name"],
+                        "type": ob_equity["type"],
+                        "debit": abs(validation.imbalance)
+                        if validation.imbalance < 0
+                        else 0,
+                        "credit": validation.imbalance
+                        if validation.imbalance > 0
+                        else 0,
+                    }
+                )
 
             # Create journal entry
             total_debit = sum(l["debit"] for l in journal_lines)
@@ -602,16 +644,21 @@ async def create_opening_balance(
             journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
             existing_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
-                tenant_id, f"OB-{body.opening_date.strftime('%Y%m%d')}%"
+                tenant_id,
+                f"OB-{body.opening_date.strftime('%Y%m%d')}%",
             )
             if existing_count > 0:
                 journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
 
             journal_id = await conn.fetchval(
                 journal_query,
-                tenant_id, journal_number, body.opening_date,
+                tenant_id,
+                journal_number,
+                body.opening_date,
                 body.description or "Saldo Awal / Opening Balance",
-                total_debit, total_credit, user_id
+                total_debit,
+                total_credit,
+                user_id,
             )
 
             # Insert journal lines
@@ -622,15 +669,17 @@ async def create_opening_balance(
                         journal_id, account_id, memo, debit, credit, line_number
                     ) VALUES ($1, $2::uuid, $3, $4, $5, $6)
                     """,
-                    journal_id, line["account_id"],
+                    journal_id,
+                    line["account_id"],
                     f"Opening Balance - {line['account_name']}",
-                    line["debit"], line["credit"], idx
+                    line["debit"],
+                    line["credit"],
+                    idx,
                 )
 
             # Law 20: DRAFT -> POSTED after lines inserted (triggers hash chain)
             await conn.execute(
-                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                journal_id
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
             )
 
             # Create AR subledger entries if provided
@@ -655,13 +704,15 @@ async def create_opening_balance(
                             $8, $9
                         )
                         """,
-                        tenant_id, ar.customer_id, journal_id,
+                        tenant_id,
+                        ar.customer_id,
+                        journal_id,
                         ar.invoice_number or f"OB-AR-{ar_count}",
                         ar.invoice_date or body.opening_date,
                         ar.due_date or body.opening_date,
                         ar.amount,
                         ar.description or "Opening Balance AR",
-                        user_id
+                        user_id,
                     )
 
             # Create AP subledger entries if provided
@@ -686,13 +737,15 @@ async def create_opening_balance(
                             $8, $9
                         )
                         """,
-                        tenant_id, ap.vendor_id, journal_id,
+                        tenant_id,
+                        ap.vendor_id,
+                        journal_id,
                         ap.bill_number or f"OB-AP-{ap_count}",
                         ap.bill_date or body.opening_date,
                         ap.due_date or body.opening_date,
                         ap.amount,
                         ap.description or "Opening Balance AP",
-                        user_id
+                        user_id,
                     )
 
             # Handle inventory opening balances if provided
@@ -702,7 +755,9 @@ async def create_opening_balance(
             if body.inventory_balances:
                 for inv in body.inventory_balances:
                     inventory_count += 1
-                    item_total = inv.total_value or Decimal(str(inv.quantity)) * Decimal(str(inv.unit_cost))
+                    item_total = inv.total_value or Decimal(
+                        str(inv.quantity)
+                    ) * Decimal(str(inv.unit_cost))
                     inventory_total += item_total
 
                     # Update product/item inventory quantity
@@ -714,7 +769,10 @@ async def create_opening_balance(
                             updated_at = NOW()
                         WHERE tenant_id = $3::uuid AND id = $4::uuid
                         """,
-                        inv.quantity, inv.unit_cost, tenant_id, inv.item_id
+                        inv.quantity,
+                        inv.unit_cost,
+                        tenant_id,
+                        inv.item_id,
                     )
 
             # Build balance snapshot
@@ -729,30 +787,33 @@ async def create_opening_balance(
                     "ap_count": ap_count if ap_count > 0 else None,
                     "ap_total": ap_total if ap_count > 0 else None,
                     "inventory_count": inventory_count if inventory_count > 0 else None,
-                    "inventory_total": inventory_total if inventory_count > 0 else None
+                    "inventory_total": inventory_total if inventory_count > 0 else None,
                 },
                 "ar_details": [
                     {
                         "customer_id": ar.customer_id,
                         "customer_name": ar.customer_name,
-                        "amount": ar.amount
-                    } for ar in (body.ar_balances or [])
+                        "amount": ar.amount,
+                    }
+                    for ar in (body.ar_balances or [])
                 ],
                 "ap_details": [
                     {
                         "vendor_id": ap.vendor_id,
                         "vendor_name": ap.vendor_name,
-                        "amount": ap.amount
-                    } for ap in (body.ap_balances or [])
+                        "amount": ap.amount,
+                    }
+                    for ap in (body.ap_balances or [])
                 ],
                 "inventory_details": [
                     {
                         "item_id": inv.item_id,
                         "item_code": inv.item_code,
                         "quantity": inv.quantity,
-                        "unit_cost": inv.unit_cost
-                    } for inv in (body.inventory_balances or [])
-                ]
+                        "unit_cost": inv.unit_cost,
+                    }
+                    for inv in (body.inventory_balances or [])
+                ],
             }
 
             # Create opening balance record
@@ -765,9 +826,15 @@ async def create_opening_balance(
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ACTIVE', $9)
                 RETURNING id
                 """,
-                tenant_id, body.opening_date, body.description,
-                journal_id, ar_journal_id, ap_journal_id, inventory_journal_id,
-                json.dumps(balance_snapshot), user_id
+                tenant_id,
+                body.opening_date,
+                body.description,
+                journal_id,
+                ar_journal_id,
+                ap_journal_id,
+                inventory_journal_id,
+                json.dumps(balance_snapshot),
+                user_id,
             )
 
             logger.info(
@@ -777,7 +844,7 @@ async def create_opening_balance(
                 journal_id=str(journal_id),
                 total_debit=total_debit,
                 total_credit=total_credit,
-                equity_adjustment=equity_adjustment
+                equity_adjustment=equity_adjustment,
             )
 
             return CreateOpeningBalanceResponse(
@@ -792,17 +859,14 @@ async def create_opening_balance(
                     "equity_adjustment": equity_adjustment,
                     "ar_entries": ar_count,
                     "ap_entries": ap_count,
-                    "inventory_entries": inventory_count
+                    "inventory_entries": inventory_count,
                 },
-                warnings=validation.warnings if validation.warnings else None
+                warnings=validation.warnings if validation.warnings else None,
             )
 
 
 @router.put("", response_model=CreateOpeningBalanceResponse)
-async def update_opening_balance(
-    request: Request,
-    body: UpdateOpeningBalanceRequest
-):
+async def update_opening_balance(request: Request, body: UpdateOpeningBalanceRequest):
     """
     Update/supersede opening balance.
 
@@ -829,13 +893,13 @@ async def update_opening_balance(
             FROM opening_balance_records
             WHERE tenant_id = $1 AND status = 'ACTIVE'
             """,
-            tenant_id
+            tenant_id,
         )
 
         if not existing:
             raise HTTPException(
                 status_code=404,
-                detail="No active opening balance to update. Use POST to create one."
+                detail="No active opening balance to update. Use POST to create one.",
             )
 
         # Validate new request
@@ -845,24 +909,23 @@ async def update_opening_balance(
             accounts=body.accounts,
             ar_balances=body.ar_balances,
             ap_balances=body.ap_balances,
-            inventory_balances=body.inventory_balances
+            inventory_balances=body.inventory_balances,
         )
 
-        validation = await validate_opening_balance_request(conn, tenant_id, create_request)
+        validation = await validate_opening_balance_request(
+            conn, tenant_id, create_request
+        )
         if not validation.is_valid:
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "message": "Validation failed",
-                    "errors": validation.errors
-                }
+                detail={"message": "Validation failed", "errors": validation.errors},
             )
 
         async with conn.transaction():
             # Law 13: Advisory lock on opening balance update
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
-                f"OPENING_UPDATE:{tenant_id}"
+                f"OPENING_UPDATE:{tenant_id}",
             )
 
             # Law 5: Check period is open for the opening balance date
@@ -872,12 +935,13 @@ async def update_opening_balance(
                 WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
                 ORDER BY start_date DESC LIMIT 1
                 """,
-                tenant_id, body.opening_date
+                tenant_id,
+                body.opening_date,
             )
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post opening balance to {period['status'].lower()} period"
+                    detail=f"Cannot post opening balance to {period['status'].lower()} period",
                 )
 
             # Mark existing as superseded
@@ -887,7 +951,8 @@ async def update_opening_balance(
                 SET status = 'SUPERSEDED', superseded_at = NOW(), superseded_by = $1
                 WHERE id = $2
                 """,
-                user_id, existing["id"]
+                user_id,
+                existing["id"],
             )
 
             # Create reversal journal for old opening balance
@@ -900,7 +965,7 @@ async def update_opening_balance(
                     FROM journal_lines
                     WHERE journal_id = $1
                     """,
-                    old_journal_id
+                    old_journal_id,
                 )
 
                 # Create reversal journal
@@ -919,9 +984,14 @@ async def update_opening_balance(
                         true, $7, $8
                     ) RETURNING id
                     """,
-                    tenant_id, reversal_number, body.opening_date,
+                    tenant_id,
+                    reversal_number,
+                    body.opening_date,
                     f"Reversal: {body.reason}",
-                    total_debit, total_credit, old_journal_id, user_id
+                    total_debit,
+                    total_credit,
+                    old_journal_id,
+                    user_id,
                 )
 
                 for idx, line in enumerate(old_lines, 1):
@@ -931,15 +1001,18 @@ async def update_opening_balance(
                             journal_id, account_id, memo, debit, credit, line_number
                         ) VALUES ($1, $2, $3, $4, $5, $6)
                         """,
-                        reversal_id, line["account_id"],
+                        reversal_id,
+                        line["account_id"],
                         f"Reversal - {line['memo']}",
-                        line["credit"], line["debit"], idx  # Swap debit/credit
+                        line["credit"],
+                        line["debit"],
+                        idx,  # Swap debit/credit
                     )
 
                 # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
                 await conn.execute(
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_id
+                    reversal_id,
                 )
 
                 # Law 26: Link original journal to reversal
@@ -949,7 +1022,8 @@ async def update_opening_balance(
                     SET reversed_by_id = $1
                     WHERE id = $2
                     """,
-                    reversal_id, old_journal_id
+                    reversal_id,
+                    old_journal_id,
                 )
 
             # Now create new opening balance (reuse create logic)
@@ -966,58 +1040,74 @@ async def update_opening_balance(
                     continue
 
                 if line.debit > 0:
-                    journal_lines.append({
-                        "account_id": str(account["id"]),
-                        "account_code": account["code"],
-                        "account_name": account["name"],
-                        "debit": line.debit,
-                        "credit": 0
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(account["id"]),
+                            "account_code": account["code"],
+                            "account_name": account["name"],
+                            "debit": line.debit,
+                            "credit": 0,
+                        }
+                    )
                 if line.credit > 0:
-                    journal_lines.append({
-                        "account_id": str(account["id"]),
-                        "account_code": account["code"],
-                        "account_name": account["name"],
-                        "debit": 0,
-                        "credit": line.credit
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(account["id"]),
+                            "account_code": account["code"],
+                            "account_name": account["name"],
+                            "debit": 0,
+                            "credit": line.credit,
+                        }
+                    )
 
-                account_snapshot.append({
-                    "code": account["code"],
-                    "name": account["name"],
-                    "type": account["type"],
-                    "debit": line.debit,
-                    "credit": line.credit
-                })
+                account_snapshot.append(
+                    {
+                        "code": account["code"],
+                        "name": account["name"],
+                        "type": account["type"],
+                        "debit": line.debit,
+                        "credit": line.credit,
+                    }
+                )
 
             # Add equity adjustment
             equity_adjustment = 0
             if validation.imbalance != 0:
                 equity_adjustment = abs(validation.imbalance)
                 if validation.imbalance > 0:
-                    journal_lines.append({
-                        "account_id": str(ob_equity["id"]),
-                        "account_code": ob_equity["code"],
-                        "account_name": ob_equity["name"],
-                        "debit": 0,
-                        "credit": validation.imbalance
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(ob_equity["id"]),
+                            "account_code": ob_equity["code"],
+                            "account_name": ob_equity["name"],
+                            "debit": 0,
+                            "credit": validation.imbalance,
+                        }
+                    )
                 else:
-                    journal_lines.append({
-                        "account_id": str(ob_equity["id"]),
-                        "account_code": ob_equity["code"],
-                        "account_name": ob_equity["name"],
-                        "debit": abs(validation.imbalance),
-                        "credit": 0
-                    })
+                    journal_lines.append(
+                        {
+                            "account_id": str(ob_equity["id"]),
+                            "account_code": ob_equity["code"],
+                            "account_name": ob_equity["name"],
+                            "debit": abs(validation.imbalance),
+                            "credit": 0,
+                        }
+                    )
 
-                account_snapshot.append({
-                    "code": ob_equity["code"],
-                    "name": ob_equity["name"],
-                    "type": ob_equity["type"],
-                    "debit": abs(validation.imbalance) if validation.imbalance < 0 else 0,
-                    "credit": validation.imbalance if validation.imbalance > 0 else 0
-                })
+                account_snapshot.append(
+                    {
+                        "code": ob_equity["code"],
+                        "name": ob_equity["name"],
+                        "type": ob_equity["type"],
+                        "debit": abs(validation.imbalance)
+                        if validation.imbalance < 0
+                        else 0,
+                        "credit": validation.imbalance
+                        if validation.imbalance > 0
+                        else 0,
+                    }
+                )
 
             total_debit = sum(l["debit"] for l in journal_lines)
             total_credit = sum(l["credit"] for l in journal_lines)
@@ -1025,7 +1115,8 @@ async def update_opening_balance(
             journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
             existing_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
-                tenant_id, f"OB-{body.opening_date.strftime('%Y%m%d')}%"
+                tenant_id,
+                f"OB-{body.opening_date.strftime('%Y%m%d')}%",
             )
             if existing_count > 0:
                 journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-{str(existing_count + 1).zfill(3)}"
@@ -1041,9 +1132,13 @@ async def update_opening_balance(
                     true, $7
                 ) RETURNING id
                 """,
-                tenant_id, journal_number, body.opening_date,
+                tenant_id,
+                journal_number,
+                body.opening_date,
                 body.description or f"Updated Opening Balance: {body.reason}",
-                total_debit, total_credit, user_id
+                total_debit,
+                total_credit,
+                user_id,
             )
 
             for idx, line in enumerate(journal_lines, 1):
@@ -1053,27 +1148,40 @@ async def update_opening_balance(
                         journal_id, account_id, memo, debit, credit, line_number
                     ) VALUES ($1, $2::uuid, $3, $4, $5, $6)
                     """,
-                    journal_id, line["account_id"],
+                    journal_id,
+                    line["account_id"],
                     f"Opening Balance - {line['account_name']}",
-                    line["debit"], line["credit"], idx
+                    line["debit"],
+                    line["credit"],
+                    idx,
                 )
 
             # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
             await conn.execute(
-                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                journal_id
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
             )
 
             # Handle AR/AP/Inventory (simplified - in production would need more careful handling)
             ar_count = len(body.ar_balances) if body.ar_balances else 0
-            ar_total = sum(ar.amount for ar in body.ar_balances) if body.ar_balances else 0
+            ar_total = (
+                sum(ar.amount for ar in body.ar_balances) if body.ar_balances else 0
+            )
             ap_count = len(body.ap_balances) if body.ap_balances else 0
-            ap_total = sum(ap.amount for ap in body.ap_balances) if body.ap_balances else 0
-            inventory_count = len(body.inventory_balances) if body.inventory_balances else 0
-            inventory_total = sum(
-                inv.total_value or Decimal(str(inv.quantity)) * Decimal(str(inv.unit_cost))
-                for inv in body.inventory_balances
-            ) if body.inventory_balances else 0
+            ap_total = (
+                sum(ap.amount for ap in body.ap_balances) if body.ap_balances else 0
+            )
+            inventory_count = (
+                len(body.inventory_balances) if body.inventory_balances else 0
+            )
+            inventory_total = (
+                sum(
+                    inv.total_value
+                    or Decimal(str(inv.quantity)) * Decimal(str(inv.unit_cost))
+                    for inv in body.inventory_balances
+                )
+                if body.inventory_balances
+                else 0
+            )
 
             balance_snapshot = {
                 "accounts": account_snapshot,
@@ -1086,10 +1194,10 @@ async def update_opening_balance(
                     "ap_count": ap_count if ap_count > 0 else None,
                     "ap_total": ap_total if ap_count > 0 else None,
                     "inventory_count": inventory_count if inventory_count > 0 else None,
-                    "inventory_total": inventory_total if inventory_count > 0 else None
+                    "inventory_total": inventory_total if inventory_count > 0 else None,
                 },
                 "update_reason": body.reason,
-                "supersedes": str(existing["id"])
+                "supersedes": str(existing["id"]),
             }
 
             record_id = await conn.fetchval(
@@ -1100,8 +1208,12 @@ async def update_opening_balance(
                 ) VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6)
                 RETURNING id
                 """,
-                tenant_id, body.opening_date, body.description,
-                journal_id, json.dumps(balance_snapshot), user_id
+                tenant_id,
+                body.opening_date,
+                body.description,
+                journal_id,
+                json.dumps(balance_snapshot),
+                user_id,
             )
 
             logger.info(
@@ -1109,7 +1221,7 @@ async def update_opening_balance(
                 tenant_id=tenant_id,
                 old_record_id=str(existing["id"]),
                 new_record_id=str(record_id),
-                reason=body.reason
+                reason=body.reason,
             )
 
             return CreateOpeningBalanceResponse(
@@ -1122,7 +1234,7 @@ async def update_opening_balance(
                     "opening_date": body.opening_date.isoformat(),
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "equity_adjustment": equity_adjustment
+                    "equity_adjustment": equity_adjustment,
                 },
-                warnings=validation.warnings if validation.warnings else None
+                warnings=validation.warnings if validation.warnings else None,
             )

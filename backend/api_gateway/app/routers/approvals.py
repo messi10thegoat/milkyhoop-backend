@@ -41,16 +41,13 @@ from uuid import UUID
 import logging
 import asyncpg
 from datetime import date, datetime
-import uuid as uuid_module
 
 from ..schemas.approvals import (
     CreateApprovalWorkflowRequest,
     UpdateApprovalWorkflowRequest,
     CreateApprovalLevelRequest,
-    UpdateApprovalLevelRequest,
     ApproveRequestBody,
     RejectRequestBody,
-    EscalateRequestBody,
     CancelRequestBody,
     CreateDelegationRequest,
     ApprovalWorkflowListResponse,
@@ -60,36 +57,26 @@ from ..schemas.approvals import (
     PendingApprovalsResponse,
     DelegationListResponse,
     ApprovalStatisticsResponse,
-    SubmitApprovalResponse,
     ApprovalActionResponse,
     ApprovalResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -103,13 +90,14 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": tenant_id,
         "user_id": UUID(user_id) if user_id else None,
         "user_email": user.get("email"),
-        "user_role": user.get("role")
+        "user_role": user.get("role"),
     }
 
 
 # =============================================================================
 # WORKFLOW MANAGEMENT
 # =============================================================================
+
 
 @router.get("/approval-workflows", response_model=ApprovalWorkflowListResponse)
 async def list_workflows(
@@ -141,7 +129,9 @@ async def list_workflows(
 
             where_clause = " AND ".join(conditions)
 
-            count_query = f"SELECT COUNT(*) FROM approval_workflows aw WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM approval_workflows aw WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             query = f"""
@@ -174,11 +164,7 @@ async def list_workflows(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -196,15 +182,22 @@ async def create_workflow(request: Request, body: CreateApprovalWorkflowRequest)
 
         async with pool.acquire() as conn:
             # Check for duplicate name
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id FROM approval_workflows
                 WHERE tenant_id = $1 AND name = $2
-            """, ctx["tenant_id"], body.name)
+            """,
+                ctx["tenant_id"],
+                body.name,
+            )
 
             if existing:
-                raise HTTPException(status_code=400, detail="Workflow with this name already exists")
+                raise HTTPException(
+                    status_code=400, detail="Workflow with this name already exists"
+                )
 
-            workflow_id = await conn.fetchval("""
+            workflow_id = await conn.fetchval(
+                """
                 INSERT INTO approval_workflows (
                     tenant_id, name, description, document_type,
                     min_amount, max_amount, is_sequential, auto_approve_below_min,
@@ -220,13 +213,13 @@ async def create_workflow(request: Request, body: CreateApprovalWorkflowRequest)
                 body.max_amount,
                 body.is_sequential,
                 body.auto_approve_below_min,
-                ctx["user_id"]
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Approval workflow created",
-                "data": {"id": str(workflow_id)}
+                "data": {"id": str(workflow_id)},
             }
 
     except HTTPException:
@@ -236,7 +229,9 @@ async def create_workflow(request: Request, body: CreateApprovalWorkflowRequest)
         raise HTTPException(status_code=500, detail="Failed to create workflow")
 
 
-@router.get("/approval-workflows/{workflow_id}", response_model=ApprovalWorkflowDetailResponse)
+@router.get(
+    "/approval-workflows/{workflow_id}", response_model=ApprovalWorkflowDetailResponse
+)
 async def get_workflow(request: Request, workflow_id: UUID):
     """Get workflow detail with levels."""
     try:
@@ -244,22 +239,29 @@ async def get_workflow(request: Request, workflow_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM approval_workflows
                 WHERE id = $1 AND tenant_id = $2
-            """, workflow_id, ctx["tenant_id"])
+            """,
+                workflow_id,
+                ctx["tenant_id"],
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Workflow not found")
 
             # Get levels
-            levels = await conn.fetch("""
+            levels = await conn.fetch(
+                """
                 SELECT id, level_order, name, approver_type, approver_user_id,
                        approver_role, can_reject, auto_escalate_hours
                 FROM approval_levels
                 WHERE workflow_id = $1
                 ORDER BY level_order
-            """, workflow_id)
+            """,
+                workflow_id,
+            )
 
             return {
                 "success": True,
@@ -279,7 +281,9 @@ async def get_workflow(request: Request, workflow_id: UUID):
                             "level_order": lv["level_order"],
                             "name": lv["name"],
                             "approver_type": lv["approver_type"],
-                            "approver_user_id": str(lv["approver_user_id"]) if lv["approver_user_id"] else None,
+                            "approver_user_id": str(lv["approver_user_id"])
+                            if lv["approver_user_id"]
+                            else None,
                             "approver_role": lv["approver_role"],
                             "can_reject": lv["can_reject"],
                             "auto_escalate_hours": lv["auto_escalate_hours"],
@@ -289,7 +293,7 @@ async def get_workflow(request: Request, workflow_id: UUID):
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                     "created_by": str(row["created_by"]) if row["created_by"] else None,
-                }
+                },
             }
 
     except HTTPException:
@@ -301,9 +305,7 @@ async def get_workflow(request: Request, workflow_id: UUID):
 
 @router.patch("/approval-workflows/{workflow_id}", response_model=ApprovalResponse)
 async def update_workflow(
-    request: Request,
-    workflow_id: UUID,
-    body: UpdateApprovalWorkflowRequest
+    request: Request, workflow_id: UUID, body: UpdateApprovalWorkflowRequest
 ):
     """Update an approval workflow."""
     try:
@@ -311,10 +313,14 @@ async def update_workflow(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id FROM approval_workflows
                 WHERE id = $1 AND tenant_id = $2
-            """, workflow_id, ctx["tenant_id"])
+            """,
+                workflow_id,
+                ctx["tenant_id"],
+            )
 
             if not existing:
                 raise HTTPException(status_code=404, detail="Workflow not found")
@@ -364,16 +370,19 @@ async def update_workflow(
             updates.append("updated_at = NOW()")
             params.extend([workflow_id, ctx["tenant_id"]])
 
-            await conn.execute(f"""
+            await conn.execute(
+                f"""
                 UPDATE approval_workflows
                 SET {", ".join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            """, *params)
+            """,
+                *params,
+            )
 
             return {
                 "success": True,
                 "message": "Workflow updated",
-                "data": {"id": str(workflow_id)}
+                "data": {"id": str(workflow_id)},
             }
 
     except HTTPException:
@@ -391,11 +400,15 @@ async def deactivate_workflow(request: Request, workflow_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute("""
+            result = await conn.execute(
+                """
                 UPDATE approval_workflows
                 SET is_active = false, updated_at = NOW()
                 WHERE id = $1 AND tenant_id = $2
-            """, workflow_id, ctx["tenant_id"])
+            """,
+                workflow_id,
+                ctx["tenant_id"],
+            )
 
             if result == "UPDATE 0":
                 raise HTTPException(status_code=404, detail="Workflow not found")
@@ -403,7 +416,7 @@ async def deactivate_workflow(request: Request, workflow_id: UUID):
             return {
                 "success": True,
                 "message": "Workflow deactivated",
-                "data": {"id": str(workflow_id)}
+                "data": {"id": str(workflow_id)},
             }
 
     except HTTPException:
@@ -417,11 +430,14 @@ async def deactivate_workflow(request: Request, workflow_id: UUID):
 # APPROVAL LEVELS
 # =============================================================================
 
-@router.post("/approval-workflows/{workflow_id}/levels", response_model=ApprovalResponse, status_code=201)
+
+@router.post(
+    "/approval-workflows/{workflow_id}/levels",
+    response_model=ApprovalResponse,
+    status_code=201,
+)
 async def add_approval_level(
-    request: Request,
-    workflow_id: UUID,
-    body: CreateApprovalLevelRequest
+    request: Request, workflow_id: UUID, body: CreateApprovalLevelRequest
 ):
     """Add a level to a workflow."""
     try:
@@ -430,15 +446,20 @@ async def add_approval_level(
 
         async with pool.acquire() as conn:
             # Verify workflow exists
-            workflow = await conn.fetchrow("""
+            workflow = await conn.fetchrow(
+                """
                 SELECT id FROM approval_workflows
                 WHERE id = $1 AND tenant_id = $2
-            """, workflow_id, ctx["tenant_id"])
+            """,
+                workflow_id,
+                ctx["tenant_id"],
+            )
 
             if not workflow:
                 raise HTTPException(status_code=404, detail="Workflow not found")
 
-            level_id = await conn.fetchval("""
+            level_id = await conn.fetchval(
+                """
                 INSERT INTO approval_levels (
                     workflow_id, level_order, name, approver_type,
                     approver_user_id, approver_role, approver_user_ids, approver_roles,
@@ -473,13 +494,13 @@ async def add_approval_level(
                 body.can_reject,
                 body.notify_on_pending,
                 body.notify_on_approved,
-                body.notify_on_rejected
+                body.notify_on_rejected,
             )
 
             return {
                 "success": True,
                 "message": "Approval level added/updated",
-                "data": {"id": str(level_id)}
+                "data": {"id": str(level_id)},
             }
 
     except HTTPException:
@@ -489,12 +510,11 @@ async def add_approval_level(
         raise HTTPException(status_code=500, detail="Failed to add approval level")
 
 
-@router.delete("/approval-workflows/{workflow_id}/levels/{level_id}", response_model=ApprovalResponse)
-async def remove_approval_level(
-    request: Request,
-    workflow_id: UUID,
-    level_id: UUID
-):
+@router.delete(
+    "/approval-workflows/{workflow_id}/levels/{level_id}",
+    response_model=ApprovalResponse,
+)
+async def remove_approval_level(request: Request, workflow_id: UUID, level_id: UUID):
     """Remove a level from a workflow."""
     try:
         ctx = get_user_context(request)
@@ -502,18 +522,26 @@ async def remove_approval_level(
 
         async with pool.acquire() as conn:
             # Verify workflow ownership
-            workflow = await conn.fetchrow("""
+            workflow = await conn.fetchrow(
+                """
                 SELECT id FROM approval_workflows
                 WHERE id = $1 AND tenant_id = $2
-            """, workflow_id, ctx["tenant_id"])
+            """,
+                workflow_id,
+                ctx["tenant_id"],
+            )
 
             if not workflow:
                 raise HTTPException(status_code=404, detail="Workflow not found")
 
-            result = await conn.execute("""
+            result = await conn.execute(
+                """
                 DELETE FROM approval_levels
                 WHERE id = $1 AND workflow_id = $2
-            """, level_id, workflow_id)
+            """,
+                level_id,
+                workflow_id,
+            )
 
             if result == "DELETE 0":
                 raise HTTPException(status_code=404, detail="Level not found")
@@ -521,7 +549,7 @@ async def remove_approval_level(
             return {
                 "success": True,
                 "message": "Approval level removed",
-                "data": {"id": str(level_id)}
+                "data": {"id": str(level_id)},
             }
 
     except HTTPException:
@@ -535,10 +563,13 @@ async def remove_approval_level(
 # APPROVAL REQUESTS
 # =============================================================================
 
+
 @router.get("/approval-requests", response_model=ApprovalRequestListResponse)
 async def list_approval_requests(
     request: Request,
-    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(None),
+    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(
+        None
+    ),
     document_type: Optional[str] = Query(None),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
@@ -577,7 +608,9 @@ async def list_approval_requests(
 
             where_clause = " AND ".join(conditions)
 
-            count_query = f"SELECT COUNT(*) FROM approval_requests ar WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM approval_requests ar WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             query = f"""
@@ -610,11 +643,7 @@ async def list_approval_requests(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -631,9 +660,14 @@ async def get_pending_approvals(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_pending_approvals_for_user($1, $2, $3)
-            """, ctx["tenant_id"], ctx["user_id"], ctx.get("user_role", ""))
+            """,
+                ctx["tenant_id"],
+                ctx["user_id"],
+                ctx.get("user_role", ""),
+            )
 
             items = []
             for row in rows:
@@ -642,24 +676,23 @@ async def get_pending_approvals(request: Request):
                     delta = datetime.utcnow() - row["requested_at"].replace(tzinfo=None)
                     waiting_hours = round(delta.total_seconds() / 3600, 1)
 
-                items.append({
-                    "request_id": str(row["request_id"]),
-                    "workflow_name": row["workflow_name"],
-                    "document_type": row["document_type"],
-                    "document_id": str(row["document_id"]),
-                    "document_number": row["document_number"],
-                    "document_amount": row["document_amount"],
-                    "current_level": row["current_level"],
-                    "level_name": row["level_name"],
-                    "requested_by": str(row["requested_by"]),
-                    "requested_at": row["requested_at"],
-                    "waiting_hours": waiting_hours
-                })
+                items.append(
+                    {
+                        "request_id": str(row["request_id"]),
+                        "workflow_name": row["workflow_name"],
+                        "document_type": row["document_type"],
+                        "document_id": str(row["document_id"]),
+                        "document_number": row["document_number"],
+                        "document_amount": row["document_amount"],
+                        "current_level": row["current_level"],
+                        "level_name": row["level_name"],
+                        "requested_by": str(row["requested_by"]),
+                        "requested_at": row["requested_at"],
+                        "waiting_hours": waiting_hours,
+                    }
+                )
 
-            return {
-                "items": items,
-                "total": len(items)
-            }
+            return {"items": items, "total": len(items)}
 
     except HTTPException:
         raise
@@ -671,7 +704,9 @@ async def get_pending_approvals(request: Request):
 @router.get("/approval-requests/submitted")
 async def get_submitted_requests(
     request: Request,
-    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(None),
+    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(
+        None
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
 ):
@@ -692,7 +727,9 @@ async def get_submitted_requests(
 
             where_clause = " AND ".join(conditions)
 
-            count_query = f"SELECT COUNT(*) FROM approval_requests ar WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM approval_requests ar WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             query = f"""
@@ -721,12 +758,14 @@ async def get_submitted_requests(
                         "current_level": row["current_level"],
                         "status": row["status"],
                         "requested_at": row["requested_at"].isoformat(),
-                        "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None
+                        "completed_at": row["completed_at"].isoformat()
+                        if row["completed_at"]
+                        else None,
                     }
                     for row in rows
                 ],
                 "total": total,
-                "has_more": (skip + limit) < total
+                "has_more": (skip + limit) < total,
             }
 
     except HTTPException:
@@ -736,7 +775,9 @@ async def get_submitted_requests(
         raise HTTPException(status_code=500, detail="Failed to get submitted requests")
 
 
-@router.get("/approval-requests/{request_id}", response_model=ApprovalRequestDetailResponse)
+@router.get(
+    "/approval-requests/{request_id}", response_model=ApprovalRequestDetailResponse
+)
 async def get_approval_request(request: Request, request_id: UUID):
     """Get approval request detail with history."""
     try:
@@ -744,17 +785,25 @@ async def get_approval_request(request: Request, request_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM get_approval_request_detail($1)
-            """, request_id)
+            """,
+                request_id,
+            )
 
             if not row:
-                raise HTTPException(status_code=404, detail="Approval request not found")
+                raise HTTPException(
+                    status_code=404, detail="Approval request not found"
+                )
 
             # Get total levels
-            total_levels = await conn.fetchval("""
+            total_levels = await conn.fetchval(
+                """
                 SELECT COUNT(*) FROM approval_levels WHERE workflow_id = $1
-            """, row["workflow_id"])
+            """,
+                row["workflow_id"],
+            )
 
             actions = row["actions"] or []
 
@@ -782,11 +831,11 @@ async def get_approval_request(request: Request, request_id: UUID):
                             "action": a["action"],
                             "action_by": str(a["action_by"]),
                             "action_at": a["action_at"],
-                            "comments": a.get("comments")
+                            "comments": a.get("comments"),
                         }
                         for a in actions
-                    ]
-                }
+                    ],
+                },
             }
 
     except HTTPException:
@@ -800,7 +849,10 @@ async def get_approval_request(request: Request, request_id: UUID):
 # APPROVAL ACTIONS
 # =============================================================================
 
-@router.post("/approval-requests/{request_id}/approve", response_model=ApprovalActionResponse)
+
+@router.post(
+    "/approval-requests/{request_id}/approve", response_model=ApprovalActionResponse
+)
 async def approve_request(request: Request, request_id: UUID, body: ApproveRequestBody):
     """Approve current level of an approval request."""
     try:
@@ -810,77 +862,116 @@ async def approve_request(request: Request, request_id: UUID, body: ApproveReque
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get request
-                ar = await conn.fetchrow("""
+                ar = await conn.fetchrow(
+                    """
                     SELECT ar.*, aw.is_sequential
                     FROM approval_requests ar
                     JOIN approval_workflows aw ON ar.workflow_id = aw.id
                     WHERE ar.id = $1 AND ar.tenant_id = $2 AND ar.status = 'pending'
-                """, request_id, ctx["tenant_id"])
+                """,
+                    request_id,
+                    ctx["tenant_id"],
+                )
 
                 if not ar:
-                    raise HTTPException(status_code=404, detail="Pending approval request not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending approval request not found"
+                    )
 
                 # Get current level
-                level = await conn.fetchrow("""
+                level = await conn.fetchrow(
+                    """
                     SELECT * FROM approval_levels
                     WHERE workflow_id = $1 AND level_order = $2
-                """, ar["workflow_id"], ar["current_level"])
+                """,
+                    ar["workflow_id"],
+                    ar["current_level"],
+                )
 
                 if not level:
-                    raise HTTPException(status_code=400, detail="Approval level not found")
+                    raise HTTPException(
+                        status_code=400, detail="Approval level not found"
+                    )
 
                 # Check if user can approve
-                can_approve = await conn.fetchval("""
+                can_approve = await conn.fetchval(
+                    """
                     SELECT can_user_approve($1, $2, $3)
-                """, level["id"], ctx["user_id"], ctx.get("user_role", ""))
+                """,
+                    level["id"],
+                    ctx["user_id"],
+                    ctx.get("user_role", ""),
+                )
 
                 if not can_approve:
-                    raise HTTPException(status_code=403, detail="Not authorized to approve")
+                    raise HTTPException(
+                        status_code=403, detail="Not authorized to approve"
+                    )
 
                 # Record action
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO approval_actions (request_id, level_id, action, action_by, comments)
                     VALUES ($1, $2, 'approved', $3, $4)
-                """, request_id, level["id"], ctx["user_id"], body.comments)
+                """,
+                    request_id,
+                    level["id"],
+                    ctx["user_id"],
+                    body.comments,
+                )
 
                 # Check if more levels
-                next_level = await conn.fetchrow("""
+                next_level = await conn.fetchrow(
+                    """
                     SELECT * FROM approval_levels
                     WHERE workflow_id = $1 AND level_order = $2
-                """, ar["workflow_id"], ar["current_level"] + 1)
+                """,
+                    ar["workflow_id"],
+                    ar["current_level"] + 1,
+                )
 
                 if next_level:
                     # Move to next level
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE approval_requests
                         SET current_level = current_level + 1
                         WHERE id = $1
-                    """, request_id)
+                    """,
+                        request_id,
+                    )
 
                     return {
                         "success": True,
                         "status": "pending",
                         "message": f"Approved. Moved to level {ar['current_level'] + 1}",
-                        "next_level": ar["current_level"] + 1
+                        "next_level": ar["current_level"] + 1,
                     }
                 else:
                     # All levels approved
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE approval_requests
                         SET status = 'approved', completed_at = NOW()
                         WHERE id = $1
-                    """, request_id)
+                    """,
+                        request_id,
+                    )
 
                     # Update document status
                     await update_document_approval_status(
-                        conn, ar["document_type"], ar["document_id"], "approved", request_id
+                        conn,
+                        ar["document_type"],
+                        ar["document_id"],
+                        "approved",
+                        request_id,
                     )
 
                     return {
                         "success": True,
                         "status": "approved",
                         "message": "Fully approved",
-                        "next_level": None
+                        "next_level": None,
                     }
 
     except HTTPException:
@@ -890,7 +981,9 @@ async def approve_request(request: Request, request_id: UUID, body: ApproveReque
         raise HTTPException(status_code=500, detail="Failed to approve request")
 
 
-@router.post("/approval-requests/{request_id}/reject", response_model=ApprovalActionResponse)
+@router.post(
+    "/approval-requests/{request_id}/reject", response_model=ApprovalActionResponse
+)
 async def reject_request(request: Request, request_id: UUID, body: RejectRequestBody):
     """Reject an approval request."""
     try:
@@ -900,43 +993,71 @@ async def reject_request(request: Request, request_id: UUID, body: RejectRequest
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get request
-                ar = await conn.fetchrow("""
+                ar = await conn.fetchrow(
+                    """
                     SELECT ar.* FROM approval_requests ar
                     WHERE ar.id = $1 AND ar.tenant_id = $2 AND ar.status = 'pending'
-                """, request_id, ctx["tenant_id"])
+                """,
+                    request_id,
+                    ctx["tenant_id"],
+                )
 
                 if not ar:
-                    raise HTTPException(status_code=404, detail="Pending approval request not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending approval request not found"
+                    )
 
                 # Get current level
-                level = await conn.fetchrow("""
+                level = await conn.fetchrow(
+                    """
                     SELECT * FROM approval_levels
                     WHERE workflow_id = $1 AND level_order = $2
-                """, ar["workflow_id"], ar["current_level"])
+                """,
+                    ar["workflow_id"],
+                    ar["current_level"],
+                )
 
                 if not level or not level["can_reject"]:
-                    raise HTTPException(status_code=400, detail="This level cannot reject")
+                    raise HTTPException(
+                        status_code=400, detail="This level cannot reject"
+                    )
 
                 # Check if user can approve/reject
-                can_approve = await conn.fetchval("""
+                can_approve = await conn.fetchval(
+                    """
                     SELECT can_user_approve($1, $2, $3)
-                """, level["id"], ctx["user_id"], ctx.get("user_role", ""))
+                """,
+                    level["id"],
+                    ctx["user_id"],
+                    ctx.get("user_role", ""),
+                )
 
                 if not can_approve:
-                    raise HTTPException(status_code=403, detail="Not authorized to reject")
+                    raise HTTPException(
+                        status_code=403, detail="Not authorized to reject"
+                    )
 
                 # Record action
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO approval_actions (request_id, level_id, action, action_by, comments)
                     VALUES ($1, $2, 'rejected', $3, $4)
-                """, request_id, level["id"], ctx["user_id"], body.comments)
+                """,
+                    request_id,
+                    level["id"],
+                    ctx["user_id"],
+                    body.comments,
+                )
 
                 # Update request
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE approval_requests
                     SET status = 'rejected', completed_at = NOW()
                     WHERE id = $1
-                """, request_id)
+                """,
+                    request_id,
+                )
 
                 # Update document status
                 await update_document_approval_status(
@@ -947,7 +1068,7 @@ async def reject_request(request: Request, request_id: UUID, body: RejectRequest
                     "success": True,
                     "status": "rejected",
                     "message": "Request rejected",
-                    "next_level": None
+                    "next_level": None,
                 }
 
     except HTTPException:
@@ -957,7 +1078,9 @@ async def reject_request(request: Request, request_id: UUID, body: RejectRequest
         raise HTTPException(status_code=500, detail="Failed to reject request")
 
 
-@router.post("/approval-requests/{request_id}/cancel", response_model=ApprovalActionResponse)
+@router.post(
+    "/approval-requests/{request_id}/cancel", response_model=ApprovalActionResponse
+)
 async def cancel_request(request: Request, request_id: UUID, body: CancelRequestBody):
     """Cancel an approval request (by requester only)."""
     try:
@@ -966,33 +1089,49 @@ async def cancel_request(request: Request, request_id: UUID, body: CancelRequest
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                ar = await conn.fetchrow("""
+                ar = await conn.fetchrow(
+                    """
                     SELECT * FROM approval_requests
                     WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
-                """, request_id, ctx["tenant_id"])
+                """,
+                    request_id,
+                    ctx["tenant_id"],
+                )
 
                 if not ar:
-                    raise HTTPException(status_code=404, detail="Pending approval request not found")
+                    raise HTTPException(
+                        status_code=404, detail="Pending approval request not found"
+                    )
 
                 if ar["requested_by"] != ctx["user_id"]:
-                    raise HTTPException(status_code=403, detail="Only requester can cancel")
+                    raise HTTPException(
+                        status_code=403, detail="Only requester can cancel"
+                    )
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE approval_requests
                     SET status = 'cancelled', completed_at = NOW(), notes = $2
                     WHERE id = $1
-                """, request_id, body.reason)
+                """,
+                    request_id,
+                    body.reason,
+                )
 
                 # Update document status
                 await update_document_approval_status(
-                    conn, ar["document_type"], ar["document_id"], "cancelled", request_id
+                    conn,
+                    ar["document_type"],
+                    ar["document_id"],
+                    "cancelled",
+                    request_id,
                 )
 
                 return {
                     "success": True,
                     "status": "cancelled",
                     "message": "Request cancelled",
-                    "next_level": None
+                    "next_level": None,
                 }
 
     except HTTPException:
@@ -1002,7 +1141,9 @@ async def cancel_request(request: Request, request_id: UUID, body: CancelRequest
         raise HTTPException(status_code=500, detail="Failed to cancel request")
 
 
-async def update_document_approval_status(conn, document_type: str, document_id: UUID, status: str, request_id: UUID):
+async def update_document_approval_status(
+    conn, document_type: str, document_id: UUID, status: str, request_id: UUID
+):
     """Update the approval status on the source document."""
     table_map = {
         "purchase_order": "purchase_orders",
@@ -1012,16 +1153,22 @@ async def update_document_approval_status(conn, document_type: str, document_id:
 
     table = table_map.get(document_type)
     if table:
-        await conn.execute(f"""
+        await conn.execute(
+            f"""
             UPDATE {table}
             SET approval_status = $1, approval_request_id = $2
             WHERE id = $3
-        """, status, request_id, document_id)
+        """,
+            status,
+            request_id,
+            document_id,
+        )
 
 
 # =============================================================================
 # DELEGATION
 # =============================================================================
+
 
 @router.get("/approval-delegates", response_model=DelegationListResponse)
 async def list_delegations(request: Request):
@@ -1031,13 +1178,17 @@ async def list_delegations(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, approver_user_id, delegate_user_id, start_date, end_date,
                        workflow_ids, is_active, created_at
                 FROM approval_delegates
                 WHERE tenant_id = $1 AND approver_user_id = $2
                 ORDER BY start_date DESC
-            """, ctx["tenant_id"], ctx["user_id"])
+            """,
+                ctx["tenant_id"],
+                ctx["user_id"],
+            )
 
             return {
                 "items": [
@@ -1047,13 +1198,15 @@ async def list_delegations(request: Request):
                         "delegate_user_id": str(row["delegate_user_id"]),
                         "start_date": row["start_date"],
                         "end_date": row["end_date"],
-                        "workflow_ids": [str(w) for w in row["workflow_ids"]] if row["workflow_ids"] else None,
+                        "workflow_ids": [str(w) for w in row["workflow_ids"]]
+                        if row["workflow_ids"]
+                        else None,
                         "is_active": row["is_active"],
-                        "created_at": row["created_at"].isoformat()
+                        "created_at": row["created_at"].isoformat(),
                     }
                     for row in rows
                 ],
-                "total": len(rows)
+                "total": len(rows),
             }
 
     except HTTPException:
@@ -1071,7 +1224,8 @@ async def create_delegation(request: Request, body: CreateDelegationRequest):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            delegation_id = await conn.fetchval("""
+            delegation_id = await conn.fetchval(
+                """
                 INSERT INTO approval_delegates (
                     tenant_id, approver_user_id, delegate_user_id,
                     start_date, end_date, workflow_ids, created_by
@@ -1084,13 +1238,13 @@ async def create_delegation(request: Request, body: CreateDelegationRequest):
                 body.start_date,
                 body.end_date,
                 body.workflow_ids,
-                ctx["user_id"]
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Delegation created",
-                "data": {"id": str(delegation_id)}
+                "data": {"id": str(delegation_id)},
             }
 
     except HTTPException:
@@ -1108,11 +1262,16 @@ async def remove_delegation(request: Request, delegation_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute("""
+            result = await conn.execute(
+                """
                 UPDATE approval_delegates
                 SET is_active = false
                 WHERE id = $1 AND tenant_id = $2 AND approver_user_id = $3
-            """, delegation_id, ctx["tenant_id"], ctx["user_id"])
+            """,
+                delegation_id,
+                ctx["tenant_id"],
+                ctx["user_id"],
+            )
 
             if result == "UPDATE 0":
                 raise HTTPException(status_code=404, detail="Delegation not found")
@@ -1120,7 +1279,7 @@ async def remove_delegation(request: Request, delegation_id: UUID):
             return {
                 "success": True,
                 "message": "Delegation removed",
-                "data": {"id": str(delegation_id)}
+                "data": {"id": str(delegation_id)},
             }
 
     except HTTPException:
@@ -1134,6 +1293,7 @@ async def remove_delegation(request: Request, delegation_id: UUID):
 # REPORTS
 # =============================================================================
 
+
 @router.get("/approval-requests/statistics", response_model=ApprovalStatisticsResponse)
 async def get_approval_statistics(
     request: Request,
@@ -1146,9 +1306,14 @@ async def get_approval_statistics(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT * FROM get_approval_statistics($1, $2, $3)
-            """, ctx["tenant_id"], from_date, to_date)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
 
             return {
                 "success": True,
@@ -1160,14 +1325,16 @@ async def get_approval_statistics(
                         "approved_count": row["approved_count"],
                         "rejected_count": row["rejected_count"],
                         "cancelled_count": row["cancelled_count"],
-                        "avg_approval_hours": float(row["avg_approval_hours"]) if row["avg_approval_hours"] else None
+                        "avg_approval_hours": float(row["avg_approval_hours"])
+                        if row["avg_approval_hours"]
+                        else None,
                     }
                     for row in rows
                 ],
                 "period": {
                     "from_date": from_date.isoformat() if from_date else None,
-                    "to_date": to_date.isoformat() if to_date else None
-                }
+                    "to_date": to_date.isoformat() if to_date else None,
+                },
             }
 
     except HTTPException:
@@ -1189,7 +1356,8 @@ async def get_turnaround_time(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT aw.name as workflow_name, aw.document_type,
                        AVG(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as avg_hours,
                        MIN(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as min_hours,
@@ -1204,7 +1372,11 @@ async def get_turnaround_time(
                 AND ($3::DATE IS NULL OR ar.requested_at::DATE <= $3)
                 GROUP BY aw.name, aw.document_type
                 ORDER BY avg_hours DESC
-            """, ctx["tenant_id"], from_date, to_date)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
 
             return {
                 "success": True,
@@ -1212,13 +1384,19 @@ async def get_turnaround_time(
                     {
                         "workflow_name": row["workflow_name"],
                         "document_type": row["document_type"],
-                        "avg_hours": round(row["avg_hours"], 1) if row["avg_hours"] else 0,
-                        "min_hours": round(row["min_hours"], 1) if row["min_hours"] else 0,
-                        "max_hours": round(row["max_hours"], 1) if row["max_hours"] else 0,
-                        "total_completed": row["total_completed"]
+                        "avg_hours": round(row["avg_hours"], 1)
+                        if row["avg_hours"]
+                        else 0,
+                        "min_hours": round(row["min_hours"], 1)
+                        if row["min_hours"]
+                        else 0,
+                        "max_hours": round(row["max_hours"], 1)
+                        if row["max_hours"]
+                        else 0,
+                        "total_completed": row["total_completed"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:

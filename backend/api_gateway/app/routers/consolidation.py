@@ -10,7 +10,6 @@ NOTE: Consolidation is reporting only - no journal entries are posted.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
-from datetime import date
 import logging
 import asyncpg
 import json
@@ -32,38 +31,26 @@ from ..schemas.consolidation import (
     ConsolidationRunListResponse,
     ConsolidationRunDetailResponse,
     ProcessConsolidationRequest,
-    ConsolidatedTrialBalanceResponse,
-    ConsolidatedBalanceSheetResponse,
-    ConsolidatedIncomeStatementResponse,
     EliminationEntriesResponse,
     ConsolidationResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -73,10 +60,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -112,7 +96,9 @@ async def list_groups(
             param_idx = 2
 
             if search:
-                conditions.append(f"(cg.name ILIKE ${param_idx} OR cg.code ILIKE ${param_idx})")
+                conditions.append(
+                    f"(cg.name ILIKE ${param_idx} OR cg.code ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -122,10 +108,16 @@ async def list_groups(
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
-            sort_column = {"name": "cg.name", "code": "cg.code", "created_at": "cg.created_at"}[sort_by]
+            sort_column = {
+                "name": "cg.name",
+                "code": "cg.code",
+                "created_at": "cg.created_at",
+            }[sort_by]
 
             # Count total
-            count_query = f"SELECT COUNT(*) FROM consolidation_groups cg WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM consolidation_groups cg WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             # Fetch groups with entity count
@@ -153,17 +145,15 @@ async def list_groups(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing consolidation groups: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list consolidation groups")
+        raise HTTPException(
+            status_code=500, detail="Failed to list consolidation groups"
+        )
 
 
 @router.post("/groups", response_model=ConsolidationResponse, status_code=201)
@@ -177,10 +167,14 @@ async def create_group(request: Request, body: CreateConsolidationGroupRequest):
             # Check duplicate code
             exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND code = $2",
-                ctx["tenant_id"], body.code
+                ctx["tenant_id"],
+                body.code,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Consolidation group with code '{body.code}' already exists")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Consolidation group with code '{body.code}' already exists",
+                )
 
             # Insert group
             query = """
@@ -192,22 +186,30 @@ async def create_group(request: Request, body: CreateConsolidationGroupRequest):
             """
             group_id = await conn.fetchval(
                 query,
-                ctx["tenant_id"], body.code, body.name, body.description,
-                body.consolidation_currency_id, body.elimination_method,
-                body.fiscal_year_end_month, body.fiscal_year_end_day, ctx["user_id"]
+                ctx["tenant_id"],
+                body.code,
+                body.name,
+                body.description,
+                body.consolidation_currency_id,
+                body.elimination_method,
+                body.fiscal_year_end_month,
+                body.fiscal_year_end_day,
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Consolidation group created successfully",
-                "data": {"id": str(group_id)}
+                "data": {"id": str(group_id)},
             }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating consolidation group: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create consolidation group")
+        raise HTTPException(
+            status_code=500, detail="Failed to create consolidation group"
+        )
 
 
 @router.get("/groups/{group_id}", response_model=ConsolidationGroupDetailResponse)
@@ -227,7 +229,9 @@ async def get_group(request: Request, group_id: UUID):
             """
             row = await conn.fetchrow(query, ctx["tenant_id"], group_id)
             if not row:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             # Get entities
             entities_query = """
@@ -251,9 +255,13 @@ async def get_group(request: Request, group_id: UUID):
                     "entity_code": e["entity_code"],
                     "ownership_percent": e["ownership_percent"],
                     "is_parent": e["is_parent"],
-                    "parent_entity_id": str(e["parent_entity_id"]) if e["parent_entity_id"] else None,
+                    "parent_entity_id": str(e["parent_entity_id"])
+                    if e["parent_entity_id"]
+                    else None,
                     "parent_entity_name": e["parent_entity_name"],
-                    "functional_currency_id": str(e["functional_currency_id"]) if e["functional_currency_id"] else None,
+                    "functional_currency_id": str(e["functional_currency_id"])
+                    if e["functional_currency_id"]
+                    else None,
                     "functional_currency_code": e["functional_currency_code"],
                     "consolidation_type": e["consolidation_type"],
                     "is_active": e["is_active"],
@@ -269,7 +277,9 @@ async def get_group(request: Request, group_id: UUID):
                     "code": row["code"],
                     "name": row["name"],
                     "description": row["description"],
-                    "consolidation_currency_id": str(row["consolidation_currency_id"]) if row["consolidation_currency_id"] else None,
+                    "consolidation_currency_id": str(row["consolidation_currency_id"])
+                    if row["consolidation_currency_id"]
+                    else None,
                     "consolidation_currency_code": row["currency_code"],
                     "elimination_method": row["elimination_method"],
                     "fiscal_year_end_month": row["fiscal_year_end_month"],
@@ -278,7 +288,7 @@ async def get_group(request: Request, group_id: UUID):
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "entities": entities,
-                }
+                },
             }
 
     except HTTPException:
@@ -289,7 +299,9 @@ async def get_group(request: Request, group_id: UUID):
 
 
 @router.patch("/groups/{group_id}", response_model=ConsolidationResponse)
-async def update_group(request: Request, group_id: UUID, body: UpdateConsolidationGroupRequest):
+async def update_group(
+    request: Request, group_id: UUID, body: UpdateConsolidationGroupRequest
+):
     """Update consolidation group."""
     try:
         ctx = get_user_context(request)
@@ -299,10 +311,13 @@ async def update_group(request: Request, group_id: UUID, body: UpdateConsolidati
             # Check exists
             exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             # Build update
             updates = []
@@ -318,7 +333,7 @@ async def update_group(request: Request, group_id: UUID, body: UpdateConsolidati
             if not updates:
                 return {"success": True, "message": "No changes to update"}
 
-            updates.append(f"updated_at = NOW()")
+            updates.append("updated_at = NOW()")
             params.extend([ctx["tenant_id"], group_id])
 
             query = f"""
@@ -328,13 +343,18 @@ async def update_group(request: Request, group_id: UUID, body: UpdateConsolidati
             """
             await conn.execute(query, *params)
 
-            return {"success": True, "message": "Consolidation group updated successfully"}
+            return {
+                "success": True,
+                "message": "Consolidation group updated successfully",
+            }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating consolidation group: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update consolidation group")
+        raise HTTPException(
+            status_code=500, detail="Failed to update consolidation group"
+        )
 
 
 @router.delete("/groups/{group_id}", response_model=ConsolidationResponse)
@@ -351,10 +371,13 @@ async def delete_group(request: Request, group_id: UUID):
                 SET is_active = false, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2
                 """,
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             return {"success": True, "message": "Consolidation group deactivated"}
 
@@ -362,14 +385,22 @@ async def delete_group(request: Request, group_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error deleting consolidation group: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete consolidation group")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete consolidation group"
+        )
 
 
 # =============================================================================
 # CONSOLIDATION ENTITIES
 # =============================================================================
-@router.post("/groups/{group_id}/entities", response_model=ConsolidationEntityResponse, status_code=201)
-async def add_entity(request: Request, group_id: UUID, body: CreateConsolidationEntityRequest):
+@router.post(
+    "/groups/{group_id}/entities",
+    response_model=ConsolidationEntityResponse,
+    status_code=201,
+)
+async def add_entity(
+    request: Request, group_id: UUID, body: CreateConsolidationEntityRequest
+):
     """Add entity to consolidation group."""
     try:
         ctx = get_user_context(request)
@@ -379,18 +410,24 @@ async def add_entity(request: Request, group_id: UUID, body: CreateConsolidation
             # Check group exists
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             # Check duplicate entity
             exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_entities WHERE group_id = $1 AND entity_tenant_id = $2",
-                group_id, body.entity_tenant_id
+                group_id,
+                body.entity_tenant_id,
             )
             if exists:
-                raise HTTPException(status_code=400, detail="Entity already exists in this group")
+                raise HTTPException(
+                    status_code=400, detail="Entity already exists in this group"
+                )
 
             # Insert entity
             query = """
@@ -403,15 +440,22 @@ async def add_entity(request: Request, group_id: UUID, body: CreateConsolidation
             """
             entity_id = await conn.fetchval(
                 query,
-                group_id, body.entity_tenant_id, body.entity_name, body.entity_code,
-                body.ownership_percent, body.is_parent, body.parent_entity_id,
-                body.functional_currency_id, body.consolidation_type, body.effective_date
+                group_id,
+                body.entity_tenant_id,
+                body.entity_name,
+                body.entity_code,
+                body.ownership_percent,
+                body.is_parent,
+                body.parent_entity_id,
+                body.functional_currency_id,
+                body.consolidation_type,
+                body.effective_date,
             )
 
             return {
                 "success": True,
                 "message": "Entity added to consolidation group",
-                "data": {"id": str(entity_id)}
+                "data": {"id": str(entity_id)},
             }
 
     except HTTPException:
@@ -422,7 +466,9 @@ async def add_entity(request: Request, group_id: UUID, body: CreateConsolidation
 
 
 @router.patch("/entities/{entity_id}", response_model=ConsolidationEntityResponse)
-async def update_entity(request: Request, entity_id: UUID, body: UpdateConsolidationEntityRequest):
+async def update_entity(
+    request: Request, entity_id: UUID, body: UpdateConsolidationEntityRequest
+):
     """Update consolidation entity."""
     try:
         ctx = get_user_context(request)
@@ -436,7 +482,8 @@ async def update_entity(request: Request, entity_id: UUID, body: UpdateConsolida
                 JOIN consolidation_groups cg ON cg.id = ce.group_id
                 WHERE cg.tenant_id = $1 AND ce.id = $2
                 """,
-                ctx["tenant_id"], entity_id
+                ctx["tenant_id"],
+                entity_id,
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="Entity not found")
@@ -482,7 +529,8 @@ async def remove_entity(request: Request, entity_id: UUID):
                 USING consolidation_groups cg
                 WHERE ce.group_id = cg.id AND cg.tenant_id = $1 AND ce.id = $2
                 """,
-                ctx["tenant_id"], entity_id
+                ctx["tenant_id"],
+                entity_id,
             )
             if result == "DELETE 0":
                 raise HTTPException(status_code=404, detail="Entity not found")
@@ -510,10 +558,13 @@ async def list_mappings(request: Request, group_id: UUID):
             # Verify group access
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             query = """
                 SELECT cam.*, ce.entity_name as source_entity_name
@@ -547,7 +598,9 @@ async def list_mappings(request: Request, group_id: UUID):
 
 
 @router.post("/groups/{group_id}/mappings", response_model=ConsolidationResponse)
-async def create_mappings(request: Request, group_id: UUID, body: CreateAccountMappingsRequest):
+async def create_mappings(
+    request: Request, group_id: UUID, body: CreateAccountMappingsRequest
+):
     """Create or update account mappings."""
     try:
         ctx = get_user_context(request)
@@ -557,10 +610,13 @@ async def create_mappings(request: Request, group_id: UUID, body: CreateAccountM
             # Verify group access
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             created = 0
             updated = 0
@@ -579,8 +635,12 @@ async def create_mappings(request: Request, group_id: UUID, body: CreateAccountM
                         sign_flip = $5,
                         elimination_account = $6
                     """,
-                    group_id, mapping.source_entity_id, mapping.source_account_code,
-                    mapping.target_account_code, mapping.sign_flip, mapping.elimination_account
+                    group_id,
+                    mapping.source_entity_id,
+                    mapping.source_account_code,
+                    mapping.target_account_code,
+                    mapping.sign_flip,
+                    mapping.elimination_account,
                 )
                 if "INSERT" in result:
                     created += 1
@@ -589,7 +649,7 @@ async def create_mappings(request: Request, group_id: UUID, body: CreateAccountM
 
             return {
                 "success": True,
-                "message": f"Account mappings saved: {created} created, {updated} updated"
+                "message": f"Account mappings saved: {created} created, {updated} updated",
             }
 
     except HTTPException:
@@ -614,7 +674,9 @@ async def auto_map_accounts(request: Request, group_id: UUID, body: AutoMapReque
                 JOIN consolidation_groups cg ON cg.id = ce.group_id
                 WHERE cg.tenant_id = $1 AND cg.id = $2 AND ce.id = $3
                 """,
-                ctx["tenant_id"], group_id, body.source_entity_id
+                ctx["tenant_id"],
+                group_id,
+                body.source_entity_id,
             )
             if not entity_exists:
                 raise HTTPException(status_code=404, detail="Entity not found in group")
@@ -622,13 +684,13 @@ async def auto_map_accounts(request: Request, group_id: UUID, body: AutoMapReque
             # Get entity's tenant accounts
             entity = await conn.fetchrow(
                 "SELECT entity_tenant_id FROM consolidation_entities WHERE id = $1",
-                body.source_entity_id
+                body.source_entity_id,
             )
 
             # Get accounts from entity's tenant
             accounts = await conn.fetch(
                 "SELECT code FROM chart_of_accounts WHERE tenant_id = $1 AND is_active = true",
-                entity["entity_tenant_id"]
+                entity["entity_tenant_id"],
             )
 
             # Create mappings (1:1 for exact strategy)
@@ -648,13 +710,16 @@ async def auto_map_accounts(request: Request, group_id: UUID, body: AutoMapReque
                     ) VALUES ($1, $2, $3, $4)
                     ON CONFLICT (group_id, source_entity_id, source_account_code) DO NOTHING
                     """,
-                    group_id, body.source_entity_id, acc["code"], target_code
+                    group_id,
+                    body.source_entity_id,
+                    acc["code"],
+                    target_code,
                 )
                 created += 1
 
             return {
                 "success": True,
-                "message": f"Auto-mapping completed: {created} accounts processed"
+                "message": f"Auto-mapping completed: {created} accounts processed",
             }
 
     except HTTPException:
@@ -667,7 +732,10 @@ async def auto_map_accounts(request: Request, group_id: UUID, body: AutoMapReque
 # =============================================================================
 # INTERCOMPANY RELATIONSHIPS
 # =============================================================================
-@router.get("/groups/{group_id}/intercompany", response_model=IntercompanyRelationshipListResponse)
+@router.get(
+    "/groups/{group_id}/intercompany",
+    response_model=IntercompanyRelationshipListResponse,
+)
 async def list_intercompany(request: Request, group_id: UUID):
     """List intercompany relationships."""
     try:
@@ -677,10 +745,13 @@ async def list_intercompany(request: Request, group_id: UUID):
         async with pool.acquire() as conn:
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             query = """
                 SELECT ir.*,
@@ -715,11 +786,19 @@ async def list_intercompany(request: Request, group_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error listing intercompany relationships: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list intercompany relationships")
+        raise HTTPException(
+            status_code=500, detail="Failed to list intercompany relationships"
+        )
 
 
-@router.post("/groups/{group_id}/intercompany", response_model=ConsolidationResponse, status_code=201)
-async def add_intercompany(request: Request, group_id: UUID, body: CreateIntercompanyRelationshipRequest):
+@router.post(
+    "/groups/{group_id}/intercompany",
+    response_model=ConsolidationResponse,
+    status_code=201,
+)
+async def add_intercompany(
+    request: Request, group_id: UUID, body: CreateIntercompanyRelationshipRequest
+):
     """Add intercompany relationship."""
     try:
         ctx = get_user_context(request)
@@ -728,10 +807,13 @@ async def add_intercompany(request: Request, group_id: UUID, body: CreateInterco
         async with pool.acquire() as conn:
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], group_id
+                ctx["tenant_id"],
+                group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             # Insert relationship
             rel_id = await conn.fetchval(
@@ -742,21 +824,27 @@ async def add_intercompany(request: Request, group_id: UUID, body: CreateInterco
                 ) VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id
                 """,
-                group_id, body.entity_a_id, body.entity_b_id, body.relationship_type,
-                body.ar_account_code, body.ap_account_code
+                group_id,
+                body.entity_a_id,
+                body.entity_b_id,
+                body.relationship_type,
+                body.ar_account_code,
+                body.ap_account_code,
             )
 
             return {
                 "success": True,
                 "message": "Intercompany relationship created",
-                "data": {"id": str(rel_id)}
+                "data": {"id": str(rel_id)},
             }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating intercompany relationship: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create intercompany relationship")
+        raise HTTPException(
+            status_code=500, detail="Failed to create intercompany relationship"
+        )
 
 
 # =============================================================================
@@ -801,7 +889,7 @@ async def list_runs(
 
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM consolidation_runs cr WHERE {where_clause}",
-                *params
+                *params,
             )
 
             query = f"""
@@ -852,10 +940,13 @@ async def create_run(request: Request, body: CreateConsolidationRunRequest):
             # Verify group
             group_exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_groups WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], body.group_id
+                ctx["tenant_id"],
+                body.group_id,
             )
             if not group_exists:
-                raise HTTPException(status_code=404, detail="Consolidation group not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation group not found"
+                )
 
             # Insert run
             run_id = await conn.fetchval(
@@ -866,23 +957,33 @@ async def create_run(request: Request, body: CreateConsolidationRunRequest):
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """,
-                ctx["tenant_id"], body.group_id, body.period_type, body.period_year,
-                body.period_month, body.period_quarter, body.as_of_date, ctx["user_id"]
+                ctx["tenant_id"],
+                body.group_id,
+                body.period_type,
+                body.period_year,
+                body.period_month,
+                body.period_quarter,
+                body.as_of_date,
+                ctx["user_id"],
             )
 
             return {
                 "success": True,
                 "message": "Consolidation run created",
-                "data": {"id": str(run_id)}
+                "data": {"id": str(run_id)},
             }
 
     except HTTPException:
         raise
     except asyncpg.UniqueViolationError:
-        raise HTTPException(status_code=400, detail="A run for this period already exists")
+        raise HTTPException(
+            status_code=400, detail="A run for this period already exists"
+        )
     except Exception as e:
         logger.error(f"Error creating consolidation run: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create consolidation run")
+        raise HTTPException(
+            status_code=500, detail="Failed to create consolidation run"
+        )
 
 
 @router.get("/runs/{run_id}", response_model=ConsolidationRunDetailResponse)
@@ -901,7 +1002,9 @@ async def get_run(request: Request, run_id: UUID):
             """
             row = await conn.fetchrow(query, ctx["tenant_id"], run_id)
             if not row:
-                raise HTTPException(status_code=404, detail="Consolidation run not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation run not found"
+                )
 
             return {
                 "success": True,
@@ -918,12 +1021,14 @@ async def get_run(request: Request, run_id: UUID):
                     "error_message": row["error_message"],
                     "consolidated_trial_balance": row["consolidated_trial_balance"],
                     "consolidated_balance_sheet": row["consolidated_balance_sheet"],
-                    "consolidated_income_statement": row["consolidated_income_statement"],
+                    "consolidated_income_statement": row[
+                        "consolidated_income_statement"
+                    ],
                     "elimination_entries": row["elimination_entries"],
                     "exchange_rates_snapshot": row["exchange_rates_snapshot"],
                     "created_at": row["created_at"],
                     "completed_at": row["completed_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -934,7 +1039,9 @@ async def get_run(request: Request, run_id: UUID):
 
 
 @router.post("/runs/{run_id}/process", response_model=ConsolidationResponse)
-async def process_run(request: Request, run_id: UUID, body: ProcessConsolidationRequest = None):
+async def process_run(
+    request: Request, run_id: UUID, body: ProcessConsolidationRequest = None
+):
     """Process consolidation - gather data from entities and create consolidated reports."""
     try:
         ctx = get_user_context(request)
@@ -949,10 +1056,13 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                 JOIN consolidation_groups cg ON cg.id = cr.group_id
                 WHERE cr.tenant_id = $1 AND cr.id = $2
                 """,
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not run:
-                raise HTTPException(status_code=404, detail="Consolidation run not found")
+                raise HTTPException(
+                    status_code=404, detail="Consolidation run not found"
+                )
 
             if run["status"] == "completed":
                 raise HTTPException(status_code=400, detail="Run already completed")
@@ -960,7 +1070,7 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
             # Update status to processing
             await conn.execute(
                 "UPDATE consolidation_runs SET status = 'processing' WHERE id = $1",
-                run_id
+                run_id,
             )
 
             try:
@@ -970,7 +1080,7 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                     SELECT * FROM consolidation_entities
                     WHERE group_id = $1 AND is_active = true
                     """,
-                    run["group_id"]
+                    run["group_id"],
                 )
 
                 # Gather trial balances from each entity
@@ -994,7 +1104,8 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                         GROUP BY coa.code, coa.name
                         ORDER BY coa.code
                         """,
-                        entity["entity_tenant_id"], run["as_of_date"]
+                        entity["entity_tenant_id"],
+                        run["as_of_date"],
                     )
 
                     entity_code = entity["entity_code"]
@@ -1008,7 +1119,7 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                             entity_balances[account_code] = {
                                 "account_name": row["account_name"],
                                 "entities": {},
-                                "total": 0
+                                "total": 0,
                             }
 
                         entity_balances[account_code]["entities"][entity_code] = balance
@@ -1018,23 +1129,29 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                 eliminations = []
                 intercompany_rels = await conn.fetch(
                     "SELECT * FROM intercompany_relationships WHERE group_id = $1 AND is_active = true",
-                    run["group_id"]
+                    run["group_id"],
                 )
 
                 for rel in intercompany_rels:
                     if rel["ar_account_code"] and rel["ap_account_code"]:
-                        ar_balance = entity_balances.get(rel["ar_account_code"], {}).get("total", 0)
-                        ap_balance = entity_balances.get(rel["ap_account_code"], {}).get("total", 0)
+                        ar_balance = entity_balances.get(
+                            rel["ar_account_code"], {}
+                        ).get("total", 0)
+                        ap_balance = entity_balances.get(
+                            rel["ap_account_code"], {}
+                        ).get("total", 0)
 
                         # Create elimination entry
                         elimination_amount = min(abs(ar_balance), abs(ap_balance))
                         if elimination_amount > 0:
-                            eliminations.append({
-                                "description": "Intercompany elimination",
-                                "ar_account": rel["ar_account_code"],
-                                "ap_account": rel["ap_account_code"],
-                                "amount": elimination_amount
-                            })
+                            eliminations.append(
+                                {
+                                    "description": "Intercompany elimination",
+                                    "ar_account": rel["ar_account_code"],
+                                    "ap_account": rel["ap_account_code"],
+                                    "amount": elimination_amount,
+                                }
+                            )
 
                 # Format trial balance
                 for code, data in entity_balances.items():
@@ -1043,13 +1160,15 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                         if elim["ar_account"] == code or elim["ap_account"] == code:
                             elim_amount = elim["amount"]
 
-                    consolidated_tb.append({
-                        "account_code": code,
-                        "account_name": data["account_name"],
-                        "entity_balances": data["entities"],
-                        "eliminations": elim_amount,
-                        "consolidated_balance": data["total"] - elim_amount
-                    })
+                    consolidated_tb.append(
+                        {
+                            "account_code": code,
+                            "account_name": data["account_name"],
+                            "entity_balances": data["entities"],
+                            "eliminations": elim_amount,
+                            "consolidated_balance": data["total"] - elim_amount,
+                        }
+                    )
 
                 # Save results
                 await conn.execute(
@@ -1063,19 +1182,20 @@ async def process_run(request: Request, run_id: UUID, body: ProcessConsolidation
                     """,
                     json.dumps(consolidated_tb),
                     json.dumps(eliminations),
-                    run_id
+                    run_id,
                 )
 
                 return {
                     "success": True,
-                    "message": f"Consolidation completed for {len(entities)} entities"
+                    "message": f"Consolidation completed for {len(entities)} entities",
                 }
 
             except Exception as process_error:
                 # Mark as error
                 await conn.execute(
                     "UPDATE consolidation_runs SET status = 'error', error_message = $1 WHERE id = $2",
-                    str(process_error), run_id
+                    str(process_error),
+                    run_id,
                 )
                 raise
 
@@ -1096,7 +1216,8 @@ async def get_eliminations(request: Request, run_id: UUID):
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT elimination_entries FROM consolidation_runs WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -1106,24 +1227,28 @@ async def get_eliminations(request: Request, run_id: UUID):
             total = 0
 
             for entry in entries:
-                formatted.append({
-                    "description": entry.get("description", ""),
-                    "account_code": entry.get("ar_account", ""),
-                    "account_name": "",
-                    "debit": entry.get("amount", 0),
-                    "credit": 0,
-                    "entity_a": "",
-                    "entity_b": ""
-                })
-                formatted.append({
-                    "description": entry.get("description", ""),
-                    "account_code": entry.get("ap_account", ""),
-                    "account_name": "",
-                    "debit": 0,
-                    "credit": entry.get("amount", 0),
-                    "entity_a": "",
-                    "entity_b": ""
-                })
+                formatted.append(
+                    {
+                        "description": entry.get("description", ""),
+                        "account_code": entry.get("ar_account", ""),
+                        "account_name": "",
+                        "debit": entry.get("amount", 0),
+                        "credit": 0,
+                        "entity_a": "",
+                        "entity_b": "",
+                    }
+                )
+                formatted.append(
+                    {
+                        "description": entry.get("description", ""),
+                        "account_code": entry.get("ap_account", ""),
+                        "account_name": "",
+                        "debit": 0,
+                        "credit": entry.get("amount", 0),
+                        "entity_a": "",
+                        "entity_b": "",
+                    }
+                )
                 total += entry.get("amount", 0)
 
             return {"success": True, "entries": formatted, "total_eliminations": total}
@@ -1154,7 +1279,8 @@ async def get_trial_balance(request: Request, run_id: UUID):
                 LEFT JOIN currencies c ON c.id = cg.consolidation_currency_id
                 WHERE cr.tenant_id = $1 AND cr.id = $2
                 """,
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -1166,8 +1292,18 @@ async def get_trial_balance(request: Request, run_id: UUID):
             elif row["period_quarter"]:
                 period_desc = f"Q{row['period_quarter']} {row['period_year']}"
 
-            total_debit = sum(r.get("consolidated_balance", 0) for r in tb if r.get("consolidated_balance", 0) > 0)
-            total_credit = abs(sum(r.get("consolidated_balance", 0) for r in tb if r.get("consolidated_balance", 0) < 0))
+            total_debit = sum(
+                r.get("consolidated_balance", 0)
+                for r in tb
+                if r.get("consolidated_balance", 0) > 0
+            )
+            total_credit = abs(
+                sum(
+                    r.get("consolidated_balance", 0)
+                    for r in tb
+                    if r.get("consolidated_balance", 0) < 0
+                )
+            )
 
             return {
                 "success": True,
@@ -1177,7 +1313,7 @@ async def get_trial_balance(request: Request, run_id: UUID):
                 "currency_code": row["currency_code"] or "IDR",
                 "rows": tb,
                 "total_debit": total_debit,
-                "total_credit": total_credit
+                "total_credit": total_credit,
             }
 
     except HTTPException:
@@ -1203,7 +1339,8 @@ async def get_balance_sheet(request: Request, run_id: UUID):
                 LEFT JOIN currencies c ON c.id = cg.consolidation_currency_id
                 WHERE cr.tenant_id = $1 AND cr.id = $2
                 """,
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -1219,7 +1356,7 @@ async def get_balance_sheet(request: Request, run_id: UUID):
                 "liabilities": bs.get("liabilities", {}),
                 "equity": bs.get("equity", {}),
                 "total_assets": bs.get("total_assets", 0),
-                "total_liabilities_equity": bs.get("total_liabilities_equity", 0)
+                "total_liabilities_equity": bs.get("total_liabilities_equity", 0),
             }
 
     except HTTPException:
@@ -1245,7 +1382,8 @@ async def get_income_statement(request: Request, run_id: UUID):
                 LEFT JOIN currencies c ON c.id = cg.consolidation_currency_id
                 WHERE cr.tenant_id = $1 AND cr.id = $2
                 """,
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -1262,7 +1400,7 @@ async def get_income_statement(request: Request, run_id: UUID):
                 "expenses": income.get("expenses", {}),
                 "total_revenue": income.get("total_revenue", 0),
                 "total_expenses": income.get("total_expenses", 0),
-                "net_income": income.get("net_income", 0)
+                "net_income": income.get("net_income", 0),
             }
 
     except HTTPException:
@@ -1273,7 +1411,9 @@ async def get_income_statement(request: Request, run_id: UUID):
 
 
 @router.get("/runs/{run_id}/export")
-async def export_run(request: Request, run_id: UUID, format: Literal["json", "csv"] = Query("json")):
+async def export_run(
+    request: Request, run_id: UUID, format: Literal["json", "csv"] = Query("json")
+):
     """Export consolidation run data."""
     try:
         ctx = get_user_context(request)
@@ -1282,7 +1422,8 @@ async def export_run(request: Request, run_id: UUID, format: Literal["json", "cs
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM consolidation_runs WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], run_id
+                ctx["tenant_id"],
+                run_id,
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -1292,7 +1433,7 @@ async def export_run(request: Request, run_id: UUID, format: Literal["json", "cs
                     "trial_balance": row["consolidated_trial_balance"],
                     "balance_sheet": row["consolidated_balance_sheet"],
                     "income_statement": row["consolidated_income_statement"],
-                    "eliminations": row["elimination_entries"]
+                    "eliminations": row["elimination_entries"],
                 }
             else:
                 # CSV format - return trial balance as CSV
@@ -1301,20 +1442,21 @@ async def export_run(request: Request, run_id: UUID, format: Literal["json", "cs
 
                 output = io.StringIO()
                 writer = csv.writer(output)
-                writer.writerow(["Account Code", "Account Name", "Consolidated Balance"])
+                writer.writerow(
+                    ["Account Code", "Account Name", "Consolidated Balance"]
+                )
 
                 tb = row["consolidated_trial_balance"] or []
                 for item in tb:
-                    writer.writerow([
-                        item.get("account_code", ""),
-                        item.get("account_name", ""),
-                        item.get("consolidated_balance", 0)
-                    ])
+                    writer.writerow(
+                        [
+                            item.get("account_code", ""),
+                            item.get("account_name", ""),
+                            item.get("consolidated_balance", 0),
+                        ]
+                    )
 
-                return {
-                    "content_type": "text/csv",
-                    "data": output.getvalue()
-                }
+                return {"content_type": "text/csv", "data": output.getvalue()}
 
     except HTTPException:
         raise

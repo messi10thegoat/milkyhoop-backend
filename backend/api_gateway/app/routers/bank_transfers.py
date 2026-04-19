@@ -36,36 +36,27 @@ from ..schemas.bank_transfers import (
     BankTransferListResponse,
     BankTransferSummaryResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 # Account codes
 BANK_FEE_ACCOUNT = "5-20950"  # Biaya Transfer Bank
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -75,15 +66,13 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
 # LIST BANK TRANSFERS
 # =============================================================================
+
 
 @router.get("", response_model=BankTransferListResponse)
 async def list_bank_transfers(
@@ -96,7 +85,9 @@ async def list_bank_transfers(
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    sort_by: Literal["transfer_date", "transfer_number", "amount", "created_at"] = Query("created_at"),
+    sort_by: Literal[
+        "transfer_date", "transfer_number", "amount", "created_at"
+    ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """List bank transfers with filters and pagination."""
@@ -157,7 +148,7 @@ async def list_bank_transfers(
                 "transfer_date": "bt.transfer_date",
                 "transfer_number": "bt.transfer_number",
                 "amount": "bt.amount",
-                "created_at": "bt.created_at"
+                "created_at": "bt.created_at",
             }
             sort_field = valid_sorts.get(sort_by, "bt.created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
@@ -203,11 +194,7 @@ async def list_bank_transfers(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -219,6 +206,7 @@ async def list_bank_transfers(
 # =============================================================================
 # SUMMARY
 # =============================================================================
+
 
 @router.get("/summary", response_model=BankTransferSummaryResponse)
 async def get_bank_transfers_summary(request: Request):
@@ -250,7 +238,7 @@ async def get_bank_transfers_summary(request: Request):
                     "void_count": row["void_count"] or 0,
                     "total_transferred": int(row["total_transferred"] or 0),
                     "total_fees": int(row["total_fees"] or 0),
-                }
+                },
             }
 
     except HTTPException:
@@ -263,6 +251,7 @@ async def get_bank_transfers_summary(request: Request):
 # =============================================================================
 # GET BANK TRANSFER DETAIL
 # =============================================================================
+
 
 @router.get("/{transfer_id}", response_model=BankTransferDetailResponse)
 async def get_bank_transfer(request: Request, transfer_id: UUID):
@@ -317,7 +306,9 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
                     "amount": row["amount"],
                     "fee_amount": row["fee_amount"] or 0,
                     "total_amount": row["total_amount"],
-                    "fee_account_id": str(row["fee_account_id"]) if row["fee_account_id"] else None,
+                    "fee_account_id": str(row["fee_account_id"])
+                    if row["fee_account_id"]
+                    else None,
                     "fee_account_code": row["fee_account_code"],
                     "fee_account_name": row["fee_account_name"],
                     "status": row["status"],
@@ -326,16 +317,24 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
                     "notes": row["notes"],
                     "journal_id": str(row["journal_id"]) if row["journal_id"] else None,
                     "journal_number": row["journal_number"],
-                    "from_transaction_id": str(row["from_transaction_id"]) if row["from_transaction_id"] else None,
-                    "to_transaction_id": str(row["to_transaction_id"]) if row["to_transaction_id"] else None,
-                    "posted_at": row["posted_at"].isoformat() if row["posted_at"] else None,
+                    "from_transaction_id": str(row["from_transaction_id"])
+                    if row["from_transaction_id"]
+                    else None,
+                    "to_transaction_id": str(row["to_transaction_id"])
+                    if row["to_transaction_id"]
+                    else None,
+                    "posted_at": row["posted_at"].isoformat()
+                    if row["posted_at"]
+                    else None,
                     "posted_by": str(row["posted_by"]) if row["posted_by"] else None,
-                    "voided_at": row["voided_at"].isoformat() if row["voided_at"] else None,
+                    "voided_at": row["voided_at"].isoformat()
+                    if row["voided_at"]
+                    else None,
                     "voided_reason": row["voided_reason"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                     "created_by": str(row["created_by"]) if row["created_by"] else None,
-                }
+                },
             }
 
     except HTTPException:
@@ -348,6 +347,7 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
 # =============================================================================
 # CREATE BANK TRANSFER
 # =============================================================================
+
 
 @router.post("", response_model=BankTransferResponse, status_code=201)
 async def create_bank_transfer(request: Request, body: CreateBankTransferRequest):
@@ -366,48 +366,64 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Validate from bank
-                from_bank = await conn.fetchrow("""
+                from_bank = await conn.fetchrow(
+                    """
                     SELECT ba.id, ba.account_name,
                         (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
                         ba.coa_id, ba.is_active
                     FROM bank_accounts ba
                     WHERE ba.id = $1 AND ba.tenant_id = $2
-                """, UUID(body.from_bank_id), ctx["tenant_id"])
+                """,
+                    UUID(body.from_bank_id),
+                    ctx["tenant_id"],
+                )
 
                 if not from_bank:
-                    raise HTTPException(status_code=400, detail="Source bank account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Source bank account not found"
+                    )
 
                 if not from_bank["is_active"]:
-                    raise HTTPException(status_code=400, detail="Source bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Source bank account is inactive"
+                    )
 
                 # Validate to bank
-                to_bank = await conn.fetchrow("""
+                to_bank = await conn.fetchrow(
+                    """
                     SELECT ba.id, ba.account_name,
                         (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
                         ba.coa_id, ba.is_active
                     FROM bank_accounts ba
                     WHERE ba.id = $1 AND ba.tenant_id = $2
-                """, UUID(body.to_bank_id), ctx["tenant_id"])
+                """,
+                    UUID(body.to_bank_id),
+                    ctx["tenant_id"],
+                )
 
                 if not to_bank:
-                    raise HTTPException(status_code=400, detail="Destination bank account not found")
+                    raise HTTPException(
+                        status_code=400, detail="Destination bank account not found"
+                    )
 
                 if not to_bank["is_active"]:
-                    raise HTTPException(status_code=400, detail="Destination bank account is inactive")
+                    raise HTTPException(
+                        status_code=400, detail="Destination bank account is inactive"
+                    )
 
                 # Calculate total
                 total_amount = body.amount + body.fee_amount
 
                 # Generate transfer number
                 transfer_number = await conn.fetchval(
-                    "SELECT generate_bank_transfer_number($1, 'TRF')",
-                    ctx["tenant_id"]
+                    "SELECT generate_bank_transfer_number($1, 'TRF')", ctx["tenant_id"]
                 )
 
                 # Create transfer
                 transfer_id = uuid_module.uuid4()
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO bank_transfers (
                         id, tenant_id, transfer_number, from_bank_id, to_bank_id,
                         amount, fee_amount, total_amount, transfer_date,
@@ -425,10 +441,12 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
                     body.transfer_date,
                     body.ref_no,
                     body.notes,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
-                logger.info(f"Bank transfer created: {transfer_id}, number={transfer_number}")
+                logger.info(
+                    f"Bank transfer created: {transfer_id}, number={transfer_number}"
+                )
 
                 result = {
                     "success": True,
@@ -436,8 +454,8 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
                     "data": {
                         "id": str(transfer_id),
                         "transfer_number": transfer_number,
-                        "status": "draft"
-                    }
+                        "status": "draft",
+                    },
                 }
 
                 # Auto-post if requested
@@ -460,8 +478,11 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
 # UPDATE BANK TRANSFER
 # =============================================================================
 
+
 @router.patch("/{transfer_id}", response_model=BankTransferResponse)
-async def update_bank_transfer(request: Request, transfer_id: UUID, body: UpdateBankTransferRequest):
+async def update_bank_transfer(
+    request: Request, transfer_id: UUID, body: UpdateBankTransferRequest
+):
     """Update a draft bank transfer."""
     try:
         ctx = get_user_context(request)
@@ -470,18 +491,23 @@ async def update_bank_transfer(request: Request, transfer_id: UUID, body: Update
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Get existing transfer
-                bt = await conn.fetchrow("""
+                bt = await conn.fetchrow(
+                    """
                     SELECT * FROM bank_transfers
                     WHERE id = $1 AND tenant_id = $2
-                """, transfer_id, ctx["tenant_id"])
+                """,
+                    transfer_id,
+                    ctx["tenant_id"],
+                )
 
                 if not bt:
-                    raise HTTPException(status_code=404, detail="Bank transfer not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank transfer not found"
+                    )
 
                 if bt["status"] != "draft":
                     raise HTTPException(
-                        status_code=400,
-                        detail="Only draft transfers can be updated"
+                        status_code=400, detail="Only draft transfers can be updated"
                     )
 
                 # Build update
@@ -491,23 +517,37 @@ async def update_bank_transfer(request: Request, transfer_id: UUID, body: Update
 
                 if body.from_bank_id is not None:
                     # Validate bank
-                    exists = await conn.fetchval("""
+                    exists = await conn.fetchval(
+                        """
                         SELECT id FROM bank_accounts
                         WHERE id = $1 AND tenant_id = $2 AND is_active = true
-                    """, UUID(body.from_bank_id), ctx["tenant_id"])
+                    """,
+                        UUID(body.from_bank_id),
+                        ctx["tenant_id"],
+                    )
                     if not exists:
-                        raise HTTPException(status_code=400, detail="Source bank account not found or inactive")
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Source bank account not found or inactive",
+                        )
                     updates.append(f"from_bank_id = ${param_idx}")
                     params.append(UUID(body.from_bank_id))
                     param_idx += 1
 
                 if body.to_bank_id is not None:
-                    exists = await conn.fetchval("""
+                    exists = await conn.fetchval(
+                        """
                         SELECT id FROM bank_accounts
                         WHERE id = $1 AND tenant_id = $2 AND is_active = true
-                    """, UUID(body.to_bank_id), ctx["tenant_id"])
+                    """,
+                        UUID(body.to_bank_id),
+                        ctx["tenant_id"],
+                    )
                     if not exists:
-                        raise HTTPException(status_code=400, detail="Destination bank account not found or inactive")
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Destination bank account not found or inactive",
+                        )
                     updates.append(f"to_bank_id = ${param_idx}")
                     params.append(UUID(body.to_bank_id))
                     param_idx += 1
@@ -541,12 +581,16 @@ async def update_bank_transfer(request: Request, transfer_id: UUID, body: Update
                     return {
                         "success": True,
                         "message": "No changes provided",
-                        "data": {"id": str(transfer_id)}
+                        "data": {"id": str(transfer_id)},
                     }
 
                 # Recalculate total_amount
                 new_amount = body.amount if body.amount is not None else bt["amount"]
-                new_fee = body.fee_amount if body.fee_amount is not None else (bt["fee_amount"] or 0)
+                new_fee = (
+                    body.fee_amount
+                    if body.fee_amount is not None
+                    else (bt["fee_amount"] or 0)
+                )
                 updates.append(f"total_amount = ${param_idx}")
                 params.append(new_amount + new_fee)
                 param_idx += 1
@@ -566,7 +610,7 @@ async def update_bank_transfer(request: Request, transfer_id: UUID, body: Update
                 return {
                     "success": True,
                     "message": "Bank transfer updated successfully",
-                    "data": {"id": str(transfer_id)}
+                    "data": {"id": str(transfer_id)},
                 }
 
     except HTTPException:
@@ -580,6 +624,7 @@ async def update_bank_transfer(request: Request, transfer_id: UUID, body: Update
 # DELETE BANK TRANSFER
 # =============================================================================
 
+
 @router.delete("/{transfer_id}", response_model=BankTransferResponse)
 async def delete_bank_transfer(request: Request, transfer_id: UUID):
     """Delete a draft bank transfer."""
@@ -588,10 +633,14 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            bt = await conn.fetchrow("""
+            bt = await conn.fetchrow(
+                """
                 SELECT id, transfer_number, status FROM bank_transfers
                 WHERE id = $1 AND tenant_id = $2
-            """, transfer_id, ctx["tenant_id"])
+            """,
+                transfer_id,
+                ctx["tenant_id"],
+            )
 
             if not bt:
                 raise HTTPException(status_code=404, detail="Bank transfer not found")
@@ -599,13 +648,10 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
             if bt["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft transfers can be deleted. Use void for posted."
+                    detail="Only draft transfers can be deleted. Use void for posted.",
                 )
 
-            await conn.execute(
-                "DELETE FROM bank_transfers WHERE id = $1",
-                transfer_id
-            )
+            await conn.execute("DELETE FROM bank_transfers WHERE id = $1", transfer_id)
 
             logger.info(f"Bank transfer deleted: {transfer_id}")
 
@@ -614,8 +660,8 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
                 "message": "Bank transfer deleted",
                 "data": {
                     "id": str(transfer_id),
-                    "transfer_number": bt["transfer_number"]
-                }
+                    "transfer_number": bt["transfer_number"],
+                },
             }
 
     except HTTPException:
@@ -629,6 +675,7 @@ async def delete_bank_transfer(request: Request, transfer_id: UUID):
 # POST BANK TRANSFER
 # =============================================================================
 
+
 async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     """Internal function to post a transfer. Returns journal info."""
     # Law 13: Advisory lock for transfer posting
@@ -638,18 +685,22 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     )
 
     # Lock source bank account row to prevent TOCTOU race condition
-    from_bank_id = await conn.fetchval("""
+    from_bank_id = await conn.fetchval(
+        """
         SELECT from_bank_id FROM bank_transfers
         WHERE id = $1 AND tenant_id = $2
-    """, transfer_id, ctx["tenant_id"])
+    """,
+        transfer_id,
+        ctx["tenant_id"],
+    )
     if from_bank_id:
         await conn.fetchrow(
-            "SELECT id FROM bank_accounts WHERE id = $1 FOR UPDATE",
-            from_bank_id
+            "SELECT id FROM bank_accounts WHERE id = $1 FOR UPDATE", from_bank_id
         )
 
     # Get transfer with bank info
-    bt = await conn.fetchrow("""
+    bt = await conn.fetchrow(
+        """
         SELECT bt.*,
                fb.account_name as from_name, fb.coa_id as from_coa_id,
                (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
@@ -658,35 +709,40 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
         LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id
         WHERE bt.id = $1 AND bt.tenant_id = $2
-    """, transfer_id, ctx["tenant_id"])
+    """,
+        transfer_id,
+        ctx["tenant_id"],
+    )
 
     if not bt:
         raise HTTPException(status_code=404, detail="Bank transfer not found")
 
     if bt["status"] != "draft":
         raise HTTPException(
-            status_code=400,
-            detail=f"Cannot post transfer with status '{bt['status']}'"
+            status_code=400, detail=f"Cannot post transfer with status '{bt['status']}'"
         )
 
     # Check sufficient balance
     if bt["from_balance"] < bt["total_amount"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient balance. Available: {bt['from_balance']}, Required: {bt['total_amount']}"
+            detail=f"Insufficient balance. Available: {bt['from_balance']}, Required: {bt['total_amount']}",
         )
 
     # Get fee account ID if fee > 0
     fee_account_id = None
     if bt["fee_amount"] and bt["fee_amount"] > 0:
-        fee_account_id = await resolve_account_id(conn, ctx["tenant_id"], BANK_FEE_ACCOUNT)
+        fee_account_id = await resolve_account_id(
+            conn, ctx["tenant_id"], BANK_FEE_ACCOUNT
+        )
 
     # Create journal entry
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
     journal_number = f"TRF-{bt['transfer_number']}"
 
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO journal_entries (
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, trace_id,
@@ -701,13 +757,14 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         transfer_id,
         str(trace_id),
         bt["total_amount"],
-        ctx["user_id"]
+        ctx["user_id"],
     )
 
     line_number = 1
 
     # Dr. Destination Bank
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO journal_lines (
             id, journal_id, line_number, account_id, debit, credit, memo
         ) VALUES ($1, $2, $3, $4, $5, 0, $6)
@@ -717,13 +774,14 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         line_number,
         bt["to_coa_id"],
         bt["amount"],
-        f"Transfer masuk dari {bt['from_name']}"
+        f"Transfer masuk dari {bt['from_name']}",
     )
     line_number += 1
 
     # Dr. Transfer Fee (if any)
     if bt["fee_amount"] and bt["fee_amount"] > 0 and fee_account_id:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO journal_lines (
                 id, journal_id, line_number, account_id, debit, credit, memo
             ) VALUES ($1, $2, $3, $4, $5, 0, $6)
@@ -733,12 +791,13 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
             line_number,
             fee_account_id,
             bt["fee_amount"],
-            f"Biaya transfer - {bt['transfer_number']}"
+            f"Biaya transfer - {bt['transfer_number']}",
         )
         line_number += 1
 
     # Cr. Source Bank
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO journal_lines (
             id, journal_id, line_number, account_id, debit, credit, memo
         ) VALUES ($1, $2, $3, $4, 0, $5, $6)
@@ -748,7 +807,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         line_number,
         bt["from_coa_id"],
         bt["total_amount"],
-        f"Transfer keluar ke {bt['to_name']}"
+        f"Transfer keluar ke {bt['to_name']}",
     )
 
     # Law 20: DRAFT->POSTED for hash chain
@@ -762,7 +821,8 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     from_new_balance = bt["from_balance"] - bt["total_amount"]
     from_tx_id = uuid_module.uuid4()
 
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO bank_transactions (
             id, tenant_id, bank_account_id, transaction_date, transaction_type,
             amount, running_balance, reference_type, reference_id, reference_number,
@@ -780,7 +840,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         f"Transfer ke {bt['to_name']}",
         bt["to_name"],
         journal_id,
-        ctx["user_id"]
+        ctx["user_id"],
     )
 
     # Destination bank (incoming)
@@ -790,12 +850,13 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         JOIN journal_entries je ON je.id=jl.journal_id
         WHERE jl.account_id=(SELECT coa_id FROM bank_accounts WHERE id=$1)
         AND je.status='POSTED'""",
-        bt["to_bank_id"]
+        bt["to_bank_id"],
     )
     to_new_balance = (to_balance or 0) + bt["amount"]
     to_tx_id = uuid_module.uuid4()
 
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO bank_transactions (
             id, tenant_id, bank_account_id, transaction_date, transaction_type,
             amount, running_balance, reference_type, reference_id, reference_number,
@@ -813,17 +874,25 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         f"Transfer dari {bt['from_name']}",
         bt["from_name"],
         journal_id,
-        ctx["user_id"]
+        ctx["user_id"],
     )
 
     # Update transfer status
-    await conn.execute("""
+    await conn.execute(
+        """
         UPDATE bank_transfers
         SET status = 'posted', journal_id = $2, fee_account_id = $3,
             from_transaction_id = $4, to_transaction_id = $5,
             posted_at = NOW(), posted_by = $6, updated_at = NOW()
         WHERE id = $1
-    """, transfer_id, journal_id, fee_account_id, from_tx_id, to_tx_id, ctx["user_id"])
+    """,
+        transfer_id,
+        journal_id,
+        fee_account_id,
+        from_tx_id,
+        to_tx_id,
+        ctx["user_id"],
+    )
 
     logger.info(f"Bank transfer posted: {transfer_id}, journal={journal_id}")
 
@@ -831,7 +900,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         "journal_id": str(journal_id),
         "journal_number": journal_number,
         "from_transaction_id": str(from_tx_id),
-        "to_transaction_id": str(to_tx_id)
+        "to_transaction_id": str(to_tx_id),
     }
 
 
@@ -861,11 +930,7 @@ async def post_bank_transfer(request: Request, transfer_id: UUID):
                 return {
                     "success": True,
                     "message": "Bank transfer posted to accounting",
-                    "data": {
-                        "id": str(transfer_id),
-                        "status": "posted",
-                        **result
-                    }
+                    "data": {"id": str(transfer_id), "status": "posted", **result},
                 }
 
     except HTTPException:
@@ -879,8 +944,11 @@ async def post_bank_transfer(request: Request, transfer_id: UUID):
 # VOID BANK TRANSFER
 # =============================================================================
 
+
 @router.post("/{transfer_id}/void", response_model=BankTransferResponse)
-async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBankTransferRequest):
+async def void_bank_transfer(
+    request: Request, transfer_id: UUID, body: VoidBankTransferRequest
+):
     """
     Void a posted bank transfer.
 
@@ -902,7 +970,8 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                 )
 
                 # Get transfer
-                bt = await conn.fetchrow("""
+                bt = await conn.fetchrow(
+                    """
                     SELECT bt.*,
                            fb.account_name as from_name, fb.coa_id as from_coa_id,
                            (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
@@ -912,43 +981,58 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
                     LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id
                     WHERE bt.id = $1 AND bt.tenant_id = $2
-                """, transfer_id, ctx["tenant_id"])
+                """,
+                    transfer_id,
+                    ctx["tenant_id"],
+                )
 
                 if not bt:
-                    raise HTTPException(status_code=404, detail="Bank transfer not found")
+                    raise HTTPException(
+                        status_code=404, detail="Bank transfer not found"
+                    )
 
                 if bt["status"] == "void":
-                    raise HTTPException(status_code=400, detail="Transfer already voided")
+                    raise HTTPException(
+                        status_code=400, detail="Transfer already voided"
+                    )
 
                 if bt["status"] == "draft":
                     # Just delete draft
                     await conn.execute(
-                        "DELETE FROM bank_transfers WHERE id = $1",
-                        transfer_id
+                        "DELETE FROM bank_transfers WHERE id = $1", transfer_id
                     )
                     return {
                         "success": True,
                         "message": "Draft transfer deleted",
-                        "data": {"id": str(transfer_id)}
+                        "data": {"id": str(transfer_id)},
                     }
 
                 # Law 5: Period lock check
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"], bt["transfer_date"])
-                if period_row and period_row["status"] != 'OPEN':
-                    raise HTTPException(status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}")
+                    ctx["tenant_id"],
+                    bt["transfer_date"],
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                    )
 
                 # Create reversal journal
                 reversal_journal_id = uuid_module.uuid4()
                 reversal_number = f"RV-{bt['transfer_number']}"
 
                 # Get original journal lines
-                original_lines = await conn.fetch("""
+                original_lines = await conn.fetch(
+                    """
                     SELECT * FROM journal_lines WHERE journal_id = $1
-                """, bt["journal_id"])
+                """,
+                    bt["journal_id"],
+                )
 
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, reversal_of_id,
@@ -962,12 +1046,13 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     transfer_id,
                     bt["journal_id"],
                     bt["total_amount"],
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Create reversed lines (swap debit/credit)
                 for idx, line in enumerate(original_lines, 1):
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -977,8 +1062,8 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                         idx,
                         line["account_id"],
                         line["credit"],  # Swap
-                        line["debit"],   # Swap
-                        f"Reversal - {line['memo'] or ''}"
+                        line["debit"],  # Swap
+                        f"Reversal - {line['memo'] or ''}",
                     )
 
                 # Law 20: DRAFT->POSTED for hash chain
@@ -988,16 +1073,21 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                 )
 
                 # Mark original journal as reversed
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE journal_entries
                     SET reversed_by_id = $2, status = 'VOID'
                     WHERE id = $1
-                """, bt["journal_id"], reversal_journal_id)
+                """,
+                    bt["journal_id"],
+                    reversal_journal_id,
+                )
 
                 # Create reversal bank transactions
                 # Reverse source bank (get money back)
                 from_new_balance = bt["from_balance"] + bt["total_amount"]
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO bank_transactions (
                         id, tenant_id, bank_account_id, transaction_date, transaction_type,
                         amount, running_balance, reference_type, reference_id, reference_number,
@@ -1013,12 +1103,13 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     f"VOID-{bt['transfer_number']}",
                     f"Void transfer - {body.reason}",
                     reversal_journal_id,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Reverse destination bank (money out)
                 to_new_balance = bt["to_balance"] - bt["amount"]
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO bank_transactions (
                         id, tenant_id, bank_account_id, transaction_date, transaction_type,
                         amount, running_balance, reference_type, reference_id, reference_number,
@@ -1034,7 +1125,7 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     f"VOID-{bt['transfer_number']}",
                     f"Void transfer - {body.reason}",
                     reversal_journal_id,
-                    ctx["user_id"]
+                    ctx["user_id"],
                 )
 
                 # Mark original bank transactions as voided
@@ -1052,12 +1143,17 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                 )
 
                 # Update transfer status
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE bank_transfers
                     SET status = 'void', voided_at = NOW(), voided_by = $2,
                         voided_reason = $3, updated_at = NOW()
                     WHERE id = $1
-                """, transfer_id, ctx["user_id"], body.reason)
+                """,
+                    transfer_id,
+                    ctx["user_id"],
+                    body.reason,
+                )
 
                 logger.info(f"Bank transfer voided: {transfer_id}")
 
@@ -1067,8 +1163,8 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
                     "data": {
                         "id": str(transfer_id),
                         "status": "void",
-                        "reversal_journal_id": str(reversal_journal_id)
-                    }
+                        "reversal_journal_id": str(reversal_journal_id),
+                    },
                 }
 
     except HTTPException:
@@ -1076,7 +1172,6 @@ async def void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBank
     except Exception as e:
         logger.error(f"Error voiding bank transfer {transfer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void bank transfer")
-
 
 
 @router.get("/{transfer_id}/journal-entries")
@@ -1101,7 +1196,8 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                 FROM bank_transfers
                 WHERE id = $1::uuid AND tenant_id = $2
                 """,
-                transfer_id, ctx["tenant_id"]
+                transfer_id,
+                ctx["tenant_id"],
             )
 
             if not transfer:
@@ -1115,7 +1211,7 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                     SELECT reversed_by_id FROM journal_entries
                     WHERE id = $1 AND reversed_by_id IS NOT NULL
                     """,
-                    transfer["journal_id"]
+                    transfer["journal_id"],
                 )
                 if reversal and reversal["reversed_by_id"]:
                     journal_ids.append(reversal["reversed_by_id"])
@@ -1125,7 +1221,11 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                     "success": True,
                     "data": [],
                     "total": 0,
-                    "summary": {"total_debit": 0, "total_credit": 0, "is_balanced": True}
+                    "summary": {
+                        "total_debit": 0,
+                        "total_credit": 0,
+                        "is_balanced": True,
+                    },
                 }
 
             journals = await conn.fetch(
@@ -1136,7 +1236,7 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                journal_ids
+                journal_ids,
             )
 
             journal_data = []
@@ -1153,7 +1253,7 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -1165,7 +1265,7 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                         "account_name": line["account_name"],
                         "debit": int(line["debit"] or 0),
                         "credit": int(line["credit"] or 0),
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -1175,18 +1275,22 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": journal_debit,
-                    "total_credit": journal_credit,
-                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": journal_debit,
+                        "total_credit": journal_credit,
+                        "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -1195,8 +1299,8 @@ async def get_bank_transfer_journal_entries(request: Request, transfer_id: str):
                 "summary": {
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "is_balanced": abs(total_debit - total_credit) < 0.01
-                }
+                    "is_balanced": abs(total_debit - total_credit) < 0.01,
+                },
             }
     except HTTPException:
         raise

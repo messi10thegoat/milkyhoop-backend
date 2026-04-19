@@ -34,7 +34,7 @@ from typing import Optional, Literal
 from uuid import UUID
 import logging
 import asyncpg
-from datetime import date, datetime
+from datetime import date
 
 from ..schemas.audit import (
     LogSensitiveAccessRequest,
@@ -50,32 +50,23 @@ from ..schemas.audit import (
     CleanupResponse,
     AuditResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -89,7 +80,7 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": tenant_id,
         "user_id": UUID(user_id) if user_id else None,
         "user_email": user.get("email"),
-        "user_role": user.get("role")
+        "user_role": user.get("role"),
     }
 
 
@@ -97,12 +88,15 @@ def get_user_context(request: Request) -> dict:
 # AUDIT LOGS
 # =============================================================================
 
+
 @router.get("/audit-logs", response_model=AuditLogListResponse)
 async def list_audit_logs(
     request: Request,
     entity_type: Optional[str] = Query(None),
     entity_id: Optional[UUID] = Query(None),
-    action: Optional[Literal["create", "read", "update", "delete", "login", "logout", "export"]] = Query(None),
+    action: Optional[
+        Literal["create", "read", "update", "delete", "login", "logout", "export"]
+    ] = Query(None),
     user_id: Optional[UUID] = Query(None),
     category: Optional[str] = Query(None),
     severity: Optional[Literal["info", "warning", "error", "critical"]] = Query(None),
@@ -123,22 +117,22 @@ async def list_audit_logs(
             param_idx = 1
 
             if action:
-                conditions.append(f"\"eventType\" = ${param_idx}")
+                conditions.append(f'"eventType" = ${param_idx}')
                 params.append(action)
                 param_idx += 1
 
             if user_id:
-                conditions.append(f"\"userId\" = ${param_idx}")
+                conditions.append(f'"userId" = ${param_idx}')
                 params.append(str(user_id))
                 param_idx += 1
 
             if from_date:
-                conditions.append(f"\"createdAt\"::DATE >= ${param_idx}")
+                conditions.append(f'"createdAt"::DATE >= ${param_idx}')
                 params.append(from_date)
                 param_idx += 1
 
             if to_date:
-                conditions.append(f"\"createdAt\"::DATE <= ${param_idx}")
+                conditions.append(f'"createdAt"::DATE <= ${param_idx}')
                 params.append(to_date)
                 param_idx += 1
 
@@ -146,7 +140,11 @@ async def list_audit_logs(
 
             # Count total
             count_query = f"SELECT COUNT(*) FROM audit_logs WHERE {where_clause}"
-            total = await conn.fetchval(count_query, *params) if params else await conn.fetchval("SELECT COUNT(*) FROM audit_logs")
+            total = (
+                await conn.fetchval(count_query, *params)
+                if params
+                else await conn.fetchval("SELECT COUNT(*) FROM audit_logs")
+            )
 
             # Get items - map camelCase columns to expected format
             query = f"""
@@ -168,33 +166,39 @@ async def list_audit_logs(
                 # Handle case where metadata might be a string or None
                 if isinstance(raw_metadata, str):
                     import json
+
                     try:
                         metadata = json.loads(raw_metadata)
                     except:
                         metadata = {}
                 else:
                     metadata = raw_metadata or {}
-                items.append({
-                    "id": str(row["id"]),
-                    "event_time": row["event_time"],
-                    "user_id": str(row["user_id"]) if row["user_id"] else None,
-                    "user_email": metadata.get("email"),
-                    "user_name": metadata.get("name"),
-                    "ip_address": str(row["ip_address"]) if row["ip_address"] else None,
-                    "action": row["action"],
-                    "entity_type": metadata.get("entity_type"),
-                    "entity_id": metadata.get("entity_id"),
-                    "entity_number": metadata.get("entity_number"),
-                    "description": metadata.get("description") or row.get("errorMessage"),
-                    "changed_fields": metadata.get("changed_fields"),
-                    "category": metadata.get("category", "general"),
-                    "severity": "error" if not row["success"] else "info",
-                })
+                items.append(
+                    {
+                        "id": str(row["id"]),
+                        "event_time": row["event_time"],
+                        "user_id": str(row["user_id"]) if row["user_id"] else None,
+                        "user_email": metadata.get("email"),
+                        "user_name": metadata.get("name"),
+                        "ip_address": str(row["ip_address"])
+                        if row["ip_address"]
+                        else None,
+                        "action": row["action"],
+                        "entity_type": metadata.get("entity_type"),
+                        "entity_id": metadata.get("entity_id"),
+                        "entity_number": metadata.get("entity_number"),
+                        "description": metadata.get("description")
+                        or row.get("errorMessage"),
+                        "changed_fields": metadata.get("changed_fields"),
+                        "category": metadata.get("category", "general"),
+                        "severity": "error" if not row["success"] else "info",
+                    }
+                )
 
             return {
                 "items": items,
                 "total": total or 0,
-                "has_more": (skip + limit) < (total or 0)
+                "has_more": (skip + limit) < (total or 0),
             }
 
     except HTTPException:
@@ -216,7 +220,8 @@ async def search_audit_logs(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, event_time, action, entity_type, entity_number,
                        description, user_email,
                        ts_rank(to_tsvector('english', search_text), plainto_tsquery('english', $2)) as rank
@@ -225,7 +230,11 @@ async def search_audit_logs(
                 AND to_tsvector('english', search_text) @@ plainto_tsquery('english', $2)
                 ORDER BY rank DESC, event_time DESC
                 LIMIT $3
-            """, ctx["tenant_id"], q, limit)
+            """,
+                ctx["tenant_id"],
+                q,
+                limit,
+            )
 
             items = [
                 {
@@ -244,7 +253,7 @@ async def search_audit_logs(
                 "items": items,
                 "total": len(items),
                 "has_more": False,
-                "search_query": q
+                "search_query": q,
             }
 
     except HTTPException:
@@ -262,10 +271,14 @@ async def get_audit_log(request: Request, audit_log_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
+            row = await conn.fetchrow(
+                """
                 SELECT * FROM audit_logs
                 WHERE id = $1 AND tenant_id = $2
-            """, audit_log_id, ctx["tenant_id"])
+            """,
+                audit_log_id,
+                ctx["tenant_id"],
+            )
 
             if not row:
                 raise HTTPException(status_code=404, detail="Audit log not found")
@@ -293,7 +306,7 @@ async def get_audit_log(request: Request, audit_log_id: UUID):
                     "request_method": row["request_method"],
                     "category": row["category"],
                     "severity": row["severity"],
-                }
+                },
             }
 
     except HTTPException:
@@ -303,7 +316,9 @@ async def get_audit_log(request: Request, audit_log_id: UUID):
         raise HTTPException(status_code=500, detail="Failed to get audit log")
 
 
-@router.get("/audit-logs/entity/{entity_type}/{entity_id}", response_model=EntityHistoryResponse)
+@router.get(
+    "/audit-logs/entity/{entity_type}/{entity_id}", response_model=EntityHistoryResponse
+)
 async def get_entity_history(
     request: Request,
     entity_type: str,
@@ -317,21 +332,32 @@ async def get_entity_history(
 
         async with pool.acquire() as conn:
             # Get entity info
-            first_row = await conn.fetchrow("""
+            first_row = await conn.fetchrow(
+                """
                 SELECT entity_number FROM audit_logs
                 WHERE entity_type = $1 AND entity_id = $2 AND tenant_id = $3
                 ORDER BY event_time DESC LIMIT 1
-            """, entity_type, entity_id, ctx["tenant_id"])
+            """,
+                entity_type,
+                entity_id,
+                ctx["tenant_id"],
+            )
 
             # Get history
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, event_time, action, user_email, description,
                        changed_fields, old_values, new_values
                 FROM audit_logs
                 WHERE entity_type = $1 AND entity_id = $2 AND tenant_id = $3
                 ORDER BY event_time DESC
                 LIMIT $4
-            """, entity_type, entity_id, ctx["tenant_id"], limit)
+            """,
+                entity_type,
+                entity_id,
+                ctx["tenant_id"],
+                limit,
+            )
 
             history = []
             for row in rows:
@@ -341,17 +367,19 @@ async def get_entity_history(
                     for field in row["changed_fields"]:
                         changes[field] = {
                             "old": row["old_values"].get(field),
-                            "new": row["new_values"].get(field)
+                            "new": row["new_values"].get(field),
                         }
 
-                history.append({
-                    "event_time": row["event_time"],
-                    "action": row["action"],
-                    "user_email": row["user_email"],
-                    "description": row["description"],
-                    "changed_fields": row["changed_fields"],
-                    "changes": changes
-                })
+                history.append(
+                    {
+                        "event_time": row["event_time"],
+                        "action": row["action"],
+                        "user_email": row["user_email"],
+                        "description": row["description"],
+                        "changed_fields": row["changed_fields"],
+                        "changes": changes,
+                    }
+                )
 
             return {
                 "success": True,
@@ -360,8 +388,8 @@ async def get_entity_history(
                     "entity_id": str(entity_id),
                     "entity_number": first_row["entity_number"] if first_row else None,
                     "history": history,
-                    "total_changes": len(history)
-                }
+                    "total_changes": len(history),
+                },
             }
 
     except HTTPException:
@@ -401,14 +429,18 @@ async def get_user_activity(
 
             where_clause = " AND ".join(conditions)
 
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT id, event_time, action, entity_type, entity_number,
                        description, category
                 FROM audit_logs
                 WHERE {where_clause}
                 ORDER BY event_time DESC
                 LIMIT ${param_idx}
-            """, *params, limit)
+            """,
+                *params,
+                limit,
+            )
 
             return {
                 "success": True,
@@ -422,12 +454,12 @@ async def get_user_activity(
                             "entity_type": row["entity_type"],
                             "entity_number": row["entity_number"],
                             "description": row["description"],
-                            "category": row["category"]
+                            "category": row["category"],
                         }
                         for row in rows
                     ],
-                    "total": len(rows)
-                }
+                    "total": len(rows),
+                },
             }
 
     except HTTPException:
@@ -441,11 +473,14 @@ async def get_user_activity(
 # LOGIN HISTORY
 # =============================================================================
 
+
 @router.get("/audit/login-history", response_model=LoginHistoryListResponse)
 async def list_login_history(
     request: Request,
     user_id: Optional[UUID] = Query(None),
-    status: Optional[Literal["success", "failed_password", "failed_2fa", "blocked"]] = Query(None),
+    status: Optional[
+        Literal["success", "failed_password", "failed_2fa", "blocked"]
+    ] = Query(None),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
@@ -518,11 +553,7 @@ async def list_login_history(
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -542,7 +573,8 @@ async def get_failed_logins(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT user_email, COUNT(*) as failed_count,
                        MAX(login_time) as last_attempt,
                        ARRAY_AGG(DISTINCT failure_reason) as reasons
@@ -553,7 +585,10 @@ async def get_failed_logins(
                 GROUP BY user_email
                 HAVING COUNT(*) >= 3
                 ORDER BY COUNT(*) DESC
-            """, ctx["tenant_id"], str(hours))
+            """,
+                ctx["tenant_id"],
+                str(hours),
+            )
 
             return {
                 "success": True,
@@ -562,11 +597,11 @@ async def get_failed_logins(
                         "user_email": row["user_email"],
                         "failed_count": row["failed_count"],
                         "last_attempt": row["last_attempt"].isoformat(),
-                        "reasons": [r for r in row["reasons"] if r]
+                        "reasons": [r for r in row["reasons"] if r],
                     }
                     for row in rows
                 ],
-                "hours_checked": hours
+                "hours_checked": hours,
             }
 
     except HTTPException:
@@ -588,7 +623,10 @@ async def get_suspicious_activity(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            conditions = ["(tenant_id = $1 OR tenant_id IS NULL)", "is_suspicious = true"]
+            conditions = [
+                "(tenant_id = $1 OR tenant_id IS NULL)",
+                "is_suspicious = true",
+            ]
             params = [ctx["tenant_id"]]
             param_idx = 2
 
@@ -604,14 +642,17 @@ async def get_suspicious_activity(
 
             where_clause = " AND ".join(conditions)
 
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch(
+                f"""
                 SELECT id, user_id, user_email, login_time, ip_address,
                        device_type, location_country, location_city, login_status
                 FROM login_history
                 WHERE {where_clause}
                 ORDER BY login_time DESC
                 LIMIT 100
-            """, *params)
+            """,
+                *params,
+            )
 
             return {
                 "success": True,
@@ -621,14 +662,16 @@ async def get_suspicious_activity(
                         "user_id": str(row["user_id"]),
                         "user_email": row["user_email"],
                         "login_time": row["login_time"].isoformat(),
-                        "ip_address": str(row["ip_address"]) if row["ip_address"] else None,
+                        "ip_address": str(row["ip_address"])
+                        if row["ip_address"]
+                        else None,
                         "device_type": row["device_type"],
                         "location_country": row["location_country"],
                         "location_city": row["location_city"],
-                        "login_status": row["login_status"]
+                        "login_status": row["login_status"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:
@@ -641,6 +684,7 @@ async def get_suspicious_activity(
 # =============================================================================
 # SENSITIVE DATA ACCESS
 # =============================================================================
+
 
 @router.get("/audit/sensitive-access", response_model=SensitiveAccessListResponse)
 async def list_sensitive_access(
@@ -684,7 +728,9 @@ async def list_sensitive_access(
 
             where_clause = " AND ".join(conditions)
 
-            count_query = f"SELECT COUNT(*) FROM sensitive_data_access WHERE {where_clause}"
+            count_query = (
+                f"SELECT COUNT(*) FROM sensitive_data_access WHERE {where_clause}"
+            )
             total = await conn.fetchval(count_query, *params)
 
             query = f"""
@@ -708,18 +754,16 @@ async def list_sensitive_access(
                     "entity_type": row["entity_type"],
                     "entity_id": str(row["entity_id"]) if row["entity_id"] else None,
                     "reason": row["reason"],
-                    "authorized_by": str(row["authorized_by"]) if row["authorized_by"] else None,
+                    "authorized_by": str(row["authorized_by"])
+                    if row["authorized_by"]
+                    else None,
                     "was_exported": row["was_exported"],
                     "export_format": row["export_format"],
                 }
                 for row in rows
             ]
 
-            return {
-                "items": items,
-                "total": total,
-                "has_more": (skip + limit) < total
-            }
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
         raise
@@ -736,7 +780,8 @@ async def log_sensitive_access(request: Request, body: LogSensitiveAccessRequest
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            access_id = await conn.fetchval("""
+            access_id = await conn.fetchval(
+                """
                 INSERT INTO sensitive_data_access (
                     tenant_id, user_id, data_type, entity_type, entity_id,
                     reason, authorized_by, was_exported, export_format
@@ -751,13 +796,13 @@ async def log_sensitive_access(request: Request, body: LogSensitiveAccessRequest
                 body.reason,
                 body.authorized_by,
                 body.was_exported,
-                body.export_format
+                body.export_format,
             )
 
             return {
                 "success": True,
                 "message": "Sensitive data access logged",
-                "data": {"id": str(access_id)}
+                "data": {"id": str(access_id)},
             }
 
     except HTTPException:
@@ -771,6 +816,7 @@ async def log_sensitive_access(request: Request, body: LogSensitiveAccessRequest
 # RETENTION POLICIES
 # =============================================================================
 
+
 @router.get("/audit/retention-policies", response_model=RetentionPolicyListResponse)
 async def list_retention_policies(request: Request):
     """List audit retention policies."""
@@ -779,13 +825,16 @@ async def list_retention_policies(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT id, category, retention_days, archive_after_days,
                        delete_after_days, is_active
                 FROM audit_retention_policies
                 WHERE tenant_id = $1
                 ORDER BY category
-            """, ctx["tenant_id"])
+            """,
+                ctx["tenant_id"],
+            )
 
             return {
                 "success": True,
@@ -799,7 +848,7 @@ async def list_retention_policies(request: Request):
                         "is_active": row["is_active"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:
@@ -811,9 +860,7 @@ async def list_retention_policies(request: Request):
 
 @router.patch("/audit/retention-policies/{policy_id}", response_model=AuditResponse)
 async def update_retention_policy(
-    request: Request,
-    policy_id: UUID,
-    body: UpdateRetentionPolicyRequest
+    request: Request, policy_id: UUID, body: UpdateRetentionPolicyRequest
 ):
     """Update a retention policy."""
     try:
@@ -822,10 +869,14 @@ async def update_retention_policy(
 
         async with pool.acquire() as conn:
             # Verify ownership
-            existing = await conn.fetchrow("""
+            existing = await conn.fetchrow(
+                """
                 SELECT id FROM audit_retention_policies
                 WHERE id = $1 AND tenant_id = $2
-            """, policy_id, ctx["tenant_id"])
+            """,
+                policy_id,
+                ctx["tenant_id"],
+            )
 
             if not existing:
                 raise HTTPException(status_code=404, detail="Policy not found")
@@ -861,16 +912,19 @@ async def update_retention_policy(
             updates.append("updated_at = NOW()")
             params.extend([policy_id, ctx["tenant_id"]])
 
-            await conn.execute(f"""
+            await conn.execute(
+                f"""
                 UPDATE audit_retention_policies
                 SET {", ".join(updates)}
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            """, *params)
+            """,
+                *params,
+            )
 
             return {
                 "success": True,
                 "message": "Retention policy updated",
-                "data": {"id": str(policy_id)}
+                "data": {"id": str(policy_id)},
             }
 
     except HTTPException:
@@ -889,14 +943,13 @@ async def run_audit_cleanup(request: Request):
 
         async with pool.acquire() as conn:
             deleted_count = await conn.fetchval(
-                "SELECT cleanup_audit_logs($1)",
-                ctx["tenant_id"]
+                "SELECT cleanup_audit_logs($1)", ctx["tenant_id"]
             )
 
             return {
                 "success": True,
                 "message": f"Cleanup completed. Deleted {deleted_count} records.",
-                "deleted_count": deleted_count or 0
+                "deleted_count": deleted_count or 0,
             }
 
     except HTTPException:
@@ -910,6 +963,7 @@ async def run_audit_cleanup(request: Request):
 # REPORTS
 # =============================================================================
 
+
 @router.get("/audit/summary", response_model=AuditSummaryResponse)
 async def get_audit_summary(
     request: Request,
@@ -922,7 +976,8 @@ async def get_audit_summary(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT action, entity_type, COUNT(*)::BIGINT as count
                 FROM audit_logs
                 WHERE tenant_id = $1
@@ -930,7 +985,11 @@ async def get_audit_summary(
                 AND ($3::DATE IS NULL OR event_time::DATE <= $3)
                 GROUP BY action, entity_type
                 ORDER BY count DESC
-            """, ctx["tenant_id"], from_date, to_date)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
 
             return {
                 "success": True,
@@ -938,14 +997,14 @@ async def get_audit_summary(
                     {
                         "action": row["action"],
                         "entity_type": row["entity_type"],
-                        "count": row["count"]
+                        "count": row["count"],
                     }
                     for row in rows
                 ],
                 "period": {
                     "from_date": from_date.isoformat() if from_date else None,
-                    "to_date": to_date.isoformat() if to_date else None
-                }
+                    "to_date": to_date.isoformat() if to_date else None,
+                },
             }
 
     except HTTPException:
@@ -967,7 +1026,8 @@ async def get_user_activity_report(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT user_id, user_email,
                        COUNT(*)::INTEGER as total_actions,
                        jsonb_object_agg(action, action_count) as actions_by_type,
@@ -984,7 +1044,11 @@ async def get_user_activity_report(
                 ) sub
                 GROUP BY user_id, user_email
                 ORDER BY total_actions DESC
-            """, ctx["tenant_id"], from_date, to_date)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
 
             return {
                 "success": True,
@@ -994,17 +1058,19 @@ async def get_user_activity_report(
                         "user_email": row["user_email"],
                         "total_actions": row["total_actions"],
                         "actions_by_type": row["actions_by_type"],
-                        "last_activity": row["last_activity"].isoformat()
+                        "last_activity": row["last_activity"].isoformat(),
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting user activity report: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get user activity report")
+        raise HTTPException(
+            status_code=500, detail="Failed to get user activity report"
+        )
 
 
 @router.get("/audit/changes-report")
@@ -1019,7 +1085,8 @@ async def get_changes_report(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(
+                """
                 SELECT event_time::DATE as date, entity_type,
                        COUNT(CASE WHEN action = 'create' THEN 1 END)::INTEGER as creates,
                        COUNT(CASE WHEN action = 'update' THEN 1 END)::INTEGER as updates,
@@ -1031,7 +1098,11 @@ async def get_changes_report(
                 AND ($3::DATE IS NULL OR event_time::DATE <= $3)
                 GROUP BY event_time::DATE, entity_type
                 ORDER BY event_time::DATE DESC, entity_type
-            """, ctx["tenant_id"], from_date, to_date)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
 
             return {
                 "success": True,
@@ -1041,10 +1112,10 @@ async def get_changes_report(
                         "entity_type": row["entity_type"],
                         "creates": row["creates"],
                         "updates": row["updates"],
-                        "deletes": row["deletes"]
+                        "deletes": row["deletes"],
                     }
                     for row in rows
-                ]
+                ],
             }
 
     except HTTPException:

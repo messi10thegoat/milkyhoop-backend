@@ -26,8 +26,7 @@ from ..schemas.bill_payments import (
     OpenBillsResponse,
     OpenBillItem,
 )
-from ..config import settings
-from ..services.resolve_account import resolve_account_id, resolve_accounts_by_codes
+from ..services.resolve_account import resolve_account_id
 
 # Account codes for bill payment journals
 AP_ACCOUNT = "2-10100"  # Hutang Usaha (Accounts Payable)
@@ -36,17 +35,12 @@ PURCHASE_DISCOUNT_ACCOUNT = "5-10200"  # Diskon Pembelian (Purchase Discount)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -60,17 +54,15 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
-
-
 def validate_uuid(value: str, field_name: str = "id") -> UUID:
     """Validate UUID format and return UUID object."""
     try:
         return UUID(value)
     except (ValueError, AttributeError):
         raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} harus berupa UUID yang valid"
+            status_code=400, detail=f"{field_name} harus berupa UUID yang valid"
         )
+
 
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     period = await conn.fetchrow(
@@ -100,7 +92,8 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
     Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
     """
     bill_id_str = str(bill_id)
-    result = await conn.fetchval("""
+    result = await conn.fetchval(
+        """
         SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
@@ -134,7 +127,10 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
                   WHERE vda.bill_id = $2::uuid
               ))
           )
-    """, tenant_id, bill_id_str)
+    """,
+        tenant_id,
+        bill_id_str,
+    )
     return int(result or 0)
 
 
@@ -214,19 +210,25 @@ async def create_bill_payment_journal(
     # Get or default purchase discount account
     purchase_discount_account_id = discount_account_id
     if discount_amount > 0 and not purchase_discount_account_id:
-        purchase_discount_account_id = await resolve_account_id(conn, ctx["tenant_id"], PURCHASE_DISCOUNT_ACCOUNT)
+        purchase_discount_account_id = await resolve_account_id(
+            conn, ctx["tenant_id"], PURCHASE_DISCOUNT_ACCOUNT
+        )
 
     # Get vendor deposit account for unapplied amounts (overpayments to vendor)
     vendor_deposit_account_id = None
     if unapplied_amount > 0:
-        vendor_deposit_account_id = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
+        vendor_deposit_account_id = await resolve_account_id(
+            conn, ctx["tenant_id"], "1-10500"
+        )
 
     # Resolve PPh CoA (Fase 2.3) — Utang Pajak
     pph_coa_id = None
     if pph_amount > 0 and pph_tax_code_id:
         pph_coa_id = await conn.fetchval(
             "SELECT coa_id FROM tax_codes WHERE id = $1",
-            pph_tax_code_id if isinstance(pph_tax_code_id, UUID) else UUID(str(pph_tax_code_id)),
+            pph_tax_code_id
+            if isinstance(pph_tax_code_id, UUID)
+            else UUID(str(pph_tax_code_id)),
         )
         if not pph_coa_id:
             pph_coa_id = await resolve_account_id(conn, ctx["tenant_id"], "2-10300")
@@ -397,9 +399,8 @@ async def create_bill_payment_journal(
     return journal_id, journal_number
 
 
-
-
 # === Journal Preview (read-only, for DirectAction confirmation card) ===
+
 
 @router.post("/preview-journal")
 async def preview_journal(request: Request, body: dict = Body(...)):
@@ -422,12 +423,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         if bank_account_id:
             try:
                 from uuid import UUID
+
                 ba_row = await conn.fetchrow(
                     """SELECT ba.coa_id, ca.name, ca.account_code
                        FROM bank_accounts ba
                        JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
                        WHERE ba.id = $1::uuid AND ba.tenant_id = $2""",
-                    UUID(bank_account_id), ctx["tenant_id"]
+                    UUID(bank_account_id),
+                    ctx["tenant_id"],
                 )
                 if ba_row:
                     bank_name = ba_row["name"]
@@ -441,7 +444,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         try:
             ap_row = await conn.fetchrow(
                 "SELECT name, account_code FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
-                ctx["tenant_id"], AP_ACCOUNT
+                ctx["tenant_id"],
+                AP_ACCOUNT,
             )
             if ap_row:
                 ap_name = ap_row["name"]
@@ -450,8 +454,18 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             pass
 
         lines = [
-            {"account_name": ap_name, "account_code": ap_code, "debit": total_amount, "credit": 0},
-            {"account_name": bank_name, "account_code": bank_code, "debit": 0, "credit": total_amount},
+            {
+                "account_name": ap_name,
+                "account_code": ap_code,
+                "debit": total_amount,
+                "credit": 0,
+            },
+            {
+                "account_name": bank_name,
+                "account_code": bank_code,
+                "debit": 0,
+                "credit": total_amount,
+            },
         ]
 
         return {"journal_lines": lines}
@@ -532,7 +546,9 @@ async def list_bill_payments(
                 params.append(date_to)
                 param_idx += 1
 
-            outer_where = (" AND " + " AND ".join(outer_conditions)) if outer_conditions else ""
+            outer_where = (
+                (" AND " + " AND ".join(outer_conditions)) if outer_conditions else ""
+            )
 
             # Sort column mapping (on outer query aliases)
             sort_col = {
@@ -548,7 +564,7 @@ async def list_bill_payments(
             skip_idx = param_idx + 1
 
             # Journal-derived settlements CTE + LEFT JOIN bill_payments_v2 (Rule 6)
-            base_cte = f"""
+            base_cte = """
                 WITH settlements AS (
                     SELECT je.id AS journal_id, je.journal_number, je.journal_date,
                            je.source_id, je.source_type, je.created_at AS je_created_at,
@@ -779,7 +795,8 @@ async def get_bill_payment(request: Request, payment_id: str):
                     WHERE je.id = $1::uuid AND je.tenant_id = $2
                       AND je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL')
                     """,
-                    payment_id, ctx["tenant_id"],
+                    payment_id,
+                    ctx["tenant_id"],
                 )
 
                 if not journal_row:
@@ -794,7 +811,8 @@ async def get_bill_payment(request: Request, payment_id: str):
                         LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
                         WHERE bp.id = $1::uuid AND bp.tenant_id = $2
                         """,
-                        journal_row["source_id"], ctx["tenant_id"],
+                        journal_row["source_id"],
+                        ctx["tenant_id"],
                     )
 
                 if not payment:
@@ -813,13 +831,24 @@ async def get_bill_payment(request: Request, payment_id: str):
                     # Parse vendor name from description
                     desc = journal_row["description"] or ""
                     vendor_name = "Settlement"
-                    for prefix in ["Pembayaran ke ", "Payment to ", "Bill payment to ", "Pembayaran untuk "]:
+                    for prefix in [
+                        "Pembayaran ke ",
+                        "Payment to ",
+                        "Bill payment to ",
+                        "Pembayaran untuk ",
+                    ]:
                         if desc.startswith(prefix):
-                            vendor_name = desc[len(prefix):]
+                            vendor_name = desc[len(prefix) :]
                             break
 
                     je_status = (journal_row["status"] or "POSTED").upper()
-                    mapped_status = "posted" if je_status == "POSTED" else "draft" if je_status == "DRAFT" else "voided"
+                    mapped_status = (
+                        "posted"
+                        if je_status == "POSTED"
+                        else "draft"
+                        if je_status == "DRAFT"
+                        else "voided"
+                    )
 
                     return {
                         "success": True,
@@ -828,7 +857,9 @@ async def get_bill_payment(request: Request, payment_id: str):
                             "payment_number": journal_row["journal_number"],
                             "vendor_id": "",
                             "vendor_name": vendor_name,
-                            "payment_date": journal_row["journal_date"].isoformat() if journal_row["journal_date"] else None,
+                            "payment_date": journal_row["journal_date"].isoformat()
+                            if journal_row["journal_date"]
+                            else None,
                             "payment_method": "bank_transfer",
                             "source_type": "cash",
                             "bank_account_id": "",
@@ -845,14 +876,24 @@ async def get_bill_payment(request: Request, payment_id: str):
                             "journal_number": journal_row["journal_number"],
                             "void_journal_id": "",
                             "allocations": [],
-                            "posted_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "posted_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "posted_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "posted_by": str(journal_row["created_by"])
+                            if journal_row["created_by"]
+                            else None,
                             "voided_at": None,
                             "voided_by": None,
                             "void_reason": None,
-                            "created_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "updated_at": journal_row["created_at"].isoformat() if journal_row["created_at"] else None,
-                            "created_by": str(journal_row["created_by"]) if journal_row["created_by"] else None,
+                            "created_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "updated_at": journal_row["created_at"].isoformat()
+                            if journal_row["created_at"]
+                            else None,
+                            "created_by": str(journal_row["created_by"])
+                            if journal_row["created_by"]
+                            else None,
                             "is_journal_only": True,
                             "currency_code": "IDR",
                             "exchange_rate": 1,
@@ -966,7 +1007,9 @@ async def get_bill_payment(request: Request, payment_id: str):
                 created_by=str(payment["created_by"])
                 if payment.get("created_by")
                 else None,
-                pph_tax_code_id=str(payment["pph_tax_code_id"]) if payment.get("pph_tax_code_id") else None,
+                pph_tax_code_id=str(payment["pph_tax_code_id"])
+                if payment.get("pph_tax_code_id")
+                else None,
                 pph_amount=int(payment["pph_amount"] or 0),
             )
 
@@ -1003,15 +1046,19 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 if payload.idempotency_key:
                     existing = await conn.fetchrow(
                         "SELECT id, payment_number, status FROM bill_payments_v2 WHERE tenant_id = $1 AND idempotency_key = $2",
-                        ctx["tenant_id"], payload.idempotency_key
+                        ctx["tenant_id"],
+                        payload.idempotency_key,
                     )
                     if existing:
                         return BillPaymentResponse(
                             success=True,
                             message=f"Payment {existing['payment_number']} already exists (idempotent)",
-                            data={"id": str(existing["id"]), "payment_number": existing['payment_number'], "status": existing["status"]}
+                            data={
+                                "id": str(existing["id"]),
+                                "payment_number": existing["payment_number"],
+                                "status": existing["status"],
+                            },
                         )
-
 
                 if not payload.save_as_draft:
                     await check_period_is_open(
@@ -1109,7 +1156,10 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     payload.bank_fee_account_id,
                     payload.currency_code,
                     payload.exchange_rate,
-                    int(Decimal(str(payload.total_amount)) * Decimal(str(payload.exchange_rate))),
+                    int(
+                        Decimal(str(payload.total_amount))
+                        * Decimal(str(payload.exchange_rate))
+                    ),
                     payload.check_number,
                     payload.check_due_date,
                     payload.check_bank_name,
@@ -1211,9 +1261,21 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             UUID(payload.pph_tax_code_id),
                         )
                         vendor_npwp = None  # vendors table has no npwp column yet
-                        pph_rate = Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
-                        pph_dpp = (Decimal(str(payload.pph_amount)) / pph_rate * 100).quantize(Decimal("1")) if pph_rate > 0 else Decimal("0")
-                        tax_period = payload.payment_date.strftime("%Y%m") if hasattr(payload.payment_date, "strftime") else str(payload.payment_date)[:7].replace("-", "")
+                        pph_rate = (
+                            Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
+                        )
+                        pph_dpp = (
+                            (
+                                Decimal(str(payload.pph_amount)) / pph_rate * 100
+                            ).quantize(Decimal("1"))
+                            if pph_rate > 0
+                            else Decimal("0")
+                        )
+                        tax_period = (
+                            payload.payment_date.strftime("%Y%m")
+                            if hasattr(payload.payment_date, "strftime")
+                            else str(payload.payment_date)[:7].replace("-", "")
+                        )
 
                         await conn.execute(
                             """
@@ -1229,19 +1291,26 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                                 $10, $11, 'recorded'
                             )
                             """,
-                            uuid_module.uuid4(), ctx["tenant_id"],
+                            uuid_module.uuid4(),
+                            ctx["tenant_id"],
                             UUID(payload.pph_tax_code_id),
-                            payment_id, payment_id, journal_id,
+                            payment_id,
+                            payment_id,
+                            journal_id,
                             UUID(payload.vendor_id) if payload.vendor_id else None,
-                            vendor_npwp, tax_period,
-                            pph_dpp, payload.pph_amount,
+                            vendor_npwp,
+                            tax_period,
+                            pph_dpp,
+                            payload.pph_amount,
                         )
 
                     # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
                     if payload.bank_account_id:
                         bank_acct = await conn.fetchrow(
                             "SELECT id, account_name, account_type FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                            validate_uuid(str(payload.bank_account_id), "bank_account_id"),
+                            validate_uuid(
+                                str(payload.bank_account_id), "bank_account_id"
+                            ),
                             ctx["tenant_id"],
                         )
                         if bank_acct:
@@ -1423,7 +1492,9 @@ async def post_bill_payment(request: Request, payment_id: str):
                     source_type=full_payment.get("source_type") or "cash",
                     source_deposit_id=full_payment.get("source_deposit_id"),
                     unapplied_amount=full_payment["unapplied_amount"] or 0,
-                    pph_tax_code_id=str(full_payment["pph_tax_code_id"]) if full_payment.get("pph_tax_code_id") else None,
+                    pph_tax_code_id=str(full_payment["pph_tax_code_id"])
+                    if full_payment.get("pph_tax_code_id")
+                    else None,
                     pph_amount=full_payment.get("pph_amount") or 0,
                 )
 
@@ -1587,7 +1658,7 @@ async def void_bill_payment(
                             idx,
                             line["account_id"],
                             line["credit"],  # Swap: original credit -> debit
-                            line["debit"],   # Swap: original debit -> credit
+                            line["debit"],  # Swap: original debit -> credit
                             f"Reversal - {line['memo'] or ''}",
                         )
 
@@ -1621,7 +1692,11 @@ async def void_bill_payment(
                         payment_id,
                     )
                     if original_btxn:
-                        mirror_type = 'deposit' if original_btxn['transaction_type'] == 'withdrawal' else 'withdrawal'
+                        mirror_type = (
+                            "deposit"
+                            if original_btxn["transaction_type"] == "withdrawal"
+                            else "withdrawal"
+                        )
                         await conn.execute(
                             """
                             INSERT INTO bank_transactions (
@@ -1671,12 +1746,16 @@ async def void_bill_payment(
                     )
 
                 # Fase 2.3: Void withholding_tax_records linked to this payment
-            await conn.execute("""
+            await conn.execute(
+                """
                 UPDATE withholding_tax_records
                 SET status = 'void', updated_at = NOW()
                 WHERE payment_id = $1::uuid AND tenant_id = $2
                   AND status != 'void'
-            """, payment_id, ctx["tenant_id"])
+            """,
+                payment_id,
+                ctx["tenant_id"],
+            )
 
             # Update payment status and link void journal
             await conn.execute(
@@ -1776,7 +1855,8 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                     bill_date=r["bill_date"].isoformat() if r["bill_date"] else "",
                     due_date=r["due_date"].isoformat() if r["due_date"] else "",
                     total_amount=r["total_amount"] or 0,
-                    paid_amount=(r["total_amount"] or 0) - int(r["journal_remaining"] or 0),
+                    paid_amount=(r["total_amount"] or 0)
+                    - int(r["journal_remaining"] or 0),
                     remaining_amount=int(r["journal_remaining"] or 0),
                     is_overdue=r["is_overdue"] or False,
                     overdue_days=r["overdue_days"] or 0,
@@ -1802,9 +1882,11 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
         logger.error(f"Error getting open bills: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get open bills")
 
+
 # =============================================================================
 # TABNAV ENDPOINTS
 # =============================================================================
+
 
 @router.get("/{payment_id}/activities")
 async def get_payment_activities(
@@ -1827,7 +1909,8 @@ async def get_payment_activities(
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                payment_id, ctx["tenant_id"]
+                payment_id,
+                ctx["tenant_id"],
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
@@ -1844,12 +1927,16 @@ async def get_payment_activities(
                 ORDER BY created_at DESC
                 LIMIT $3 OFFSET $4
                 """,
-                ctx["tenant_id"], payment_id, limit, offset
+                ctx["tenant_id"],
+                payment_id,
+                limit,
+                offset,
             )
 
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid",
-                ctx["tenant_id"], payment_id
+                ctx["tenant_id"],
+                payment_id,
             )
 
             # If no audit logs, return payment lifecycle events
@@ -1884,7 +1971,7 @@ async def get_payment_activities(
                     FROM bill_payments_v2
                     WHERE id = $1::uuid
                     """,
-                    payment_id
+                    payment_id,
                 )
                 total = len(activities)
 
@@ -1895,16 +1982,18 @@ async def get_payment_activities(
                         "id": str(a["id"]) if a["id"] else None,
                         "action": a["action"],
                         "description": a["description"],
-                        "created_at": a["created_at"].isoformat() if a["created_at"] else None,
+                        "created_at": a["created_at"].isoformat()
+                        if a["created_at"]
+                        else None,
                         "user_id": str(a["user_id"]) if a["user_id"] else None,
-                        "user_email": a["user_email"] or ""
+                        "user_email": a["user_email"] or "",
                     }
                     for a in activities
                 ],
                 "total": total or 0,
                 "page": page,
                 "limit": limit,
-                "has_more": offset + limit < (total or 0)
+                "has_more": offset + limit < (total or 0),
             }
     except HTTPException:
         raise
@@ -1934,14 +2023,16 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                 FROM bill_payments_v2
                 WHERE id = $1::uuid AND tenant_id = $2
                 """,
-                payment_id, ctx["tenant_id"]
+                payment_id,
+                ctx["tenant_id"],
             )
 
             if not payment:
                 # Law 29 fallback: check if payment_id IS a journal_entries.id
                 je_exists = await conn.fetchval(
                     "SELECT id FROM journal_entries WHERE id = $1::uuid AND tenant_id = $2",
-                    payment_id, ctx["tenant_id"]
+                    payment_id,
+                    ctx["tenant_id"],
                 )
                 if not je_exists:
                     raise HTTPException(status_code=404, detail="Payment not found")
@@ -1962,8 +2053,8 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     "summary": {
                         "total_debit": 0,
                         "total_credit": 0,
-                        "is_balanced": True
-                    }
+                        "is_balanced": True,
+                    },
                 }
 
             # Get journal entries
@@ -1975,7 +2066,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                 WHERE je.id = ANY($1::uuid[])
                 ORDER BY je.journal_date, je.created_at
                 """,
-                journal_ids
+                journal_ids,
             )
 
             journal_data = []
@@ -1993,7 +2084,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     WHERE jl.journal_id = $1
                     ORDER BY jl.line_number
                     """,
-                    journal["id"]
+                    journal["id"],
                 )
 
                 line_data = [
@@ -2005,7 +2096,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                         "account_name": line["account_name"],
                         "debit": int(line["debit"] or 0),
                         "credit": int(line["credit"] or 0),
-                        "memo": line["memo"] or ""
+                        "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
@@ -2015,18 +2106,22 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                 total_debit += journal_debit
                 total_credit += journal_credit
 
-                journal_data.append({
-                    "id": str(journal["id"]),
-                    "journal_number": journal["journal_number"],
-                    "journal_date": journal["journal_date"].isoformat() if journal["journal_date"] else None,
-                    "description": journal["description"],
-                    "source_type": journal["source_type"],
-                    "status": journal["status"],
-                    "total_debit": journal_debit,
-                    "total_credit": journal_credit,
-                    "is_balanced": abs(journal_debit - journal_credit) < 0.01,
-                    "lines": line_data
-                })
+                journal_data.append(
+                    {
+                        "id": str(journal["id"]),
+                        "journal_number": journal["journal_number"],
+                        "journal_date": journal["journal_date"].isoformat()
+                        if journal["journal_date"]
+                        else None,
+                        "description": journal["description"],
+                        "source_type": journal["source_type"],
+                        "status": journal["status"],
+                        "total_debit": journal_debit,
+                        "total_credit": journal_credit,
+                        "is_balanced": abs(journal_debit - journal_credit) < 0.01,
+                        "lines": line_data,
+                    }
+                )
 
             return {
                 "success": True,
@@ -2035,8 +2130,8 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                 "summary": {
                     "total_debit": total_debit,
                     "total_credit": total_credit,
-                    "is_balanced": abs(total_debit - total_credit) < 0.01
-                }
+                    "is_balanced": abs(total_debit - total_credit) < 0.01,
+                },
             }
     except HTTPException:
         raise
@@ -2066,7 +2161,8 @@ async def get_payment_transactions(
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                payment_id, ctx["tenant_id"]
+                payment_id,
+                ctx["tenant_id"],
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
@@ -2086,12 +2182,14 @@ async def get_payment_transactions(
                 ORDER BY bpa.created_at
                 LIMIT $2 OFFSET $3
                 """,
-                payment_id, limit, offset
+                payment_id,
+                limit,
+                offset,
             )
 
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM bill_payment_allocations WHERE payment_id = $1::uuid",
-                payment_id
+                payment_id,
             )
 
             return {
@@ -2101,20 +2199,24 @@ async def get_payment_transactions(
                         "id": str(a["id"]),
                         "bill_id": str(a["bill_id"]),
                         "bill_number": a["bill_number"] or "",
-                        "bill_date": a["bill_date"].isoformat() if a["bill_date"] else None,
+                        "bill_date": a["bill_date"].isoformat()
+                        if a["bill_date"]
+                        else None,
                         "bill_amount": a["bill_amount"] or 0,
                         "bill_status": a["bill_status"] or "draft",
                         "remaining_before": a["remaining_before"] or 0,
                         "amount_applied": a["amount_applied"] or 0,
                         "remaining_after": a["remaining_after"] or 0,
-                        "created_at": a["created_at"].isoformat() if a["created_at"] else None
+                        "created_at": a["created_at"].isoformat()
+                        if a["created_at"]
+                        else None,
                     }
                     for a in allocations
                 ],
                 "total": total or 0,
                 "page": page,
                 "limit": limit,
-                "has_more": offset + limit < (total or 0)
+                "has_more": offset + limit < (total or 0),
             }
     except HTTPException:
         raise
@@ -2139,7 +2241,8 @@ async def get_payment_documents(request: Request, payment_id: str):
             # Verify payment exists
             payment = await conn.fetchrow(
                 "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                payment_id, ctx["tenant_id"]
+                payment_id,
+                ctx["tenant_id"],
             )
             if not payment:
                 raise HTTPException(status_code=404, detail="Payment not found")
@@ -2153,7 +2256,8 @@ async def get_payment_documents(request: Request, payment_id: str):
                 WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid
                 ORDER BY created_at DESC
                 """,
-                ctx["tenant_id"], payment_id
+                ctx["tenant_id"],
+                payment_id,
             )
 
             return {
@@ -2166,12 +2270,14 @@ async def get_payment_documents(request: Request, payment_id: str):
                         "file_size": d["file_size"],
                         "file_url": d["file_url"],
                         "description": d["description"],
-                        "created_at": d["created_at"].isoformat() if d["created_at"] else None,
-                        "created_by": str(d["created_by"]) if d["created_by"] else None
+                        "created_at": d["created_at"].isoformat()
+                        if d["created_at"]
+                        else None,
+                        "created_by": str(d["created_by"]) if d["created_by"] else None,
                     }
                     for d in documents
                 ],
-                "total": len(documents)
+                "total": len(documents),
             }
     except HTTPException:
         raise
@@ -2192,28 +2298,45 @@ async def list_payment_attachments(request: Request, payment_id: str):
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
         rows = await conn.fetch(
             """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                      d.file_url as url, d.thumbnail_path as thumbnail_url,
+                      d.file_url, d.file_path, d.thumbnail_path as thumbnail_url,
                       d.uploaded_at, da.attachment_type, da.display_order
                FROM document_attachments da
                JOIN documents d ON da.document_id = d.id
                WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
                  AND d.deleted_at IS NULL
-               ORDER BY da.display_order, d.uploaded_at DESC""",
-            ctx["tenant_id"], payment_id,
+               ORDER BY da.display_order, da.attached_at DESC""",
+            ctx["tenant_id"],
+            payment_id,
         )
-        return {
-            "success": True,
-            "data": [
+
+        try:
+            from app.services.storage_service import get_storage_service
+
+            storage = get_storage_service()
+        except Exception:
+            storage = None
+
+        result = []
+        for r in rows:
+            url = r["file_url"]
+            if storage and r.get("file_path"):
+                try:
+                    url = await storage.generate_signed_url(r["file_path"])
+                except Exception:
+                    url = r["file_url"]
+            result.append(
                 {
                     "id": str(r["id"]),
                     "file_name": r["file_name"],
                     "file_size": r["file_size"],
                     "mime_type": r["mime_type"],
-                    "url": r["url"],
+                    "url": url,
                     "thumbnail_url": r["thumbnail_url"],
-                    "uploaded_at": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
                     "attachment_type": r["attachment_type"],
                 }
-                for r in rows
-            ],
-        }
+            )
+
+        return {"success": True, "data": result}

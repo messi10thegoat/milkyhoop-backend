@@ -57,7 +57,13 @@ CALC: calc_{{op}}_{{what}}
 OTHER: chitchat, ambiguous, reformat_as_table, contextual_drill_down
 
 COMMON INTENTS (gunakan PERSIS):
-create_vendor, create_customer, create_item, create_sales_invoice, create_bill, create_expense, create_journal_entry, create_bank_account, create_warehouse, create_account, create_stock_adjustment, create_receive_payment, create_bill_payment, create_credit_note, create_vendor_credit, create_quote, create_bank_transfer, create_customer_deposit, create_vendor_deposit
+create_vendor, create_customer, create_item, create_sales_invoice, create_sales_order, create_bill, create_expense, create_journal_entry, create_bank_account, create_warehouse, create_account, create_stock_adjustment, create_receive_payment, create_bill_payment, create_credit_note, create_vendor_credit, create_quote, create_bank_transfer, create_customer_deposit, create_vendor_deposit
+
+SALES DOCUMENT DISTINCTION (CRITICAL — jangan tertukar):
+- "buat/bikin pesanan [penjualan]" / "pesanan untuk X" / "bikin SO" / "sales order" → create_sales_order (komitmen, BELUM jurnal)
+- "buat/bikin faktur [penjualan]" / "faktur untuk X" / "bikin invoice" / "tagih X" → create_sales_invoice (AR, ADA jurnal)
+- "buat/bikin penawaran" / "bikin quote" / "quotation" / "tawaran harga" → create_quote (belum komitmen)
+"pesanan" ≠ "faktur" ≠ "penawaran". Gunakan kata kunci user PERSIS: pesanan→SO, faktur→INV, penawaran→QUOTE.
 update_vendor, update_customer, update_item, update_bank_account, update_warehouse
 delete_vendor, delete_customer, delete_item, delete_warehouse, delete_bank_account
 void_sales_invoice, void_bill, void_expense, void_bill_payment, void_receive_payment, reverse_journal

@@ -11,7 +11,6 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from ..config import settings
 from ..schemas.cost_centers import (
     CostCenterCreate,
     CostCenterUpdate,
@@ -29,15 +28,13 @@ from ..schemas.cost_centers import (
 router = APIRouter()
 
 # Connection pool
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -53,6 +50,7 @@ def get_user_context(request: Request) -> dict:
 # COST CENTER CRUD
 # ============================================================================
 
+
 @router.get("", response_model=CostCenterListResponse)
 async def list_cost_centers(
     request: Request,
@@ -67,14 +65,18 @@ async def list_cost_centers(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         where_clauses = ["tenant_id = $1"]
         params = [ctx["tenant_id"]]
         param_idx = 2
 
         if search:
-            where_clauses.append(f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})")
+            where_clauses.append(
+                f"(code ILIKE ${param_idx} OR name ILIKE ${param_idx})"
+            )
             params.append(f"%{search}%")
             param_idx += 1
 
@@ -90,7 +92,9 @@ async def list_cost_centers(
 
         where_sql = " AND ".join(where_clauses)
 
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM cost_centers WHERE {where_sql}", *params)
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM cost_centers WHERE {where_sql}", *params
+        )
 
         rows = await conn.fetch(
             f"""
@@ -99,7 +103,9 @@ async def list_cost_centers(
             ORDER BY path, code
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
-            *params, skip, limit
+            *params,
+            skip,
+            limit,
         )
 
         items = [CostCenterResponse(**dict(row)) for row in rows]
@@ -113,11 +119,12 @@ async def get_cost_center_tree(request: Request):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
-            "SELECT * FROM get_cost_center_tree($1)",
-            ctx["tenant_id"]
+            "SELECT * FROM get_cost_center_tree($1)", ctx["tenant_id"]
         )
 
         # Build tree structure
@@ -137,7 +144,7 @@ async def get_cost_center_tree(request: Request):
                 created_at=None,
                 updated_at=None,
                 children_count=row["children_count"],
-                children=[]
+                children=[],
             )
             nodes[row["id"]] = node
 
@@ -159,11 +166,14 @@ async def get_cost_center(request: Request, cost_center_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         row = await conn.fetchrow(
             "SELECT * FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-            cost_center_id, ctx["tenant_id"]
+            cost_center_id,
+            ctx["tenant_id"],
         )
         if not row:
             raise HTTPException(status_code=404, detail="Cost center not found")
@@ -178,24 +188,32 @@ async def create_cost_center(request: Request, data: CostCenterCreate):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         # Check code uniqueness
         exists = await conn.fetchval(
             "SELECT 1 FROM cost_centers WHERE tenant_id = $1 AND code = $2",
-            ctx["tenant_id"], data.code
+            ctx["tenant_id"],
+            data.code,
         )
         if exists:
-            raise HTTPException(status_code=400, detail=f"Cost center code '{data.code}' already exists")
+            raise HTTPException(
+                status_code=400, detail=f"Cost center code '{data.code}' already exists"
+            )
 
         # Validate parent
         if data.parent_id:
             parent = await conn.fetchrow(
                 "SELECT id FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-                data.parent_id, ctx["tenant_id"]
+                data.parent_id,
+                ctx["tenant_id"],
             )
             if not parent:
-                raise HTTPException(status_code=400, detail="Parent cost center not found")
+                raise HTTPException(
+                    status_code=400, detail="Parent cost center not found"
+                )
 
         row = await conn.fetchrow(
             """
@@ -203,25 +221,35 @@ async def create_cost_center(request: Request, data: CostCenterCreate):
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             """,
-            ctx["tenant_id"], data.code, data.name, data.description,
-            data.parent_id, data.manager_name, data.manager_email
+            ctx["tenant_id"],
+            data.code,
+            data.name,
+            data.description,
+            data.parent_id,
+            data.manager_name,
+            data.manager_email,
         )
 
         return CostCenterResponse(**dict(row))
 
 
 @router.patch("/{cost_center_id}", response_model=CostCenterResponse)
-async def update_cost_center(request: Request, cost_center_id: UUID, data: CostCenterUpdate):
+async def update_cost_center(
+    request: Request, cost_center_id: UUID, data: CostCenterUpdate
+):
     """Update cost center"""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-            cost_center_id, ctx["tenant_id"]
+            cost_center_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Cost center not found")
@@ -234,21 +262,30 @@ async def update_cost_center(request: Request, cost_center_id: UUID, data: CostC
         if "code" in update_data and update_data["code"] != existing["code"]:
             exists = await conn.fetchval(
                 "SELECT 1 FROM cost_centers WHERE tenant_id = $1 AND code = $2 AND id != $3",
-                ctx["tenant_id"], update_data["code"], cost_center_id
+                ctx["tenant_id"],
+                update_data["code"],
+                cost_center_id,
             )
             if exists:
-                raise HTTPException(status_code=400, detail=f"Cost center code already exists")
+                raise HTTPException(
+                    status_code=400, detail="Cost center code already exists"
+                )
 
         # Validate parent if changing
         if "parent_id" in update_data and update_data["parent_id"]:
             if update_data["parent_id"] == cost_center_id:
-                raise HTTPException(status_code=400, detail="Cost center cannot be its own parent")
+                raise HTTPException(
+                    status_code=400, detail="Cost center cannot be its own parent"
+                )
             parent = await conn.fetchrow(
                 "SELECT id FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-                update_data["parent_id"], ctx["tenant_id"]
+                update_data["parent_id"],
+                ctx["tenant_id"],
             )
             if not parent:
-                raise HTTPException(status_code=400, detail="Parent cost center not found")
+                raise HTTPException(
+                    status_code=400, detail="Parent cost center not found"
+                )
 
         set_clauses = []
         params = []
@@ -256,7 +293,7 @@ async def update_cost_center(request: Request, cost_center_id: UUID, data: CostC
             set_clauses.append(f"{key} = ${i}")
             params.append(value)
 
-        set_clauses.append(f"updated_at = NOW()")
+        set_clauses.append("updated_at = NOW()")
         params.extend([cost_center_id, ctx["tenant_id"]])
 
         row = await conn.fetchrow(
@@ -265,7 +302,7 @@ async def update_cost_center(request: Request, cost_center_id: UUID, data: CostC
             WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
             RETURNING *
             """,
-            *params
+            *params,
         )
 
         return CostCenterResponse(**dict(row))
@@ -278,33 +315,37 @@ async def delete_cost_center(request: Request, cost_center_id: UUID):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         existing = await conn.fetchrow(
             "SELECT * FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-            cost_center_id, ctx["tenant_id"]
+            cost_center_id,
+            ctx["tenant_id"],
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Cost center not found")
 
         # Check for children
         children = await conn.fetchval(
-            "SELECT COUNT(*) FROM cost_centers WHERE parent_id = $1",
-            cost_center_id
+            "SELECT COUNT(*) FROM cost_centers WHERE parent_id = $1", cost_center_id
         )
         if children > 0:
-            raise HTTPException(status_code=400, detail="Cannot delete cost center with children")
+            raise HTTPException(
+                status_code=400, detail="Cannot delete cost center with children"
+            )
 
         # Check for usage in journal_lines
         usage = await conn.fetchval(
             "SELECT COUNT(*) FROM journal_lines WHERE cost_center_id = $1",
-            cost_center_id
+            cost_center_id,
         )
         if usage > 0:
             # Soft delete
             await conn.execute(
                 "UPDATE cost_centers SET is_active = false, updated_at = NOW() WHERE id = $1",
-                cost_center_id
+                cost_center_id,
             )
             return {"message": "Cost center deactivated (has transactions)"}
 
@@ -316,6 +357,7 @@ async def delete_cost_center(request: Request, cost_center_id: UUID):
 # ============================================================================
 # REPORTS
 # ============================================================================
+
 
 @router.get("/{cost_center_id}/summary", response_model=CostCenterSummaryResponse)
 async def get_cost_center_summary(
@@ -329,28 +371,36 @@ async def get_cost_center_summary(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         cc = await conn.fetchrow(
             "SELECT * FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-            cost_center_id, ctx["tenant_id"]
+            cost_center_id,
+            ctx["tenant_id"],
         )
         if not cc:
             raise HTTPException(status_code=404, detail="Cost center not found")
 
         rows = await conn.fetch(
             "SELECT * FROM get_cost_center_summary($1, $2, $3)",
-            cost_center_id, start_date, end_date
+            cost_center_id,
+            start_date,
+            end_date,
         )
 
-        items = [CostCenterSummaryItem(
-            account_type=row["account_type"],
-            account_code=row["account_code"],
-            account_name=row["account_name"],
-            total_debit=row["total_debit"],
-            total_credit=row["total_credit"],
-            net_amount=row["net_amount"],
-        ) for row in rows]
+        items = [
+            CostCenterSummaryItem(
+                account_type=row["account_type"],
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                total_debit=row["total_debit"],
+                total_credit=row["total_credit"],
+                net_amount=row["net_amount"],
+            )
+            for row in rows
+        ]
 
         total_debit = sum(i.total_debit for i in items)
         total_credit = sum(i.total_credit for i in items)
@@ -366,7 +416,9 @@ async def get_cost_center_summary(
         )
 
 
-@router.get("/{cost_center_id}/transactions", response_model=CostCenterTransactionsResponse)
+@router.get(
+    "/{cost_center_id}/transactions", response_model=CostCenterTransactionsResponse
+)
 async def get_cost_center_transactions(
     request: Request,
     cost_center_id: UUID,
@@ -380,11 +432,14 @@ async def get_cost_center_transactions(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         cc = await conn.fetchrow(
             "SELECT * FROM cost_centers WHERE id = $1 AND tenant_id = $2",
-            cost_center_id, ctx["tenant_id"]
+            cost_center_id,
+            ctx["tenant_id"],
         )
         if not cc:
             raise HTTPException(status_code=404, detail="Cost center not found")
@@ -409,19 +464,26 @@ async def get_cost_center_transactions(
             ORDER BY je.entry_date DESC, je.id
             OFFSET $4 LIMIT $5
             """,
-            cost_center_id, start_date, end_date, skip, limit
+            cost_center_id,
+            start_date,
+            end_date,
+            skip,
+            limit,
         )
 
-        transactions = [CostCenterTransactionItem(
-            journal_id=row["journal_id"],
-            entry_date=row["entry_date"],
-            reference=row["reference"],
-            description=row["description"],
-            account_code=row["account_code"],
-            account_name=row["account_name"],
-            debit=row["debit"],
-            credit=row["credit"],
-        ) for row in rows]
+        transactions = [
+            CostCenterTransactionItem(
+                journal_id=row["journal_id"],
+                entry_date=row["entry_date"],
+                reference=row["reference"],
+                description=row["description"],
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                debit=row["debit"],
+                credit=row["credit"],
+            )
+            for row in rows
+        ]
 
         total_debit = sum(t.debit for t in transactions)
         total_credit = sum(t.credit for t in transactions)
@@ -447,21 +509,28 @@ async def compare_cost_centers(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
 
         rows = await conn.fetch(
             "SELECT * FROM compare_cost_centers($1, $2, $3)",
-            ctx["tenant_id"], start_date, end_date
+            ctx["tenant_id"],
+            start_date,
+            end_date,
         )
 
-        items = [CostCenterComparisonItem(
-            cost_center_id=row["cost_center_id"],
-            cost_center_code=row["cost_center_code"],
-            cost_center_name=row["cost_center_name"],
-            total_revenue=row["total_revenue"],
-            total_expense=row["total_expense"],
-            net_amount=row["net_amount"],
-        ) for row in rows]
+        items = [
+            CostCenterComparisonItem(
+                cost_center_id=row["cost_center_id"],
+                cost_center_code=row["cost_center_code"],
+                cost_center_name=row["cost_center_name"],
+                total_revenue=row["total_revenue"],
+                total_expense=row["total_expense"],
+                net_amount=row["net_amount"],
+            )
+            for row in rows
+        ]
 
         return CostCenterComparisonResponse(
             start_date=start_date,

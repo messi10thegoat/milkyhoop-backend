@@ -28,35 +28,24 @@ from ..schemas.production import (
     ProductionCompletionInput,
     CostAnalysisResponse,
     ProductionScheduleResponse,
-    CapacityResponse,
     ProductionResponse,
 )
-from ..config import settings
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     user = request.state.user
@@ -66,10 +55,7 @@ def get_user_context(request: Request) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user_id) if user_id else None
-    }
+    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================
@@ -85,6 +71,7 @@ async def health_check():
 # AGGREGATE VIEWS — Material Issues & FG Receipts across all WOs
 # Must be defined BEFORE /{order_id} routes
 # =============================================================================
+
 
 @router.get("/material-issues")
 async def list_material_issues_aggregate(
@@ -122,7 +109,8 @@ async def list_material_issues_aggregate(
                 ORDER BY pom.issued_date DESC NULLS LAST, po.order_number DESC
                 LIMIT $2
                 """,
-                ctx["tenant_id"], limit,
+                ctx["tenant_id"],
+                limit,
             )
             items = [
                 {
@@ -139,7 +127,9 @@ async def list_material_issues_aggregate(
                     "unit": r["unit"],
                     "planned_cost": float(r["planned_cost"] or 0),
                     "actual_cost": float(r["actual_cost"] or 0),
-                    "issued_date": r["issued_date"].isoformat() if r["issued_date"] else None,
+                    "issued_date": r["issued_date"].isoformat()
+                    if r["issued_date"]
+                    else None,
                 }
                 for r in rows
             ]
@@ -186,7 +176,8 @@ async def list_fg_receipts_aggregate(
                 ORDER BY pc.completion_date DESC NULLS LAST, pc.created_at DESC
                 LIMIT $2
                 """,
-                ctx["tenant_id"], limit,
+                ctx["tenant_id"],
+                limit,
             )
             items = [
                 {
@@ -202,7 +193,9 @@ async def list_fg_receipts_aggregate(
                     "quality_status": r["quality_status"] or "passed",
                     "unit_cost": float(r["unit_cost"] or 0),
                     "total_cost": float(r["total_cost"] or 0),
-                    "completion_date": r["completion_date"].isoformat() if r["completion_date"] else None,
+                    "completion_date": r["completion_date"].isoformat()
+                    if r["completion_date"]
+                    else None,
                     "inspection_notes": r["inspection_notes"],
                 }
                 for r in rows
@@ -218,6 +211,7 @@ async def list_fg_receipts_aggregate(
 # =============================================================================
 # PRODUCTION ORDERS
 # =============================================================================
+
 
 # Alias endpoint for /api/production/orders (must be defined BEFORE /{order_id})
 @router.get("/orders", response_model=ProductionOrderListResponse)
@@ -276,7 +270,9 @@ async def list_production_orders(
             param_idx = 2
 
             if search:
-                conditions.append(f"(po.order_number ILIKE ${param_idx} OR p.nama_produk ILIKE ${param_idx})")
+                conditions.append(
+                    f"(po.order_number ILIKE ${param_idx} OR p.nama_produk ILIKE ${param_idx})"
+                )
                 params.append(f"%{search}%")
                 param_idx += 1
 
@@ -309,12 +305,12 @@ async def list_production_orders(
             sort_column = {
                 "order_number": "po.order_number",
                 "order_date": "po.order_date",
-                "priority": "po.priority"
+                "priority": "po.priority",
             }[sort_by]
 
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM production_orders po JOIN products p ON p.id = po.product_id WHERE {where_clause}",
-                *params
+                *params,
             )
 
             query = f"""
@@ -337,25 +333,34 @@ async def list_production_orders(
             for row in rows:
                 completion_pct = 0
                 if row["planned_quantity"] > 0:
-                    completion_pct = round(Decimal(str(row["completed_quantity"])) / Decimal(str(row["planned_quantity"])) * 100, 2)
+                    completion_pct = round(
+                        Decimal(str(row["completed_quantity"]))
+                        / Decimal(str(row["planned_quantity"]))
+                        * 100,
+                        2,
+                    )
 
-                items.append({
-                    "id": str(row["id"]),
-                    "order_number": row["order_number"],
-                    "order_date": row["order_date"],
-                    "product_id": str(row["product_id"]),
-                    "product_name": row["product_name"],
-                    "product_sku": row["product_sku"],
-                    "planned_quantity": row["planned_quantity"],
-                    "completed_quantity": row["completed_quantity"],
-                    "status": row["status"],
-                    "priority": row["priority"],
-                    "planned_start_date": row["planned_start_date"],
-                    "planned_end_date": row["planned_end_date"],
-                    "completion_percent": Decimal(str(completion_pct)),
-                    "created_at": row["created_at"],
-                    "all_materials_issued": bool(row.get("all_materials_issued") or False),
-                })
+                items.append(
+                    {
+                        "id": str(row["id"]),
+                        "order_number": row["order_number"],
+                        "order_date": row["order_date"],
+                        "product_id": str(row["product_id"]),
+                        "product_name": row["product_name"],
+                        "product_sku": row["product_sku"],
+                        "planned_quantity": row["planned_quantity"],
+                        "completed_quantity": row["completed_quantity"],
+                        "status": row["status"],
+                        "priority": row["priority"],
+                        "planned_start_date": row["planned_start_date"],
+                        "planned_end_date": row["planned_end_date"],
+                        "completion_percent": Decimal(str(completion_pct)),
+                        "created_at": row["created_at"],
+                        "all_materials_issued": bool(
+                            row.get("all_materials_issued") or False
+                        ),
+                    }
+                )
 
             return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
@@ -383,19 +388,21 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     JOIN products p ON p.id = bom.product_id
                     WHERE bom.tenant_id = $1 AND bom.id = $2 AND bom.status = 'active'
                     """,
-                    ctx["tenant_id"], body.bom_id
+                    ctx["tenant_id"],
+                    body.bom_id,
                 )
                 if not bom:
                     raise HTTPException(status_code=400, detail="Active BOM not found")
 
                 # Generate order number
                 order_number = await conn.fetchval(
-                    "SELECT generate_production_order_number($1)",
-                    ctx["tenant_id"]
+                    "SELECT generate_production_order_number($1)", ctx["tenant_id"]
                 )
 
                 # Calculate planned costs based on BOM
-                multiplier = Decimal(str(body.planned_quantity)) / Decimal(str(bom["output_quantity"]))
+                multiplier = Decimal(str(body.planned_quantity)) / Decimal(
+                    str(bom["output_quantity"])
+                )
                 planned_material = int(Decimal(str(bom["standard_cost"])) * multiplier)
                 planned_labor = int(Decimal(str(bom["labor_cost"])) * multiplier)
                 planned_overhead = int(Decimal(str(bom["overhead_cost"])) * multiplier)
@@ -412,12 +419,24 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     ) VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                     RETURNING id
                     """,
-                    ctx["tenant_id"], order_number, body.product_id, body.bom_id,
-                    body.planned_quantity, body.unit, body.planned_start_date,
-                    body.planned_end_date, body.work_center_id, body.warehouse_id,
-                    body.sales_order_id, body.customer_id,
-                    planned_material, planned_labor, planned_overhead,
-                    body.priority, body.notes, ctx["user_id"]
+                    ctx["tenant_id"],
+                    order_number,
+                    body.product_id,
+                    body.bom_id,
+                    body.planned_quantity,
+                    body.unit,
+                    body.planned_start_date,
+                    body.planned_end_date,
+                    body.work_center_id,
+                    body.warehouse_id,
+                    body.sales_order_id,
+                    body.customer_id,
+                    planned_material,
+                    planned_labor,
+                    planned_overhead,
+                    body.priority,
+                    body.notes,
+                    ctx["user_id"],
                 )
 
                 # Create planned materials from BOM components
@@ -428,11 +447,15 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     JOIN products p ON p.id = bc.component_product_id
                     WHERE bc.bom_id = $1
                     """,
-                    body.bom_id
+                    body.bom_id,
                 )
 
                 for comp in components:
-                    planned_qty = Decimal(str(comp["quantity"])) * multiplier * (1 + Decimal(str(comp["wastage_percent"] or 0)) / 100)
+                    planned_qty = (
+                        Decimal(str(comp["quantity"]))
+                        * multiplier
+                        * (1 + Decimal(str(comp["wastage_percent"] or 0)) / 100)
+                    )
                     planned_cost = int(planned_qty * Decimal(str(comp["unit_cost"])))
 
                     await conn.execute(
@@ -442,14 +465,17 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                             unit, planned_cost
                         ) VALUES ($1, $2, $3, $4, $5)
                         """,
-                        order_id, comp["component_product_id"],
-                        Decimal(str(round(planned_qty, 4))), comp["unit"], planned_cost
+                        order_id,
+                        comp["component_product_id"],
+                        Decimal(str(round(planned_qty, 4))),
+                        comp["unit"],
+                        planned_cost,
                     )
 
                 return {
                     "success": True,
                     "message": "Production order created",
-                    "data": {"id": str(order_id), "order_number": order_number}
+                    "data": {"id": str(order_id), "order_number": order_number},
                 }
 
     except HTTPException:
@@ -479,10 +505,13 @@ async def get_production_order(request: Request, order_id: UUID):
                 LEFT JOIN warehouses w ON w.id = po.warehouse_id
                 WHERE po.tenant_id = $1 AND po.id = $2
                 """,
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
+                raise HTTPException(
+                    status_code=404, detail="Production order not found"
+                )
 
             # Get materials
             materials = await conn.fetch(
@@ -495,7 +524,7 @@ async def get_production_order(request: Request, order_id: UUID):
                 WHERE pom.production_order_id = $1
                 ORDER BY p.nama_produk
                 """,
-                order_id
+                order_id,
             )
 
             # Get labor
@@ -505,7 +534,7 @@ async def get_production_order(request: Request, order_id: UUID):
                 WHERE production_order_id = $1
                 ORDER BY created_at
                 """,
-                order_id
+                order_id,
             )
 
             # Get completions
@@ -517,7 +546,7 @@ async def get_production_order(request: Request, order_id: UUID):
                 WHERE pc.production_order_id = $1
                 ORDER BY pc.completion_date DESC
                 """,
-                order_id
+                order_id,
             )
 
             return {
@@ -539,12 +568,20 @@ async def get_production_order(request: Request, order_id: UUID):
                     "planned_end_date": order["planned_end_date"],
                     "actual_start_date": order["actual_start_date"],
                     "actual_end_date": order["actual_end_date"],
-                    "work_center_id": str(order["work_center_id"]) if order["work_center_id"] else None,
+                    "work_center_id": str(order["work_center_id"])
+                    if order["work_center_id"]
+                    else None,
                     "work_center_name": order["work_center_name"],
-                    "warehouse_id": str(order["warehouse_id"]) if order["warehouse_id"] else None,
+                    "warehouse_id": str(order["warehouse_id"])
+                    if order["warehouse_id"]
+                    else None,
                     "warehouse_name": order["warehouse_name"],
-                    "sales_order_id": str(order["sales_order_id"]) if order["sales_order_id"] else None,
-                    "customer_id": str(order["customer_id"]) if order["customer_id"] else None,
+                    "sales_order_id": str(order["sales_order_id"])
+                    if order["sales_order_id"]
+                    else None,
+                    "customer_id": str(order["customer_id"])
+                    if order["customer_id"]
+                    else None,
                     "planned_material_cost": order["planned_material_cost"],
                     "planned_labor_cost": order["planned_labor_cost"],
                     "planned_overhead_cost": order["planned_overhead_cost"],
@@ -554,9 +591,15 @@ async def get_production_order(request: Request, order_id: UUID):
                     "variance_amount": order["variance_amount"],
                     "status": order["status"],
                     "priority": order["priority"],
-                    "material_issue_journal_id": str(order["material_issue_journal_id"]) if order["material_issue_journal_id"] else None,
-                    "labor_journal_id": str(order["labor_journal_id"]) if order["labor_journal_id"] else None,
-                    "completion_journal_id": str(order["completion_journal_id"]) if order["completion_journal_id"] else None,
+                    "material_issue_journal_id": str(order["material_issue_journal_id"])
+                    if order["material_issue_journal_id"]
+                    else None,
+                    "labor_journal_id": str(order["labor_journal_id"])
+                    if order["labor_journal_id"]
+                    else None,
+                    "completion_journal_id": str(order["completion_journal_id"])
+                    if order["completion_journal_id"]
+                    else None,
                     "notes": order["notes"],
                     "materials": [
                         {
@@ -575,20 +618,26 @@ async def get_production_order(request: Request, order_id: UUID):
                             "batch_id": str(m["batch_id"]) if m["batch_id"] else None,
                             "batch_number": m["batch_number"],
                             "issued_date": m["issued_date"],
-                            "warehouse_id": str(m["warehouse_id"]) if m["warehouse_id"] else None,
+                            "warehouse_id": str(m["warehouse_id"])
+                            if m["warehouse_id"]
+                            else None,
                         }
                         for m in materials
                     ],
                     "labor": [
                         {
                             "id": str(l["id"]),
-                            "operation_id": str(l["operation_id"]) if l["operation_id"] else None,
+                            "operation_id": str(l["operation_id"])
+                            if l["operation_id"]
+                            else None,
                             "operation_name": l["operation_name"],
                             "planned_hours": l["planned_hours"],
                             "planned_cost": l["planned_cost"],
                             "actual_hours": l["actual_hours"],
                             "actual_cost": l["actual_cost"],
-                            "worker_id": str(l["worker_id"]) if l["worker_id"] else None,
+                            "worker_id": str(l["worker_id"])
+                            if l["worker_id"]
+                            else None,
                             "worker_name": l["worker_name"],
                             "start_time": l["start_time"],
                             "end_time": l["end_time"],
@@ -608,18 +657,24 @@ async def get_production_order(request: Request, order_id: UUID):
                             "inspection_notes": c["inspection_notes"],
                             "unit_cost": c["unit_cost"],
                             "total_cost": c["total_cost"],
-                            "warehouse_id": str(c["warehouse_id"]) if c["warehouse_id"] else None,
+                            "warehouse_id": str(c["warehouse_id"])
+                            if c["warehouse_id"]
+                            else None,
                             "batch_id": str(c["batch_id"]) if c["batch_id"] else None,
                             "batch_number": c["batch_number"],
-                            "journal_id": str(c["journal_id"]) if c["journal_id"] else None,
-                            "completed_by": str(c["completed_by"]) if c["completed_by"] else None,
+                            "journal_id": str(c["journal_id"])
+                            if c["journal_id"]
+                            else None,
+                            "completed_by": str(c["completed_by"])
+                            if c["completed_by"]
+                            else None,
                             "created_at": c["created_at"],
                         }
                         for c in completions
                     ],
                     "created_at": order["created_at"],
                     "updated_at": order["updated_at"],
-                }
+                },
             }
 
     except HTTPException:
@@ -630,7 +685,9 @@ async def get_production_order(request: Request, order_id: UUID):
 
 
 @router.patch("/{order_id}", response_model=ProductionResponse)
-async def update_production_order(request: Request, order_id: UUID, body: UpdateProductionOrderRequest):
+async def update_production_order(
+    request: Request, order_id: UUID, body: UpdateProductionOrderRequest
+):
     """Update production order (draft/planned only)."""
     try:
         ctx = get_user_context(request)
@@ -639,13 +696,18 @@ async def update_production_order(request: Request, order_id: UUID, body: Update
         async with pool.acquire() as conn:
             order = await conn.fetchrow(
                 "SELECT status FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if not order:
-                raise HTTPException(status_code=404, detail="Production order not found")
+                raise HTTPException(
+                    status_code=404, detail="Production order not found"
+                )
 
             if order["status"] not in ("draft", "planned"):
-                raise HTTPException(status_code=400, detail="Can only update draft or planned orders")
+                raise HTTPException(
+                    status_code=400, detail="Can only update draft or planned orders"
+                )
 
             updates = []
             params = []
@@ -665,7 +727,7 @@ async def update_production_order(request: Request, order_id: UUID, body: Update
 
             await conn.execute(
                 f"UPDATE production_orders SET {', '.join(updates)} WHERE tenant_id = ${param_idx} AND id = ${param_idx + 1}",
-                *params
+                *params,
             )
 
             return {"success": True, "message": "Production order updated"}
@@ -687,10 +749,13 @@ async def delete_production_order(request: Request, order_id: UUID):
         async with pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM production_orders WHERE tenant_id = $1 AND id = $2 AND status = 'draft'",
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if result == "DELETE 0":
-                raise HTTPException(status_code=400, detail="Order not found or not in draft status")
+                raise HTTPException(
+                    status_code=400, detail="Order not found or not in draft status"
+                )
 
             return {"success": True, "message": "Production order deleted"}
 
@@ -718,7 +783,7 @@ async def release_order(request: Request, order_id: UUID):
                 # Advisory lock for subcontract release
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"SUBCONTRACT_RELEASE:{order_id}"
+                    f"SUBCONTRACT_RELEASE:{order_id}",
                 )
 
                 # Fetch order + validate
@@ -728,12 +793,16 @@ async def release_order(request: Request, order_id: UUID):
                     FROM production_orders
                     WHERE tenant_id = $1 AND id = $2
                     """,
-                    tenant_id, order_id
+                    tenant_id,
+                    order_id,
                 )
                 if not order:
                     raise HTTPException(status_code=404, detail="Order not found")
                 if order["status"] not in ("draft", "planned"):
-                    raise HTTPException(status_code=400, detail="Order cannot be released from current status")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Order cannot be released from current status",
+                    )
 
                 # Update status
                 await conn.execute(
@@ -742,7 +811,8 @@ async def release_order(request: Request, order_id: UUID):
                     SET status = 'released', updated_at = NOW()
                     WHERE tenant_id = $1 AND id = $2
                     """,
-                    tenant_id, order_id
+                    tenant_id,
+                    order_id,
                 )
 
                 # Query BOM for subcontract operations
@@ -759,7 +829,8 @@ async def release_order(request: Request, order_id: UUID):
                         LEFT JOIN vendors v ON v.id = bo.vendor_id AND v.tenant_id = $1
                         WHERE bo.bom_id = $2 AND bo.is_subcontract = true AND bo.vendor_id IS NOT NULL
                         """,
-                        tenant_id, bom_id
+                        tenant_id,
+                        bom_id,
                     )
 
                 total_subcontract_cost = Decimal("0")
@@ -788,14 +859,21 @@ async def release_order(request: Request, order_id: UUID):
                             0, false, $7
                         ) RETURNING id
                         """,
-                        tenant_id, bill_number, op["vendor_id"], op["vendor_name"] or "Vendor",
+                        tenant_id,
+                        bill_number,
+                        op["vendor_id"],
+                        op["vendor_name"] or "Vendor",
                         line_total,
                         f"Subcontract: {op['operation_name']} for WO {order_id}",
-                        user_id
+                        user_id,
                     )
 
                     # Create bill item — purchase_account = WIP (1-10650) per Law 27
-                    desc = op["subcontract_description"] or op["operation_name"] or "Subcontract service"
+                    desc = (
+                        op["subcontract_description"]
+                        or op["operation_name"]
+                        or "Subcontract service"
+                    )
                     await conn.execute(
                         """
                         INSERT INTO bill_items (
@@ -808,8 +886,12 @@ async def release_order(request: Request, order_id: UUID):
                             $6, $6, 1
                         )
                         """,
-                        bill_id, op["operation_name"] or "Subcontract",
-                        desc, wo_qty, unit_cost, line_total
+                        bill_id,
+                        op["operation_name"] or "Subcontract",
+                        desc,
+                        wo_qty,
+                        unit_cost,
+                        line_total,
                     )
 
                     # Create production_subcontracts record
@@ -821,9 +903,14 @@ async def release_order(request: Request, order_id: UUID):
                             bill_id, bill_status, status
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', 'pending')
                         """,
-                        tenant_id, order_id, op["id"],
-                        op["vendor_id"], wo_qty, unit_cost, line_total,
-                        bill_id
+                        tenant_id,
+                        order_id,
+                        op["id"],
+                        op["vendor_id"],
+                        wo_qty,
+                        unit_cost,
+                        line_total,
+                        bill_id,
                     )
 
                     total_subcontract_cost += line_total
@@ -837,10 +924,15 @@ async def release_order(request: Request, order_id: UUID):
                             updated_at = NOW()
                         WHERE tenant_id = $2 AND id = $3
                         """,
-                        total_subcontract_cost, tenant_id, order_id
+                        total_subcontract_cost,
+                        tenant_id,
+                        order_id,
                     )
 
-                return {"success": True, "message": f"Production order released. {len(subcontract_ops)} subcontract bill(s) created."}
+                return {
+                    "success": True,
+                    "message": f"Production order released. {len(subcontract_ops)} subcontract bill(s) created.",
+                }
 
     except HTTPException:
         raise
@@ -863,10 +955,13 @@ async def start_production(request: Request, order_id: UUID):
                 SET status = 'in_progress', actual_start_date = CURRENT_DATE, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2 AND status = 'released'
                 """,
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if result == "UPDATE 0":
-                raise HTTPException(status_code=400, detail="Order not found or not released")
+                raise HTTPException(
+                    status_code=400, detail="Order not found or not released"
+                )
 
             return {"success": True, "message": "Production started"}
 
@@ -890,7 +985,8 @@ async def complete_order(request: Request, order_id: UUID):
                 SELECT * FROM production_orders
                 WHERE tenant_id = $1 AND id = $2
                 """,
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if not order:
                 raise HTTPException(status_code=404, detail="Order not found")
@@ -899,8 +995,16 @@ async def complete_order(request: Request, order_id: UUID):
                 raise HTTPException(status_code=400, detail="Order not in progress")
 
             # Calculate variance
-            actual_total = order["actual_material_cost"] + order["actual_labor_cost"] + order["actual_overhead_cost"]
-            planned_total = order["planned_material_cost"] + order["planned_labor_cost"] + order["planned_overhead_cost"]
+            actual_total = (
+                order["actual_material_cost"]
+                + order["actual_labor_cost"]
+                + order["actual_overhead_cost"]
+            )
+            planned_total = (
+                order["planned_material_cost"]
+                + order["planned_labor_cost"]
+                + order["planned_overhead_cost"]
+            )
             variance = actual_total - planned_total
 
             await conn.execute(
@@ -910,13 +1014,140 @@ async def complete_order(request: Request, order_id: UUID):
                     variance_amount = $3, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2
                 """,
-                ctx["tenant_id"], order_id, variance
+                ctx["tenant_id"],
+                order_id,
+                variance,
             )
+
+            # Bug #9 fix: Flush WIP residual via variance journal
+            # Check WIP balance from this order's journals
+            wip_account_id = await resolve_account_id(conn, ctx["tenant_id"], "1-10650")
+            variance_account_id = await resolve_account_id(
+                conn, ctx["tenant_id"], "5-90200"
+            )
+
+            if wip_account_id and variance_account_id:
+                # Get WIP balance from material issue + FG receipt journals of this order
+                wip_residual = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.source_id = $1 AND je.tenant_id = $2
+                      AND je.status = 'POSTED' AND jl.account_id = $3
+                """,
+                    order_id,
+                    ctx["tenant_id"],
+                    wip_account_id,
+                )
+
+                if wip_residual and abs(float(wip_residual)) > Decimal("0.01"):
+                    from datetime import date as _date_var
+                    import uuid as _uuid_var
+
+                    wip_residual = Decimal(str(wip_residual))
+
+                    # Advisory lock
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"VARIANCE:{order_id}",
+                    )
+
+                    today_var = _date_var.today()
+                    var_id = _uuid_var.uuid4()
+                    ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
+                    vseq = await conn.fetchval(
+                        """
+                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                        VALUES ($1, 'JV', $2, $3, 1)
+                        ON CONFLICT (tenant_id, prefix, year, month)
+                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                        RETURNING last_number
+                    """,
+                        ctx["tenant_id"],
+                        today_var.year,
+                        today_var.month,
+                    )
+                    var_num = f"JV-VAR-{ym_var}-{vseq:04d}"
+
+                    abs_amount = abs(wip_residual)
+
+                    # Create DRAFT journal
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id,
+                            total_debit, total_credit, status, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_VARIANCE', $6, $7, $7, 'DRAFT', $8)
+                    """,
+                        var_id,
+                        ctx["tenant_id"],
+                        var_num,
+                        today_var,
+                        f"Manufacturing variance WO {order['order_number']}",
+                        order_id,
+                        abs_amount,
+                        ctx.get("user_id"),
+                    )
+
+                    if wip_residual > 0:
+                        # WIP has debit residual: Cr WIP, Dr Variance Expense
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                            VALUES (gen_random_uuid(), $1, $2, $3, 0, 'Variance expense', 1)
+                        """,
+                            var_id,
+                            variance_account_id,
+                            abs_amount,
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                            VALUES (gen_random_uuid(), $1, $2, 0, $3, 'WIP flush', 2)
+                        """,
+                            var_id,
+                            wip_account_id,
+                            abs_amount,
+                        )
+                    else:
+                        # WIP has credit residual: Dr WIP, Cr Variance Income
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                            VALUES (gen_random_uuid(), $1, $2, $3, 0, 'WIP flush', 1)
+                        """,
+                            var_id,
+                            wip_account_id,
+                            abs_amount,
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                            VALUES (gen_random_uuid(), $1, $2, 0, $3, 'Variance credit', 2)
+                        """,
+                            var_id,
+                            variance_account_id,
+                            abs_amount,
+                        )
+
+                    # DRAFT -> POSTED (Law 20)
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries SET status = 'POSTED' WHERE id = $1
+                    """,
+                        var_id,
+                    )
+
+                    logger.info(
+                        f"Variance journal {var_num}: WIP flush {wip_residual} for {order['order_number']}"
+                    )
 
             return {
                 "success": True,
                 "message": "Production order completed",
-                "data": {"variance_amount": variance}
+                "data": {"variance_amount": variance},
             }
 
     except HTTPException:
@@ -926,13 +1157,17 @@ async def complete_order(request: Request, order_id: UUID):
         raise HTTPException(status_code=500, detail="Failed to complete order")
 
 
-async def _reverse_journal(conn, tenant_id: str, user_id, original_journal_id, reason: str):
+async def _reverse_journal(
+    conn, tenant_id: str, user_id, original_journal_id, reason: str
+):
     """Create a reversal journal (Law 2 + Law 26): swap debit/credit of original, link via reversal_of_id."""
     import uuid as _uuid_rev
     from datetime import date as _date_rev
+
     original = await conn.fetchrow(
         "SELECT id, journal_number, source_type, source_id, total_debit, total_credit, status, reversed_by_id FROM journal_entries WHERE id = $1 AND tenant_id = $2",
-        original_journal_id, tenant_id,
+        original_journal_id,
+        tenant_id,
     )
     if not original:
         return None
@@ -951,7 +1186,9 @@ async def _reverse_journal(conn, tenant_id: str, user_id, original_journal_id, r
         DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
         RETURNING last_number
         """,
-        tenant_id, today_rev.year, today_rev.month,
+        tenant_id,
+        today_rev.year,
+        today_rev.month,
     )
     rev_id = _uuid_rev.uuid4()
     rev_num = f"JV-{ym_rev}-{jseq_rev:04d}"
@@ -964,10 +1201,17 @@ async def _reverse_journal(conn, tenant_id: str, user_id, original_journal_id, r
             reversal_of_id, reversal_reason
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
         """,
-        rev_id, tenant_id, rev_num, today_rev,
+        rev_id,
+        tenant_id,
+        rev_num,
+        today_rev,
         f"REVERSAL {original['journal_number']}: {reason}",
-        original["source_type"], original["source_id"],
-        original["total_debit"], user_id, original_journal_id, reason,
+        original["source_type"],
+        original["source_id"],
+        original["total_debit"],
+        user_id,
+        original_journal_id,
+        reason,
     )
     # Copy lines with debit/credit swapped
     orig_lines = await conn.fetch(
@@ -980,22 +1224,37 @@ async def _reverse_journal(conn, tenant_id: str, user_id, original_journal_id, r
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
-            _uuid_rev.uuid4(), rev_id, idx, ln["account_id"],
-            ln["credit"], ln["debit"],  # SWAPPED
+            _uuid_rev.uuid4(),
+            rev_id,
+            idx,
+            ln["account_id"],
+            ln["credit"],
+            ln["debit"],  # SWAPPED
             f"REV: {ln['memo']}" if ln["memo"] else None,
             ln["item_id"],
         )
     # Law 20: POST reversal (hash chain)
-    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rev_id)
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rev_id
+    )
     # Mark original as reversed
     await conn.execute(
         "UPDATE journal_entries SET reversed_by_id = $1, reversed_at = NOW() WHERE id = $2",
-        rev_id, original_journal_id,
+        rev_id,
+        original_journal_id,
     )
     return rev_id
 
 
-async def _reverse_inventory_ledger(conn, tenant_id: str, user_id, source_type: str, source_id, reversal_journal_id, movement_tag: str):
+async def _reverse_inventory_ledger(
+    conn,
+    tenant_id: str,
+    user_id,
+    source_type: str,
+    source_id,
+    reversal_journal_id,
+    movement_tag: str,
+):
     """Insert reversal rows for all inventory_ledger entries of a given source.
     Flips quantity_in/out, recomputes balance, sets movement_type to {TAG}_REVERSAL, links new journal."""
     rows = await conn.fetch(
@@ -1006,17 +1265,22 @@ async def _reverse_inventory_ledger(conn, tenant_id: str, user_id, source_type: 
         WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3
           AND movement_type NOT LIKE '%_REVERSAL'
         """,
-        tenant_id, source_type, source_id,
+        tenant_id,
+        source_type,
+        source_id,
     )
     for r in rows:
         current_bal = await conn.fetchval(
             "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id=$1 AND product_id=$2",
-            tenant_id, r["product_id"],
+            tenant_id,
+            r["product_id"],
         )
         # Swap: original in -> out, original out -> in
         new_in = r["quantity_out"]
         new_out = r["quantity_in"]
-        new_bal = Decimal(str(current_bal)) + Decimal(str(new_in)) - Decimal(str(new_out))
+        new_bal = (
+            Decimal(str(current_bal)) + Decimal(str(new_in)) - Decimal(str(new_out))
+        )
         await conn.execute(
             """
             INSERT INTO inventory_ledger (
@@ -1033,12 +1297,21 @@ async def _reverse_inventory_ledger(conn, tenant_id: str, user_id, source_type: 
                 $14, $15, $16, $17
             )
             """,
-            tenant_id, r["product_id"], r["product_code"], r["product_name"],
+            tenant_id,
+            r["product_id"],
+            r["product_code"],
+            r["product_name"],
             f"{movement_tag}_REVERSAL",
-            source_type, source_id, r["source_number"],
-            new_in, new_out, new_bal,
-            r["unit_cost"], r["total_cost"],
-            r["warehouse_id"], user_id,
+            source_type,
+            source_id,
+            r["source_number"],
+            new_in,
+            new_out,
+            new_bal,
+            r["unit_cost"],
+            r["total_cost"],
+            r["warehouse_id"],
+            user_id,
             "Reversal of production cancellation",
             reversal_journal_id,
         )
@@ -1054,39 +1327,61 @@ async def cancel_order(request: Request, order_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PRODUCTION_CANCEL:{order_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"PRODUCTION_CANCEL:{order_id}",
+                )
 
                 order = await conn.fetchrow(
                     "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                    ctx["tenant_id"], order_id,
+                    ctx["tenant_id"],
+                    order_id,
                 )
                 if not order:
                     raise HTTPException(status_code=404, detail="Order not found")
                 if order["status"] == "cancelled":
-                    raise HTTPException(status_code=400, detail="Order already cancelled")
+                    raise HTTPException(
+                        status_code=400, detail="Order already cancelled"
+                    )
 
                 # 1. Reverse FG Receipt first (un-credit WIP, un-debit FG)
                 if order["completion_journal_id"]:
                     rev_fg_id = await _reverse_journal(
-                        conn, ctx["tenant_id"], ctx["user_id"],
-                        order["completion_journal_id"], "Production order cancelled",
+                        conn,
+                        ctx["tenant_id"],
+                        ctx["user_id"],
+                        order["completion_journal_id"],
+                        "Production order cancelled",
                     )
                     if rev_fg_id:
                         await _reverse_inventory_ledger(
-                            conn, ctx["tenant_id"], ctx["user_id"],
-                            "PRODUCTION_OUTPUT", order_id, rev_fg_id, "PRODUCTION_OUTPUT",
+                            conn,
+                            ctx["tenant_id"],
+                            ctx["user_id"],
+                            "PRODUCTION_OUTPUT",
+                            order_id,
+                            rev_fg_id,
+                            "PRODUCTION_OUTPUT",
                         )
 
                 # 2. Reverse Material Issue (un-debit WIP, un-credit Persediaan RM)
                 if order["material_issue_journal_id"]:
                     rev_mi_id = await _reverse_journal(
-                        conn, ctx["tenant_id"], ctx["user_id"],
-                        order["material_issue_journal_id"], "Production order cancelled",
+                        conn,
+                        ctx["tenant_id"],
+                        ctx["user_id"],
+                        order["material_issue_journal_id"],
+                        "Production order cancelled",
                     )
                     if rev_mi_id:
                         await _reverse_inventory_ledger(
-                            conn, ctx["tenant_id"], ctx["user_id"],
-                            "MATERIAL_ISSUE", order_id, rev_mi_id, "MATERIAL_ISSUE",
+                            conn,
+                            ctx["tenant_id"],
+                            ctx["user_id"],
+                            "MATERIAL_ISSUE",
+                            order_id,
+                            rev_mi_id,
+                            "MATERIAL_ISSUE",
                         )
 
                 # 3. Reset WO counters (cumulative fields set to 0; original rows preserved for audit)
@@ -1109,21 +1404,28 @@ async def cancel_order(request: Request, order_id: UUID):
                 # Cascade: clean up subcontract bills
                 subcontracts = await conn.fetch(
                     "SELECT * FROM production_subcontracts WHERE production_order_id = $1 AND tenant_id = $2 AND status != 'voided'",
-                    order_id, ctx["tenant_id"],
+                    order_id,
+                    ctx["tenant_id"],
                 )
                 for sc in subcontracts:
                     if sc["bill_id"]:
                         bill = await conn.fetchrow(
                             "SELECT status_v2 FROM bills WHERE id = $1 AND tenant_id = $2",
-                            sc["bill_id"], ctx["tenant_id"],
+                            sc["bill_id"],
+                            ctx["tenant_id"],
                         )
                         if bill and bill["status_v2"] == "draft":
                             await conn.execute(
                                 "UPDATE production_subcontracts SET bill_id = NULL, status = 'voided', updated_at = NOW() WHERE id = $1",
                                 sc["id"],
                             )
-                            await conn.execute("DELETE FROM bill_items WHERE bill_id = $1", sc["bill_id"])
-                            await conn.execute("DELETE FROM bills WHERE id = $1", sc["bill_id"])
+                            await conn.execute(
+                                "DELETE FROM bill_items WHERE bill_id = $1",
+                                sc["bill_id"],
+                            )
+                            await conn.execute(
+                                "DELETE FROM bills WHERE id = $1", sc["bill_id"]
+                            )
                             continue
                     await conn.execute(
                         "UPDATE production_subcontracts SET status = 'voided', updated_at = NOW() WHERE id = $1",
@@ -1143,7 +1445,9 @@ async def cancel_order(request: Request, order_id: UUID):
 # MATERIAL ISSUE
 # =============================================================================
 @router.post("/{order_id}/issue-materials", response_model=ProductionResponse)
-async def issue_materials(request: Request, order_id: UUID, materials: List[ProductionMaterialInput]):
+async def issue_materials(
+    request: Request, order_id: UUID, materials: List[ProductionMaterialInput]
+):
     """Issue materials to production order."""
     try:
         ctx = get_user_context(request)
@@ -1153,16 +1457,22 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
             async with conn.transaction():
                 order = await conn.fetchrow(
                     "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                    ctx["tenant_id"], order_id
+                    ctx["tenant_id"],
+                    order_id,
                 )
                 if not order:
                     raise HTTPException(status_code=404, detail="Order not found")
 
                 if order["status"] not in ("released", "in_progress"):
-                    raise HTTPException(status_code=400, detail="Order must be released or in progress")
+                    raise HTTPException(
+                        status_code=400, detail="Order must be released or in progress"
+                    )
 
                 # Law 13: Advisory lock for atomic material issue
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"MATERIAL_ISSUE:{order_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MATERIAL_ISSUE:{order_id}",
+                )
 
                 # Resolve order number for journal description
                 order_number = order["order_number"]
@@ -1178,15 +1488,20 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                                warehouse_id AS default_warehouse_id
                         FROM products WHERE tenant_id = $1 AND id = $2
                         """,
-                        ctx["tenant_id"], mat.product_id
+                        ctx["tenant_id"],
+                        mat.product_id,
                     )
                     if not product:
-                        raise HTTPException(status_code=404, detail=f"Product {mat.product_id} not found")
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Product {mat.product_id} not found",
+                        )
 
                     # Law/Inventory Rule 3: use WAC from inventory_ledger; fallback to purchase_price
                     wac = await conn.fetchval(
                         "SELECT get_weighted_average_cost($1, $2)",
-                        ctx["tenant_id"], mat.product_id
+                        ctx["tenant_id"],
+                        mat.product_id,
                     )
                     unit_cost = Decimal(str(wac or 0))
                     if unit_cost <= 0:
@@ -1195,11 +1510,31 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         raise HTTPException(
                             status_code=409,
                             detail=f"Tidak bisa issue material: produk '{product['nama_produk']}' tidak punya riwayat stok / biaya perolehan. "
-                                   f"Catat penerimaan stok atau opening balance terlebih dahulu."
+                            f"Catat penerimaan stok atau opening balance terlebih dahulu.",
                         )
 
                     qty_dec = Decimal(str(mat.quantity))
                     issue_cost = (qty_dec * unit_cost).quantize(Decimal("0.01"))
+
+                    # Bug #3 fix: stock validation before issue
+                    wh_id = (
+                        mat.warehouse_id
+                        or order["warehouse_id"]
+                        or product["default_warehouse_id"]
+                    )
+                    current_stock = await conn.fetchval(
+                        "SELECT COALESCE(quantity, 0) FROM warehouse_stock WHERE item_id = $1 AND warehouse_id = $2 AND tenant_id = $3",
+                        str(product["id"]),
+                        str(wh_id),
+                        ctx["tenant_id"],
+                    )
+                    if current_stock is None:
+                        current_stock = Decimal("0")
+                    if Decimal(str(current_stock)) < qty_dec:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Stok {product['nama_produk']} tidak cukup di gudang. Tersedia: {current_stock}, dibutuhkan: {qty_dec}",
+                        )
 
                     # Get planned material
                     planned = await conn.fetchrow(
@@ -1207,7 +1542,8 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         SELECT * FROM production_order_materials
                         WHERE production_order_id = $1 AND product_id = $2
                         """,
-                        order_id, mat.product_id
+                        order_id,
+                        mat.product_id,
                     )
 
                     if planned:
@@ -1222,8 +1558,13 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                                 batch_id = $7
                             WHERE production_order_id = $1 AND product_id = $2
                             """,
-                            order_id, mat.product_id, mat.quantity, issue_cost,
-                            ctx["user_id"], mat.warehouse_id, mat.batch_id
+                            order_id,
+                            mat.product_id,
+                            mat.quantity,
+                            issue_cost,
+                            ctx["user_id"],
+                            mat.warehouse_id,
+                            mat.batch_id,
                         )
                     else:
                         await conn.execute(
@@ -1233,20 +1574,30 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                                 issued_quantity, actual_cost, issued_date, issued_by, warehouse_id, batch_id
                             ) VALUES ($1, $2, 0, $3, $4, $5, CURRENT_DATE, $6, $7, $8)
                             """,
-                            order_id, mat.product_id, mat.unit, mat.quantity, issue_cost,
-                            ctx["user_id"], mat.warehouse_id, mat.batch_id
+                            order_id,
+                            mat.product_id,
+                            mat.unit,
+                            mat.quantity,
+                            issue_cost,
+                            ctx["user_id"],
+                            mat.warehouse_id,
+                            mat.batch_id,
                         )
 
                     total_issued_cost += issue_cost
-                    ledger_rows.append({
-                        "product_id": mat.product_id,
-                        "product_code": product["item_code"],
-                        "product_name": product["nama_produk"],
-                        "warehouse_id": mat.warehouse_id or product["default_warehouse_id"],
-                        "quantity": qty_dec,
-                        "unit_cost": unit_cost,
-                        "total_cost": issue_cost,
-                    })
+                    ledger_rows.append(
+                        {
+                            "product_id": mat.product_id,
+                            "product_code": product["item_code"],
+                            "product_name": product["nama_produk"],
+                            "warehouse_id": mat.warehouse_id
+                            or order["warehouse_id"]
+                            or product["default_warehouse_id"],
+                            "quantity": qty_dec,
+                            "unit_cost": unit_cost,
+                            "total_cost": issue_cost,
+                        }
+                    )
 
                 # Update order actual material cost
                 await conn.execute(
@@ -1255,7 +1606,8 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                     SET actual_material_cost = actual_material_cost + $2, updated_at = NOW()
                     WHERE id = $1
                     """,
-                    order_id, total_issued_cost
+                    order_id,
+                    total_issued_cost,
                 )
 
                 # =============================================================
@@ -1267,12 +1619,21 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                 mi_journal_id = None
                 if total_issued_cost > 0:
                     import uuid as _uuid_mi
-                    wip_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10650")
-                    inv_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
+
+                    wip_acct = await resolve_account_id(
+                        conn, ctx["tenant_id"], "1-10650"
+                    )
+                    inv_acct = await resolve_account_id(
+                        conn, ctx["tenant_id"], "1-10600"
+                    )
                     if not wip_acct or not inv_acct:
-                        raise HTTPException(status_code=500, detail="Akun WIP (1-10650) atau Persediaan (1-10600) tidak ditemukan")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Akun WIP (1-10650) atau Persediaan (1-10600) tidak ditemukan",
+                        )
 
                     from datetime import date as _date
+
                     today = _date.today()
                     year_month_str = f"{today.year % 100:02d}{today.month:02d}"
                     jseq = await conn.fetchval(
@@ -1283,7 +1644,9 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                         RETURNING last_number
                         """,
-                        ctx["tenant_id"], today.year, today.month
+                        ctx["tenant_id"],
+                        today.year,
+                        today.month,
                     )
                     mi_journal_id = _uuid_mi.uuid4()
                     jnum = f"JV-{year_month_str}-{jseq:04d}"
@@ -1295,9 +1658,14 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                             total_debit, total_credit, status, created_by
                         ) VALUES ($1, $2, $3, $4, $5, 'MATERIAL_ISSUE', $6, $7, $7, 'DRAFT', $8)
                         """,
-                        mi_journal_id, ctx["tenant_id"], jnum, today,
-                        f"Pengeluaran Bahan {order_number}", order_id,
-                        total_issued_cost, ctx["user_id"],
+                        mi_journal_id,
+                        ctx["tenant_id"],
+                        jnum,
+                        today,
+                        f"Pengeluaran Bahan {order_number}",
+                        order_id,
+                        total_issued_cost,
+                        ctx["user_id"],
                     )
                     # Line 1: Dr WIP total
                     await conn.execute(
@@ -1305,7 +1673,10 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 1, $3, $4, 0, $5)
                         """,
-                        _uuid_mi.uuid4(), mi_journal_id, wip_acct, total_issued_cost,
+                        _uuid_mi.uuid4(),
+                        mi_journal_id,
+                        wip_acct,
+                        total_issued_cost,
                         f"WIP {order_number}",
                     )
                     # Lines 2..N: Cr Persediaan per material
@@ -1315,14 +1686,18 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
                             VALUES ($1, $2, $3, $4, 0, $5, $6, $7)
                             """,
-                            _uuid_mi.uuid4(), mi_journal_id, idx, inv_acct,
-                            row["total_cost"], f"Persediaan {row['product_name']} - {order_number}",
+                            _uuid_mi.uuid4(),
+                            mi_journal_id,
+                            idx,
+                            inv_acct,
+                            row["total_cost"],
+                            f"Persediaan {row['product_name']} - {order_number}",
                             row["product_id"],
                         )
                     # Law 20: POST
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        mi_journal_id
+                        mi_journal_id,
                     )
 
                     # Insert inventory_ledger OUT per material (Inventory Rule 1: atomic with journal)
@@ -1330,13 +1705,18 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                         # Current balance
                         current_bal = await conn.fetchval(
                             "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id=$1 AND product_id=$2",
-                            ctx["tenant_id"], row["product_id"]
+                            ctx["tenant_id"],
+                            row["product_id"],
                         )
                         new_bal = Decimal(str(current_bal)) - row["quantity"]
-                        avg_snap = await conn.fetchval(
-                            "SELECT get_weighted_average_cost($1, $2)",
-                            ctx["tenant_id"], row["product_id"]
-                        ) or row["unit_cost"]
+                        avg_snap = (
+                            await conn.fetchval(
+                                "SELECT get_weighted_average_cost($1, $2)",
+                                ctx["tenant_id"],
+                                row["product_id"],
+                            )
+                            or row["unit_cost"]
+                        )
                         await conn.execute(
                             """
                             INSERT INTO inventory_ledger (
@@ -1353,11 +1733,19 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                                 $12, $13, $14, $15
                             )
                             """,
-                            ctx["tenant_id"], row["product_id"], row["product_code"], row["product_name"],
-                            order_id, order_number,
-                            row["quantity"], new_bal,
-                            row["unit_cost"], row["total_cost"], avg_snap,
-                            row["warehouse_id"], ctx["user_id"],
+                            ctx["tenant_id"],
+                            row["product_id"],
+                            row["product_code"],
+                            row["product_name"],
+                            order_id,
+                            order_number,
+                            row["quantity"],
+                            new_bal,
+                            row["unit_cost"],
+                            row["total_cost"],
+                            avg_snap,
+                            row["warehouse_id"],
+                            ctx["user_id"],
                             f"Pengeluaran bahan untuk {order_number}",
                             mi_journal_id,
                         )
@@ -1365,13 +1753,16 @@ async def issue_materials(request: Request, order_id: UUID, materials: List[Prod
                     # Link journal to WO
                     await conn.execute(
                         "UPDATE production_orders SET material_issue_journal_id = $1 WHERE id = $2",
-                        mi_journal_id, order_id
+                        mi_journal_id,
+                        order_id,
                     )
 
                 return {
                     "success": True,
                     "message": f"Materials issued, total cost: {total_issued_cost}",
-                    "data": {"journal_id": str(mi_journal_id) if mi_journal_id else None}
+                    "data": {
+                        "journal_id": str(mi_journal_id) if mi_journal_id else None
+                    },
                 }
 
     except HTTPException:
@@ -1394,15 +1785,20 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
         async with pool.acquire() as conn:
             order = await conn.fetchrow(
                 "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if not order:
                 raise HTTPException(status_code=404, detail="Order not found")
 
             if order["status"] not in ("released", "in_progress"):
-                raise HTTPException(status_code=400, detail="Order must be released or in progress")
+                raise HTTPException(
+                    status_code=400, detail="Order must be released or in progress"
+                )
 
-            labor_cost = int(Decimal(str(body.actual_hours)) * Decimal(str(body.hourly_rate)))
+            labor_cost = int(
+                Decimal(str(body.actual_hours)) * Decimal(str(body.hourly_rate))
+            )
 
             labor_id = await conn.fetchval(
                 """
@@ -1413,9 +1809,17 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING id
                 """,
-                order_id, body.operation_id, body.operation_name,
-                body.actual_hours, labor_cost, body.worker_id, body.worker_name,
-                body.start_time, body.end_time, body.hourly_rate, body.notes
+                order_id,
+                body.operation_id,
+                body.operation_name,
+                body.actual_hours,
+                labor_cost,
+                body.worker_id,
+                body.worker_name,
+                body.start_time,
+                body.end_time,
+                body.hourly_rate,
+                body.notes,
             )
 
             # Update order actual labor cost
@@ -1425,13 +1829,14 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 SET actual_labor_cost = actual_labor_cost + $2, updated_at = NOW()
                 WHERE id = $1
                 """,
-                order_id, labor_cost
+                order_id,
+                labor_cost,
             )
 
             return {
                 "success": True,
                 "message": "Labor recorded",
-                "data": {"id": str(labor_id), "cost": labor_cost}
+                "data": {"id": str(labor_id), "cost": labor_cost},
             }
 
     except HTTPException:
@@ -1445,7 +1850,9 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
 # OUTPUT / COMPLETION
 # =============================================================================
 @router.post("/{order_id}/report-output", response_model=ProductionResponse)
-async def report_output(request: Request, order_id: UUID, body: ProductionCompletionInput):
+async def report_output(
+    request: Request, order_id: UUID, body: ProductionCompletionInput
+):
     """Report production output."""
     try:
         ctx = get_user_context(request)
@@ -1455,18 +1862,83 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
             async with conn.transaction():
                 order = await conn.fetchrow(
                     "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                    ctx["tenant_id"], order_id
+                    ctx["tenant_id"],
+                    order_id,
                 )
                 if not order:
                     raise HTTPException(status_code=404, detail="Order not found")
 
                 if order["status"] not in ("released", "in_progress"):
-                    raise HTTPException(status_code=400, detail="Order must be released or in progress")
+                    raise HTTPException(
+                        status_code=400, detail="Order must be released or in progress"
+                    )
+
+                # Over-output guard: warn if good+scrap > remaining, require allow_overrun=true
+                existing_totals = await conn.fetchrow(
+                    """
+                    SELECT COALESCE(SUM(good_quantity), 0) as total_good,
+                           COALESCE(SUM(scrap_quantity), 0) as total_scrap
+                    FROM production_completions WHERE production_order_id = $1
+                """,
+                    order_id,
+                )
+                existing_completed = Decimal(
+                    str(existing_totals["total_good"])
+                ) + Decimal(str(existing_totals["total_scrap"]))
+                planned = Decimal(str(order["planned_quantity"] or order["quantity"]))
+                remaining_output = planned - existing_completed
+                requested = Decimal(str(body.good_quantity)) + Decimal(
+                    str(body.scrap_quantity or 0)
+                )
+                is_overrun = requested > remaining_output
+                if is_overrun and not body.allow_overrun:
+                    overrun_amount = requested - remaining_output
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "detail": "Output melebihi target",
+                            "error_code": "OVERRUN_REQUIRES_CONFIRMATION",
+                            "planned": str(planned),
+                            "existing": str(existing_completed),
+                            "remaining": str(max(Decimal("0"), remaining_output)),
+                            "requested": str(requested),
+                            "overrun": str(overrun_amount),
+                            "message": f"Target {planned} pcs, sudah {existing_completed} pcs. Mencoba tambah {requested} pcs (kelebihan {overrun_amount} pcs). Konfirmasi untuk lanjutkan.",
+                        },
+                    )
+                if is_overrun:
+                    logger.info(
+                        f"WO {order['order_number']}: overrun {requested - remaining_output} pcs (confirmed by user {ctx['user_id']})"
+                    )
 
                 # Calculate unit cost (include subcontract cost)
                 subcontract_cost = Decimal(str(order["subcontract_cost"] or 0))
-                total_actual = order["actual_material_cost"] + order["actual_labor_cost"] + order["actual_overhead_cost"] + subcontract_cost
-                total_qty = Decimal(str(order["completed_quantity"])) + Decimal(str(body.good_quantity))
+                # Bug #5 fix: block FG receipt if subcontract bill not posted
+                if subcontract_cost > 0:
+                    unposted = await conn.fetchval(
+                        """
+                        SELECT COUNT(*) FROM production_subcontracts ps
+                        JOIN bills b ON b.id = ps.bill_id
+                        WHERE ps.production_order_id = $1 AND ps.tenant_id = $2
+                          AND (b.status IS NULL OR b.status != 'posted')
+                    """,
+                        str(order_id),
+                        ctx["tenant_id"],
+                    )
+                    if unposted and unposted > 0:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Faktur subkontrak harus di-posting sebelum lapor output. Posting faktur pembelian terlebih dahulu.",
+                        )
+                total_actual = (
+                    order["actual_material_cost"]
+                    + order["actual_labor_cost"]
+                    + order["actual_overhead_cost"]
+                    + subcontract_cost
+                )
+                total_qty = Decimal(str(order["completed_quantity"])) + Decimal(
+                    str(body.good_quantity)
+                )
                 unit_cost = int(total_actual / total_qty) if total_qty > 0 else 0
                 total_cost = int(unit_cost * Decimal(str(body.good_quantity)))
 
@@ -1476,13 +1948,21 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                     INSERT INTO production_completions (
                         production_order_id, completion_date, good_quantity,
                         scrap_quantity, quality_status, inspection_notes,
-                        unit_cost, total_cost, warehouse_id, batch_id, completed_by
-                    ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        unit_cost, total_cost, warehouse_id, batch_id, completed_by, is_overrun
+                    ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     RETURNING id
                     """,
-                    order_id, body.good_quantity, body.scrap_quantity,
-                    body.quality_status, body.inspection_notes,
-                    unit_cost, total_cost, body.warehouse_id, body.batch_id, ctx["user_id"]
+                    order_id,
+                    body.good_quantity,
+                    body.scrap_quantity,
+                    body.quality_status,
+                    body.inspection_notes,
+                    unit_cost,
+                    total_cost,
+                    body.warehouse_id,
+                    body.batch_id,
+                    ctx["user_id"],
+                    is_overrun,
                 )
 
                 # Update order quantities
@@ -1494,7 +1974,9 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         updated_at = NOW()
                     WHERE id = $1
                     """,
-                    order_id, body.good_quantity, body.scrap_quantity
+                    order_id,
+                    body.good_quantity,
+                    body.scrap_quantity,
                 )
 
                 # Update total_cost to reflect all cost components
@@ -1510,7 +1992,10 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                 # + inventory_ledger PRODUCTION_OUTPUT for FG product
                 # Law 6, 13, 20, 25, 27 / Inventory Rules 1, 3, 10
                 # =============================================================
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PRODUCTION_OUTPUT:{order_id}")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"PRODUCTION_OUTPUT:{order_id}",
+                )
 
                 fg_journal_id = None
                 if total_cost > 0:
@@ -1522,17 +2007,28 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         SELECT item_code, nama_produk, warehouse_id AS default_warehouse_id
                         FROM products WHERE tenant_id = $1 AND id = $2
                         """,
-                        ctx["tenant_id"], order["product_id"]
+                        ctx["tenant_id"],
+                        order["product_id"],
                     )
                     if not fg_product:
-                        raise HTTPException(status_code=404, detail="FG product not found")
+                        raise HTTPException(
+                            status_code=404, detail="FG product not found"
+                        )
 
-                    fg_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
-                    wip_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10650")
+                    fg_acct = await resolve_account_id(
+                        conn, ctx["tenant_id"], "1-10600"
+                    )
+                    wip_acct = await resolve_account_id(
+                        conn, ctx["tenant_id"], "1-10650"
+                    )
                     if not fg_acct or not wip_acct:
-                        raise HTTPException(status_code=500, detail="Akun Persediaan FG (1-10600) atau WIP (1-10650) tidak ditemukan")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Akun Persediaan FG (1-10600) atau WIP (1-10650) tidak ditemukan",
+                        )
 
                     from datetime import date as _date_ro
+
                     today_ro = _date_ro.today()
                     ym_ro = f"{today_ro.year % 100:02d}{today_ro.month:02d}"
                     jseq_ro = await conn.fetchval(
@@ -1543,7 +2039,9 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
                         RETURNING last_number
                         """,
-                        ctx["tenant_id"], today_ro.year, today_ro.month
+                        ctx["tenant_id"],
+                        today_ro.year,
+                        today_ro.month,
                     )
                     fg_journal_id = _uuid_ro.uuid4()
                     jnum_ro = f"JV-{ym_ro}-{jseq_ro:04d}"
@@ -1556,9 +2054,14 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                             total_debit, total_credit, status, created_by
                         ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_OUTPUT', $6, $7, $7, 'DRAFT', $8)
                         """,
-                        fg_journal_id, ctx["tenant_id"], jnum_ro, today_ro,
+                        fg_journal_id,
+                        ctx["tenant_id"],
+                        jnum_ro,
+                        today_ro,
                         f"Penerimaan Produksi {order['order_number']} - {fg_product['nama_produk']}",
-                        order_id, total_cost_dec, ctx["user_id"],
+                        order_id,
+                        total_cost_dec,
+                        ctx["user_id"],
                     )
                     # Dr Persediaan FG
                     await conn.execute(
@@ -1566,8 +2069,12 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
                         VALUES ($1, $2, 1, $3, $4, 0, $5, $6)
                         """,
-                        _uuid_ro.uuid4(), fg_journal_id, fg_acct, total_cost_dec,
-                        f"Persediaan FG {order['order_number']}", order["product_id"],
+                        _uuid_ro.uuid4(),
+                        fg_journal_id,
+                        fg_acct,
+                        total_cost_dec,
+                        f"Persediaan FG {order['order_number']}",
+                        order["product_id"],
                     )
                     # Cr WIP
                     await conn.execute(
@@ -1575,22 +2082,32 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, 2, $3, 0, $4, $5)
                         """,
-                        _uuid_ro.uuid4(), fg_journal_id, wip_acct, total_cost_dec,
+                        _uuid_ro.uuid4(),
+                        fg_journal_id,
+                        wip_acct,
+                        total_cost_dec,
                         f"WIP {order['order_number']}",
                     )
                     # Law 20: POST
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        fg_journal_id
+                        fg_journal_id,
                     )
 
                     # inventory_ledger PRODUCTION_OUTPUT (FG inbound)
-                    fg_warehouse = body.warehouse_id or order["warehouse_id"] or fg_product["default_warehouse_id"]
+                    fg_warehouse = (
+                        body.warehouse_id
+                        or order["warehouse_id"]
+                        or fg_product["default_warehouse_id"]
+                    )
                     current_bal_fg = await conn.fetchval(
                         "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id=$1 AND product_id=$2",
-                        ctx["tenant_id"], order["product_id"]
+                        ctx["tenant_id"],
+                        order["product_id"],
                     )
-                    new_bal_fg = Decimal(str(current_bal_fg)) + Decimal(str(body.good_quantity))
+                    new_bal_fg = Decimal(str(current_bal_fg)) + Decimal(
+                        str(body.good_quantity)
+                    )
                     # WAC calc: ((old_value + new_value) / (old_qty + new_qty))
                     wac_row = await conn.fetchrow(
                         """
@@ -1598,14 +2115,17 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS total_qty
                         FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2
                         """,
-                        ctx["tenant_id"], order["product_id"]
+                        ctx["tenant_id"],
+                        order["product_id"],
                     )
                     old_val = Decimal(str(wac_row["total_value"] or 0))
                     old_qty = Decimal(str(wac_row["total_qty"] or 0))
                     qty_in = Decimal(str(body.good_quantity))
                     unit_cost_dec = Decimal(str(unit_cost))
                     if old_qty + qty_in > 0:
-                        new_avg = (old_val + qty_in * unit_cost_dec) / (old_qty + qty_in)
+                        new_avg = (old_val + qty_in * unit_cost_dec) / (
+                            old_qty + qty_in
+                        )
                     else:
                         new_avg = unit_cost_dec
                     await conn.execute(
@@ -1624,11 +2144,19 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                             $12, $13, $14, $15
                         )
                         """,
-                        ctx["tenant_id"], order["product_id"], fg_product["item_code"], fg_product["nama_produk"],
-                        order_id, order["order_number"],
-                        qty_in, new_bal_fg,
-                        unit_cost_dec, total_cost_dec, new_avg,
-                        fg_warehouse, ctx["user_id"],
+                        ctx["tenant_id"],
+                        order["product_id"],
+                        fg_product["item_code"],
+                        fg_product["nama_produk"],
+                        order_id,
+                        order["order_number"],
+                        qty_in,
+                        new_bal_fg,
+                        unit_cost_dec,
+                        total_cost_dec,
+                        new_avg,
+                        fg_warehouse,
+                        ctx["user_id"],
                         f"Penerimaan produksi {order['order_number']}",
                         fg_journal_id,
                     )
@@ -1636,11 +2164,13 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                     # Link journal to completion + WO
                     await conn.execute(
                         "UPDATE production_completions SET journal_id = $1 WHERE id = $2",
-                        fg_journal_id, completion_id
+                        fg_journal_id,
+                        completion_id,
                     )
                     await conn.execute(
                         "UPDATE production_orders SET completion_journal_id = $1 WHERE id = $2",
-                        fg_journal_id, order_id
+                        fg_journal_id,
+                        order_id,
                     )
 
                 return {
@@ -1651,7 +2181,7 @@ async def report_output(request: Request, order_id: UUID, body: ProductionComple
                         "unit_cost": unit_cost,
                         "total_cost": total_cost,
                         "journal_id": str(fg_journal_id) if fg_journal_id else None,
-                    }
+                    },
                 }
 
     except HTTPException:
@@ -1679,7 +2209,8 @@ async def get_cost_analysis(request: Request, order_id: UUID):
                 JOIN products p ON p.id = po.product_id
                 WHERE po.tenant_id = $1 AND po.id = $2
                 """,
-                ctx["tenant_id"], order_id
+                ctx["tenant_id"],
+                order_id,
             )
             if not order:
                 raise HTTPException(status_code=404, detail="Order not found")
@@ -1690,40 +2221,53 @@ async def get_cost_analysis(request: Request, order_id: UUID):
             mat_planned = order["planned_material_cost"]
             mat_actual = order["actual_material_cost"]
             mat_var = mat_actual - mat_planned
-            analysis.append({
-                "category": "material",
-                "planned": mat_planned,
-                "actual": mat_actual,
-                "variance": mat_var,
-                "variance_percent": round(Decimal(mat_var / mat_planned * 100) if mat_planned else 0, 2)
-            })
+            analysis.append(
+                {
+                    "category": "material",
+                    "planned": mat_planned,
+                    "actual": mat_actual,
+                    "variance": mat_var,
+                    "variance_percent": round(
+                        Decimal(mat_var / mat_planned * 100) if mat_planned else 0, 2
+                    ),
+                }
+            )
 
             # Labor
             lab_planned = order["planned_labor_cost"]
             lab_actual = order["actual_labor_cost"]
             lab_var = lab_actual - lab_planned
-            analysis.append({
-                "category": "labor",
-                "planned": lab_planned,
-                "actual": lab_actual,
-                "variance": lab_var,
-                "variance_percent": round(Decimal(lab_var / lab_planned * 100) if lab_planned else 0, 2)
-            })
+            analysis.append(
+                {
+                    "category": "labor",
+                    "planned": lab_planned,
+                    "actual": lab_actual,
+                    "variance": lab_var,
+                    "variance_percent": round(
+                        Decimal(lab_var / lab_planned * 100) if lab_planned else 0, 2
+                    ),
+                }
+            )
 
             # Overhead
             oh_planned = order["planned_overhead_cost"]
             oh_actual = order["actual_overhead_cost"]
             oh_var = oh_actual - oh_planned
-            analysis.append({
-                "category": "overhead",
-                "planned": oh_planned,
-                "actual": oh_actual,
-                "variance": oh_var,
-                "variance_percent": round(Decimal(oh_var / oh_planned * 100) if oh_planned else 0, 2)
-            })
+            analysis.append(
+                {
+                    "category": "overhead",
+                    "planned": oh_planned,
+                    "actual": oh_actual,
+                    "variance": oh_var,
+                    "variance_percent": round(
+                        Decimal(oh_var / oh_planned * 100) if oh_planned else 0, 2
+                    ),
+                }
+            )
 
             # Fetch subcontract records
-            subcontracts = await conn.fetch("""
+            subcontracts = await conn.fetch(
+                """
                 SELECT ps.*, op.operation_name, v.name AS vendor_name,
                        b.invoice_number AS bill_number
                 FROM production_subcontracts ps
@@ -1731,12 +2275,19 @@ async def get_cost_analysis(request: Request, order_id: UUID):
                 JOIN vendors v ON v.id = ps.vendor_id
                 LEFT JOIN bills b ON b.id = ps.bill_id
                 WHERE ps.production_order_id = $1 AND ps.tenant_id = $2
-            """, order_id, ctx["tenant_id"])
+            """,
+                order_id,
+                ctx["tenant_id"],
+            )
 
             sc_cost = Decimal(str(order["subcontract_cost"] or 0))
             total_planned = mat_planned + lab_planned + oh_planned
             total_actual = mat_actual + lab_actual + oh_actual + sc_cost
-            unit_cost = int(total_actual / Decimal(str(order["completed_quantity"]))) if order["completed_quantity"] else 0
+            unit_cost = (
+                int(total_actual / Decimal(str(order["completed_quantity"])))
+                if order["completed_quantity"]
+                else 0
+            )
 
             return {
                 "success": True,
@@ -1751,17 +2302,20 @@ async def get_cost_analysis(request: Request, order_id: UUID):
                 "unit_cost": unit_cost,
                 "subcontract_cost": float(order["subcontract_cost"] or 0),
                 "total_cost": float(order["total_cost"] or 0),
-                "subcontracts": [{
-                    "id": str(s["id"]),
-                    "operation": s["operation_name"],
-                    "vendor": s["vendor_name"],
-                    "quantity": float(s["quantity"]),
-                    "unit_cost": float(s["unit_cost"]),
-                    "total_cost": float(s["total_cost"]),
-                    "bill_number": s["bill_number"],
-                    "bill_status": s["bill_status"],
-                    "status": s["status"],
-                } for s in subcontracts],
+                "subcontracts": [
+                    {
+                        "id": str(s["id"]),
+                        "operation": s["operation_name"],
+                        "vendor": s["vendor_name"],
+                        "quantity": float(s["quantity"]),
+                        "unit_cost": float(s["unit_cost"]),
+                        "total_cost": float(s["total_cost"]),
+                        "bill_number": s["bill_number"],
+                        "bill_status": s["bill_status"],
+                        "status": s["status"],
+                    }
+                    for s in subcontracts
+                ],
             }
 
     except HTTPException:
@@ -1790,7 +2344,7 @@ async def get_active_orders(request: Request):
                 WHERE po.tenant_id = $1 AND po.status IN ('released', 'in_progress')
                 ORDER BY po.priority, po.planned_start_date
                 """,
-                ctx["tenant_id"]
+                ctx["tenant_id"],
             )
 
             items = [
@@ -1817,9 +2371,7 @@ async def get_active_orders(request: Request):
 
 @router.get("/schedule", response_model=ProductionScheduleResponse)
 async def get_production_schedule(
-    request: Request,
-    start_date: date = Query(...),
-    end_date: date = Query(...)
+    request: Request, start_date: date = Query(...), end_date: date = Query(...)
 ):
     """Get production schedule."""
     try:
@@ -1842,7 +2394,9 @@ async def get_production_schedule(
                   )
                 ORDER BY po.planned_start_date, po.priority
                 """,
-                ctx["tenant_id"], start_date, end_date
+                ctx["tenant_id"],
+                start_date,
+                end_date,
             )
 
             items = [
@@ -1865,7 +2419,7 @@ async def get_production_schedule(
                 "start_date": start_date,
                 "end_date": end_date,
                 "items": items,
-                "total_orders": len(items)
+                "total_orders": len(items),
             }
 
     except HTTPException:

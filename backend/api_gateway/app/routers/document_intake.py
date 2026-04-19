@@ -12,7 +12,6 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query
 
-from ..config import settings
 from ..schemas.document_intake import (
     BatchSummary,
     ConfirmDraftRequest,
@@ -33,18 +32,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=5, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -68,7 +62,6 @@ async def _get_service() -> DocumentIntakeService:
     return DocumentIntakeService(pool=pool)
 
 
-
 def _parse_jsonb(value):
     """Parse JSONB value from asyncpg (returned as string)."""
     if value is None:
@@ -81,6 +74,7 @@ def _parse_jsonb(value):
         except (json.JSONDecodeError, TypeError):
             return None
     return value
+
 
 def _batch_summary(row: dict) -> BatchSummary:
     return BatchSummary(
@@ -105,10 +99,14 @@ def _doc_data(row: dict) -> DocumentIntakeData:
         status=row["status"],
         status_detail=row.get("status_detail"),
         retry_count=row.get("retry_count", 0),
-        ocr_confidence=float(row["ocr_confidence"]) if row.get("ocr_confidence") else None,
+        ocr_confidence=float(row["ocr_confidence"])
+        if row.get("ocr_confidence")
+        else None,
         ocr_model_used=row.get("ocr_model_used"),
         doc_type=row.get("doc_type"),
-        classification_confidence=float(row["classification_confidence"]) if row.get("classification_confidence") else None,
+        classification_confidence=float(row["classification_confidence"])
+        if row.get("classification_confidence")
+        else None,
         draft_plan=_parse_jsonb(row.get("draft_plan")),
         journal_entry_id=row.get("journal_entry_id"),
         bank_transaction_id=row.get("bank_transaction_id"),
@@ -267,8 +265,11 @@ async def confirm_document(
         execution_error = None
         try:
             from ..services.kernel_document_executor import KernelDocumentExecutor
+
             pool = await get_pool()
-            auth_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            auth_token = (
+                request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            )
             executor = KernelDocumentExecutor(pool, auth_token=auth_token)
             exec_result = await executor.execute(
                 str(doc_id), ctx["tenant_id"], str(ctx["user_id"])
@@ -280,13 +281,16 @@ async def confirm_document(
                 async with pool2.acquire() as conn:
                     updated = await conn.fetchrow(
                         "SELECT * FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
-                        doc_id, ctx["tenant_id"],
+                        doc_id,
+                        ctx["tenant_id"],
                     )
                     if updated:
                         doc = dict(updated)
             else:
                 execution_error = exec_result.error
-                logger.error(f"[confirm] Execution failed after confirm: {exec_result.error}")
+                logger.error(
+                    f"[confirm] Execution failed after confirm: {exec_result.error}"
+                )
         except Exception as e:
             execution_error = str(e)
             logger.exception(f"[confirm] Execution exception after confirm: {e}")
@@ -326,7 +330,9 @@ async def reject_document(
         reason=body.reason if body else None,
     )
     if not success:
-        raise HTTPException(status_code=404, detail="Document not found or already posted")
+        raise HTTPException(
+            status_code=404, detail="Document not found or already posted"
+        )
 
     return RejectDocumentResponse()
 
@@ -334,6 +340,7 @@ async def reject_document(
 # ======================================================================
 # PROCESSING TRIGGER (Phase 3)
 # ======================================================================
+
 
 @router.post("/process")
 async def trigger_processing(
@@ -364,9 +371,7 @@ async def trigger_processing(
             limit=limit,
         )
 
-        details = [
-            ProcessResultItem(**d) for d in result.get("details", [])
-        ]
+        details = [ProcessResultItem(**d) for d in result.get("details", [])]
 
         return ProcessResponse(
             processed=result["processed"],
@@ -376,7 +381,9 @@ async def trigger_processing(
         )
     except Exception as e:
         logger.exception(f"[DocIntake] Processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)[:200]}")
+        raise HTTPException(
+            status_code=500, detail=f"Processing failed: {str(e)[:200]}"
+        )
 
 
 # ── Phase 8: Kernel Document Executor endpoints ──
@@ -392,7 +399,10 @@ async def execute_document(
     pool = await get_pool()
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
-    auth_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    auth_token = (
+        request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
     result = await executor.execute(doc_id, ctx["tenant_id"], str(ctx["user_id"]))
 
@@ -421,9 +431,14 @@ async def execute_batch(
         raise HTTPException(status_code=400, detail="Max 50 documents per batch")
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
-    auth_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    auth_token = (
+        request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
-    result = await executor.execute_batch(document_ids, ctx["tenant_id"], str(ctx["user_id"]))
+    result = await executor.execute_batch(
+        document_ids, ctx["tenant_id"], str(ctx["user_id"])
+    )
 
     return {
         "success": True,
@@ -449,7 +464,8 @@ async def get_batch_progress(
             """SELECT id, total_documents, processed_count, failed_count, status
                FROM document_batches
                WHERE id = $1 AND tenant_id = $2""",
-            batch_uuid, ctx["tenant_id"],
+            batch_uuid,
+            ctx["tenant_id"],
         )
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found")
@@ -460,7 +476,8 @@ async def get_batch_progress(
                FROM uploaded_documents
                WHERE batch_id = $1 AND tenant_id = $2
                ORDER BY created_at""",
-            batch_uuid, ctx["tenant_id"],
+            batch_uuid,
+            ctx["tenant_id"],
         )
 
         # Count by status
@@ -470,13 +487,22 @@ async def get_batch_progress(
             progress[s] = progress.get(s, 0) + 1
 
         total = len(documents)
-        terminal = {"draft_ready", "confirmed", "posted", "posting_failed", "rejected", "duplicate"}
+        terminal = {
+            "draft_ready",
+            "confirmed",
+            "posted",
+            "posting_failed",
+            "rejected",
+            "duplicate",
+        }
         done_count = sum(1 for d in documents if d["status"] in terminal)
         is_complete = done_count == total and total > 0
 
         # Sync batch status if processing is complete
         if is_complete and batch["status"] == "processing":
-            failed_count = sum(1 for d in documents if d["status"] in ("posting_failed", "rejected"))
+            failed_count = sum(
+                1 for d in documents if d["status"] in ("posting_failed", "rejected")
+            )
             await conn.execute(
                 """UPDATE document_batches
                    SET status = 'completed',
@@ -485,8 +511,11 @@ async def get_batch_progress(
                        total_documents = $5,
                        updated_at = NOW()
                    WHERE id = $1 AND tenant_id = $2""",
-                batch_uuid, ctx["tenant_id"],
-                done_count, failed_count, total,
+                batch_uuid,
+                ctx["tenant_id"],
+                done_count,
+                failed_count,
+                total,
             )
 
         return {
@@ -522,7 +551,8 @@ async def retry_document(
         doc = await conn.fetchrow(
             """SELECT id, status FROM uploaded_documents
                WHERE id = $1 AND tenant_id = $2""",
-            doc_uuid, ctx["tenant_id"],
+            doc_uuid,
+            ctx["tenant_id"],
         )
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -537,12 +567,16 @@ async def retry_document(
             """UPDATE uploaded_documents
                SET status = 'confirmed', updated_at = NOW()
                WHERE id = $1 AND tenant_id = $2""",
-            doc_uuid, ctx["tenant_id"],
+            doc_uuid,
+            ctx["tenant_id"],
         )
 
     # Re-execute via Phase 8 kernel
     from ..services.kernel_document_executor import KernelDocumentExecutor
-    auth_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    auth_token = (
+        request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
     result = await executor.execute(doc_id, ctx["tenant_id"], str(ctx["user_id"]))
 
@@ -569,7 +603,14 @@ async def retry_all_failed(
         )
 
     if not failed_docs:
-        return {"success": True, "message": "No failed documents to retry", "total": 0, "succeeded": 0, "failed": 0, "results": []}
+        return {
+            "success": True,
+            "message": "No failed documents to retry",
+            "total": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "results": [],
+        }
 
     # Reset all to confirmed first
     async with pool.acquire() as conn:
@@ -581,7 +622,10 @@ async def retry_all_failed(
         )
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
-    auth_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    auth_token = (
+        request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
     result = await executor.execute_batch(
         [str(d["id"]) for d in failed_docs],

@@ -6,7 +6,7 @@ import io
 import zipfile
 import logging
 from decimal import Decimal
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from ..schemas.efaktur import EfakturPeriodRequest
@@ -18,18 +18,13 @@ router = APIRouter()
 
 # ── Helpers (per-router pool pattern) ─────────────────────
 import asyncpg
-from ..config import settings
 
-_pool = None
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -51,9 +46,14 @@ async def validate_invoices(conn, invoices, tenant_id) -> list:
 
     # Fetch kode_transaksi requirements
     kode_reqs = {}
-    rows = await conn.fetch("SELECT kode, requires_keterangan, requires_cap_fasilitas FROM djp_kode_transaksi")
+    rows = await conn.fetch(
+        "SELECT kode, requires_keterangan, requires_cap_fasilitas FROM djp_kode_transaksi"
+    )
     for r in rows:
-        kode_reqs[r["kode"]] = {"keterangan": r["requires_keterangan"], "cap": r["requires_cap_fasilitas"]}
+        kode_reqs[r["kode"]] = {
+            "keterangan": r["requires_keterangan"],
+            "cap": r["requires_cap_fasilitas"],
+        }
 
     errors = []
 
@@ -89,7 +89,7 @@ async def validate_invoices(conn, invoices, tenant_id) -> list:
         # Items
         items = await conn.fetch(
             "SELECT * FROM tax_invoice_items WHERE tax_invoice_id = $1 ORDER BY line_number",
-            inv["id"]
+            inv["id"],
         )
 
         if not items:
@@ -105,13 +105,17 @@ async def validate_invoices(conn, invoices, tenant_id) -> list:
             sum_dpp = sum(Decimal(str(item.get("dpp") or 0)) for item in items)
             header_dpp = Decimal(str(inv.get("dpp") or inv.get("total_dpp") or 0))
             if abs(sum_dpp - header_dpp) > Decimal("0.01"):
-                issues.append(f"Total DPP header ({header_dpp}) tidak cocok dengan detail ({sum_dpp})")
+                issues.append(
+                    f"Total DPP header ({header_dpp}) tidak cocok dengan detail ({sum_dpp})"
+                )
 
             # PPN match
             sum_ppn = sum(Decimal(str(item.get("ppn") or 0)) for item in items)
             header_ppn = Decimal(str(inv.get("ppn") or inv.get("total_ppn") or 0))
             if abs(sum_ppn - header_ppn) > Decimal("0.01"):
-                issues.append(f"Total PPN header ({header_ppn}) tidak cocok dengan detail ({sum_ppn})")
+                issues.append(
+                    f"Total PPN header ({header_ppn}) tidak cocok dengan detail ({sum_ppn})"
+                )
 
         # NPWP/NIK pembeli
         jenis_id = inv.get("jenis_id_pembeli") or ""
@@ -125,17 +129,20 @@ async def validate_invoices(conn, invoices, tenant_id) -> list:
                 issues.append("NIK pembeli tidak valid")
 
         if issues:
-            errors.append({
-                "tax_invoice_id": inv_id,
-                "faktur_number": inv.get("faktur_number"),
-                "referensi": inv.get("referensi"),
-                "issues": issues,
-            })
+            errors.append(
+                {
+                    "tax_invoice_id": inv_id,
+                    "faktur_number": inv.get("faktur_number"),
+                    "referensi": inv.get("referensi"),
+                    "issues": issues,
+                }
+            )
 
     return errors
 
 
 # ── Endpoints ────────────────────────────────────────────
+
 
 @router.post("/validate")
 async def validate_efaktur(request: Request, payload: EfakturPeriodRequest):
@@ -147,7 +154,8 @@ async def validate_efaktur(request: Request, payload: EfakturPeriodRequest):
         tid = ctx["tenant_id"]
         await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
 
-        invoices = await conn.fetch("""
+        invoices = await conn.fetch(
+            """
             SELECT * FROM tax_invoices
             WHERE tenant_id = $1
               AND direction = $2
@@ -155,7 +163,12 @@ async def validate_efaktur(request: Request, payload: EfakturPeriodRequest):
               AND tahun_pajak = $4
               AND status = 'nsfp_assigned'
             ORDER BY faktur_number
-        """, tid, payload.export_type, payload.masa_pajak, payload.tahun_pajak)
+        """,
+            tid,
+            payload.export_type,
+            payload.masa_pajak,
+            payload.tahun_pajak,
+        )
 
         total = len(invoices)
         if total == 0:
@@ -195,12 +208,15 @@ async def export_efaktur(request: Request, payload: EfakturPeriodRequest):
             await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
 
             # PKP check
-            pkp = await conn.fetchrow("SELECT is_pkp FROM tax_info WHERE tenant_id = $1", tid)
+            pkp = await conn.fetchrow(
+                "SELECT is_pkp FROM tax_info WHERE tenant_id = $1", tid
+            )
             if not pkp or not pkp["is_pkp"]:
                 raise HTTPException(400, "Tenant bukan PKP")
 
             # Query eligible invoices
-            invoices = await conn.fetch("""
+            invoices = await conn.fetch(
+                """
                 SELECT * FROM tax_invoices
                 WHERE tenant_id = $1
                   AND direction = $2
@@ -208,36 +224,50 @@ async def export_efaktur(request: Request, payload: EfakturPeriodRequest):
                   AND tahun_pajak = $4
                   AND status = 'nsfp_assigned'
                 ORDER BY faktur_number
-            """, tid, payload.export_type, payload.masa_pajak, payload.tahun_pajak)
+            """,
+                tid,
+                payload.export_type,
+                payload.masa_pajak,
+                payload.tahun_pajak,
+            )
 
             if not invoices:
-                raise HTTPException(404, "Tidak ada faktur siap export untuk periode ini")
+                raise HTTPException(
+                    404, "Tidak ada faktur siap export untuk periode ini"
+                )
 
             # Validate
             errors = await validate_invoices(conn, invoices, tid)
             if errors:
-                raise HTTPException(400, detail={
-                    "message": "Validasi gagal, perbaiki faktur bermasalah terlebih dahulu",
-                    "errors": errors,
-                })
+                raise HTTPException(
+                    400,
+                    detail={
+                        "message": "Validasi gagal, perbaiki faktur bermasalah terlebih dahulu",
+                        "errors": errors,
+                    },
+                )
 
             # Fetch items for each invoice
             invoice_data = []
             for inv in invoices:
                 items = await conn.fetch(
                     "SELECT * FROM tax_invoice_items WHERE tax_invoice_id = $1 ORDER BY line_number",
-                    inv["id"]
+                    inv["id"],
                 )
-                invoice_data.append({
-                    "header": dict(inv),
-                    "items": [dict(i) for i in items],
-                })
+                invoice_data.append(
+                    {
+                        "header": dict(inv),
+                        "items": [dict(i) for i in items],
+                    }
+                )
 
             # Load config
             config = load_xml_config()
 
             # Split into chunks of max 200
-            chunks = [invoice_data[i:i+200] for i in range(0, len(invoice_data), 200)]
+            chunks = [
+                invoice_data[i : i + 200] for i in range(0, len(invoice_data), 200)
+            ]
 
             # Generate XML per chunk
             xml_files = []
@@ -250,34 +280,46 @@ async def export_efaktur(request: Request, payload: EfakturPeriodRequest):
             primary_filename = xml_files[0]["filename"]
 
             # Record export batch
-            export_id = await conn.fetchval("""
+            export_id = await conn.fetchval(
+                """
                 INSERT INTO efaktur_exports (
                     id, tenant_id, export_type, masa_pajak, tahun_pajak,
                     total_faktur, file_name, exported_by
                 ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)
                 RETURNING id
-            """, tid, payload.export_type, payload.masa_pajak, payload.tahun_pajak,
-                len(invoices), primary_filename, uid)
+            """,
+                tid,
+                payload.export_type,
+                payload.masa_pajak,
+                payload.tahun_pajak,
+                len(invoices),
+                primary_filename,
+                uid,
+            )
 
             # Update invoice status
             for inv in invoices:
                 await conn.execute(
                     "UPDATE tax_invoices SET status = 'exported', updated_at = now() WHERE id = $1",
-                    inv["id"]
+                    inv["id"],
                 )
 
-            logger.info(f"E-Faktur exported: {len(invoices)} invoices, export_id={export_id}")
+            logger.info(
+                f"E-Faktur exported: {len(invoices)} invoices, export_id={export_id}"
+            )
 
     # Return file
     if len(xml_files) == 1:
         return Response(
             content=xml_files[0]["content"],
             media_type="application/xml",
-            headers={"Content-Disposition": f'attachment; filename="{xml_files[0]["filename"]}"'}
+            headers={
+                "Content-Disposition": f'attachment; filename="{xml_files[0]["filename"]}"'
+            },
         )
     else:
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in xml_files:
                 zf.writestr(f["filename"], f["content"])
         zip_buffer.seek(0)
@@ -285,12 +327,14 @@ async def export_efaktur(request: Request, payload: EfakturPeriodRequest):
         return Response(
             content=zip_buffer.read(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'}
+            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
         )
 
 
 @router.get("/exports")
-async def list_exports(request: Request, export_type: str = None, tahun_pajak: int = None):
+async def list_exports(
+    request: Request, export_type: str = None, tahun_pajak: int = None
+):
     """List export batches."""
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -319,15 +363,19 @@ async def list_exports(request: Request, export_type: str = None, tahun_pajak: i
 
         data = []
         for r in rows:
-            data.append({
-                "id": str(r["id"]),
-                "export_type": r["export_type"],
-                "masa_pajak": r["masa_pajak"],
-                "tahun_pajak": r["tahun_pajak"],
-                "total_faktur": r["total_faktur"],
-                "file_name": r["file_name"],
-                "exported_at": r["exported_at"].isoformat() if r["exported_at"] else None,
-                "exported_by": str(r["exported_by"]) if r["exported_by"] else None,
-            })
+            data.append(
+                {
+                    "id": str(r["id"]),
+                    "export_type": r["export_type"],
+                    "masa_pajak": r["masa_pajak"],
+                    "tahun_pajak": r["tahun_pajak"],
+                    "total_faktur": r["total_faktur"],
+                    "file_name": r["file_name"],
+                    "exported_at": r["exported_at"].isoformat()
+                    if r["exported_at"]
+                    else None,
+                    "exported_by": str(r["exported_by"]) if r["exported_by"] else None,
+                }
+            )
 
         return {"data": data, "total": len(data)}

@@ -20,24 +20,18 @@ from ..schemas.accounts import (
     AccountDropdownResponse,
     AccountBalanceResponse,
 )
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-_pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get or create connection pool."""
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -104,7 +98,12 @@ async def get_account_dropdown(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            conditions = ["tenant_id = $1", "is_active = true"]
+            conditions = [
+                "tenant_id = $1",
+                "is_active = true",
+                "is_header = false",
+                "account_code NOT IN ('3-50000', '3-30000')",
+            ]
             params = [ctx["tenant_id"]]
             param_idx = 2
 
@@ -240,6 +239,7 @@ async def list_accounts(
     search: Optional[str] = Query(None, description="Search code or name"),
     type: Optional[str] = Query(None, description="Filter by account type"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    is_header: Optional[bool] = Query(None, description="Filter by header status"),
     sort_by: Literal["code", "name", "type", "created_at", "updated_at"] = Query(
         "code", description="Sort field"
     ),
@@ -285,6 +285,13 @@ async def list_accounts(
                 conditions.append(f"is_active = ${param_idx}")
                 params.append(is_active)
                 param_idx += 1
+
+            if is_header is not None:
+                conditions.append(f"is_header = ${param_idx}")
+                params.append(is_header)
+                param_idx += 1
+                if is_header is False:
+                    conditions.append("account_code NOT IN ('3-50000', '3-30000')")
 
             where_clause = " AND ".join(conditions)
 
@@ -567,22 +574,28 @@ async def get_account_journal_entries(
                     entry["id"],
                 )
 
-                result_entries.append({
-                    "id": str(entry["id"]),
-                    "date": entry["journal_date"].isoformat(),
-                    "reference": entry["journal_number"],
-                    "description": entry["description"],
-                    "source_type": entry["source_type"],
-                    "lines": [
-                        {
-                            "account_code": line["account_code"],
-                            "account_name": f"{line['account_code']} - {line['account_name']}",
-                            "debit": str(line["debit"]),  # Law 25: numeric(18,2) — serialize as string
-                            "credit": str(line["credit"]),  # Law 25: numeric(18,2) — serialize as string
-                        }
-                        for line in lines
-                    ],
-                })
+                result_entries.append(
+                    {
+                        "id": str(entry["id"]),
+                        "date": entry["journal_date"].isoformat(),
+                        "reference": entry["journal_number"],
+                        "description": entry["description"],
+                        "source_type": entry["source_type"],
+                        "lines": [
+                            {
+                                "account_code": line["account_code"],
+                                "account_name": f"{line['account_code']} - {line['account_name']}",
+                                "debit": str(
+                                    line["debit"]
+                                ),  # Law 25: numeric(18,2) — serialize as string
+                                "credit": str(
+                                    line["credit"]
+                                ),  # Law 25: numeric(18,2) — serialize as string
+                            }
+                            for line in lines
+                        ],
+                    }
+                )
 
             return {
                 "success": True,
@@ -595,8 +608,12 @@ async def get_account_journal_entries(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting account journal entries {account_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get account journal entries")
+        logger.error(
+            f"Error getting account journal entries {account_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to get account journal entries"
+        )
 
 
 # =============================================================================

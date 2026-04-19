@@ -6,31 +6,24 @@ stored in the tax_info table.
 """
 
 from fastapi import APIRouter, HTTPException, Request
-from typing import Optional
 import logging
 import asyncpg
 
 from ..schemas.pkp_settings import PKPSettingsResponse, PKPSettingsUpdate
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_pool: Optional[asyncpg.Pool] = None
-
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        db_config = settings.get_db_config()
-        _pool = await asyncpg.create_pool(
-            **db_config, min_size=2, max_size=10, command_timeout=30
-        )
-    return _pool
+    """Get singleton connection pool (Law 32)."""
+    from ..services.db_pool import get_db_pool
+
+    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, 'user') or not request.state.user:
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Authentication required")
     user = request.state.user
     tenant_id = user.get("tenant_id")
@@ -41,8 +34,16 @@ def get_user_context(request: Request) -> dict:
 
 # PKP-related columns in tax_info
 PKP_COLUMNS = [
-    "is_pkp", "npwp_pkp", "npwp_pkp_15", "nitku", "nama_pkp",
-    "alamat_pkp", "default_kode_transaksi", "negara", "status_wp", "tahun_terdaftar"
+    "is_pkp",
+    "npwp_pkp",
+    "npwp_pkp_15",
+    "nitku",
+    "nama_pkp",
+    "alamat_pkp",
+    "default_kode_transaksi",
+    "negara",
+    "status_wp",
+    "tahun_terdaftar",
 ]
 
 PKP_SELECT = ", ".join(PKP_COLUMNS)
@@ -57,7 +58,7 @@ async def get_pkp_settings(request: Request):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT {PKP_SELECT} FROM tax_info WHERE tenant_id = $1 LIMIT 1",
-            ctx["tenant_id"]
+            ctx["tenant_id"],
         )
 
         if row is None:
@@ -86,18 +87,20 @@ async def update_pkp_settings(request: Request, payload: PKPSettingsUpdate):
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM tax_info WHERE tenant_id = $1)",
-            ctx["tenant_id"]
+            ctx["tenant_id"],
         )
 
         if not exists:
             # INSERT new row with provided fields
             columns = ["id", "tenant_id", "periode"] + list(update_fields.keys())
-            values = [ctx["tenant_id"], ctx["tenant_id"], "000000"] + list(update_fields.values())
+            values = [ctx["tenant_id"], ctx["tenant_id"], "000000"] + list(
+                update_fields.values()
+            )
             placeholders = [f"${i+1}" for i in range(len(values))]
 
             await conn.execute(
                 f"INSERT INTO tax_info ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
-                *values
+                *values,
             )
             logger.info(f"Created tax_info row for tenant {ctx['tenant_id']}")
         else:
@@ -112,13 +115,12 @@ async def update_pkp_settings(request: Request, payload: PKPSettingsUpdate):
             await conn.execute(
                 f"UPDATE tax_info SET {', '.join(set_clauses)}, updated_at = now() "
                 f"WHERE tenant_id = ${len(values)}",
-                *values
+                *values,
             )
 
         # Return updated state
         row = await conn.fetchrow(
-            f"SELECT {PKP_SELECT} FROM tax_info WHERE tenant_id = $1",
-            ctx["tenant_id"]
+            f"SELECT {PKP_SELECT} FROM tax_info WHERE tenant_id = $1", ctx["tenant_id"]
         )
 
         data = dict(row)
