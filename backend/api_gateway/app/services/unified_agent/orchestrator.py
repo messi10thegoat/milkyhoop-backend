@@ -3654,8 +3654,15 @@ class UnifiedAgent:
                                 number=getattr(_seed_state, "active_bill_number", None),
                                 source="session_seed", turn=0,
                             ))
-                        # REC last_response_items seeding disabled (Phase 2)
-                        # Items have ambiguous keys that create bad entity types
+                        # Seed from active_entity (set by calc_rank pipeline)
+                        _ae = getattr(_seed_state, "active_entity", None)
+                        if _ae and isinstance(_ae, dict) and _ae.get("type") and _ae.get("name"):
+                            self._ecm.push_entity(Entity(
+                                type=_ae["type"],
+                                id=_ae.get("id"),
+                                name=_ae["name"],
+                                source="session_seed_active_entity", turn=0,
+                            ))
                 except Exception as _seed_err:
                     logger.debug("[ECM] session seed failed: %s", _seed_err)
             _ecm_extracted = self._ecm.ingest_tool_result(
@@ -5832,6 +5839,25 @@ class UnifiedAgent:
                                 )
                             except Exception:
                                 pass
+                        # ECM: ingest calc_rank result
+                        try:
+                            if hasattr(self, "_ecm") and _rec_items:
+                                for _ci in _rec_items[:5]:
+                                    if isinstance(_ci, dict):
+                                        for _cei in self._ecm._extract_entities_from_dict(_ci, extraction.intent):
+                                            self._ecm.push_entity(_cei)
+                                # Also push active_entity directly
+                                if _rec_kw.get("active_entity"):
+                                    _ae2 = _rec_kw["active_entity"]
+                                    from .entity_context_manager import Entity
+                                    self._ecm.push_entity(Entity(
+                                        type=_ae2["type"], id=_ae2.get("id"),
+                                        name=_ae2.get("name"), source=extraction.intent, turn=self._ecm.current_turn,
+                                    ))
+                                logger.warning("[ECM] calc_rank ingested: %s", self._ecm.get_stats())
+                        except Exception:
+                            pass
+
                         return AgentResponse(
                             message_type="TEXT",
                             content=_calc_text,
@@ -6553,7 +6579,11 @@ class UnifiedAgent:
                     if getattr(_seed, "active_bill_id", None):
                         _ecm.push_entity(Entity(type="bill", id=_seed.active_bill_id,
                             number=getattr(_seed, "active_bill_number", None), source="session_seed", turn=0))
-                    # REC last_response_items seeding disabled (Phase 2)
+                    # Seed from active_entity (set by calc_rank pipeline)
+                    _ae = getattr(_seed, "active_entity", None)
+                    if _ae and isinstance(_ae, dict) and _ae.get("type") and _ae.get("name"):
+                        _ecm.push_entity(Entity(type=_ae["type"], id=_ae.get("id"),
+                            name=_ae["name"], source="session_seed_active_entity", turn=0))
             except Exception:
                 pass
 

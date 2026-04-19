@@ -250,7 +250,11 @@ class EntityContextManager:
 
     # ── Phase 2: Injection ──
 
+    injection_enabled: bool = True  # Phase 2 regression test: set True to activate
+
     def inject_missing_params(self, tool_name: str, tool_schema: dict, params: dict) -> dict:
+        if not self.injection_enabled:
+            return params
         """Generic entity injection -- zero manual mapping.
 
         If tool needs customer_id and params does not have it,
