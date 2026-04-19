@@ -1390,8 +1390,8 @@ class ToolExecutor:
 
         if status == "outstanding":
             # Response: {"invoices": [...], "summary": {...}}
-            invoices = data.get("invoices", [])
-            summary = data.get("summary", {})
+            invoices = normalize_api_response(data)
+            summary = data.get("summary", {}) if isinstance(data, dict) else {}
             return {
                 "results": [
                     {
@@ -1410,9 +1410,7 @@ class ToolExecutor:
                 "total_outstanding": str(summary.get("total_outstanding", 0)),
             }
         else:
-            invoices = data.get("data", data.get("items", data)) if isinstance(data, dict) else data
-            if not isinstance(invoices, list):
-                invoices = []
+            invoices = normalize_api_response(data)
             return {
                 "results": [
                     {
@@ -1486,7 +1484,7 @@ class ToolExecutor:
 
         if status == "outstanding":
             # Response: {"bills": [...], "total_outstanding": X}
-            bills = data.get("bills", [])
+            bills = normalize_api_response(data)
             logger.info(
                 "get_vendor_bills: vendor=%s, bills_count=%d, total=%s",
                 vendor_id,
@@ -1510,7 +1508,7 @@ class ToolExecutor:
                 "total_outstanding": str(data.get("total_outstanding", 0)),
             }
         else:
-            bills = data.get("data", data) if isinstance(data, dict) else data
+            bills = normalize_api_response(data)
             if not isinstance(bills, list):
                 bills = []
             return {
@@ -1984,7 +1982,7 @@ class ToolExecutor:
                     bill_data = resp.json()
                     unpaid_bills.extend(
                         bill_data.get(
-                            "items", bill_data.get("data", bill_data.get("bills", []))
+                            "items", normalize_api_response(bill_data)
                         )
                     )
 
@@ -2109,7 +2107,7 @@ class ToolExecutor:
                     inv_data = resp.json()
                     unpaid_invoices.extend(
                         inv_data.get(
-                            "items", inv_data.get("data", inv_data.get("invoices", []))
+                            "items", normalize_api_response(inv_data)
                         )
                     )
 
@@ -2203,7 +2201,7 @@ class ToolExecutor:
                 )
             if resp.status_code == 200:
                 data = resp.json()
-                items = data.get("items", [])
+                items = normalize_api_response(data)
                 # Exact code match (search is ILIKE, so verify exact)
                 for item in items:
                     if item.get("code") == account_code:
@@ -2310,7 +2308,7 @@ class ToolExecutor:
                 )
 
             data = resp.json()
-            lines = data.get("data", data.get("lines", []))
+            lines = normalize_api_response(data)
 
             if not lines:
                 # No more unmatched items
@@ -2895,11 +2893,7 @@ class ToolExecutor:
                 }
             data = resp.json()
 
-        result = data
-        if isinstance(data, dict) and "data" in data:
-            result = data["data"]
-        elif isinstance(data, dict) and "items" in data:
-            result = data["items"]
+        result = normalize_api_response_or_dict(data)
 
         result = _truncate_result(result)
         return {"success": True, "data": result}
@@ -2942,7 +2936,7 @@ class ToolExecutor:
                 data = resp.json()
                 # Handle wrapped response: {"data": {...}} or flat {...}
                 if isinstance(data, dict):
-                    return data.get("data", data)
+                    return normalize_api_response_or_dict(data)
         except Exception as e:
             logger.warning(f"Entity lookup failed for {path}: {e}")
         return None
@@ -4730,7 +4724,7 @@ class ToolExecutor:
         items = (
             data
             if isinstance(data, list)
-            else data.get("items", data.get("expenses", data.get("data", [])))
+            else normalize_api_response(data)
         )
         if not isinstance(items, list):
             items = []
@@ -4752,7 +4746,7 @@ class ToolExecutor:
         items = (
             data
             if isinstance(data, list)
-            else data.get("items", data.get("customers", data.get("data", [])))
+            else normalize_api_response(data)
         )
         if not isinstance(items, list):
             items = []
@@ -4775,7 +4769,7 @@ class ToolExecutor:
         items = (
             data
             if isinstance(data, list)
-            else data.get("trend", data.get("items", data.get("data", [])))
+            else normalize_api_response(data)
         )
         if not isinstance(items, list):
             items = []
@@ -4839,7 +4833,7 @@ class ToolExecutor:
 
     def _chart_cash_projection(self, data: dict, spec: dict) -> dict:
         """Transform cash-flow-projection into area chart."""
-        projections = data.get("projections", data.get("data", []))
+        projections = normalize_api_response(data)
         if isinstance(projections, list) and projections:
             spec["labels"] = [
                 str(p.get("date", p.get("period", ""))) for p in projections
@@ -4879,7 +4873,7 @@ class ToolExecutor:
 
     def _chart_overdue_invoices(self, data: dict, spec: dict) -> dict:
         """Transform overdue-invoices into horizontal bar."""
-        invoices = data.get("invoices", [])
+        invoices = normalize_api_response(data)
         spec["labels"] = [
             self._truncate(str(i.get("customer_name", i.get("name", "Unknown"))))
             for i in invoices[:10]
@@ -4910,7 +4904,7 @@ class ToolExecutor:
 
     def _chart_overdue_bills(self, data: dict, spec: dict) -> dict:
         """Transform overdue-bills into horizontal bar."""
-        bills = data.get("bills", [])
+        bills = normalize_api_response(data)
         spec["labels"] = [
             self._truncate(str(b.get("vendor_name", b.get("name", "Unknown"))))
             for b in bills[:10]
@@ -5371,7 +5365,7 @@ class ToolExecutor:
     def _chart_sales_trend(self, data: dict, spec: dict) -> dict:
         """Transform daily-summary into line chart."""
         items = (
-            data if isinstance(data, list) else data.get("items", data.get("data", []))
+            normalize_api_response(data)
         )
         if isinstance(items, list) and items:
             spec["labels"] = [str(i.get("date", i.get("tanggal", ""))) for i in items]
@@ -5400,7 +5394,7 @@ class ToolExecutor:
 
     def _chart_top_vendors(self, data: dict, spec: dict) -> dict:
         """Transform vendors list into horizontal bar by AP balance."""
-        items = data.get("items", data) if isinstance(data, dict) else data
+        items = normalize_api_response(data)
         if isinstance(items, list):
             sorted_v = sorted(
                 items, key=lambda v: float(v.get("ap_balance", 0)), reverse=True
@@ -5560,7 +5554,7 @@ class ToolExecutor:
 
     def _chart_budget_vs_actual(self, data: dict, spec: dict) -> dict:
         """Transform budget vs-actual into grouped bar."""
-        items = data.get("items", data.get("line_items", []))
+        items = normalize_api_response(data)
         if isinstance(items, list) and items:
             spec["labels"] = [
                 self._truncate(str(i.get("account_name", i.get("name", ""))))
@@ -5592,7 +5586,7 @@ class ToolExecutor:
 
     def _chart_variance_alerts(self, data: dict, spec: dict) -> dict:
         """Transform variance-alerts into horizontal bar."""
-        alerts = data.get("alerts", data.get("items", []))
+        alerts = normalize_api_response(data)
         if isinstance(alerts, list) and alerts:
             spec["labels"] = [
                 self._truncate(str(a.get("account_name", a.get("name", ""))))
@@ -5718,6 +5712,56 @@ class ToolExecutor:
             "replaces_action_id": old_pending_id,
             "document_id": doc_ctx.get("document_id"),
         }
+
+
+
+def normalize_api_response(data) -> list:
+    """Extract entity list from any API response shape.
+
+    Single source of truth for response key normalization.
+    Handles: {"data": [...]}, {"items": [...]}, {"results": [...]},
+             {"invoices": [...]}, {"expenses": [...]}, plain list, single dict.
+
+    Phase 0 of EntityContextManager migration.
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return [data] if data else []
+
+    # Check known list keys (order = most common first)
+    for key in ("data", "items", "results", "invoices", "bills",
+                "expenses", "accounts", "vendors", "customers",
+                "alerts", "projections", "trend", "line_items", "lines"):
+        val = data.get(key)
+        if isinstance(val, list):
+            return val
+
+    # Single entity dict (has "id" field)
+    if "id" in data:
+        return [data]
+
+    return []  # truly empty
+
+
+def normalize_api_response_or_dict(data) -> any:
+    """Like normalize_api_response but preserves dict metadata (total, summary, has_more).
+
+    Returns the original dict with list extracted, or just the list.
+    Used when callers need both the list AND metadata like total/summary.
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return data
+
+    for key in ("data", "items", "results", "invoices", "bills",
+                "expenses", "accounts", "vendors", "customers"):
+        val = data.get(key)
+        if isinstance(val, list):
+            return val
+
+    return data
 
 
 def _error(code: str, message: str) -> Dict[str, Any]:
