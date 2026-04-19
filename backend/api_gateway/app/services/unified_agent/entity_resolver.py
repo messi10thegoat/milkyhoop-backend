@@ -1013,6 +1013,9 @@ class EntityResolver:
             "sama dia",
             " dia?",
             " dia,",
+            " itu",
+            " tersebut",
+            " tadi",
         ]
         if entity and any(p in f" {t} " or t.endswith(p.strip()) for p in _PRONOUNS):
             _type = entity.get("type", "")
