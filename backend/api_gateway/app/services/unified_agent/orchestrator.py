@@ -3597,6 +3597,20 @@ class UnifiedAgent:
         except Exception as _rec_err:
             logger.warning("[REC] Extract/store failed: %s", _rec_err)
 
+        # ECM shadow ingest (Phase 1) — pipeline path
+        try:
+            from .entity_context_manager import EntityContextManager
+            if not hasattr(self, "_ecm"):
+                self._ecm = EntityContextManager()
+            self._ecm.advance_turn()
+            _ecm_extracted = self._ecm.ingest_tool_result(
+                query_config.action_key or "query_endpoint", query_params, data
+            )
+            if _ecm_extracted:
+                logger.warning("[ECM_SHADOW] pipeline stats=%s", self._ecm.get_stats())
+        except Exception as _ecm_err:
+            logger.debug("[ECM] pipeline ingest failed: %s", _ecm_err)
+
         # Format + LLM Polish
         await emit(
             "THINKING_STEP",
@@ -6460,6 +6474,11 @@ class UnifiedAgent:
         has_proposed = False
         thinking_stages: List[str] = []
 
+        # EntityContextManager — shadow mode (Phase 1)
+        from .entity_context_manager import EntityContextManager
+        _ecm = EntityContextManager()
+        _ecm.advance_turn()
+
         # Model routing (M2) — determine tier based on message + state
         model_choice = ModelRouter.route(
             user_message=user_text,
@@ -6614,6 +6633,10 @@ class UnifiedAgent:
                     accumulated_usage[k] += llm_response.usage.get(k, 0)
 
             # Case 1: LLM returns text (no tool calls) → final answer
+            # ECM: Log shadow stats
+            if _ecm.entity_stack:
+                logger.warning("[ECM_SHADOW] stats=%s", _ecm.get_stats())
+
             if llm_response.finish_reason == "stop" or not llm_response.tool_calls:
                 # ── NUDGE: If ACTION intent, LLM has data but didn't call propose_direct_action ──
                 _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
@@ -7038,6 +7061,13 @@ class UnifiedAgent:
                         }
                     )
 
+                    # ECM shadow ingest (Phase 1)
+                    try:
+                        if result.get("success") and result.get("data"):
+                            _ecm.ingest_tool_result(tc.function_name, tc.arguments or {}, result.get("data"))
+                    except Exception:
+                        pass
+
                     # Intercept CHART result from parallel tools (execute_query with chart_ key)
                     if (
                         isinstance(result, dict)
@@ -7192,6 +7222,13 @@ class UnifiedAgent:
                         "data": _log_data,
                     }
                 )
+
+                # ECM shadow ingest (Phase 1)
+                try:
+                    if result.get("success") and result.get("data"):
+                        _ecm.ingest_tool_result(tool_name, tool_args or {}, result.get("data"))
+                except Exception:
+                    pass
 
                 # Special: propose_action returned ACTION_PREVIEW → exit immediately
                 if (
