@@ -14,7 +14,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-from datetime import date
+from datetime import date, datetime
 
 logger = logging.getLogger("unified_agent.entity_resolver")
 
@@ -22,6 +22,7 @@ logger = logging.getLogger("unified_agent.entity_resolver")
 @dataclass
 class ResolvedEntity:
     """Single resolved entity."""
+
     entity_type: str
     entity_id: str
     entity_name: str
@@ -32,6 +33,7 @@ class ResolvedEntity:
 @dataclass
 class ResolutionResult:
     """Result of entity resolution."""
+
     resolved: dict = field(default_factory=dict)
     missing: list = field(default_factory=list)
     clarifications: list = field(default_factory=list)
@@ -73,7 +75,11 @@ class EntityResolver:
             resolve_tasks.append(self._resolve_customer(entities["customer_name"]))
         if entities.get("vendor_name") and not _skip_vendor_resolve:
             resolve_tasks.append(self._resolve_vendor(entities["vendor_name"]))
-        if entities.get("item_name") and not intent.startswith("create_item") and intent != "create_expense":
+        if (
+            entities.get("item_name")
+            and not intent.startswith("create_item")
+            and intent != "create_expense"
+        ):
             resolve_tasks.append(self._resolve_item(entities["item_name"]))
         if entities.get("bank_name") and not _skip_bank_resolve:
             resolve_tasks.append(self._resolve_bank_account(entities["bank_name"]))
@@ -87,7 +93,9 @@ class EntityResolver:
             resolve_tasks.append(self._resolve_account(entities["account_name"]))
 
         if resolve_tasks:
-            resolved_entities = await asyncio.gather(*resolve_tasks, return_exceptions=True)
+            resolved_entities = await asyncio.gather(
+                *resolve_tasks, return_exceptions=True
+            )
             for res in resolved_entities:
                 if isinstance(res, Exception):
                     logger.warning("[RESOLVE] Entity resolution failed: %s", res)
@@ -111,37 +119,54 @@ class EntityResolver:
         # Step A.5: Graph-based resolution for implicit references
         if entity_graph:
             from .entity_graph import get_last_node, get_focus, _ensure_graph
+
             graph = _ensure_graph(entity_graph)
             if not entities.get("customer_name") and "customer" not in result.resolved:
                 focus = get_focus(graph)
                 if focus and focus.get("type") == "customer":
                     result.resolved["customer"] = ResolvedEntity(
-                        entity_type="customer", entity_id=focus["id"],
-                        entity_name=focus["name"], confidence=0.9,
+                        entity_type="customer",
+                        entity_id=focus["id"],
+                        entity_name=focus["name"],
+                        confidence=0.9,
                     )
                 else:
                     last_cust = get_last_node(graph, "customer")
                     if last_cust:
                         result.resolved["customer"] = ResolvedEntity(
-                            entity_type="customer", entity_id=last_cust["id"],
-                            entity_name=last_cust["name"], confidence=0.85,
+                            entity_type="customer",
+                            entity_id=last_cust["id"],
+                            entity_name=last_cust["name"],
+                            confidence=0.85,
                         )
             if not entities.get("vendor_name") and "vendor" not in result.resolved:
-                last_vendor = get_last_node(graph, "vendor") if graph.get("nodes") else None
+                last_vendor = (
+                    get_last_node(graph, "vendor") if graph.get("nodes") else None
+                )
                 if last_vendor:
                     result.resolved["vendor"] = ResolvedEntity(
-                        entity_type="vendor", entity_id=last_vendor["id"],
-                        entity_name=last_vendor["name"], confidence=0.85,
+                        entity_type="vendor",
+                        entity_id=last_vendor["id"],
+                        entity_name=last_vendor["name"],
+                        confidence=0.85,
                     )
 
         # Step B: Complete from memory + defaults (3-source merge)
         result.payload = self._build_payload(
-            intent, entities, result.resolved, memory_state, system_defaults,
+            intent,
+            entities,
+            result.resolved,
+            memory_state,
+            system_defaults,
             action_memory_suggestion=action_memory_suggestion,
         )
 
         # Step B.5: Auto-resolve account for create_expense (keyword inference)
-        if intent == "create_expense" and "account" not in result.resolved and not result.payload.get("account_id"):
+        if (
+            intent == "create_expense"
+            and "account" not in result.resolved
+            and not result.payload.get("account_id")
+        ):
             acct_name = result.payload.get("account_name", "")
             desc = result.payload.get("description", "")
             # Strategy 1: user explicitly said account name
@@ -154,22 +179,41 @@ class EntityResolver:
             # Strategy 2: keyword inference from description
             if not result.payload.get("account_id") and desc:
                 _EXPENSE_KW = {
-                    "listrik": "Beban Listrik", "air pdam": "Beban Air",
-                    "telepon": "Beban Telepon", "internet": "Beban Telepon & Internet",
-                    "wifi": "Beban Telepon & Internet", "sewa": "Beban Sewa",
-                    "gaji": "Beban Gaji", "transport": "Beban Transportasi",
-                    "bensin": "Beban Transportasi", "parkir": "Beban Transportasi",
-                    "tol": "Beban Transportasi", "ojek": "Beban Transportasi",
-                    "grab": "Beban Transportasi", "servis": "Beban Pemeliharaan",
-                    "service": "Beban Pemeliharaan", "reparasi": "Beban Pemeliharaan",
-                    "perbaikan": "Beban Pemeliharaan", "maintenance": "Beban Pemeliharaan",
-                    "perawatan": "Beban Pemeliharaan", "makan": "Beban Makan & Minum",
-                    "minum": "Beban Makan & Minum", "snack": "Beban Makan & Minum",
-                    "catering": "Beban Makan & Minum", "konsumsi": "Beban Makan & Minum",
-                    "atk": "Beban Perlengkapan Kantor", "alat tulis": "Beban Perlengkapan Kantor",
-                    "kertas": "Beban Perlengkapan Kantor", "printer": "Beban Perlengkapan Kantor",
-                    "asuransi": "Beban Asuransi", "pajak": "Beban Pajak",
-                    "admin bank": "Biaya Admin Bank", "biaya bank": "Biaya Admin Bank",
+                    "listrik": "Beban Listrik",
+                    "air pdam": "Beban Air",
+                    "telepon": "Beban Telepon",
+                    "internet": "Beban Telepon & Internet",
+                    "wifi": "Beban Telepon & Internet",
+                    "pulsa": "Beban Telepon & Internet",
+                    "telefon": "Beban Telepon & Internet",
+                    "telpon": "Beban Telepon & Internet",
+                    "sewa": "Beban Sewa",
+                    "gaji": "Beban Gaji",
+                    "transport": "Beban Transportasi",
+                    "bensin": "Beban Transportasi",
+                    "parkir": "Beban Transportasi",
+                    "tol": "Beban Transportasi",
+                    "ojek": "Beban Transportasi",
+                    "grab": "Beban Transportasi",
+                    "servis": "Beban Pemeliharaan",
+                    "service": "Beban Pemeliharaan",
+                    "reparasi": "Beban Pemeliharaan",
+                    "perbaikan": "Beban Pemeliharaan",
+                    "maintenance": "Beban Pemeliharaan",
+                    "perawatan": "Beban Pemeliharaan",
+                    "makan": "Beban Makan & Minum",
+                    "minum": "Beban Makan & Minum",
+                    "snack": "Beban Makan & Minum",
+                    "catering": "Beban Makan & Minum",
+                    "konsumsi": "Beban Makan & Minum",
+                    "atk": "Beban Perlengkapan Kantor",
+                    "alat tulis": "Beban Perlengkapan Kantor",
+                    "kertas": "Beban Perlengkapan Kantor",
+                    "printer": "Beban Perlengkapan Kantor",
+                    "asuransi": "Beban Asuransi",
+                    "pajak": "Beban Pajak",
+                    "admin bank": "Biaya Admin Bank",
+                    "biaya bank": "Biaya Admin Bank",
                 }
                 desc_lower = desc.lower()
                 matched = None
@@ -186,27 +230,52 @@ class EntityResolver:
                     result.payload["account_name"] = acct_res.entity_name
 
         # Step C: Check required fields
-        from .direct_action_registry import get_direct_action, validate_payload
+        from .direct_action_registry import (
+            get_direct_action,
+            validate_payload,
+            apply_defaults,
+            DIRECT_ACTIONS,
+        )
+
         config = get_direct_action(intent)
         if config:
+            # Pre-validate defaults hoist (fixes validate-then-enrich ordering bug).
+            # Fills deterministic field defaults BEFORE validate_payload so required date
+            # fields + FieldSpec defaults don't spuriously trigger needs_clarification.
+            try:
+                apply_defaults(intent, result.payload)
+            except Exception as _e:
+                logger.warning(f"apply_defaults failed for {intent}: {_e}")
+            _today = datetime.now().strftime("%Y-%m-%d")
+            _cfg_full = DIRECT_ACTIONS.get(intent)
+            if _cfg_full:
+                for _f in _cfg_full.fields:
+                    if (
+                        getattr(_f, "field_type", None) == "date"
+                        and getattr(_f, "required", False)
+                        and not result.payload.get(_f.name)
+                    ):
+                        result.payload[_f.name] = _today
             is_valid, missing_fields = validate_payload(intent, result.payload)
             if not is_valid:
                 result.missing.extend(missing_fields)
                 if not result.needs_clarification:
-                    field_labels = []
-                    for f in config.fields:
-                        if f.name in missing_fields:
-                            field_labels.append(f.label)
-                    if field_labels:
-                        labels_str = ", ".join(field_labels)
-                        result.clarifications.append(
-                            f"Mohon lengkapi: {labels_str}"
-                        )
-                        result.needs_clarification = True
+                    # missing_fields contains labels (from validate_payload)
+                    labels_str = ", ".join(missing_fields)
+                    result.clarifications.append(f"Mohon lengkapi: {labels_str}")
+                    result.needs_clarification = True
 
         return result
 
-    def _build_payload(self, intent, entities, resolved, memory_state, system_defaults, action_memory_suggestion=None):
+    def _build_payload(
+        self,
+        intent,
+        entities,
+        resolved,
+        memory_state,
+        system_defaults,
+        action_memory_suggestion=None,
+    ):
         payload = {}
 
         # Source 1: Resolved entities -> inject IDs + display names
@@ -224,8 +293,17 @@ class EntityResolver:
             payload["item_name"] = r.entity_name
         if "bank_account" in resolved:
             r = resolved["bank_account"]
-            payload["bank_account_id"] = r.entity_id
-            payload["bank_account_name"] = r.entity_name
+            # Do NOT populate bank_account_id when ambiguous — user must pick via clarification.
+            # Also STRIP any Stage-2-hallucinated bank_account_id / paid_through_id so the
+            # orchestrator's pills shortcut can fire instead of proceeding with a guess.
+            if len(r.candidates) <= 1:
+                payload["bank_account_id"] = r.entity_id
+                payload["bank_account_name"] = r.entity_name
+            else:
+                payload.pop("bank_account_id", None)
+                payload.pop("bank_account_name", None)
+                payload.pop("paid_through_id", None)
+                payload.pop("paid_through_name", None)
         if "warehouse" in resolved:
             r = resolved["warehouse"]
             payload["warehouse_id"] = r.entity_id
@@ -234,10 +312,34 @@ class EntityResolver:
             r = resolved["invoice"]
             payload["invoice_id"] = r.entity_id
             payload["invoice_number"] = r.entity_name
+            # Void/update sales_invoice|sales_order use registry field `id`.
+            if (
+                intent
+                in (
+                    "void_sales_invoice",
+                    "update_sales_invoice",
+                    "void_sales_order",
+                    "update_sales_order",
+                )
+                and r.entity_id
+            ):
+                payload.setdefault("id", r.entity_id)
         if "bill" in resolved:
             r = resolved["bill"]
             payload["bill_id"] = r.entity_id
             payload["bill_number"] = r.entity_name
+            # Void/update/post/delete bill use registry field `id`.
+            if (
+                intent
+                in (
+                    "void_bill",
+                    "update_bill",
+                    "post_bill",
+                    "delete_bill",
+                )
+                and r.entity_id
+            ):
+                payload.setdefault("id", r.entity_id)
         if "account" in resolved:
             r = resolved["account"]
             payload["account_id"] = r.entity_id
@@ -263,9 +365,20 @@ class EntityResolver:
 
         # Source 1: Direct entity values (non-relational)
         direct_fields = [
-            "amount", "quantity", "unit_price", "description", "date",
-            "phone", "email", "address", "reason", "name",
-            "account_type", "payment_method", "item_type", "base_unit",
+            "amount",
+            "quantity",
+            "unit_price",
+            "description",
+            "date",
+            "phone",
+            "email",
+            "address",
+            "reason",
+            "name",
+            "account_type",
+            "payment_method",
+            "item_type",
+            "base_unit",
         ]
         for field_name in direct_fields:
             if entities.get(field_name) is not None:
@@ -273,6 +386,7 @@ class EntityResolver:
 
         # Registry-aware field injection (Stage 2 extracts exact registry names)
         from .direct_action_registry import get_direct_action
+
         _config = get_direct_action(intent)
         if _config:
             _registry_names = {f.name for f in _config.fields}
@@ -284,16 +398,38 @@ class EntityResolver:
         if memory_state:
             if "customer_id" not in payload and memory_state.get("active_customer_id"):
                 payload["customer_id"] = memory_state["active_customer_id"]
-                payload.setdefault("customer_name", memory_state.get("active_customer_name", ""))
+                payload.setdefault(
+                    "customer_name", memory_state.get("active_customer_name", "")
+                )
             if "vendor_id" not in payload and memory_state.get("active_vendor_id"):
                 payload["vendor_id"] = memory_state["active_vendor_id"]
-                payload.setdefault("vendor_name", memory_state.get("active_vendor_name", ""))
+                payload.setdefault(
+                    "vendor_name", memory_state.get("active_vendor_name", "")
+                )
             if "invoice_id" not in payload and memory_state.get("active_invoice_id"):
                 payload["invoice_id"] = memory_state["active_invoice_id"]
-                payload.setdefault("invoice_number", memory_state.get("active_invoice_number", ""))
+                payload.setdefault(
+                    "invoice_number", memory_state.get("active_invoice_number", "")
+                )
+                if intent in (
+                    "void_sales_invoice",
+                    "update_sales_invoice",
+                    "void_sales_order",
+                    "update_sales_order",
+                ):
+                    payload.setdefault("id", memory_state["active_invoice_id"])
             if "bill_id" not in payload and memory_state.get("active_bill_id"):
                 payload["bill_id"] = memory_state["active_bill_id"]
-                payload.setdefault("bill_number", memory_state.get("active_bill_number", ""))
+                payload.setdefault(
+                    "bill_number", memory_state.get("active_bill_number", "")
+                )
+                if intent in (
+                    "void_bill",
+                    "update_bill",
+                    "post_bill",
+                    "delete_bill",
+                ):
+                    payload.setdefault("id", memory_state["active_bill_id"])
 
         # Source 2.5: Action Memory pattern (fill items/tax from learned patterns)
         if action_memory_suggestion and action_memory_suggestion.get("pattern"):
@@ -312,7 +448,9 @@ class EntityResolver:
                 payload["tax_rate"] = pattern["tax_rate"]
             if "bank_account_id" not in payload and pattern.get("bank_account_id"):
                 payload["bank_account_id"] = pattern["bank_account_id"]
-                payload.setdefault("bank_account_name", pattern.get("bank_account_name", ""))
+                payload.setdefault(
+                    "bank_account_name", pattern.get("bank_account_name", "")
+                )
             if "account_id" not in payload and pattern.get("account_id"):
                 payload["account_id"] = pattern["account_id"]
                 payload.setdefault("account_name", pattern.get("account_name", ""))
@@ -328,22 +466,26 @@ class EntityResolver:
             inv = resolved["invoice"]
             amount = entities.get("amount")
             if amount and "allocations" not in payload:
-                payload["allocations"] = [{
-                    "invoice_id": inv.entity_id,
-                    "invoice_number": inv.entity_name,
-                    "amount": amount,
-                }]
+                payload["allocations"] = [
+                    {
+                        "invoice_id": inv.entity_id,
+                        "invoice_number": inv.entity_name,
+                        "amount": amount,
+                    }
+                ]
 
         # bill_payment: needs allocations array from resolved bill
         elif intent == "create_bill_payment" and "bill" in resolved:
             bill = resolved["bill"]
             amount = entities.get("amount")
             if amount and "allocations" not in payload:
-                payload["allocations"] = [{
-                    "bill_id": bill.entity_id,
-                    "bill_number": bill.entity_name,
-                    "amount": amount,
-                }]
+                payload["allocations"] = [
+                    {
+                        "bill_id": bill.entity_id,
+                        "bill_number": bill.entity_name,
+                        "amount": amount,
+                    }
+                ]
 
         # sales_invoice: needs items array from resolved item
         elif intent == "create_sales_invoice" and "item" in resolved:
@@ -351,12 +493,44 @@ class EntityResolver:
             if "items" not in payload:
                 qty = entities.get("quantity", 1)
                 price = entities.get("unit_price", 0)
-                payload["items"] = [{
-                    "item_id": item.entity_id,
-                    "description": item.entity_name,
-                    "quantity": qty,
-                    "unit_price": price,
-                }]
+                payload["items"] = [
+                    {
+                        "item_id": item.entity_id,
+                        "description": item.entity_name,
+                        "quantity": qty,
+                        "unit_price": price,
+                    }
+                ]
+
+        # sales_order: needs items array from resolved item (mirror sales_invoice)
+        elif intent == "create_sales_order" and "item" in resolved:
+            item = resolved["item"]
+            if "items" not in payload:
+                qty = entities.get("quantity", 1)
+                price = entities.get("unit_price", 0)
+                payload["items"] = [
+                    {
+                        "item_id": item.entity_id,
+                        "description": item.entity_name,
+                        "quantity": qty,
+                        "unit_price": price,
+                    }
+                ]
+
+        # quote: needs items array from resolved item (schema: description required, unit_price int)
+        elif intent == "create_quote" and "item" in resolved:
+            item = resolved["item"]
+            if "items" not in payload:
+                qty = entities.get("quantity", 1)
+                price = entities.get("unit_price", 0)
+                payload["items"] = [
+                    {
+                        "item_id": item.entity_id,
+                        "description": item.entity_name,
+                        "quantity": qty,
+                        "unit_price": price,
+                    }
+                ]
 
         # bill (faktur pembelian): needs items array, field names differ
         elif intent == "create_bill" and "item" in resolved:
@@ -364,25 +538,32 @@ class EntityResolver:
             if "items" not in payload:
                 qty = entities.get("quantity", 1)
                 price = entities.get("unit_price", 0)
-                payload["items"] = [{
-                    "item_id": item.entity_id,
-                    "item_name": item.entity_name,
-                    "quantity": qty,
-                    "unit_price": price,
-                }]
+                payload["items"] = [
+                    {
+                        "item_id": item.entity_id,
+                        "item_name": item.entity_name,
+                        "quantity": qty,
+                        "unit_price": price,
+                    }
+                ]
 
-        # expense: map bank_account_id to paid_through_id
+        # expense: map bank_account_id to paid_through_id (only when unambiguous)
         elif intent == "create_expense":
             if "bank_account" in resolved and "paid_through_id" not in payload:
-                payload["paid_through_id"] = resolved["bank_account"].entity_id
-                payload["paid_through_name"] = resolved["bank_account"].entity_name
+                _ba = resolved["bank_account"]
+                if len(_ba.candidates) <= 1:
+                    payload["paid_through_id"] = _ba.entity_id
+                    payload["paid_through_name"] = _ba.entity_name
 
         # Intent-specific date mapping
         if "date" not in payload:
             payload["date"] = system_defaults.get("date", "")
         if intent.startswith("create_") and intent not in (
-            "create_customer", "create_vendor", "create_warehouse",
-            "create_bank_account", "create_item"
+            "create_customer",
+            "create_vendor",
+            "create_warehouse",
+            "create_bank_account",
+            "create_item",
         ):
             date_val = payload.pop("date", system_defaults.get("date", ""))
             if date_val:
@@ -409,10 +590,27 @@ class EntityResolver:
                      AND nama ILIKE $2
                    ORDER BY total_transaksi DESC NULLS LAST
                    LIMIT 5""",
-                self.tenant_id, f"%{name_fragment}%"
+                self.tenant_id,
+                f"%{name_fragment}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="customer", entity_id="", entity_name=name_fragment, confidence=0.0)
+                rows = await self.db.fetch(
+                    """SELECT id, nama, telepon, email,
+                              similarity(nama, $2) AS sim
+                       FROM customers
+                       WHERE tenant_id = $1 AND is_active = true
+                         AND similarity(nama, $2) > 0.15
+                       ORDER BY sim DESC LIMIT 5""",
+                    self.tenant_id,
+                    name_fragment,
+                )
+            if not rows:
+                return ResolvedEntity(
+                    entity_type="customer",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
+                )
             candidates = [{"id": str(r["id"]), "name": r["nama"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
@@ -421,7 +619,13 @@ class EntityResolver:
                     best = c
                     confidence = 1.0
                     break
-            return ResolvedEntity(entity_type="customer", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="customer",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Customer lookup failed: %s", e)
             return None
@@ -432,10 +636,27 @@ class EntityResolver:
                 """SELECT id, name FROM vendors
                    WHERE tenant_id = $1 AND is_active = true AND name ILIKE $2
                    ORDER BY name LIMIT 5""",
-                self.tenant_id, f"%{name_fragment}%"
+                self.tenant_id,
+                f"%{name_fragment}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="vendor", entity_id="", entity_name=name_fragment, confidence=0.0)
+                rows = await self.db.fetch(
+                    """SELECT id, name,
+                              similarity(name, $2) AS sim
+                       FROM vendors
+                       WHERE tenant_id = $1 AND is_active = true
+                         AND similarity(name, $2) > 0.15
+                       ORDER BY sim DESC LIMIT 5""",
+                    self.tenant_id,
+                    name_fragment,
+                )
+            if not rows:
+                return ResolvedEntity(
+                    entity_type="vendor",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
+                )
             candidates = [{"id": str(r["id"]), "name": r["name"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
@@ -444,7 +665,13 @@ class EntityResolver:
                     best = c
                     confidence = 1.0
                     break
-            return ResolvedEntity(entity_type="vendor", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="vendor",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Vendor lookup failed: %s", e)
             return None
@@ -461,7 +688,8 @@ class EntityResolver:
                    WHERE tenant_id = $1 AND status = 'active'
                      AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
                    ORDER BY nama_produk LIMIT 5""",
-                self.tenant_id, f"%{search_term}%"
+                self.tenant_id,
+                f"%{search_term}%",
             )
 
             # Step 2: Fallback first word ILIKE
@@ -473,7 +701,8 @@ class EntityResolver:
                        WHERE tenant_id = $1 AND status = 'active'
                          AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
                        ORDER BY nama_produk LIMIT 5""",
-                    self.tenant_id, f"%{search_term}%"
+                    self.tenant_id,
+                    f"%{search_term}%",
                 )
 
             # Step 3: Fuzzy match via pg_trgm (handles typos like "obyat" -> "obat")
@@ -485,10 +714,16 @@ class EntityResolver:
                        WHERE tenant_id = $1 AND status = 'active'
                          AND similarity(nama_produk, $2) > 0.15
                        ORDER BY sim DESC LIMIT 5""",
-                    self.tenant_id, name_fragment.strip()
+                    self.tenant_id,
+                    name_fragment.strip(),
                 )
             if not rows:
-                return ResolvedEntity(entity_type="item", entity_id="", entity_name=name_fragment, confidence=0.0)
+                return ResolvedEntity(
+                    entity_type="item",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
+                )
             candidates = [{"id": str(r["id"]), "name": r["nama_produk"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
@@ -497,12 +732,20 @@ class EntityResolver:
                     best = c
                     confidence = 1.0
                     break
-            return ResolvedEntity(entity_type="item", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="item",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Item lookup failed: %s", e)
             return None
 
-    async def _resolve_bank_account(self, name_fragment: str) -> Optional[ResolvedEntity]:
+    async def _resolve_bank_account(
+        self, name_fragment: str
+    ) -> Optional[ResolvedEntity]:
         try:
             rows = await self.db.fetch(
                 """SELECT id, account_name, bank_name, coa_id
@@ -510,21 +753,47 @@ class EntityResolver:
                    WHERE tenant_id = $1 AND is_active = true
                      AND (account_name ILIKE $2 OR bank_name ILIKE $2)
                    ORDER BY account_name LIMIT 5""",
-                self.tenant_id, f"%{name_fragment}%"
+                self.tenant_id,
+                f"%{name_fragment}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="bank_account", entity_id="", entity_name=name_fragment, confidence=0.0)
+                return ResolvedEntity(
+                    entity_type="bank_account",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
+                )
             candidates = [{"id": str(r["id"]), "name": r["account_name"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
             # Exact match boost: if one candidate matches exactly, pick it
+            _matched_exact = False
             for i, r in enumerate(rows):
                 if r["account_name"].lower().strip() == name_fragment.lower().strip():
                     best = candidates[i]
                     confidence = 1.0
                     candidates = [best]  # collapse to single match
+                    _matched_exact = True
                     break
-            return ResolvedEntity(entity_type="bank_account", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            # Bank-name ambiguity: when user typed a short identifier (e.g. "BCA")
+            # matching multiple accounts, DO NOT silently collapse. Preserve all
+            # candidates so orchestrator emits a CLARIFICATION with pills.
+            # Collapsing destroys user intent (wrong account picked).
+            if not _matched_exact and len(candidates) > 1:
+                logger.warning(
+                    "[RESOLVE] Bank ambiguity preserved for clarification: fragment=%r matched %d accounts: %s",
+                    name_fragment,
+                    len(candidates),
+                    [c["name"] for c in candidates],
+                )
+                confidence = 0.7  # force needs_clarification in resolve_and_complete
+            return ResolvedEntity(
+                entity_type="bank_account",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Bank account lookup failed: %s", e)
             return None
@@ -535,14 +804,26 @@ class EntityResolver:
                 """SELECT id, name FROM warehouses
                    WHERE tenant_id = $1 AND name ILIKE $2
                    ORDER BY name LIMIT 5""",
-                self.tenant_id, f"%{name_fragment}%"
+                self.tenant_id,
+                f"%{name_fragment}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="warehouse", entity_id="", entity_name=name_fragment, confidence=0.0)
+                return ResolvedEntity(
+                    entity_type="warehouse",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
+                )
             candidates = [{"id": str(r["id"]), "name": r["name"]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
-            return ResolvedEntity(entity_type="warehouse", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="warehouse",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Warehouse lookup failed: %s", e)
             return None
@@ -554,14 +835,28 @@ class EntityResolver:
                    FROM sales_invoices
                    WHERE tenant_id = $1 AND invoice_number ILIKE $2
                    ORDER BY created_at DESC LIMIT 5""",
-                self.tenant_id, f"%{invoice_number}%"
+                self.tenant_id,
+                f"%{invoice_number}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="invoice", entity_id="", entity_name=invoice_number, confidence=0.0)
-            candidates = [{"id": str(r["id"]), "name": r["invoice_number"]} for r in rows]
+                return ResolvedEntity(
+                    entity_type="invoice",
+                    entity_id="",
+                    entity_name=invoice_number,
+                    confidence=0.0,
+                )
+            candidates = [
+                {"id": str(r["id"]), "name": r["invoice_number"]} for r in rows
+            ]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
-            return ResolvedEntity(entity_type="invoice", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="invoice",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Invoice lookup failed: %s", e)
             return None
@@ -574,14 +869,28 @@ class EntityResolver:
                    FROM bills
                    WHERE tenant_id = $1 AND invoice_number ILIKE $2
                    ORDER BY created_at DESC LIMIT 5""",
-                self.tenant_id, f"%{bill_number}%"
+                self.tenant_id,
+                f"%{bill_number}%",
             )
             if not rows:
-                return ResolvedEntity(entity_type="bill", entity_id="", entity_name=bill_number, confidence=0.0)
-            candidates = [{"id": str(r["id"]), "name": r["invoice_number"]} for r in rows]
+                return ResolvedEntity(
+                    entity_type="bill",
+                    entity_id="",
+                    entity_name=bill_number,
+                    confidence=0.0,
+                )
+            candidates = [
+                {"id": str(r["id"]), "name": r["invoice_number"]} for r in rows
+            ]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
-            return ResolvedEntity(entity_type="bill", entity_id=best["id"], entity_name=best["name"], confidence=confidence, candidates=candidates)
+            return ResolvedEntity(
+                entity_type="bill",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
+            )
         except Exception as e:
             logger.warning("[RESOLVE] Bill lookup failed: %s", e)
             return None
@@ -609,22 +918,24 @@ class EntityResolver:
                    FROM {table}
                    WHERE tenant_id = $1 AND {number_column} ILIKE $2
                    ORDER BY created_at DESC LIMIT 5""",
-                self.tenant_id, f"%{search_val}%"
+                self.tenant_id,
+                f"%{search_val}%",
             )
             if not rows:
                 return ResolvedEntity(
-                    entity_type=entity_type, entity_id="",
-                    entity_name=search_val, confidence=0.0,
+                    entity_type=entity_type,
+                    entity_id="",
+                    entity_name=search_val,
+                    confidence=0.0,
                 )
-            candidates = [
-                {"id": str(r["id"]), "name": r[number_column]}
-                for r in rows
-            ]
+            candidates = [{"id": str(r["id"]), "name": r[number_column]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7
             return ResolvedEntity(
-                entity_type=entity_type, entity_id=best["id"],
-                entity_name=best["name"], confidence=confidence,
+                entity_type=entity_type,
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
                 candidates=candidates,
             )
         except Exception as e:
@@ -646,12 +957,16 @@ class EntityResolver:
                      CASE WHEN LOWER(name) = LOWER($3) THEN 0 ELSE 1 END,
                      name
                    LIMIT 5""",
-                self.tenant_id, "%" + name_fragment + "%", name_fragment.strip()
+                self.tenant_id,
+                "%" + name_fragment + "%",
+                name_fragment.strip(),
             )
             if not rows:
                 return ResolvedEntity(
-                    entity_type="account", entity_id="",
-                    entity_name=name_fragment, confidence=0.0
+                    entity_type="account",
+                    entity_id="",
+                    entity_name=name_fragment,
+                    confidence=0.0,
                 )
             candidates = [
                 {"id": str(r["id"]), "name": r["name"] + " (" + r["account_code"] + ")"}
@@ -665,9 +980,11 @@ class EntityResolver:
                     confidence = 1.0
                     break
             return ResolvedEntity(
-                entity_type="account", entity_id=best["id"],
-                entity_name=best["name"], confidence=confidence,
-                candidates=candidates
+                entity_type="account",
+                entity_id=best["id"],
+                entity_name=best["name"],
+                confidence=confidence,
+                candidates=candidates,
             )
         except Exception as e:
             logger.warning("[RESOLVE] Account lookup failed: %s", e)
@@ -684,9 +1001,19 @@ class EntityResolver:
         resolved = {}
 
         # Pronoun resolution
-        _PRONOUNS = [" dia ", " mereka ", "nya?", "nya ", "ke mereka",
-                      "dari mereka", "di situ", "ke dia", "sama dia",
-                      " dia?", " dia,"]
+        _PRONOUNS = [
+            " dia ",
+            " mereka ",
+            "nya?",
+            "nya ",
+            "ke mereka",
+            "dari mereka",
+            "di situ",
+            "ke dia",
+            "sama dia",
+            " dia?",
+            " dia,",
+        ]
         if entity and any(p in f" {t} " or t.endswith(p.strip()) for p in _PRONOUNS):
             _type = entity.get("type", "")
             _name = entity.get("name", "")
@@ -704,29 +1031,60 @@ class EntityResolver:
         # Ordinal resolution
         if items:
             target = None
-            if any(w in t for w in ["yang pertama", "pertama", "nomor 1", "no 1", "no. 1"]):
+            if any(
+                w in t for w in ["yang pertama", "pertama", "nomor 1", "no 1", "no. 1"]
+            ):
                 target = items[0]
             elif any(w in t for w in ["yang terakhir", "terakhir"]):
                 target = items[-1]
-            elif any(w in t for w in ["yang kedua", "nomor 2", "no 2"]) and len(items) > 1:
+            elif (
+                any(w in t for w in ["yang kedua", "nomor 2", "no 2"])
+                and len(items) > 1
+            ):
                 target = items[1]
-            elif any(w in t for w in ["yang ketiga", "nomor 3", "no 3"]) and len(items) > 2:
+            elif (
+                any(w in t for w in ["yang ketiga", "nomor 3", "no 3"])
+                and len(items) > 2
+            ):
                 target = items[2]
-            elif any(w in t for w in ["yang terbesar", "terbesar", "paling besar",
-                                       "paling gede", "paling banyak", "tergede"]):
+            elif any(
+                w in t
+                for w in [
+                    "yang terbesar",
+                    "terbesar",
+                    "paling besar",
+                    "paling gede",
+                    "paling banyak",
+                    "tergede",
+                ]
+            ):
                 _with_amt = [i for i in items if i.get("_amount") is not None]
                 if _with_amt:
                     target = max(_with_amt, key=lambda x: x["_amount"])
-            elif any(w in t for w in ["yang terkecil", "terkecil", "paling kecil",
-                                       "paling sedikit", "paling dikit"]):
+            elif any(
+                w in t
+                for w in [
+                    "yang terkecil",
+                    "terkecil",
+                    "paling kecil",
+                    "paling sedikit",
+                    "paling dikit",
+                ]
+            ):
                 _with_amt = [i for i in items if i.get("_amount") is not None]
                 if _with_amt:
                     target = min(_with_amt, key=lambda x: x["_amount"])
 
             if target:
                 resolved["_resolved_item"] = target
+                # Set entity_id from the resolved item's document ID (for path param resolution)
+                if target.get("_id"):
+                    resolved["entity_id"] = target["_id"]
+                if target.get("_ref"):
+                    resolved["entity_name"] = target["_ref"]
                 if target.get("_name") and not any(
-                    resolved.get(k) for k in ["customer_name", "vendor_name", "item_name"]
+                    resolved.get(k)
+                    for k in ["customer_name", "vendor_name", "item_name"]
                 ):
                     _domain = getattr(session_state, "last_domain", None)
                     if _domain in ("ar", "customer"):
@@ -739,9 +1097,11 @@ class EntityResolver:
         # Document reference matching — "EXP-2604-0016" / "INV-0042" / "PB-0001"
         # Scan last_response_items for _ref match when user mentions a doc number
         import re as _rec_re
+
         _doc_ref_match = _rec_re.search(
             r"\b(EXP|INV|PB|JE|CN|VC|QT|RP|BP|SA|BT|CD|VD)-[\w-]+\b",
-            user_text, _rec_re.IGNORECASE,
+            user_text,
+            _rec_re.IGNORECASE,
         )
         if _doc_ref_match and items:
             _search_ref = _doc_ref_match.group(0).upper()
@@ -756,4 +1116,3 @@ class EntityResolver:
                     break
 
         return resolved
-
