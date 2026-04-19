@@ -148,6 +148,9 @@ class EntityContextManager:
                     continue
 
                 entity_type = key[: -len(suffix)]  # "customer_id" → "customer"
+                # Skip empty or underscore-prefixed types
+                if not entity_type or entity_type.startswith(chr(95)):
+                    break
                 if entity_type in seen_types:
                     break  # already extracted this type from this item
                 seen_types.add(entity_type)
@@ -245,6 +248,41 @@ class EntityContextManager:
         """Increment turn counter. Call at start of each user message."""
         self.current_turn += 1
 
+    # ── Phase 2: Injection ──
+
+    def inject_missing_params(self, tool_name: str, tool_schema: dict, params: dict) -> dict:
+        """Generic entity injection -- zero manual mapping.
+
+        If tool needs customer_id and params does not have it,
+        inject from most recent customer in entity_stack.
+        """
+        needed_types = derive_entity_needs(tool_name, tool_schema)
+
+        for entity_type in needed_types:
+            id_key = f"{entity_type}_id"
+            name_key = f"{entity_type}_name"
+
+            # Skip if already provided
+            if id_key in params or name_key in params:
+                continue
+
+            entity = self.get_most_recent(entity_type)
+            if entity:
+                if entity.id:
+                    params[id_key] = entity.id
+                    logger.warning(
+                        "[ECM] Injected %s=%s for tool %s (from turn %d, source=%s)",
+                        id_key, entity.id, tool_name, entity.turn, entity.source,
+                    )
+                elif entity.name:
+                    params[name_key] = entity.name
+                    logger.warning(
+                        "[ECM] Injected %s=%s for tool %s (from turn %d, source=%s)",
+                        name_key, entity.name, tool_name, entity.turn, entity.source,
+                    )
+
+        return params
+
     # ── Diagnostics ──
 
     def get_stats(self) -> dict:
@@ -256,3 +294,64 @@ class EntityContextManager:
             "last_list_size": len(self.last_list_result),
             "context": self.get_context_for_llm(),
         }
+
+
+# ── Phase 2: Schema-Derived Injection ──
+
+# Cache: tool_name → list of entity types needed
+_schema_needs_cache: dict[str, list[str]] = {}
+
+
+def derive_entity_needs(tool_name: str, tool_schema: dict) -> list[str]:
+    """Infer entity types needed from tool parameter schema.
+
+    Convention-based: parses param names for _id/_number suffixes.
+    "get_customer_invoices" with param "customer_id" → needs ["customer"]
+    "get_work_order_details" with param "work_order_id" → needs ["work_order"]
+
+    Zero manual mapping. Cached per tool_name.
+    """
+    if tool_name in _schema_needs_cache:
+        return _schema_needs_cache[tool_name]
+
+    properties = tool_schema.get("parameters", {}).get("properties", {})
+    # Prioritize required params, then optional
+    required = set(tool_schema.get("parameters", {}).get("required", []))
+    needs = []
+
+    for param_name in properties:
+        if param_name in SKIP_KEYS:
+            continue
+        for suffix in ENTITY_SUFFIX_PATTERNS:
+            if param_name.endswith(suffix) and param_name != "id":
+                entity_type = param_name[: -len(suffix)]
+                if entity_type not in needs:
+                    needs.append(entity_type)
+                break
+
+    # Sort: required params first
+    needs.sort(key=lambda t: 0 if f"{t}_id" in required or f"{t}_number" in required else 1)
+
+    _schema_needs_cache[tool_name] = needs
+    return needs
+
+
+def build_schema_needs_cache(all_tools: list[dict]):
+    """Pre-build cache from ALL_TOOLS at startup. Call once."""
+    global _schema_needs_cache
+    _schema_needs_cache = {}
+    for tool in all_tools:
+        name = tool.get("name", "")
+        if name:
+            derive_entity_needs(name, tool)
+    logger.warning(
+        "[ECM] Schema needs cache built: %d tools, %d with entity params",
+        len(all_tools),
+        sum(1 for v in _schema_needs_cache.values() if v),
+    )
+
+
+def invalidate_schema_cache():
+    """Clear schema cache. Call on tool registry reload or in tests."""
+    global _schema_needs_cache
+    _schema_needs_cache = {}

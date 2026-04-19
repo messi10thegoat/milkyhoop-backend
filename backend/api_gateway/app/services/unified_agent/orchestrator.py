@@ -3553,6 +3553,20 @@ class UnifiedAgent:
                 "X-Tenant-ID": context.tenant_id,
             }
 
+            # ECM Phase 2: inject missing entity params into pipeline query
+            try:
+                if hasattr(self, "_ecm") and query_params is not None:
+                    # Build synthetic schema from query_config.query_params
+                    _synth_props = {}
+                    for _qp in (query_config.query_params or []):
+                        _synth_props[_qp.name] = {"type": "string"}
+                    _synth_schema = {"parameters": {"properties": _synth_props, "required": []}}
+                    query_params = self._ecm.inject_missing_params(
+                        query_config.action_key, _synth_schema, query_params
+                    )
+            except Exception as _ecm_inj_err:
+                logger.debug("[ECM] pipeline injection failed: %s", _ecm_inj_err)
+
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     f"{base_url}{endpoint}",
@@ -3597,12 +3611,53 @@ class UnifiedAgent:
         except Exception as _rec_err:
             logger.warning("[REC] Extract/store failed: %s", _rec_err)
 
-        # ECM shadow ingest (Phase 1) — pipeline path
+        # ECM (Phase 1+2) — pipeline path: seed from session state
         try:
-            from .entity_context_manager import EntityContextManager
+            from .entity_context_manager import EntityContextManager, build_schema_needs_cache
+            from .tool_registry import get_tools as _gt_ecm
             if not hasattr(self, "_ecm"):
                 self._ecm = EntityContextManager()
+                build_schema_needs_cache(_gt_ecm())
             self._ecm.advance_turn()
+
+            # Seed ECM from existing session state (persisted in Redis)
+            if tool_executor and getattr(tool_executor, "session_manager", None) and getattr(tool_executor, "session_id", None):
+                try:
+                    _seed_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                    if _seed_state:
+                        from .entity_context_manager import Entity
+                        if getattr(_seed_state, "active_customer_id", None):
+                            self._ecm.push_entity(Entity(
+                                type="customer",
+                                id=_seed_state.active_customer_id,
+                                name=getattr(_seed_state, "active_customer_name", None),
+                                source="session_seed", turn=0,
+                            ))
+                        if getattr(_seed_state, "active_vendor_id", None):
+                            self._ecm.push_entity(Entity(
+                                type="vendor",
+                                id=_seed_state.active_vendor_id,
+                                name=getattr(_seed_state, "active_vendor_name", None),
+                                source="session_seed", turn=0,
+                            ))
+                        if getattr(_seed_state, "active_invoice_id", None):
+                            self._ecm.push_entity(Entity(
+                                type="invoice",
+                                id=_seed_state.active_invoice_id,
+                                number=getattr(_seed_state, "active_invoice_number", None),
+                                source="session_seed", turn=0,
+                            ))
+                        if getattr(_seed_state, "active_bill_id", None):
+                            self._ecm.push_entity(Entity(
+                                type="bill",
+                                id=_seed_state.active_bill_id,
+                                number=getattr(_seed_state, "active_bill_number", None),
+                                source="session_seed", turn=0,
+                            ))
+                        # REC last_response_items seeding disabled (Phase 2)
+                        # Items have ambiguous keys that create bad entity types
+                except Exception as _seed_err:
+                    logger.debug("[ECM] session seed failed: %s", _seed_err)
             _ecm_extracted = self._ecm.ingest_tool_result(
                 query_config.action_key or "query_endpoint", query_params, data
             )
@@ -6474,10 +6529,33 @@ class UnifiedAgent:
         has_proposed = False
         thinking_stages: List[str] = []
 
-        # EntityContextManager — shadow mode (Phase 1)
-        from .entity_context_manager import EntityContextManager
+        # EntityContextManager (Phase 1+2: shadow ingest + active injection)
+        from .entity_context_manager import EntityContextManager, Entity, build_schema_needs_cache
+        from .tool_registry import get_tools as get_all_tools
         _ecm = EntityContextManager()
         _ecm.advance_turn()
+        build_schema_needs_cache(get_all_tools())  # cached after first call
+
+        # Seed ECM from existing session state (persisted in Redis)
+        if tool_executor and getattr(tool_executor, "session_manager", None) and getattr(tool_executor, "session_id", None):
+            try:
+                _seed = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                if _seed:
+                    if getattr(_seed, "active_customer_id", None):
+                        _ecm.push_entity(Entity(type="customer", id=_seed.active_customer_id,
+                            name=getattr(_seed, "active_customer_name", None), source="session_seed", turn=0))
+                    if getattr(_seed, "active_vendor_id", None):
+                        _ecm.push_entity(Entity(type="vendor", id=_seed.active_vendor_id,
+                            name=getattr(_seed, "active_vendor_name", None), source="session_seed", turn=0))
+                    if getattr(_seed, "active_invoice_id", None):
+                        _ecm.push_entity(Entity(type="invoice", id=_seed.active_invoice_id,
+                            number=getattr(_seed, "active_invoice_number", None), source="session_seed", turn=0))
+                    if getattr(_seed, "active_bill_id", None):
+                        _ecm.push_entity(Entity(type="bill", id=_seed.active_bill_id,
+                            number=getattr(_seed, "active_bill_number", None), source="session_seed", turn=0))
+                    # REC last_response_items seeding disabled (Phase 2)
+            except Exception:
+                pass
 
         # Model routing (M2) — determine tier based on message + state
         model_choice = ModelRouter.route(
@@ -6975,6 +7053,16 @@ class UnifiedAgent:
                     )
 
                 async def _exec_one(tc_item):
+                    # ECM Phase 2: inject missing entity params from context
+                    try:
+                        from .tool_registry import get_tools as _gat
+                        _tool_schema = next((t for t in _gat() if t["name"] == tc_item.function_name), {})
+                        if _tool_schema and tc_item.arguments:
+                            tc_item.arguments = _ecm.inject_missing_params(
+                                tc_item.function_name, _tool_schema, tc_item.arguments
+                            )
+                    except Exception:
+                        pass
                     t0 = time.time()
                     res = await tool_executor.execute(
                         tc_item.function_name, tc_item.arguments
@@ -7164,6 +7252,15 @@ class UnifiedAgent:
                         tool_call_ctx = turn_ctx.new_tool_call(
                             tool_name, retry_attempt=0
                         )
+                except Exception:
+                    pass
+
+                # ECM Phase 2: inject missing entity params from context
+                try:
+                    from .tool_registry import get_tools as _gat2
+                    _tool_schema2 = next((t for t in _gat2() if t["name"] == tool_name), {})
+                    if _tool_schema2 and tool_args:
+                        tool_args = _ecm.inject_missing_params(tool_name, _tool_schema2, tool_args)
                 except Exception:
                     pass
 
