@@ -1410,7 +1410,7 @@ class ToolExecutor:
                 "total_outstanding": str(summary.get("total_outstanding", 0)),
             }
         else:
-            invoices = data.get("data", data) if isinstance(data, dict) else data
+            invoices = data.get("data", data.get("items", data)) if isinstance(data, dict) else data
             if not isinstance(invoices, list):
                 invoices = []
             return {
@@ -2898,6 +2898,8 @@ class ToolExecutor:
         result = data
         if isinstance(data, dict) and "data" in data:
             result = data["data"]
+        elif isinstance(data, dict) and "items" in data:
+            result = data["items"]
 
         result = _truncate_result(result)
         return {"success": True, "data": result}
