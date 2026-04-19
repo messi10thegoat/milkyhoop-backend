@@ -554,7 +554,7 @@ def format_calculation_result(result: dict) -> str:
         return text
 
     if rtype == "rank":
-        rdata = result.get("data", [])
+        rdata = result.get("data", result.get("items", []))
         lines = ["**" + rlabel + "** (Top " + str(len(rdata)) + ")\n"]
         lines.append("| No | Nama | Harga |")
         lines.append("|---:|------|------:|")

@@ -5770,8 +5770,7 @@ class UnifiedAgent:
             # (ARAP, CALC, CRUD, QUERY_BOOST) still apply and correct extraction.intent,
             # but actual pipeline dispatch defers to LLM_ROUTER_PRIMARY.
             if (
-                not USE_LLM_ROUTER
-                and extraction.intent.startswith("calc_")
+                extraction.intent.startswith("calc_")
                 and is_pipeline_enabled(extraction.intent)
             ):
                 from .calculation_engine import (

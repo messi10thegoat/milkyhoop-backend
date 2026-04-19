@@ -965,20 +965,20 @@ def classify_query_intent(user_text: str) -> tuple:
         return "calc_rank_customers_by_ar", None, None
     if (
         _qre.search(
-            r"(?:hutang|utang|ap).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+            r"(?:hutang|utang|\bap\b).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
             t,
         )
         or _qre.search(
-            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:hutang|utang|ap)", t
+            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:hutang|utang|\bap\b)", t
         )
         or _qre.search(
             r"(?:vendor|pemasok).*(?:hutang|utang).*(?:paling|terbesar|terbanyak)", t
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|ap)", t
+            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|\bap\b)", t
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:hutang|utang|ap).*(?:vendor|pemasok)", t
+            r"(?:ranking|peringkat).*(?:hutang|utang|\bap\b).*(?:vendor|pemasok)", t
         )
         or _qre.search(
             r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:hutang|hutangi)", t
@@ -1167,9 +1167,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_ar_aging", None, None
     if _qre.search(r"(?:piutang|ar).*(?:aging|umur)", t):
         return "query_ar_aging", None, None
-    if _qre.search(r"(?:aging|umur).*(?:hutang|utang|ap)", t):
+    if _qre.search(r"(?:aging|umur).*(?:hutang|utang|\bap\b)", t):
         return "query_ap_aging", None, None
-    if _qre.search(r"(?:hutang|utang|ap).*(?:aging|umur)", t):
+    if _qre.search(r"(?:hutang|utang|\bap\b).*(?:aging|umur)", t):
         return "query_ap_aging", None, None
 
     # DISABLED P2.1 (2026-04-14): handled by LLM Router

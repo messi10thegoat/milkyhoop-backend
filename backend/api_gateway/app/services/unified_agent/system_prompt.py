@@ -492,7 +492,7 @@ def _infer_intent(user_text: str) -> str:
         "makasih",
         "good",
         "bagus",
-        "top",
+        # "top",  # removed: conflicts with "top 5 pelanggan"
         "nice",
         "yoi",
         "sip",
