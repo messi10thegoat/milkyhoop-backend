@@ -91,6 +91,12 @@ class EntityResolver:
             resolve_tasks.append(self._resolve_bill(entities["bill_number"]))
         if entities.get("account_name"):
             resolve_tasks.append(self._resolve_account(entities["account_name"]))
+        if entities.get("work_order_number"):
+            resolve_tasks.append(self._resolve_work_order(entities["work_order_number"]))
+        if entities.get("bom_code"):
+            resolve_tasks.append(self._resolve_bom(entities["bom_code"]))
+        if entities.get("work_center_name"):
+            resolve_tasks.append(self._resolve_work_center(entities["work_center_name"]))
 
         if resolve_tasks:
             resolved_entities = await asyncio.gather(
@@ -991,6 +997,94 @@ class EntityResolver:
             return None
 
     @staticmethod
+
+    async def _resolve_work_order(self, name_or_number: str) -> "Optional[ResolvedEntity]":
+        """Resolve work order by order_number or partial match."""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
+                )
+                row = await conn.fetchrow(
+                    "SELECT id::text, order_number, status "
+                    "FROM production_orders WHERE order_number ILIKE $1 LIMIT 1",
+                    name_or_number.strip(),
+                )
+                if not row:
+                    row = await conn.fetchrow(
+                        "SELECT id::text, order_number, status "
+                        "FROM production_orders WHERE order_number ILIKE $1 "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        f"%{name_or_number.strip()}%",
+                    )
+                if row:
+                    return ResolvedEntity(
+                        entity_type="work_order",
+                        entity_id=row["id"],
+                        entity_name=row["order_number"],
+                    )
+        except Exception as e:
+            logger.warning(f"_resolve_work_order error: {e}")
+        return None
+
+    async def _resolve_bom(self, name_or_code: str) -> "Optional[ResolvedEntity]":
+        """Resolve BOM by bom_code or bom_name."""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
+                )
+                row = await conn.fetchrow(
+                    "SELECT id::text, bom_code, bom_name, status "
+                    "FROM bill_of_materials WHERE (bom_code ILIKE $1 OR bom_name ILIKE $1) LIMIT 1",
+                    name_or_code.strip(),
+                )
+                if not row:
+                    row = await conn.fetchrow(
+                        "SELECT id::text, bom_code, bom_name, status "
+                        "FROM bill_of_materials WHERE (bom_code ILIKE $1 OR bom_name ILIKE $1) "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        f"%{name_or_code.strip()}%",
+                    )
+                if row:
+                    return ResolvedEntity(
+                        entity_type="bom",
+                        entity_id=row["id"],
+                        entity_name=row["bom_code"] or row["bom_name"],
+                    )
+        except Exception as e:
+            logger.warning(f"_resolve_bom error: {e}")
+        return None
+
+    async def _resolve_work_center(self, name_or_code: str) -> "Optional[ResolvedEntity]":
+        """Resolve work center by code or name."""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
+                )
+                row = await conn.fetchrow(
+                    "SELECT id::text, code, name "
+                    "FROM work_centers WHERE (code ILIKE $1 OR name ILIKE $1) AND is_active = true LIMIT 1",
+                    name_or_code.strip(),
+                )
+                if not row:
+                    row = await conn.fetchrow(
+                        "SELECT id::text, code, name "
+                        "FROM work_centers WHERE (code ILIKE $1 OR name ILIKE $1) AND is_active = true "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        f"%{name_or_code.strip()}%",
+                    )
+                if row:
+                    return ResolvedEntity(
+                        entity_type="work_center",
+                        entity_id=row["id"],
+                        entity_name=f"{row['code']} - {row['name']}",
+                    )
+        except Exception as e:
+            logger.warning(f"_resolve_work_center error: {e}")
+        return None
+
     def resolve_from_session(user_text: str, session_state) -> dict:
         """Resolve pronouns and ordinals from REC session context.
         Returns dict of resolved fields to merge into extraction.entities.

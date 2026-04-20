@@ -275,6 +275,38 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         label="Produk Terlaris",
         format_as_currency=False,
     ),
+    # ── Manufacturing ──
+    "calc_count_work_orders_active": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/production",
+        filter_params={"status": "in_progress", "limit": "100"},
+        label="Work Order Aktif (In Progress)",
+    ),
+    "calc_count_bom_active": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/bom",
+        filter_params={"status": "active", "limit": "100"},
+        label="BOM Aktif",
+    ),
+    "calc_count_work_orders_draft": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/production",
+        filter_params={"status": "draft", "limit": "100"},
+        label="Work Order Draft (Belum Release)",
+    ),
+    "calc_count_work_centers": CalculationTemplate(
+        calc_type="COUNT",
+        source_endpoint="/api/bom/work-centers",
+        label="Jumlah Work Center",
+    ),
+    "calc_rank_work_orders_by_quantity": CalculationTemplate(
+        calc_type="RANK",
+        source_endpoint="/api/production",
+        source_field="planned_quantity",
+        filter_params={"limit": "100"},
+        name_field="order_number",
+        label="Work Order Berdasarkan Jumlah Produksi",
+    ),
 }
 
 

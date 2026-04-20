@@ -162,6 +162,29 @@ SESSION_CONTEXT_HINTS = {
     "query_warehouse_stock": "Topik sebelumnya: stok gudang",
     "query_warehouse_stock_value": "Topik sebelumnya: nilai stok gudang",
     "query_warehouses": "Topik sebelumnya: daftar gudang",
+    # Manufacturing
+    "query_bom_list": "Topik sebelumnya: daftar BOM (Bill of Materials)",
+    "query_bom_detail": "Topik sebelumnya: detail BOM",
+    "query_bom_cost_breakdown": "Topik sebelumnya: biaya BOM",
+    "query_bom_materials_required": "Topik sebelumnya: kebutuhan material BOM",
+    "query_work_order_list": "Topik sebelumnya: daftar work order (perintah produksi)",
+    "query_work_order_detail": "Topik sebelumnya: detail work order",
+    "query_work_order_cost_analysis": "Topik sebelumnya: analisis biaya produksi",
+    "query_production_active": "Topik sebelumnya: work order aktif",
+    "query_production_schedule": "Topik sebelumnya: jadwal produksi",
+    "query_material_issues": "Topik sebelumnya: material issue (bahan keluar)",
+    "query_fg_receipts": "Topik sebelumnya: FG receipt (barang jadi masuk)",
+    "query_work_center_list": "Topik sebelumnya: daftar work center",
+    "create_work_order": "Topik sebelumnya: buat work order",
+    "create_bom": "Topik sebelumnya: buat BOM",
+    "create_work_center": "Topik sebelumnya: buat work center",
+    "issue_materials": "Topik sebelumnya: issue material",
+    "report_production_output": "Topik sebelumnya: report output produksi",
+    "calc_count_work_orders_active": "Topik sebelumnya: jumlah work order aktif",
+    "calc_count_bom_active": "Topik sebelumnya: jumlah BOM aktif",
+    "calc_count_work_orders_draft": "Topik sebelumnya: jumlah work order draft",
+    "calc_count_work_centers": "Topik sebelumnya: jumlah work center",
+    "calc_rank_work_orders_by_quantity": "Topik sebelumnya: ranking work order berdasarkan jumlah",
 }
 
 
@@ -490,7 +513,7 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 == QUERY (specific mappings) ==
 - "berapa stok X?" / "cek barang X" / "detail barang X" -> query_item_detail
 - "kartu stok X" / "riwayat stok X" -> query_item_stock_card
-- "transaksi barang X" -> query_item_transactions
+- "transaksi barang X" / "omzet penjualan X" / "total terjual X" / "penjualan X berapa" / "sudah terjual berapa" -> query_item_transactions
 - "ringkasan barang" / "total barang" -> query_items_summary
 - "stok rendah" / "hampir habis" -> query_items_low_stock
 - "barang terlaris" / "paling laku" (PENJUALAN) -> query_items_top_products
@@ -797,6 +820,34 @@ PIPELINE_ENABLED_INTENTS = {
     "query_bank_transfers_list",
     "query_customer_deposits_list",
     "query_vendor_deposits_list",
+    # ── Manufacturing ──
+    "query_bom_list",
+    "query_bom_detail",
+    "query_bom_cost_breakdown",
+    "query_bom_materials_required",
+    "create_bom",
+    "query_work_order_list",
+    "query_work_order_detail",
+    "query_work_order_cost_analysis",
+    "query_production_active",
+    "query_production_schedule",
+    "query_material_issues",
+    "query_fg_receipts",
+    "create_work_order",
+    "release_work_order",
+    "start_work_order",
+    "complete_work_order",
+    "issue_materials",
+    "report_production_output",
+    "void_work_order",
+    "cancel_work_order",
+    "query_work_center_list",
+    "create_work_center",
+    "calc_count_work_orders_active",
+    "calc_count_bom_active",
+    "calc_count_work_orders_draft",
+    "calc_count_work_centers",
+    "calc_rank_work_orders_by_quantity",
 }
 
 
@@ -932,6 +983,18 @@ _ENTITY_KEYWORDS = {
         "keywords": ["deposit vendor", "vendor deposit", "uang muka vendor"],
         "name_field": "deposit_number",
     },
+    "_work_order": {
+        "keywords": ["work order", "wo", "perintah produksi", "order produksi"],
+        "name_field": "work_order_number",
+    },
+    "_bom": {
+        "keywords": ["bom", "bill of materials", "resep produksi"],
+        "name_field": "bom_code",
+    },
+    "_work_center": {
+        "keywords": ["work center", "stasiun kerja"],
+        "name_field": "work_center_name",
+    },
 }
 
 
@@ -1041,7 +1104,33 @@ def classify_query_intent(user_text: str) -> tuple:
     # ):
     #     return "calc_top_selling_items", None, None
 
-    # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
+    # ── Manufacturing query intents (code-driven, 0ms) ──
+    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)", t):
+        return "query_bom_list", None, None
+    if _qre.search(r"(?:detail|lihat)\s+(?:bom)", t):
+        return "query_bom_detail", None, None
+    if _qre.search(r"(?:biaya|cost)\s+(?:bom|breakdown)", t):
+        return "query_bom_cost_breakdown", None, None
+    if _qre.search(r"(?:material|bahan)\s+(?:dibutuhkan|perlu|yang\s+perlu)", t):
+        return "query_bom_materials_required", None, None
+    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo|perintah\s+produksi)", t):
+        return "query_work_order_list", None, None
+    if _qre.search(r"(?:detail|lihat)\s+(?:work\s*order|wo)", t):
+        return "query_work_order_detail", None, None
+    if _qre.search(r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan)", t):
+        return "query_production_active", None, None
+    if _qre.search(r"(?:jadwal|schedule)\s+(?:produksi|manufacturing)", t):
+        return "query_production_schedule", None, None
+    if _qre.search(r"(?:material\s+issue|bahan\s+keluar|pengeluaran\s+bahan)", t):
+        return "query_material_issues", None, None
+    if _qre.search(r"(?:fg\s+receipt|barang\s+jadi\s+masuk|penerimaan\s+produksi)", t):
+        return "query_fg_receipts", None, None
+    if _qre.search(r"(?:biaya|cost)\s+(?:produksi|work\s*order|wo)", t):
+        return "query_work_order_cost_analysis", None, None
+    if _qre.search(r"(?:daftar|list|semua)\s+(?:work\s*center|stasiun\s+kerja)", t):
+        return "query_work_center_list", None, None
+
+        # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
     # These override AP/AR summary when user wants list/table/detail, not total
     _is_drilldown = (
         bool(
@@ -1114,6 +1203,15 @@ def classify_query_intent(user_text: str) -> tuple:
         t,
     ):
         return "drilldown_table", None, None
+
+    # ── Item transaction queries (omzet, penjualan, terjual) ──
+    # Deterministic: "omzet penjualan X", "total terjual X", "penjualan X berapa"
+    _item_tx_match = _qre.search(
+        r"(?:omzet|total)\s+(?:penjualan|terjual)|(?:sudah|yang)\s+terjual|penjualan\s+(?:barang|produk|item)",
+        t,
+    )
+    if _item_tx_match:
+        return "query_item_transactions", None, None
 
     # ── Batch 2: New query intents ──────────────────────────────────────────
     # DISABLED P2.1 (2026-04-14): handled by LLM Router

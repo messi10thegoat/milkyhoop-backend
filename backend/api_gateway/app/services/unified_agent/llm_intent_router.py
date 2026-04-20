@@ -39,10 +39,10 @@ INTENT FORMAT — gunakan pattern berikut:
 
 CRUD: {{action}}_{{module}}
   action: create, update, delete, void, reverse
-  module: vendor, customer, item, warehouse, bank_account, account, sales_invoice, bill, expense, journal_entry, receive_payment, bill_payment, credit_note, vendor_credit, quote, bank_transfer, customer_deposit, vendor_deposit, stock_adjustment
+  module: vendor, customer, item, warehouse, bank_account, account, sales_invoice, bill, expense, journal_entry, receive_payment, bill_payment, credit_note, vendor_credit, quote, bank_transfer, customer_deposit, vendor_deposit, stock_adjustment, work_order, bom, work_center
 
 QUERY: query_{{module}}_{{type}}
-  module: ar, ap, items, customers, vendors, bank, sales_invoices, bills, expenses, receive_payments, bill_payments, journals, accounts, credit_notes, vendor_credits, quotes, bank_transfers, customer_deposits, vendor_deposits
+  module: ar, ap, items, customers, vendors, bank, sales_invoices, bills, expenses, receive_payments, bill_payments, journals, accounts, credit_notes, vendor_credits, quotes, bank_transfers, customer_deposits, vendor_deposits, bom, work_order, production, work_center
   type: list, detail, summary, overdue, unpaid, search, aging, by_date, by_vendor
   Special: query_ar_outstanding, query_ap_outstanding, query_customer_ar, query_vendor_ap, query_cash_balance, query_customers_with_overdue, query_vendors_with_overdue, query_item_stock_card, query_items_low_stock, query_items_no_stock, query_warehouse_stock, query_inventory_summary, query_inventory_health, query_account_ledger, query_general_ledger, query_profit_loss, query_balance_sheet, query_cash_flow, query_trial_balance, query_dashboard_summary, query_overdue_all, query_top_expenses
 
@@ -83,6 +83,16 @@ calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, c
 calc_sum_sales_this_month, calc_sum_purchases_this_month, calc_sum_expenses_this_month
 calc_sum_received_this_month, calc_sum_paid_this_month
 
+MANUFACTURING INTENTS:
+create_work_order, create_bom, create_work_center
+release_work_order, start_work_order, complete_work_order, void_work_order, cancel_work_order
+issue_materials, report_production_output
+query_bom_list, query_bom_detail, query_bom_cost_breakdown, query_bom_materials_required
+query_work_order_list, query_work_order_detail, query_work_order_cost_analysis
+query_production_active, query_production_schedule, query_material_issues, query_fg_receipts
+query_work_center_list
+calc_count_work_orders_active, calc_count_bom_active, calc_count_work_orders_draft, calc_count_work_centers, calc_rank_work_orders_by_quantity
+
 RULES:
 1. "daftar/list/semua/lihat/ringkasan/detail/cari" = QUERY. "buat/tambah/bikin/catat/daftarkan/input" = CREATE.
    "daftar barang/produk" → query_items_search. "ringkasan barang" → query_items_summary. "detail X" → query_X_detail.
@@ -118,6 +128,7 @@ RULES:
     "saldo [bank]" → query_bank_account_balance, bank_name=[bank].
     DILARANG jawab "sebutkan nama" jika nama SUDAH ada di pesan. Bahkan setelah CRUD/daftar context.
 19. STANDALONE STOCK: "stok habis/kosong/nol/0" tanpa context barang sebelumnya → query_items_no_stock. "stok rendah/sedikit" → query_items_low_stock.
+20. MANUFACTURING: "daftar/list BOM" → query_bom_list. "detail BOM X" → query_bom_detail. "daftar work order/WO" → query_work_order_list. "WO aktif" → query_production_active. "buat work order" → create_work_order. "release/start/complete WO" → release/start/complete_work_order. "issue material" → issue_materials. "report output" → report_production_output. "jadwal produksi" → query_production_schedule. "biaya produksi" → query_work_order_cost_analysis. "daftar work center" → query_work_center_list.
     "rekening/bank paling banyak/terbesar" → query_bank_accounts_list (bukan agent loop).
 21. MORE MAPPINGS (fast-path, hindari agent loop):
     "daftar gudang" / "list gudang" / "warehouse" / "semua gudang" → query_warehouses.
