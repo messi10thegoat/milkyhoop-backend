@@ -865,16 +865,21 @@ class BillsService:
                     ap_id = ap_result.get("ap_id")
                     journal_id = ap_result.get("journal_id")
 
-                    # Update bill with AP link
+                    # Update bill with AP link + status (Law 31: derived layer sync)
                     await conn.execute(
                         """
                         UPDATE bills
-                        SET ap_id = $1, journal_id = $2
+                        SET ap_id = $1, journal_id = $2,
+                            status = 'posted', status_v2 = 'posted',
+                            operational_status = 'RECEIVED',
+                            accounting_status = 'POSTED',
+                            posted_at = NOW(), posted_by = $4
                         WHERE id = $3
                     """,
                         ap_id,
                         journal_id,
                         bill_id,
+                        user_id,
                     )
 
                     # UPDATE INVENTORY for inventory-tracked items
