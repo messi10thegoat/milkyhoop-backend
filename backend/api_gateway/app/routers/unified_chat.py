@@ -2345,7 +2345,22 @@ Aturan:
                             _caption_has_expense = any(
                                 kw in _caption_lower_kw for kw in _expense_kws
                             )
-                            if (
+                            # Guard: if caption has payment-in signals, do NOT override to expense
+                            # "catat pembayaran dari pelanggan" should stay bank_transfer → payment flow
+                            _payment_in_signals = (
+                                "pelanggan", "customer", "pembeli",
+                                "pembayaran masuk", "uang masuk", "terima dari",
+                                "diterima", "piutang", "faktur penjualan",
+                            )
+                            _caption_has_payment_in = any(
+                                sig in _caption_lower_kw for sig in _payment_in_signals
+                            )
+                            if _caption_has_payment_in:
+                                # Payment-in context — keep bank_transfer, let matcher handle direction
+                                logger.info(
+                                    "[DocSimple] Caption has payment-in signal — skipping expense override"
+                                )
+                            elif (
                                 _ocr_doc_type in ("unknown", "", "null")
                                 and _caption_has_expense
                             ):
