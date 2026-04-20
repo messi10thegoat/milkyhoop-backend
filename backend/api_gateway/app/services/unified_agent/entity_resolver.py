@@ -1001,28 +1001,26 @@ class EntityResolver:
     async def _resolve_work_order(self, name_or_number: str) -> "Optional[ResolvedEntity]":
         """Resolve work order by order_number or partial match."""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
-                )
-                row = await conn.fetchrow(
+            _q = name_or_number.strip()
+            rows = await self.db.fetch(
+                "SELECT id::text, order_number, status "
+                "FROM production_orders WHERE tenant_id = $1 AND order_number ILIKE $2 LIMIT 1",
+                self.tenant_id, _q,
+            )
+            if not rows:
+                rows = await self.db.fetch(
                     "SELECT id::text, order_number, status "
-                    "FROM production_orders WHERE order_number ILIKE $1 LIMIT 1",
-                    name_or_number.strip(),
+                    "FROM production_orders WHERE tenant_id = $1 AND order_number ILIKE $2 "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    self.tenant_id, f"%{_q}%",
                 )
-                if not row:
-                    row = await conn.fetchrow(
-                        "SELECT id::text, order_number, status "
-                        "FROM production_orders WHERE order_number ILIKE $1 "
-                        "ORDER BY created_at DESC LIMIT 1",
-                        f"%{name_or_number.strip()}%",
-                    )
-                if row:
-                    return ResolvedEntity(
-                        entity_type="work_order",
-                        entity_id=row["id"],
-                        entity_name=row["order_number"],
-                    )
+            if rows:
+                row = rows[0]
+                return ResolvedEntity(
+                    entity_type="work_order",
+                    entity_id=row["id"],
+                    entity_name=row["order_number"],
+                )
         except Exception as e:
             logger.warning(f"_resolve_work_order error: {e}")
         return None
@@ -1030,28 +1028,26 @@ class EntityResolver:
     async def _resolve_bom(self, name_or_code: str) -> "Optional[ResolvedEntity]":
         """Resolve BOM by bom_code or bom_name."""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
-                )
-                row = await conn.fetchrow(
+            _q = name_or_code.strip()
+            rows = await self.db.fetch(
+                "SELECT id::text, bom_code, bom_name, status "
+                "FROM bill_of_materials WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) LIMIT 1",
+                self.tenant_id, _q,
+            )
+            if not rows:
+                rows = await self.db.fetch(
                     "SELECT id::text, bom_code, bom_name, status "
-                    "FROM bill_of_materials WHERE (bom_code ILIKE $1 OR bom_name ILIKE $1) LIMIT 1",
-                    name_or_code.strip(),
+                    "FROM bill_of_materials WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    self.tenant_id, f"%{_q}%",
                 )
-                if not row:
-                    row = await conn.fetchrow(
-                        "SELECT id::text, bom_code, bom_name, status "
-                        "FROM bill_of_materials WHERE (bom_code ILIKE $1 OR bom_name ILIKE $1) "
-                        "ORDER BY created_at DESC LIMIT 1",
-                        f"%{name_or_code.strip()}%",
-                    )
-                if row:
-                    return ResolvedEntity(
-                        entity_type="bom",
-                        entity_id=row["id"],
-                        entity_name=row["bom_code"] or row["bom_name"],
-                    )
+            if rows:
+                row = rows[0]
+                return ResolvedEntity(
+                    entity_type="bom",
+                    entity_id=row["id"],
+                    entity_name=row["bom_code"] or row["bom_name"],
+                )
         except Exception as e:
             logger.warning(f"_resolve_bom error: {e}")
         return None
@@ -1059,28 +1055,26 @@ class EntityResolver:
     async def _resolve_work_center(self, name_or_code: str) -> "Optional[ResolvedEntity]":
         """Resolve work center by code or name."""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", self.tenant_id
-                )
-                row = await conn.fetchrow(
+            _q = name_or_code.strip()
+            rows = await self.db.fetch(
+                "SELECT id::text, code, name "
+                "FROM work_centers WHERE tenant_id = $1 AND (code ILIKE $2 OR name ILIKE $2) AND is_active = true LIMIT 1",
+                self.tenant_id, _q,
+            )
+            if not rows:
+                rows = await self.db.fetch(
                     "SELECT id::text, code, name "
-                    "FROM work_centers WHERE (code ILIKE $1 OR name ILIKE $1) AND is_active = true LIMIT 1",
-                    name_or_code.strip(),
+                    "FROM work_centers WHERE tenant_id = $1 AND (code ILIKE $2 OR name ILIKE $2) AND is_active = true "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    self.tenant_id, f"%{_q}%",
                 )
-                if not row:
-                    row = await conn.fetchrow(
-                        "SELECT id::text, code, name "
-                        "FROM work_centers WHERE (code ILIKE $1 OR name ILIKE $1) AND is_active = true "
-                        "ORDER BY created_at DESC LIMIT 1",
-                        f"%{name_or_code.strip()}%",
-                    )
-                if row:
-                    return ResolvedEntity(
-                        entity_type="work_center",
-                        entity_id=row["id"],
-                        entity_name=f"{row['code']} - {row['name']}",
-                    )
+            if rows:
+                row = rows[0]
+                return ResolvedEntity(
+                    entity_type="work_center",
+                    entity_id=row["id"],
+                    entity_name=f"{row['code']} - {row['name']}",
+                )
         except Exception as e:
             logger.warning(f"_resolve_work_center error: {e}")
         return None

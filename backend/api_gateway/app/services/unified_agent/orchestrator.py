@@ -3229,6 +3229,96 @@ class UnifiedAgent:
                     total_latency_ms=int((_time.time() - start_time) * 1000),
                 )
 
+        # Resolve work order by number -> get ID for {id} endpoints
+        _WO_RESOLVE_INTENTS = {
+            "query_work_order_detail", "query_work_order_cost_analysis",
+        }
+        if (
+            "{id}" in endpoint
+            and extraction.intent in _WO_RESOLVE_INTENTS
+        ):
+            _wo_name = extraction.entities.get("name") or extraction.entities.get("work_order_number")
+            if _wo_name:
+                from .db_utils import get_session_db_pool
+                _wo_pool = await get_session_db_pool()
+                logger.warning("[MFG_RESOLVE_WO] Looking up: %s", _wo_name)
+                _wo_rows = await _wo_pool.fetch(
+                    "SELECT id::text, order_number FROM production_orders "
+                    "WHERE tenant_id = $1 AND order_number ILIKE $2 LIMIT 1",
+                    context.tenant_id, str(_wo_name).strip(),
+                )
+                if not _wo_rows:
+                    _wo_rows = await _wo_pool.fetch(
+                        "SELECT id::text, order_number FROM production_orders "
+                        "WHERE tenant_id = $1 AND order_number ILIKE $2 "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        context.tenant_id, f"%{str(_wo_name).strip()}%",
+                    )
+                if _wo_rows:
+                    endpoint = endpoint.replace("{id}", _wo_rows[0]["id"])
+                    logger.warning("[MFG_RESOLVE_WO] Found: %s -> %s", _wo_name, _wo_rows[0]["id"])
+                else:
+                    return AgentResponse(
+                        message_type="TEXT",
+                        content=f"Work order \'{_wo_name}\' tidak ditemukan.",
+                        iterations=1,
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                    )
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content="Mohon sebutkan nomor work order, contoh: WO-2026-000001.",
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
+        # Resolve BOM by code -> get ID for {id} endpoints
+        _BOM_RESOLVE_INTENTS = {
+            "query_bom_detail", "query_bom_cost_breakdown", "query_bom_materials_required",
+        }
+        if (
+            "{id}" in endpoint
+            and extraction.intent in _BOM_RESOLVE_INTENTS
+        ):
+            _bom_name = extraction.entities.get("name") or extraction.entities.get("bom_code")
+            if _bom_name:
+                from .db_utils import get_session_db_pool
+                _bom_pool = await get_session_db_pool()
+                logger.warning("[MFG_RESOLVE_BOM] Looking up: %s", _bom_name)
+                _bom_rows = await _bom_pool.fetch(
+                    "SELECT id::text, bom_code FROM bill_of_materials "
+                    "WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) LIMIT 1",
+                    context.tenant_id, str(_bom_name).strip(),
+                )
+                if not _bom_rows:
+                    _bom_rows = await _bom_pool.fetch(
+                        "SELECT id::text, bom_code FROM bill_of_materials "
+                        "WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        context.tenant_id, f"%{str(_bom_name).strip()}%",
+                    )
+                if _bom_rows:
+                    endpoint = endpoint.replace("{id}", _bom_rows[0]["id"])
+                    logger.warning("[MFG_RESOLVE_BOM] Found: %s -> %s", _bom_name, _bom_rows[0]["id"])
+                else:
+                    return AgentResponse(
+                        message_type="TEXT",
+                        content=f"BOM \'{_bom_name}\' tidak ditemukan.",
+                        iterations=1,
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                    )
+            else:
+                return AgentResponse(
+                    message_type="TEXT",
+                    content="Mohon sebutkan kode BOM, contoh: BOMBER-001 atau POLO-001.",
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
+
         # Resolve CoA account by name -> get ID for {id} endpoints (e.g. "detail akun kas")
         if "{account_id}" in endpoint and extraction.intent == "query_account_detail":
             # Extract account name from user text (everything after "akun"/"account"/"coa")
@@ -3576,15 +3666,8 @@ class UnifiedAgent:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as e:
-            logger.warning(f"[QUERY_PIPELINE] REST call failed: {e}")
-            err_msg = str(e)[:100]
-            return AgentResponse(
-                message_type="TEXT",
-                content=f"Gagal mengambil data: {err_msg}",
-                iterations=1,
-                model_used="gpt-4o-mini",
-                total_latency_ms=int((_time.time() - start_time) * 1000),
-            )
+            logger.warning(f"[QUERY_PIPELINE] REST call failed, falling back to agent loop: {e}")
+            raise RuntimeError(f"Query pipeline REST failed: {e}")
 
         await emit(
             "THINKING_STEP",
@@ -5248,6 +5331,7 @@ class UnifiedAgent:
         extraction = (
             None  # prevent UnboundLocalError if _intent not in ACTION/SIMPLE_READ
         )
+        _state = None  # prevent UnboundLocalError
 
         if _intent in ("ACTION", "SIMPLE_READ"):
             # ═══ LLM-FIRST CLASSIFICATION (v3) ═══
@@ -5376,7 +5460,7 @@ class UnifiedAgent:
         # NOTE: Previously this block was nested inside the `except` clause above,
         # meaning REC resolver + ARAP guard only ran when shadow init failed (rare).
         # Moved out so multi-turn follow-ups (pronoun "dia", ordinal "yang pertama") work.
-        if True:
+        if extraction is not None:
             _tel_gemini_ms = (
                 int((_tel_extraction_end - _tel_extraction_start) * 1000)
                 if _tel_extraction_end and _tel_extraction_start
@@ -5663,6 +5747,32 @@ class UnifiedAgent:
                 extraction.intent = _qci_guard
                 extraction.confidence = 1.0
                 extraction.needs_escalation = False
+
+            # 5c. MANUFACTURING_GUARD: code classifier detected manufacturing intent → always trust code
+            # LLM router doesn't know manufacturing intents well, misroutes to items/generic
+            _MFG_INTENTS = {
+                "query_bom_list", "query_bom_detail", "query_bom_cost_breakdown",
+                "query_bom_materials_required", "query_work_order_list",
+                "query_work_order_detail", "query_work_order_cost_analysis",
+                "query_production_active", "query_production_schedule",
+                "query_material_issues", "query_fg_receipts", "query_work_center_list",
+            }
+            if (
+                _qci_guard
+                and _qci_guard in _MFG_INTENTS
+                and extraction.intent != _qci_guard
+            ):
+                _tel_guard = "mfg_guard"
+                _tel_guard_from = extraction.intent
+                _tel_guard_to = _qci_guard
+                _tel_decision_source = "mfg_guard"
+                _tel_guard_matches["mfg_guard"] = _qci_guard
+                logger.warning("[MFG_GUARD] %s -> %s", extraction.intent, _qci_guard)
+                extraction.intent = _qci_guard
+                extraction.confidence = 1.0
+                extraction.needs_escalation = False
+                if _qci_entity_name:
+                    extraction.entities["name"] = _qci_entity_name
 
             # 6. DE-ESCALATION: if Gemini returned a pipeline-enabled query intent
             # with needs_escalation=True, clear it so pipeline handles it
@@ -6160,6 +6270,44 @@ class UnifiedAgent:
 
                 _lr_intent = _llm_extraction.intent or ""
 
+                # ── Query regex override: trust deterministic regex over LLM ──
+                # When regex classify_query_intent matched (confidence 1.0) and
+                # LLM Router disagrees, trust regex for item-specific queries.
+                if _qci_guard and _qci_guard != _lr_intent and _qci_guard.startswith(("query_item_", "query_item_sales")):
+                    logger.warning(
+                        "[QUERY_REGEX_OVERRIDE] Trusting regex %s over LLM %s",
+                        _qci_guard, _lr_intent,
+                    )
+                    _lr_intent = _qci_guard
+                    _llm_extraction.intent = _qci_guard
+                    if _qci_entity_name and not _llm_extraction.entities.get("item_name"):
+                        _llm_extraction.entities["item_name"] = _qci_entity_name
+
+                # ── Manufacturing intent trust: code classifier always wins ──
+                _MFG_QUERY_INTENTS = {
+                    "query_bom_list", "query_bom_detail", "query_bom_cost_breakdown",
+                    "query_bom_materials_required", "query_work_order_list",
+                    "query_work_order_detail", "query_work_order_cost_analysis",
+                    "query_production_active", "query_production_schedule",
+                    "query_material_issues", "query_fg_receipts", "query_work_center_list",
+                    "calc_count_work_orders_active", "calc_count_bom_active",
+                    "calc_count_work_orders_draft", "calc_count_work_centers",
+                    "calc_rank_work_orders_by_quantity",
+                }
+                if _qci_guard and _qci_guard in _MFG_QUERY_INTENTS and _qci_guard != _lr_intent:
+                    logger.warning(
+                        "[MFG_OVERRIDE] Trusting code %s over LLM %s",
+                        _qci_guard, _lr_intent,
+                    )
+                    _lr_intent = _qci_guard
+                    _llm_extraction.intent = _qci_guard
+                    _llm_extraction.confidence = 1.0
+                    _llm_extraction.needs_escalation = False
+                    if _qci_entity_name:
+                        if not isinstance(_llm_extraction.entities, dict):
+                            _llm_extraction.entities = {}
+                        _llm_extraction.entities["name"] = _qci_entity_name
+
                 # ── Regex-trust override for sales document confusion ──
                 # LLM often conflates pesanan/faktur/penawaran. Regex classifier is
                 # deterministic on these Indonesian keywords — trust it when they disagree.
@@ -6450,8 +6598,11 @@ class UnifiedAgent:
                                 event_callback=event_callback,
                             )
                     except Exception as _q_err:
+                        import traceback as _tb_q
                         logger.warning(
-                            "[LLM_ROUTER_PRIMARY] query pipeline failed: %s", _q_err
+                            "[LLM_ROUTER_PRIMARY] query pipeline failed: %s\n%s",
+                            _q_err,
+                            _tb_q.format_exc(),
                         )
 
                 # ── CRUD / DirectAction pipeline ──

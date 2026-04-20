@@ -133,6 +133,7 @@ SESSION_CONTEXT_HINTS = {
     "query_item_related": "Topik sebelumnya: barang terkait",
     "query_item_stock_card": "Topik sebelumnya: kartu stok barang",
     "query_item_transactions": "Topik sebelumnya: transaksi barang",
+    "query_item_sales_summary": "Topik sebelumnya: omzet penjualan barang",
     "query_items_by_price": "Topik sebelumnya: barang berdasarkan harga",
     "query_items_by_stock": "Topik sebelumnya: barang berdasarkan stok",
     "query_items_expired": "Topik sebelumnya: barang kadaluarsa",
@@ -242,6 +243,7 @@ EXTRACTION_SCHEMAS = {
                             "query_item_detail",
                             "query_item_stock_card",
                             "query_item_transactions",
+    "query_item_sales_summary",
                             "query_items_summary",
                             "query_items_low_stock",
                             "query_items_top_products",
@@ -513,7 +515,8 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 == QUERY (specific mappings) ==
 - "berapa stok X?" / "cek barang X" / "detail barang X" -> query_item_detail
 - "kartu stok X" / "riwayat stok X" -> query_item_stock_card
-- "transaksi barang X" / "omzet penjualan X" / "total terjual X" / "penjualan X berapa" / "sudah terjual berapa" -> query_item_transactions
+- "transaksi barang X" / "riwayat transaksi X" -> query_item_transactions
+- "omzet penjualan X" / "total terjual X" / "penjualan X berapa" / "sudah terjual berapa" / "revenue X" -> query_item_sales_summary
 - "ringkasan barang" / "total barang" -> query_items_summary
 - "stok rendah" / "hampir habis" -> query_items_low_stock
 - "barang terlaris" / "paling laku" (PENJUALAN) -> query_items_top_products
@@ -647,6 +650,7 @@ PIPELINE_ENABLED_INTENTS = {
     "query_item_detail",
     "query_item_stock_card",
     "query_item_transactions",
+    "query_item_sales_summary",
     "query_items_summary",
     "query_items_low_stock",
     "query_items_top_products",
@@ -1105,30 +1109,72 @@ def classify_query_intent(user_text: str) -> tuple:
     #     return "calc_top_selling_items", None, None
 
     # ── Manufacturing query intents (code-driven, 0ms) ──
+    # WO number detection: WO-XXXX-XXXXXX pattern
+    _wo_match = _qre.search(r"(WO-\d{4}-\d{4,6})", t, _qre.IGNORECASE)
+    _bom_match = _qre.search(r"(?:bom(?:\s+code)?[:\s]+)?([A-Z][A-Z0-9]+-\d{3}(?:-[A-Z0-9]+)*)", t, _qre.IGNORECASE)
+
+    # Detail WO by number: "detail work order WO-2026-000031" or just "WO-2026-000031"
+    if _wo_match:
+        _wo_num = _wo_match.group(1).upper()
+        if _qre.search(r"(?:biaya|cost|analisis|analysis)", t):
+            return "query_work_order_cost_analysis", _wo_num, "work_order_number"
+        if _qre.search(r"(?:void|batalkan|cancel|batal)", t):
+            pass  # let CRUD classifier handle void/cancel
+        else:
+            return "query_work_order_detail", _wo_num, "work_order_number"
+
+    # Detail BOM by code: "biaya BOM BOMBER-001-COPY" or "detail BOM POLO-001"
+    if _bom_match and _qre.search(r"(?:bom|bill\s+of\s+materials|resep)", t):
+        _bom_code = _bom_match.group(1).upper()
+        if _qre.search(r"(?:biaya|cost|breakdown|rincian)", t):
+            return "query_bom_cost_breakdown", _bom_code, "bom_code"
+        if _qre.search(r"(?:material|bahan|kebutuhan)", t):
+            return "query_bom_materials_required", _bom_code, "bom_code"
+        return "query_bom_detail", _bom_code, "bom_code"
+
+    # List queries
     if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)", t):
         return "query_bom_list", None, None
+    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo\b|perintah\s+produksi)", t):
+        return "query_work_order_list", None, None
+    if _qre.search(r"(?:daftar|list|semua)\s+(?:work\s*center|stasiun\s+kerja)", t):
+        return "query_work_center_list", None, None
+
+    # Detail without code (generic)
     if _qre.search(r"(?:detail|lihat)\s+(?:bom)", t):
         return "query_bom_detail", None, None
+    if _qre.search(r"(?:detail|lihat)\s+(?:work\s*order|wo\b)", t):
+        return "query_work_order_detail", None, None
+
+    # Cost/biaya queries
     if _qre.search(r"(?:biaya|cost)\s+(?:bom|breakdown)", t):
         return "query_bom_cost_breakdown", None, None
-    if _qre.search(r"(?:material|bahan)\s+(?:dibutuhkan|perlu|yang\s+perlu)", t):
-        return "query_bom_materials_required", None, None
-    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo|perintah\s+produksi)", t):
-        return "query_work_order_list", None, None
-    if _qre.search(r"(?:detail|lihat)\s+(?:work\s*order|wo)", t):
-        return "query_work_order_detail", None, None
-    if _qre.search(r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan)", t):
+    if _qre.search(r"(?:biaya|cost)\s+(?:produksi|work\s*order|wo\b)", t):
+        return "query_work_order_cost_analysis", None, None
+
+    # Status/filter queries
+    if _qre.search(r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan|in.progress)", t):
         return "query_production_active", None, None
     if _qre.search(r"(?:jadwal|schedule)\s+(?:produksi|manufacturing)", t):
         return "query_production_schedule", None, None
+
+    # Material/FG queries
+    if _qre.search(r"(?:material|bahan)\s+(?:dibutuhkan|perlu|yang\s+perlu)", t):
+        return "query_bom_materials_required", None, None
     if _qre.search(r"(?:material\s+issue|bahan\s+keluar|pengeluaran\s+bahan)", t):
         return "query_material_issues", None, None
     if _qre.search(r"(?:fg\s+receipt|barang\s+jadi\s+masuk|penerimaan\s+produksi)", t):
         return "query_fg_receipts", None, None
-    if _qre.search(r"(?:biaya|cost)\s+(?:produksi|work\s*order|wo)", t):
-        return "query_work_order_cost_analysis", None, None
-    if _qre.search(r"(?:daftar|list|semua)\s+(?:work\s*center|stasiun\s+kerja)", t):
-        return "query_work_center_list", None, None
+
+    # ── FIX 2: Manufacturing calc intents (code-driven, override LLM) ──
+    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:aktif|active|berjalan)", t):
+        return "calc_count_work_orders_active", None, None
+    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:bom).*(?:aktif|active)", t):
+        return "calc_count_bom_active", None, None
+    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:draft|belum\s+release)", t):
+        return "calc_count_work_orders_draft", None, None
+    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*center|stasiun\s+kerja)", t):
+        return "calc_count_work_centers", None, None
 
         # ── Drill-down / breakdown signals (checked BEFORE AP/AR summary) ──
     # These override AP/AR summary when user wants list/table/detail, not total
@@ -1204,14 +1250,14 @@ def classify_query_intent(user_text: str) -> tuple:
     ):
         return "drilldown_table", None, None
 
-    # ── Item transaction queries (omzet, penjualan, terjual) ──
+    # ── Item sales summary (omzet, revenue, total terjual) ──
     # Deterministic: "omzet penjualan X", "total terjual X", "penjualan X berapa"
-    _item_tx_match = _qre.search(
+    _item_sales_match = _qre.search(
         r"(?:omzet|total)\s+(?:penjualan|terjual)|(?:sudah|yang)\s+terjual|penjualan\s+(?:barang|produk|item)",
         t,
     )
-    if _item_tx_match:
-        return "query_item_transactions", None, None
+    if _item_sales_match:
+        return "query_item_sales_summary", None, None
 
     # ── Batch 2: New query intents ──────────────────────────────────────────
     # DISABLED P2.1 (2026-04-14): handled by LLM Router

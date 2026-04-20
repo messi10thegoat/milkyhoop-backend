@@ -650,6 +650,13 @@ def _build_dynamic_suffix(tenant_name: str, today_str: str) -> str:
     # Date math for query parameter hints
     month_start = f"{today_str[:8]}01"
     year_start = f"{today_str[:4]}-01-01"
+    # yesterday
+    from datetime import datetime, timedelta
+    try:
+        _today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+        yesterday_str = (_today_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        yesterday_str = today_str
 
     tutorial_list = str(list_available_tutorials())
 
@@ -665,6 +672,7 @@ Tenant: {tenant_name}
 | "bulan ini" | start_date={month_start}, end_date={today_str} |
 | "tahun ini" | start_date={year_start}, end_date={today_str} |
 | tanpa tanggal | biarkan kosong (auto-fill bulan ini) |
+| "kemarin" | start_date={yesterday_str}, end_date={yesterday_str} |
 | "per hari ini" | as_of={today_str} |
 
 ### Available Tutorials
