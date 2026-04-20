@@ -119,9 +119,10 @@ class DocumentActionResolver:
         # Resolve vendor_id from bill record (source_id is pure UUID)
         vendor_id = await self._get_vendor_id_from_bill(bm.source_id) or ""
 
-        # Resolve bank account from OCR bank name or caption hint, fallback to is_default or single-account
+        # For outgoing payments: match source_account_number (our account that sends money)
         bank_name = (
-            ocr_data.get("bank_hint")
+            ocr_data.get("source_account_number")  # OCR: "Dari rek 1234567890"
+            or ocr_data.get("bank_hint")
             or ocr_data.get("bank_source")
             or ocr_data.get("bank_destination")
             or ""
@@ -184,8 +185,10 @@ class DocumentActionResolver:
         )
         payment_date = ocr_data.get("document_date") or ocr_data.get("date")
 
+        # For incoming payments: match destination_account_number (our account that receives money)
         bank_name = (
-            ocr_data.get("bank_hint")
+            ocr_data.get("destination_account_number")  # OCR: "Ke 8295032185"
+            or ocr_data.get("bank_hint")
             or ocr_data.get("bank_destination")
             or ocr_data.get("bank_source")
             or ""
