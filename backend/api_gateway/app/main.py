@@ -137,6 +137,7 @@ from .routers import document_intake
 from .routers import efaktur
 from .routers import units
 from .routers import deliveries
+from .routers import reports_profitability
 
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
@@ -695,6 +696,7 @@ app.include_router(
 app.include_router(efaktur.router, prefix="/api/efaktur", tags=["E-Faktur Export"])
 app.include_router(deliveries.router, prefix="/api/deliveries", tags=["deliveries"])
 app.include_router(units.router, prefix="/api/units", tags=["Units"])
+app.include_router(reports_profitability.router)
 
 
 @app.get("/")
