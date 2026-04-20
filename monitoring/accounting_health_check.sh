@@ -473,6 +473,49 @@ check_11_opening_balance() {
     fi
 }
 
+
+check_13_status_desync() {
+    local tenant="$1"
+    local count
+    count=$(psql_cmd "
+        SELECT COUNT(*) FROM (
+            -- Bills with journal but wrong accounting_status
+            SELECT b.id FROM bills b
+            WHERE b.tenant_id = 
+              AND b.accounting_status != POSTED
+              AND EXISTS (
+                  SELECT 1 FROM journal_entries je
+                  WHERE je.source_id::text = b.id::text
+                    AND je.source_type = BILL
+                    AND je.status = POSTED
+                    AND je.reversed_by_id IS NULL
+                    AND je.tenant_id = 
+              )
+            UNION ALL
+            -- Sales invoices with journal but wrong accounting_status
+            SELECT si.id FROM sales_invoices si
+            WHERE si.tenant_id = 
+              AND si.accounting_status != POSTED
+              AND EXISTS (
+                  SELECT 1 FROM journal_entries je
+                  WHERE je.source_id::text = si.id::text
+                    AND je.source_type = INVOICE
+                    AND je.status = POSTED
+                    AND je.reversed_by_id IS NULL
+                    AND je.tenant_id = 
+              )
+        ) sub;
+    ")
+    if [ "$count" = "0" ] || [ -z "$count" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        CHK_PASS=0
+        CHK_DETAIL="$count docs with journal but status!=POSTED"
+        detail "[CHECK 13] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_12_negative_balance() {
     local tenant="$1"
     local count
@@ -704,6 +747,16 @@ for TENANT in $TENANTS; do
         WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
         ANOMALY_DETAIL="$CHK_DETAIL"
         log "  WARNING [12] Negative Balance: $CHK_DETAIL"
+    fi
+
+    # Check 13: Status Desync (journal exists but accounting_status wrong)
+    check_13_status_desync "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
+        log "  WARNING [13] Status Desync: $CHK_DETAIL"
     fi
 
     # ---- Build per-tenant Discord block ----
