@@ -721,7 +721,112 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 list(_doc_ctx.keys()) if _doc_ctx else "empty",
             )
             if _doc_ctx.get("pending_bank_selection"):
-                _selected_bank_id = body.text.strip()
+                _selected_value = body.text.strip()
+
+                # ── Direction selection: value starts with "direction:" ──
+                # Direction pills inherit document_context TTL (~10 min).
+                # If expired, saved_ocr_data will be None → graceful fallback.
+                if _selected_value.startswith("direction:"):
+                    _forced_dir = _selected_value.split(":", 1)[1]  # "in" or "out"
+                    _saved_ocr = _doc_ctx.get("saved_ocr_data")
+
+                    if _saved_ocr:
+                        _saved_ocr["forced_direction"] = _forced_dir
+
+                        # Re-run matcher + resolver (skip OCR — data already extracted)
+                        from ..services.unified_agent.document_matcher import DocumentMatcher as _DirMatcher
+                        from ..services.unified_agent.document_action_resolver import DocumentActionResolver as _DirResolver
+
+                        _dir_pool = await get_session_db_pool()
+                        _dir_matcher = _DirMatcher(_dir_pool, ctx["tenant_id"])
+                        _dir_match = await _dir_matcher.match(_saved_ocr)
+
+                        _dir_resolver = _DirResolver(_dir_pool, ctx["tenant_id"])
+                        _dir_resolved = await _dir_resolver.resolve(_dir_match, _saved_ocr)
+
+                        if _dir_resolved and _dir_resolved.needs_clarification:
+                            # Needs bank selection now — update state and show bank pills
+                            _doc_ctx_updated = {
+                                "pending_bank_selection": True,
+                                "resolved_action_key": _dir_resolved.action_key,
+                                "resolved_payload": _dir_resolved.payload,
+                                "doc_type": _saved_ocr.get("doc_type"),
+                                "vendor_name": _saved_ocr.get("vendor_name") or _saved_ocr.get("customer_name"),
+                                "total_amount": float(_saved_ocr.get("total_amount", 0) or 0),
+                                "match_label": _dir_match.best_match.label if _dir_match.best_match else None,
+                            }
+                            await _retrigger_sm.update_state(
+                                body.session_id, document_context=_doc_ctx_updated
+                            )
+                            _cl_options = [
+                                {"label": opt.label, "value": opt.value, "description": ""}
+                                for opt in _dir_resolved.clarification_options
+                            ]
+                            return ChatMessageResponse(
+                                message_type="CLARIFICATION",
+                                text=_dir_resolved.clarification_question,
+                                data={
+                                    "question": _dir_resolved.clarification_question,
+                                    "options": _cl_options,
+                                    "allow_freetext": False,
+                                },
+                                session_id=body.session_id,
+                            )
+                        elif _dir_resolved and _dir_resolved.action_key:
+                            # Action resolved — propose directly
+                            _te_dir = ToolExecutor(
+                                context=TenantContext(
+                                    tenant_id=ctx["tenant_id"],
+                                    user_id=ctx["user_id"],
+                                    auth_token=ctx["auth_token"],
+                                    tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                                ),
+                                session_id=body.session_id,
+                            )
+                            _propose_dir = await _te_dir._execute_propose_direct({
+                                "action_key": _dir_resolved.action_key,
+                                "payload": _dir_resolved.payload,
+                            })
+                            if _propose_dir.get("success"):
+                                await _retrigger_sm.update_state(
+                                    body.session_id,
+                                    document_context={
+                                        "pending_bank_selection": False,
+                                        "pending_action_id": _propose_dir["data"].get("pending_action_id"),
+                                    },
+                                )
+                                _dir_label = "masuk" if _forced_dir == "in" else "keluar"
+                                return ChatMessageResponse(
+                                    message_type="DIRECT_ACTION_PREVIEW",
+                                    text=f"Pembayaran {_dir_label} dipilih.",
+                                    data=_propose_dir["data"],
+                                    pending_action_id=_propose_dir["data"].get("pending_action_id"),
+                                    session_id=body.session_id,
+                                )
+                            else:
+                                await _retrigger_sm.update_state(
+                                    body.session_id,
+                                    document_context={"pending_bank_selection": False},
+                                )
+                                return ChatMessageResponse(
+                                    message_type="TEXT",
+                                    text=_propose_dir.get("error", "Gagal memproses."),
+                                    session_id=body.session_id,
+                                )
+                    else:
+                        # No saved OCR — can not re-run, clear state
+                        await _retrigger_sm.update_state(
+                            body.session_id,
+                            document_context={"pending_bank_selection": False},
+                        )
+                        return ChatMessageResponse(
+                            message_type="TEXT",
+                            text="Sesi dokumen sudah kedaluwarsa. Silakan upload ulang.",
+                            session_id=body.session_id,
+                        )
+
+                # ── Bank selection (existing path — UUID value) ──
+                _selected_bank_id = _selected_value
                 _resolved_payload = _doc_ctx.get("resolved_payload", {})
                 _action_key = _doc_ctx.get("resolved_action_key", "")
 
@@ -2056,6 +2161,7 @@ Return JSON ONLY:
   "is_financial_document": true,
   "extracted_text": "teks utama yang terbaca dari gambar, apa adanya",
   "doc_type": "expense|bank_transfer|qris|merchant_payment|purchase_invoice|sales_invoice|receipt|unknown",
+  "transfer_direction": "masuk|keluar|null",
   "vendor_name": "nama vendor (untuk struk PLN: 'PLN', untuk transfer keluar: nama penerima)",
   "customer_name": "nama customer atau null",
   "document_number": "no faktur/no ref",
@@ -2071,6 +2177,7 @@ Return JSON ONLY:
 Aturan:
 - Struk PLN: doc_type="expense", total_amount=field "RP BAYAR" (BUKAN RP STROOM/TOKEN, BUKAN total dengan ADMIN BANK), tax_amount=PBJT-TL, vendor_name="PLN"
 - QRIS/merchant payment ("Pembayaran QRIS Berhasil", Merchant PAN, Terminal ID): doc_type="qris", NOT bank_transfer. Ini pembayaran ke merchant, bukan transfer antar bank.
+- transfer_direction: "masuk" jika uang MASUK ke rekening kita (kita yang menerima, nama penerima = nama bisnis/toko kita, atau caption bilang "dari pelanggan"/"pembayaran masuk"). "keluar" jika uang KELUAR dari rekening kita. null jika tidak bisa ditentukan.
 - Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
 - Semua angka Rupiah tanpa desimal
 - is_financial_document: true jika gambar berisi dokumen keuangan (struk, invoice, bukti transfer, kwitansi, nota, faktur, slip gaji). false jika gambar berisi tabel data, screenshot aplikasi, foto produk, chat/pesan, atau konten non-keuangan.
@@ -2527,6 +2634,11 @@ Aturan:
                                     "match_label": _match_result.best_match.label
                                     if _match_result and _match_result.best_match
                                     else None,
+                                    # Persist OCR data for direction re-trigger (skip re-OCR)
+                                    "saved_ocr_data": {
+                                        k: v for k, v in _ocr_data.items()
+                                        if k != "image_bytes"
+                                    } if not _resolved_action.action_key else None,
                                 }
                                 # ── Store document_context (fix: UPSERT + diagnostics) ──
                                 import json as _ctx_json

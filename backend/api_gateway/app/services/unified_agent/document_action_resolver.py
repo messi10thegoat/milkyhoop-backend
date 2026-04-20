@@ -68,6 +68,21 @@ class DocumentActionResolver:
         has_match = match_result.best_match is not None
         lookup_key = (match_result.doc_category, match_result.direction, has_match)
 
+        # Direction still ambiguous after matcher tried both AR/AP → ask user
+        if match_result.direction == "ambiguous":
+            return ResolvedAction(
+                action_key="",  # no action yet — need direction first
+                payload={},
+                match_confidence=0.0,
+                warnings=["Direction unclear from document"],
+                needs_clarification=True,
+                clarification_question="Ini pembayaran masuk (dari pelanggan) atau keluar (ke vendor)?",
+                clarification_options=[
+                    BankOption(id="dir_in", label="Pembayaran Masuk (dari pelanggan)", value="direction:in"),
+                    BankOption(id="dir_out", label="Pembayaran Keluar (ke vendor)", value="direction:out"),
+                ],
+            )
+
         action_key = ACTION_MAP.get(lookup_key)
         if action_key is None:
             # Also try without direction specificity

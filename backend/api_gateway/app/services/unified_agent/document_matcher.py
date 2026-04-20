@@ -69,29 +69,41 @@ AMOUNT_TOLERANCE = {
     "default": 0.02,
 }
 
+# Direction keywords — ONLY unambiguous terms
+# "pembayaran" REMOVED: ambiguous (masuk or keluar depending on context)
+# "bayar" REMOVED: same ambiguity ("pelanggan bayar" = in, "bayar vendor" = out)
 DIRECTION_OUT_KEYWORDS = [
-    "pembayaran",
-    "bayar",
+    "bayar ke",
     "transfer keluar",
-    "kirim",
+    "kirim ke",
     "debit",
-    "pembelian",
-    "beli",
-    "expense",
+    "pembelian dari",
     "pengeluaran",
     "biaya",
+    "ke vendor",
+    "ke supplier",
+    "ke pemasok",
+    "pembayaran keluar",
+    "uang keluar",
 ]
 
 DIRECTION_IN_KEYWORDS = [
     "penerimaan",
-    "terima",
+    "terima dari",
     "transfer masuk",
     "kredit",
     "penjualan",
-    "jual",
     "pendapatan",
-    "income",
-    "revenue",
+    "dari pelanggan",
+    "dari customer",
+    "dari pembeli",
+    "pelanggan bayar",
+    "pelanggan transfer",
+    "customer bayar",
+    "pembayaran masuk",
+    "uang masuk",
+    "diterima dari",
+    "masuk dari",
 ]
 
 EXPENSE_KEYWORDS = {
@@ -213,9 +225,31 @@ class DocumentMatcher:
         account_rec = None
 
         if doc_category == "payment":
-            best_match, alternatives = await self._match_payment(
-                ocr_result, doc_category, direction
-            )
+            if direction == "ambiguous":
+                # Search both AR and AP — let match confidence decide direction
+                best_in, alts_in = await self._match_payment(ocr_result, doc_category, "in")
+                best_out, alts_out = await self._match_payment(ocr_result, doc_category, "out")
+
+                if best_in and best_out:
+                    if best_in.confidence >= best_out.confidence:
+                        best_match, alternatives = best_in, alts_in
+                        direction = "in"
+                    else:
+                        best_match, alternatives = best_out, alts_out
+                        direction = "out"
+                elif best_in:
+                    best_match, alternatives = best_in, alts_in
+                    direction = "in"
+                elif best_out:
+                    best_match, alternatives = best_out, alts_out
+                    direction = "out"
+                else:
+                    # No match on either side — direction stays ambiguous
+                    best_match, alternatives = None, []
+            else:
+                best_match, alternatives = await self._match_payment(
+                    ocr_result, doc_category, direction
+                )
         elif doc_category == "expense":
             account_rec = await self._recommend_expense_account(ocr_result)
         elif doc_category == "tax":
@@ -250,11 +284,21 @@ class DocumentMatcher:
 
     def _detect_direction(self, ocr: dict, doc_category: str) -> Tuple[str, float]:
         """
-        3-layer direction detection:
-        1. Explicit from doc_type (highest confidence)
+        6-layer direction detection:
+        0. Explicit override (user answered direction clarification)
+        1. Explicit from doc_type
+        1.5. OCR transfer_direction field
+        1.5b. Caption intent (user caption keywords)
         2. Keyword scan in raw_text
         3. Default by category
         """
+        # Layer 0: Explicit override from direction clarification
+        forced = (ocr.get("forced_direction") or "").lower()
+        if forced in ("in", "masuk"):
+            return ("in", 1.0)
+        if forced in ("out", "keluar"):
+            return ("out", 1.0)
+
         doc_type = (ocr.get("doc_type") or "").lower()
 
         # Layer 1: doc_type implies direction
@@ -275,24 +319,45 @@ class DocumentMatcher:
         elif transfer_dir == "masuk":
             return ("in", 0.85)
 
-        # Layer 2: keyword scan
+        # Layer 1.5b: Caption intent (user explicitly states direction)
+        # Caption is strongest human signal — confidence 0.90
+        caption = (ocr.get("user_caption") or "").lower()
+        if caption:
+            _in_signals = [
+                "dari pelanggan", "dari customer", "dari pembeli",
+                "pembayaran masuk", "uang masuk", "terima dari",
+                "pelanggan bayar", "pelanggan transfer", "customer bayar",
+                "diterima dari", "masuk dari", "pembayaran dari",
+            ]
+            _out_signals = [
+                "bayar ke", "ke vendor", "ke supplier", "ke pemasok",
+                "pembayaran keluar", "uang keluar", "transfer ke",
+                "kirim ke", "bayar vendor", "bayar supplier",
+            ]
+            if any(sig in caption for sig in _in_signals):
+                return ("in", 0.90)
+            if any(sig in caption for sig in _out_signals):
+                return ("out", 0.90)
+
+        # Layer 2: keyword scan (compound keywords — threshold 1 sufficient)
         raw_text = (
             ocr.get("raw_text") or ocr.get("berita") or ocr.get("reference_note") or ""
         ).lower()
         out_score = sum(1 for kw in DIRECTION_OUT_KEYWORDS if kw in raw_text)
         in_score = sum(1 for kw in DIRECTION_IN_KEYWORDS if kw in raw_text)
 
-        if out_score > in_score and out_score >= 2:
-            return ("out", min(0.6 + out_score * 0.05, 0.85))
-        if in_score > out_score and in_score >= 2:
-            return ("in", min(0.6 + in_score * 0.05, 0.85))
+        if out_score > in_score and out_score >= 1:
+            return ("out", min(0.6 + out_score * 0.1, 0.85))
+        if in_score > out_score and in_score >= 1:
+            return ("in", min(0.6 + in_score * 0.1, 0.85))
 
         # Layer 3: default by category
         if doc_category == "expense":
             return ("out", 0.5)
         if doc_category == "tax":
             return ("out", 0.5)
-        return ("out", 0.3)  # conservative default
+        # Payment direction unknown — downstream will ask user
+        return ("ambiguous", 0.2)
 
     async def _match_payment(
         self, ocr: dict, doc_category: str, direction: str
