@@ -406,7 +406,7 @@ async def _get_sales_today(
 ):
     """Penjualan Hari Ini - journal-derived revenue + invoice context."""
     tenant_id = request.state.user.get("tenant_id")
-    today_str = date.today().isoformat()
+    _today_str = date.today().isoformat()  # noqa: F841
     s_start = date.fromisoformat(sales_start) if sales_start else date.today()
     s_end = date.fromisoformat(sales_end) if sales_end else date.today()
 
@@ -744,8 +744,7 @@ async def get_dashboard_summary(
                 JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE coa.account_type = 'RECEIVABLE'
-                  AND je.status = 'POSTED'
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- Rule 8.1
                   AND je.tenant_id = $1
                   AND je.journal_date <= $2
             """
@@ -809,8 +808,7 @@ async def get_dashboard_summary(
                 JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE coa.account_type = 'PAYABLE'
-                  AND je.status = 'POSTED'
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- Rule 8.1
                   AND je.tenant_id = $1
                   AND je.journal_date <= $2
             """
@@ -2077,17 +2075,20 @@ async def get_cash_flow_projection(request: Request):
 
 # ─── Sales Daily Trends ────────────────────────────────────────────────────────
 
+
 class SalesDailyTrend(BaseModel):
     date: str
     label: str
     revenue: float
     trx_count: int
 
+
 class SalesDailyResponse(BaseModel):
     total_revenue: float
     trx_count: int
     granularity: str
     trends: list[SalesDailyTrend]
+
 
 @router.get("/sales-daily", response_model=SalesDailyResponse)
 async def get_sales_daily(
@@ -2108,7 +2109,9 @@ async def get_sales_daily(
             raise HTTPException(status_code=401, detail="Tenant not found")
         pool = await get_db_pool()
         async with pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, false)", str(tenant_id)
+            )
 
             if granularity == "monthly":
                 # Last 12 months
@@ -2148,12 +2151,16 @@ async def get_sales_daily(
                 trends = []
                 for r in rows:
                     d = r["date"]
-                    trends.append(SalesDailyTrend(
-                        date=d.strftime("%Y-%m-%d"),
-                        label=d.strftime("%-m/%Y") if hasattr(d, "strftime") else str(d),
-                        revenue=float(r["revenue"]),
-                        trx_count=int(r["trx_count"]),
-                    ))
+                    trends.append(
+                        SalesDailyTrend(
+                            date=d.strftime("%Y-%m-%d"),
+                            label=d.strftime("%-m/%Y")
+                            if hasattr(d, "strftime")
+                            else str(d),
+                            revenue=float(r["revenue"]),
+                            trx_count=int(r["trx_count"]),
+                        )
+                    )
             else:
                 # Daily — last N days
                 query = """
@@ -2192,12 +2199,14 @@ async def get_sales_daily(
                 trends = []
                 for r in rows:
                     d = r["date"]
-                    trends.append(SalesDailyTrend(
-                        date=d.strftime("%Y-%m-%d"),
-                        label=d.strftime("%-d/%-m"),
-                        revenue=float(r["revenue"]),
-                        trx_count=int(r["trx_count"]),
-                    ))
+                    trends.append(
+                        SalesDailyTrend(
+                            date=d.strftime("%Y-%m-%d"),
+                            label=d.strftime("%-d/%-m"),
+                            revenue=float(r["revenue"]),
+                            trx_count=int(r["trx_count"]),
+                        )
+                    )
 
             total_revenue = sum(t.revenue for t in trends)
             total_trx = sum(t.trx_count for t in trends)
@@ -2211,3 +2220,132 @@ async def get_sales_daily(
     except Exception as e:
         logger.error(f"sales-daily error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get sales daily trends")
+
+
+@router.get("/daily-transactions")
+async def get_daily_transactions(request: Request, date: str = Query(...)):
+    """All transactions for a specific date — invoices, bills, expenses, payments."""
+    tenant_id = request.state.user.get("tenant_id")
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+        from datetime import date as _dt_date
+
+        _date_obj = _dt_date.fromisoformat(date)
+
+        invoices = await conn.fetch(
+            """
+            SELECT si.invoice_number, si.invoice_date::text as date,
+                   si.total_amount, si.accounting_status as status,
+                   c.display_name as customer_name
+            FROM sales_invoices si
+            LEFT JOIN customers c ON c.id::text = si.customer_id::text AND c.tenant_id = $2
+            WHERE si.tenant_id = $2 AND si.invoice_date = $1::date
+            ORDER BY si.invoice_number
+        """,
+            _date_obj,
+            tenant_id,
+        )
+
+        bills = await conn.fetch(
+            """
+            SELECT b.invoice_number, b.issue_date::text as date,
+                   b.grand_total as total_amount, b.accounting_status as status,
+                   v.name as vendor_name
+            FROM bills b
+            LEFT JOIN vendors v ON v.id = b.vendor_id AND v.tenant_id = $2
+            WHERE b.tenant_id = $2 AND b.issue_date = $1::date
+            ORDER BY b.invoice_number
+        """,
+            _date_obj,
+            tenant_id,
+        )
+
+        expenses = await conn.fetch(
+            """
+            SELECT e.expense_number, e.expense_date::text as date,
+                   e.total_amount, e.accounting_status as status
+            FROM expenses e
+            WHERE e.tenant_id = $2 AND e.expense_date = $1::date
+            ORDER BY e.expense_number
+        """,
+            _date_obj,
+            tenant_id,
+        )
+
+        recv = await conn.fetch(
+            """
+            SELECT rp.reference_number, rp.payment_date::text as date,
+                   rp.total_amount, rp.status,
+                   c.display_name as customer_name
+            FROM receive_payments rp
+            LEFT JOIN customers c ON c.id::text = rp.customer_id AND c.tenant_id = $2
+            WHERE rp.tenant_id = $2 AND rp.payment_date = $1::date
+            ORDER BY rp.reference_number
+        """,
+            _date_obj,
+            tenant_id,
+        )
+
+        bp = await conn.fetch(
+            """
+            SELECT bp.payment_number, bp.payment_date::text as date,
+                   bp.total_amount, bp.accounting_status as status,
+                   v.name as vendor_name
+            FROM bill_payments_v2 bp
+            LEFT JOIN vendors v ON v.id = bp.vendor_id AND v.tenant_id = $2
+            WHERE bp.tenant_id = $2 AND bp.payment_date = $1::date
+            ORDER BY bp.payment_number
+        """,
+            _date_obj,
+            tenant_id,
+        )
+
+        def _fmt(rows, name_key="customer_name"):
+            out = []
+            for r in rows:
+                doc = (
+                    r.get("invoice_number")
+                    or r.get("expense_number")
+                    or r.get("reference_number")
+                    or r.get("payment_number")
+                    or "-"
+                )
+                out.append(
+                    {
+                        "doc_number": doc,
+                        "date": r["date"],
+                        "amount": float(r["total_amount"] or 0),
+                        "status": r.get("status") or "-",
+                        "party": r.get(name_key) or "-",
+                    }
+                )
+            return out
+
+        return {
+            "success": True,
+            "date": date,
+            "sales_invoices": _fmt(invoices),
+            "bills": _fmt(bills, "vendor_name"),
+            "expenses": _fmt(expenses),
+            "receive_payments": _fmt(recv),
+            "bill_payments": _fmt(bp, "vendor_name"),
+            "summary": {
+                "total_transactions": len(invoices)
+                + len(bills)
+                + len(expenses)
+                + len(recv)
+                + len(bp),
+                "total_invoice_amount": sum(
+                    float(r["total_amount"] or 0) for r in invoices
+                ),
+                "total_bill_amount": sum(float(r["total_amount"] or 0) for r in bills),
+                "total_expense_amount": sum(
+                    float(r["total_amount"] or 0) for r in expenses
+                ),
+                "total_received_amount": sum(
+                    float(r["total_amount"] or 0) for r in recv
+                ),
+                "total_paid_amount": sum(float(r["total_amount"] or 0) for r in bp),
+            },
+        }

@@ -276,7 +276,7 @@ check_7_ap_invariant() {
              JOIN journal_entries je ON je.id = jl.journal_id
              JOIN chart_of_accounts coa ON coa.id = jl.account_id
              WHERE coa.account_type = 'PAYABLE'
-               AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+               AND is_effective_journal(je.id)  -- Rule 8.1
                AND je.tenant_id = '$tenant')
             - COALESCE((SELECT SUM(outstanding) FROM compute_ap_outstanding('$tenant')), 0)
             - COALESCE((SELECT SUM(net) FROM compute_ap_adjustments('$tenant')), 0)
@@ -302,7 +302,7 @@ check_8_ar_invariant() {
              JOIN journal_entries je ON je.id = jl.journal_id
              JOIN chart_of_accounts coa ON coa.id = jl.account_id
              WHERE coa.account_type = 'RECEIVABLE'
-               AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+               AND is_effective_journal(je.id)  -- Rule 8.1
                AND je.tenant_id = '$tenant')
             - COALESCE((SELECT SUM(outstanding) FROM compute_ar_outstanding('$tenant')), 0)
             - COALESCE((SELECT SUM(net) FROM compute_ar_adjustments('$tenant')), 0)
@@ -379,7 +379,7 @@ check_10_cogs_orphans() {
             SELECT je.journal_number || ' (' || je.source_type || ')'
             FROM journal_entries je
             WHERE je.source_type IN ('SALES_INVOICE_COGS', 'SALES_RECEIPT_COGS')
-              AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+              AND is_effective_journal(je.id)  -- Rule 8.1
               AND je.tenant_id = '$tenant'
               AND NOT EXISTS (
                   SELECT 1 FROM inventory_ledger il
@@ -407,7 +407,7 @@ check_11_opening_balance() {
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.source_type = 'OPENING'
-                  AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- Rule 8.1
                   AND coa.account_type = 'PAYABLE' AND jl.credit > 0
                   AND je.tenant_id = '$tenant'
                 GROUP BY je.source_id
@@ -429,7 +429,7 @@ check_11_opening_balance() {
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
                 WHERE je.source_type = 'OPENING'
-                  AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- Rule 8.1
                   AND jl.account_id = ba2.coa_id AND jl.debit > 0
                   AND je.tenant_id = '$tenant'
                 GROUP BY je.source_id, je.tenant_id
@@ -459,7 +459,7 @@ check_11_opening_balance() {
                     FROM journal_entries je
                     JOIN journal_lines jl ON jl.journal_id = je.id
                     JOIN bank_accounts ba2 ON ba2.id = je.source_id AND ba2.tenant_id = je.tenant_id
-                    WHERE je.source_type = 'OPENING' AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                    WHERE je.source_type = 'OPENING' AND is_effective_journal(je.id)  -- Rule 8.1
                       AND jl.account_id = ba2.coa_id AND jl.debit > 0 AND je.tenant_id = '$tenant'
                     GROUP BY je.source_id, je.tenant_id
                 ) boj ON boj.source_id = ba.id AND boj.tenant_id = ba.tenant_id
@@ -523,7 +523,7 @@ check_12_negative_balance() {
             ) cba
             LEFT JOIN journal_lines jl ON jl.account_id = cba.id
             LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                AND is_effective_journal(je.id)  -- Rule 8.1
                 AND je.tenant_id = '$tenant'
             GROUP BY cba.account_code, cba.name
             HAVING COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) < 0

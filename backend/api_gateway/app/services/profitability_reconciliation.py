@@ -38,8 +38,7 @@ FROM journal_lines jl
 JOIN journal_entries je ON je.id = jl.journal_id
 JOIN chart_of_accounts coa ON coa.id = jl.account_id
 WHERE je.tenant_id = $1
-  AND je.status = 'POSTED'
-  AND je.reversed_by_id IS NULL
+  AND is_effective_journal(je.id)  -- Rule 8.1
   AND je.journal_date BETWEEN $2 AND $3
   AND coa.account_type IN ('REVENUE', 'COGS')
 """
