@@ -571,6 +571,20 @@ def _infer_intent(user_text: str) -> str:
     if any(f" {w}" in f" {text}" for w in action_words):
         return "ACTION"
 
+    # Manufacturing domain keywords → SIMPLE_READ (not CHITCHAT)
+    manufacturing_keywords = [
+        "bom", "bill of materials", "resep produksi",
+        "work order", "perintah produksi", "order produksi",
+        "work center", "stasiun kerja",
+        "material issue", "bahan keluar", "bahan baku",
+        "fg receipt", "barang jadi", "hasil produksi",
+        "produksi", "manufaktur", "manufacturing",
+        "issue material", "report output", "release wo",
+        "jadwal produksi", "biaya produksi", "cost analysis",
+    ]
+    if any(kw in text for kw in manufacturing_keywords):
+        return "SIMPLE_READ"
+
     # Complex read (multi-entity or comparison)
     complex_words = [
         "bandingkan",
