@@ -227,8 +227,12 @@ class DocumentMatcher:
         if doc_category == "payment":
             if direction == "ambiguous":
                 # Search both AR and AP — let match confidence decide direction
-                best_in, alts_in = await self._match_payment(ocr_result, doc_category, "in")
-                best_out, alts_out = await self._match_payment(ocr_result, doc_category, "out")
+                best_in, alts_in = await self._match_payment(
+                    ocr_result, doc_category, "in"
+                )
+                best_out, alts_out = await self._match_payment(
+                    ocr_result, doc_category, "out"
+                )
 
                 if best_in and best_out:
                     if best_in.confidence >= best_out.confidence:
@@ -324,15 +328,30 @@ class DocumentMatcher:
         caption = (ocr.get("user_caption") or "").lower()
         if caption:
             _in_signals = [
-                "dari pelanggan", "dari customer", "dari pembeli",
-                "pembayaran masuk", "uang masuk", "terima dari",
-                "pelanggan bayar", "pelanggan transfer", "customer bayar",
-                "diterima dari", "masuk dari", "pembayaran dari",
+                "dari pelanggan",
+                "dari customer",
+                "dari pembeli",
+                "pembayaran masuk",
+                "uang masuk",
+                "terima dari",
+                "pelanggan bayar",
+                "pelanggan transfer",
+                "customer bayar",
+                "diterima dari",
+                "masuk dari",
+                "pembayaran dari",
             ]
             _out_signals = [
-                "bayar ke", "ke vendor", "ke supplier", "ke pemasok",
-                "pembayaran keluar", "uang keluar", "transfer ke",
-                "kirim ke", "bayar vendor", "bayar supplier",
+                "bayar ke",
+                "ke vendor",
+                "ke supplier",
+                "ke pemasok",
+                "pembayaran keluar",
+                "uang keluar",
+                "transfer ke",
+                "kirim ke",
+                "bayar vendor",
+                "bayar supplier",
             ]
             if any(sig in caption for sig in _in_signals):
                 return ("in", 0.90)
@@ -414,6 +433,44 @@ class DocumentMatcher:
         alts = candidates[1:5]  # top 4 alternatives
 
         return (best, alts)
+
+    async def match_ar(
+        self,
+        amount_min,
+        amount_max,
+        counterparty: str,
+    ):
+        """Search open AR (receivables) for matching invoices.
+
+        Public interface for DocumentIntakePipeline.
+        """
+        return await self._find_open_receivables(amount_min, amount_max, counterparty)
+
+    async def match_ap(
+        self,
+        amount_min,
+        amount_max,
+        counterparty: str,
+    ):
+        """Search open AP (payables) for matching bills.
+
+        Public interface for DocumentIntakePipeline.
+        """
+        return await self._find_open_payables(amount_min, amount_max, counterparty)
+
+    def score_match(
+        self,
+        candidate,
+        amount,
+        counterparty: str,
+        doc_date,
+        reference: str,
+    ):
+        """Score a match candidate. Returns (confidence, reasons).
+
+        Public interface for DocumentIntakePipeline.
+        """
+        return self._score_match(candidate, amount, counterparty, doc_date, reference)
 
     async def _find_open_receivables(
         self,
