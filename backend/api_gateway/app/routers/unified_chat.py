@@ -2571,20 +2571,42 @@ Aturan:
                                     _store_err,
                                 )
 
-                            _vendor_cl = (
-                                _ocr_data.get("vendor_name")
-                                or _ocr_data.get("customer_name")
-                                or "Unknown"
+                            _counterparty_cl = (
+                                _intake_result.best_match.counterparty
+                                if _intake_result.best_match
+                                else (
+                                    _ocr_data.get("vendor_name")
+                                    or _ocr_data.get("customer_name")
+                                    or "Unknown"
+                                )
                             )
                             _total_cl = float(_ocr_data.get("total_amount", 0))
-                            _dir_word_cl = (
-                                "ke" if _intake_result.direction == "out" else "dari"
-                            )
-                            _cl_narration = f"Saya baca dokumen {_dir_word_cl} **{_vendor_cl}**. Total Rp {_total_cl:,.0f}.".replace(
-                                ",", "."
-                            )
-                            if _intake_result.best_match:
-                                _cl_narration += f" Cocok dengan **{_intake_result.best_match.label}**."
+                            _total_cl_fmt = f"Rp {_total_cl:,.0f}".replace(",", ".")
+                            if (
+                                _intake_result.direction == "in"
+                                and _intake_result.best_match
+                            ):
+                                _cl_narration = (
+                                    f"Pembayaran masuk dari **{_counterparty_cl}** "
+                                    f"sebesar {_total_cl_fmt}. "
+                                    f"Cocok dengan **{_intake_result.best_match.label}**."
+                                )
+                            elif (
+                                _intake_result.direction == "out"
+                                and _intake_result.best_match
+                            ):
+                                _cl_narration = (
+                                    f"Pembayaran keluar ke **{_counterparty_cl}** "
+                                    f"sebesar {_total_cl_fmt}. "
+                                    f"Cocok dengan **{_intake_result.best_match.label}**."
+                                )
+                            else:
+                                _dir_word_cl = (
+                                    "ke"
+                                    if _intake_result.direction == "out"
+                                    else "dari"
+                                )
+                                _cl_narration = f"Dokumen {_dir_word_cl} **{_counterparty_cl}**. Total {_total_cl_fmt}."
 
                             _doc_pipeline_result = ChatMessageResponse(
                                 message_type="CLARIFICATION",
@@ -2639,22 +2661,48 @@ Aturan:
                                     _type_display = _type_labels.get(
                                         _doc_type, _doc_type
                                     )
-                                    _vendor = (
-                                        _ocr_data.get("vendor_name")
-                                        or _ocr_data.get("customer_name")
-                                        or "Unknown"
+                                    # Use match counterparty (customer/vendor) if available,
+                                    # fallback to OCR-extracted name
+                                    _counterparty = (
+                                        _intake_result.best_match.counterparty
+                                        if _intake_result.best_match
+                                        else (
+                                            _ocr_data.get("vendor_name")
+                                            or _ocr_data.get("customer_name")
+                                            or "Unknown"
+                                        )
                                     )
                                     _total = float(_ocr_data.get("total_amount", 0))
-                                    _dir_word = (
-                                        "ke"
-                                        if _intake_result.direction == "out"
-                                        else "dari"
-                                    )
-                                    _narration = f"Saya baca {_type_display.lower()} {_dir_word} **{_vendor}**. Total Rp {_total:,.0f}.".replace(
-                                        ",", "."
-                                    )
-                                    if _intake_result.best_match:
-                                        _narration += f" Cocok dengan **{_intake_result.best_match.label}**."
+                                    _total_fmt = f"Rp {_total:,.0f}".replace(",", ".")
+                                    # Build narration based on direction + match
+                                    if (
+                                        _intake_result.direction == "in"
+                                        and _intake_result.best_match
+                                    ):
+                                        _narration = (
+                                            f"Pembayaran masuk dari **{_counterparty}** "
+                                            f"sebesar {_total_fmt}. "
+                                            f"Cocok dengan **{_intake_result.best_match.label}**."
+                                        )
+                                    elif (
+                                        _intake_result.direction == "out"
+                                        and _intake_result.best_match
+                                    ):
+                                        _narration = (
+                                            f"Pembayaran keluar ke **{_counterparty}** "
+                                            f"sebesar {_total_fmt}. "
+                                            f"Cocok dengan **{_intake_result.best_match.label}**."
+                                        )
+                                    else:
+                                        _dir_word = (
+                                            "ke"
+                                            if _intake_result.direction == "out"
+                                            else "dari"
+                                        )
+                                        _narration = f"Saya baca {_type_display.lower()} {_dir_word} **{_counterparty}**. Total {_total_fmt}."
+                                    # Append bank info if auto-resolved
+                                    if _intake_result.bank_display_name:
+                                        _narration += f" Rekening: **{_intake_result.bank_display_name}**."
 
                                     _doc_pipeline_result = ChatMessageResponse(
                                         message_type="DIRECT_ACTION_PREVIEW",
@@ -2676,7 +2724,7 @@ Aturan:
                                         _doc_ctx = {
                                             "document_id": str(_ocr_uuid.uuid4()),
                                             "doc_type": _doc_type,
-                                            "vendor_name": _vendor,
+                                            "vendor_name": _counterparty,
                                             "total_amount": _total,
                                             "resolved_action": _resolved_action.action_key,
                                             "pending_action_id": _propose_result[
@@ -2824,7 +2872,7 @@ Aturan:
                                     "file_hash", str(_ocr_uuid.uuid4())
                                 ),
                                 "doc_type": _doc_type,
-                                "vendor_name": _vendor,
+                                "vendor_name": _counterparty,
                                 "document_number": _doc_number,
                                 "document_date": _doc_date,
                                 "total_amount": _total,
@@ -3036,7 +3084,7 @@ Aturan:
                                 "confidence": _confidence,
                                 "document_number": _doc_number,
                                 "document_date": _doc_date,
-                                "vendor_name": _vendor,
+                                "vendor_name": _counterparty,
                                 "total_amount": _total,
                                 "tax_amount": _tax,
                                 "items": _items,
