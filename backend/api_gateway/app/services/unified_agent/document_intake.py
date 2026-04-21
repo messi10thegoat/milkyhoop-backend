@@ -176,8 +176,6 @@ class DocumentIntakePipeline:
             or ocr.get("customer_name")
             or ""
         )
-        doc_date = ocr.get("doc_date") or ocr.get("date")
-        reference = ocr.get("reference") or ocr.get("invoice_number") or ""
 
         # Caption direction signal
         caption_lower = caption.lower() if caption else ""
@@ -195,18 +193,10 @@ class DocumentIntakePipeline:
         elif "keluar" in transfer_dir_raw:
             ocr_transfer_direction = "out"
 
-        # Build amount range for queries
-        tolerance = self._amount_range(amount, ocr)
-
         # --- Forced direction: skip dual search ---
         if forced == "in":
-            ar_raw = await self.matcher.match_ar(
-                amount=amount,
-                tolerance=tolerance,
-                counterparty=counterparty,
-                doc_date=doc_date,
-                reference=reference,
-            )
+            amount_min, amount_max = self._amount_range(amount, ocr)
+            ar_raw = await self.matcher.match_ar(amount_min, amount_max, counterparty)
             result.ar_matches = ar_raw
             result.direction = "in"
             result.direction_source = "forced"
@@ -214,13 +204,8 @@ class DocumentIntakePipeline:
             return
 
         if forced == "out":
-            ap_raw = await self.matcher.match_ap(
-                amount=amount,
-                tolerance=tolerance,
-                counterparty=counterparty,
-                doc_date=doc_date,
-                reference=reference,
-            )
+            amount_min, amount_max = self._amount_range(amount, ocr)
+            ap_raw = await self.matcher.match_ap(amount_min, amount_max, counterparty)
             result.ap_matches = ap_raw
             result.direction = "out"
             result.direction_source = "forced"
@@ -228,20 +213,9 @@ class DocumentIntakePipeline:
             return
 
         # --- Dual search ---
-        ar_raw = await self.matcher.match_ar(
-            amount=amount,
-            tolerance=tolerance,
-            counterparty=counterparty,
-            doc_date=doc_date,
-            reference=reference,
-        )
-        ap_raw = await self.matcher.match_ap(
-            amount=amount,
-            tolerance=tolerance,
-            counterparty=counterparty,
-            doc_date=doc_date,
-            reference=reference,
-        )
+        amount_min, amount_max = self._amount_range(amount, ocr)
+        ar_raw = await self.matcher.match_ar(amount_min, amount_max, counterparty)
+        ap_raw = await self.matcher.match_ap(amount_min, amount_max, counterparty)
 
         result.ar_matches = ar_raw
         result.ap_matches = ap_raw
@@ -291,15 +265,21 @@ class DocumentIntakePipeline:
     # Stage 2 helper — amount tolerance
     # ------------------------------------------------------------------
 
-    def _amount_range(self, amount: Optional[float], ocr: dict) -> float:
-        """Return fractional tolerance for amount matching."""
+    def _amount_range(self, amount, ocr: dict) -> tuple:
+        """Return (amount_min, amount_max) for match queries."""
+        if amount is None:
+            return (None, None)
+        from decimal import Decimal
+
+        amt = Decimal(str(amount))
         doc_type = (ocr.get("doc_type") or "default").lower()
-        return {
-            "bank_transfer": 0.0,
-            "receipt": 0.02,
-            "nota": 0.05,
-            "invoice": 0.01,
-        }.get(doc_type, 0.02)
+        tol = {
+            "bank_transfer": Decimal("0.0"),
+            "receipt": Decimal("0.02"),
+            "nota": Decimal("0.05"),
+            "invoice": Decimal("0.01"),
+        }.get(doc_type, Decimal("0.02"))
+        return (amt * (1 - tol), amt * (1 + tol))
 
     # ------------------------------------------------------------------
     # Stage 3 — Resolve action
@@ -322,7 +302,7 @@ class DocumentIntakePipeline:
                 bank_id,
                 bank_display,
                 bank_candidates,
-            ) = await self.matcher._resolve_bank_account(account_hint)
+            ) = await self.resolver._resolve_bank_account(account_hint)
             result.bank_id = bank_id
             result.bank_display_name = bank_display
             result.bank_candidates = bank_candidates or []
