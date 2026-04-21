@@ -12,7 +12,12 @@ Unregistered TransferTypes raise _FallbackToV2PreviewSkip so V2 inline preview t
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json as _json
 import logging
+import re as _re
+import time as _time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -243,17 +248,36 @@ class DocumentIntakePipelineV3:
         caption: str = "",
         forced: Optional[ForcedOverride] = None,
     ) -> IntakeResult:
+        _t_start = _time.perf_counter()
+        _t_after_classify: Optional[float] = None
+        _t_after_handler: Optional[float] = None
+        result: Optional[IntakeResult] = None
+        error_stage: Optional[str] = None
+        error_message: Optional[str] = None
         try:
-            # Resolve classification (or forced override)
-            classification = await self._classify_or_force(ocr_data, caption, forced)
+            try:
+                classification = await self._classify_or_force(
+                    ocr_data, caption, forced
+                )
+                _t_after_classify = _time.perf_counter()
+            except Exception as e:
+                error_stage = "classify"
+                error_message = str(e)
+                raise
 
             # UNKNOWN → fall through to generic chat
             if classification.type == TransferType.UNKNOWN:
+                result = IntakeResult(
+                    success=False,
+                    classification=classification,
+                    log_trail=["unknown_fallback_generic"],
+                )
                 raise _FallbackToGenericChatSkip()
 
             # AMBIGUOUS → clarification UX
             if classification.type == TransferType.AMBIGUOUS:
-                return self._build_clarification_result(classification)
+                result = self._build_clarification_result(classification)
+                return result
 
             # Dispatch to handler
             handler = self.registry.get(classification.type)
@@ -263,14 +287,33 @@ class DocumentIntakePipelineV3:
                     "[IntakeV3] type %s not registered in Phase 1 — falling back to V2",
                     classification.type.value,
                 )
+                result = IntakeResult(
+                    success=False,
+                    classification=classification,
+                    log_trail=[f"unregistered_type:{classification.type.value}"],
+                )
                 raise _FallbackToV2PreviewSkip()
 
             tenant_ctx = None  # reserved for future context object
-            match = await handler.match(ocr_data, caption, tenant_ctx, forced=forced)
+            try:
+                match = await handler.match(
+                    ocr_data, caption, tenant_ctx, forced=forced
+                )
+                _t_after_handler = _time.perf_counter()
+            except HandlerMatchError as e:
+                error_stage = "match"
+                error_message = str(e)
+                result = IntakeResult(
+                    success=False,
+                    classification=classification,
+                    log_trail=[f"handler_match_error:{classification.type.value}"],
+                )
+                logger.warning("[IntakeV3] HandlerMatchError: %s", e)
+                raise _FallbackToV2PreviewSkip() from e
 
             if not match.success:
                 if match.needs_clarification:
-                    return IntakeResult(
+                    result = IntakeResult(
                         success=False,
                         classification=classification,
                         handler_match=match,
@@ -281,17 +324,36 @@ class DocumentIntakePipelineV3:
                             f"handler_needs_clarification:{classification.type.value}"
                         ],
                     )
+                    return result
                 # Hard fail — fall through to V2 inline preview
                 logger.info(
                     "[IntakeV3] handler match failed for %s (%s) — fallback to V2",
                     classification.type.value,
                     ",".join(match.reasons),
                 )
+                result = IntakeResult(
+                    success=False,
+                    classification=classification,
+                    handler_match=match,
+                    log_trail=[f"handler_match_fail:{classification.type.value}"],
+                )
                 raise _FallbackToV2PreviewSkip()
 
-            action = await handler.resolve(match, ocr_data, tenant_ctx)
+            try:
+                action = await handler.resolve(match, ocr_data, tenant_ctx)
+            except HandlerResolveError as e:
+                error_stage = "resolve"
+                error_message = str(e)
+                result = IntakeResult(
+                    success=False,
+                    classification=classification,
+                    handler_match=match,
+                    log_trail=[f"handler_resolve_error:{classification.type.value}"],
+                )
+                logger.warning("[IntakeV3] HandlerResolveError: %s", e)
+                raise _FallbackToV2PreviewSkip() from e
 
-            return IntakeResult(
+            result = IntakeResult(
                 success=True,
                 classification=classification,
                 handler_match=match,
@@ -304,19 +366,232 @@ class DocumentIntakePipelineV3:
                 ],
                 log_trail=[f"resolved:{action.action_key}"],
             )
+            return result
 
         except (_FallbackToGenericChatSkip, _FallbackToV2PreviewSkip):
             # Propagate — handled by unified_chat
             raise
         except HandlerMatchError as e:
+            if error_stage is None:
+                error_stage = "match"
+                error_message = str(e)
             logger.warning("[IntakeV3] HandlerMatchError: %s", e)
             raise _FallbackToV2PreviewSkip() from e
         except HandlerResolveError as e:
+            if error_stage is None:
+                error_stage = "resolve"
+                error_message = str(e)
             logger.warning("[IntakeV3] HandlerResolveError: %s", e)
             raise _FallbackToV2PreviewSkip() from e
         except Exception as e:
+            if error_stage is None:
+                error_stage = "crash"
+                error_message = str(e)
             logger.exception("[IntakeV3] pipeline crashed: %s", e)
             raise _FallbackToV2PreviewSkip() from e
+        finally:
+            try:
+                classify_ms = (
+                    int((_t_after_classify - _t_start) * 1000)
+                    if _t_after_classify is not None
+                    else None
+                )
+                handler_ms = (
+                    int((_t_after_handler - _t_after_classify) * 1000)
+                    if (_t_after_handler is not None and _t_after_classify is not None)
+                    else None
+                )
+                total_ms = int((_time.perf_counter() - _t_start) * 1000)
+                self._fire_telemetry(
+                    ocr_data,
+                    caption,
+                    result,
+                    error_stage=error_stage,
+                    error_message=error_message,
+                    classify_latency_ms=classify_ms,
+                    handler_latency_ms=handler_ms,
+                    total_latency_ms=total_ms,
+                )
+            except Exception as _tel_err:
+                logger.warning("[IntakeV3Telemetry] finally hook failed: %s", _tel_err)
+
+    # ---------------- Telemetry helpers (Task 8) ----------------
+
+    def _fire_telemetry(
+        self,
+        ocr_data: dict,
+        caption: str,
+        result: Optional[IntakeResult],
+        error_stage: Optional[str] = None,
+        error_message: Optional[str] = None,
+        classify_latency_ms: Optional[int] = None,
+        handler_latency_ms: Optional[int] = None,
+        total_latency_ms: Optional[int] = None,
+    ) -> None:
+        """Fire-and-forget telemetry log. NEVER blocks, NEVER raises."""
+        try:
+            asyncio.create_task(
+                self._log_intake_decision(
+                    ocr_data,
+                    caption,
+                    result,
+                    error_stage=error_stage,
+                    error_message=error_message,
+                    classify_latency_ms=classify_latency_ms,
+                    handler_latency_ms=handler_latency_ms,
+                    total_latency_ms=total_latency_ms,
+                )
+            )
+        except Exception as e:
+            logger.warning("[IntakeV3Telemetry] schedule failed: %s", e)
+
+    async def _log_intake_decision(
+        self,
+        ocr_data: dict,
+        caption: str,
+        result: Optional[IntakeResult],
+        error_stage: Optional[str] = None,
+        error_message: Optional[str] = None,
+        classify_latency_ms: Optional[int] = None,
+        handler_latency_ms: Optional[int] = None,
+        total_latency_ms: Optional[int] = None,
+    ) -> None:
+        """Insert 1 row into document_intake_log. PII-safe. Never raises."""
+        try:
+            ocr_hash = self._canonical_ocr_hash(ocr_data)
+            doc_type = str(ocr_data.get("doc_type") or "")[:64]
+            amount = ocr_data.get("total_amount") or ocr_data.get("amount")
+            amount_bucket = self._bucket_amount(amount)
+            has_counterparty = bool(
+                ocr_data.get("counterparty_name")
+                or ocr_data.get("vendor_name")
+                or ocr_data.get("customer_name")
+            )
+            has_caption = bool(caption and caption.strip())
+
+            classified_type: Optional[str] = None
+            classified_confidence: Optional[float] = None
+            alternatives_json: Optional[str] = None
+            signals_fired_json: Optional[str] = None
+            ambiguity_reason: Optional[str] = None
+            if result and result.classification:
+                cls = result.classification
+                classified_type = cls.type.value
+                try:
+                    classified_confidence = round(float(cls.confidence), 3)
+                except (TypeError, ValueError):
+                    classified_confidence = None
+                alternatives_json = _json.dumps(
+                    [
+                        {"type": t.value, "score": round(float(s), 3)}
+                        for t, s in (cls.alternatives or [])
+                    ]
+                )
+                signals_fired_json = _json.dumps(cls.signals_fired or [])
+                if cls.type == TransferType.AMBIGUOUS:
+                    reasons = cls.reasons or []
+                    for kw in ("low_conf", "gap", "conflict"):
+                        if any(kw in r for r in reasons):
+                            ambiguity_reason = kw
+                            break
+
+            handler_selected = classified_type
+            handler_match_success: Optional[bool] = None
+            handler_needed_clarification: Optional[bool] = None
+            if result and result.handler_match:
+                handler_match_success = result.handler_match.success
+                handler_needed_clarification = result.handler_match.needs_clarification
+
+            action_key: Optional[str] = None
+            action_resolved = False
+            if result and result.resolved_action:
+                action_key = result.resolved_action.action_key
+                action_resolved = True
+
+            err_msg: Optional[str] = None
+            if error_message:
+                err_msg = _re.sub(r"\d+", "*", str(error_message))[:500]
+
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('app.tenant_id', $1, true)",
+                        self.tenant_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO document_intake_log (
+                            tenant_id, ocr_hash, doc_type, amount_bucket,
+                            has_counterparty, has_caption,
+                            classified_type, classified_confidence,
+                            alternatives, signals_fired, ambiguity_reason,
+                            handler_selected, handler_match_success,
+                            handler_needed_clarification,
+                            action_key, action_resolved,
+                            classify_latency_ms, handler_latency_ms, total_latency_ms,
+                            error_stage, error_message
+                        ) VALUES (
+                            $1, $2, $3, $4,
+                            $5, $6,
+                            $7, $8,
+                            $9::jsonb, $10::jsonb, $11,
+                            $12, $13,
+                            $14,
+                            $15, $16,
+                            $17, $18, $19,
+                            $20, $21
+                        )
+                        """,
+                        self.tenant_id,
+                        ocr_hash,
+                        doc_type,
+                        amount_bucket,
+                        has_counterparty,
+                        has_caption,
+                        classified_type,
+                        classified_confidence,
+                        alternatives_json,
+                        signals_fired_json,
+                        ambiguity_reason,
+                        handler_selected,
+                        handler_match_success,
+                        handler_needed_clarification,
+                        action_key,
+                        action_resolved,
+                        classify_latency_ms,
+                        handler_latency_ms,
+                        total_latency_ms,
+                        error_stage,
+                        err_msg,
+                    )
+        except Exception as e:
+            logger.warning("[IntakeV3Telemetry] insert failed: %s", e)
+
+    @staticmethod
+    def _canonical_ocr_hash(ocr: dict) -> str:
+        """Canonical SHA-256 hash of OCR payload (dedup + time-series grouping)."""
+        try:
+            canonical = _json.dumps(ocr or {}, sort_keys=True, default=str)
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _bucket_amount(amount) -> str:
+        """Coarse amount bucket. PII-safe."""
+        if amount is None:
+            return "none"
+        try:
+            a = float(amount)
+        except (TypeError, ValueError):
+            return "none"
+        if a < 100_000:
+            return "<100K"
+        if a < 1_000_000:
+            return "100K-1M"
+        if a < 10_000_000:
+            return "1M-10M"
+        return ">10M"
 
     async def _classify_or_force(
         self,
