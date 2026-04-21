@@ -73,13 +73,20 @@ class DocumentActionResolver:
             return ResolvedAction(
                 action_key="",  # no action yet — need direction first
                 payload={},
-                match_confidence=0.0,
                 warnings=["Direction unclear from document"],
                 needs_clarification=True,
                 clarification_question="Ini pembayaran masuk (dari pelanggan) atau keluar (ke vendor)?",
                 clarification_options=[
-                    BankOption(id="dir_in", label="Pembayaran Masuk (dari pelanggan)", value="direction:in"),
-                    BankOption(id="dir_out", label="Pembayaran Keluar (ke vendor)", value="direction:out"),
+                    BankOption(
+                        id="dir_in",
+                        label="Pembayaran Masuk (dari pelanggan)",
+                        value="direction:in",
+                    ),
+                    BankOption(
+                        id="dir_out",
+                        label="Pembayaran Keluar (ke vendor)",
+                        value="direction:out",
+                    ),
                 ],
             )
 
