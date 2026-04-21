@@ -733,22 +733,17 @@ async def send_message(request: Request, body: ChatMessageRequest):
                     if _saved_ocr:
                         _saved_ocr["forced_direction"] = _forced_dir
 
-                        # Re-run matcher + resolver (skip OCR — data already extracted)
-                        from ..services.unified_agent.document_matcher import (
-                            DocumentMatcher as _DirMatcher,
-                        )
-                        from ..services.unified_agent.document_action_resolver import (
-                            DocumentActionResolver as _DirResolver,
+                        # Re-run via DocumentIntakePipeline with forced_direction
+                        from ..services.unified_agent.document_intake import (
+                            DocumentIntakePipeline as _DirPipeline,
                         )
 
                         _dir_pool = await get_session_db_pool()
-                        _dir_matcher = _DirMatcher(_dir_pool, ctx["tenant_id"])
-                        _dir_match = await _dir_matcher.match(_saved_ocr)
-
-                        _dir_resolver = _DirResolver(_dir_pool, ctx["tenant_id"])
-                        _dir_resolved = await _dir_resolver.resolve(
-                            _dir_match, _saved_ocr
+                        _dir_intake = _DirPipeline(_dir_pool, ctx["tenant_id"])
+                        _dir_result = await _dir_intake.process(
+                            _saved_ocr, caption=_saved_ocr.get("user_caption", "")
                         )
+                        _dir_resolved = _dir_result.resolved_action
 
                         if _dir_resolved and _dir_resolved.needs_clarification:
                             # Needs bank selection now — update state and show bank pills
@@ -762,8 +757,8 @@ async def send_message(request: Request, body: ChatMessageRequest):
                                 "total_amount": float(
                                     _saved_ocr.get("total_amount", 0) or 0
                                 ),
-                                "match_label": _dir_match.best_match.label
-                                if _dir_match.best_match
+                                "match_label": _dir_result.best_match.label
+                                if _dir_result.best_match
                                 else None,
                             }
                             await _retrigger_sm.update_state(
