@@ -1,1 +1,106 @@
-"""Document Intake V3 — bill_payment (AP) handler."""
+"""BillPaymentHandler — transfer uang keluar ke vendor, match ke AP bill."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any, ClassVar, Optional
+
+from ...document_action_resolver import DocumentActionResolver, ResolvedAction
+from ...document_matcher import DocumentMatcher, SmartMatchResult
+from ..primitives.arap_matcher import ARAPMatcher
+from ..transfer_types import TransferType
+from .base import ForcedOverride, HandlerMatchResult, HandlerResolveError
+
+
+class BillPaymentHandler:
+    transfer_type: ClassVar[TransferType] = TransferType.BILL_PAYMENT
+
+    def __init__(self, pool, tenant_id: str):
+        self.pool = pool
+        self.tenant_id = tenant_id
+        self._arap = ARAPMatcher(pool, tenant_id)
+        self._resolver = DocumentActionResolver(pool, tenant_id)
+        self._dm = DocumentMatcher(pool, tenant_id)
+
+    async def match(
+        self,
+        ocr: dict,
+        caption: str,
+        tenant_ctx: Any,
+        forced: Optional[ForcedOverride] = None,
+    ) -> HandlerMatchResult:
+        amount = ocr.get("total_amount") or ocr.get("amount")
+        counterparty = ocr.get("counterparty_name") or ocr.get("vendor_name") or ""
+        if amount is None:
+            return HandlerMatchResult(success=False, reasons=["no_amount"])
+
+        try:
+            amt = Decimal(str(amount))
+        except Exception:
+            return HandlerMatchResult(success=False, reasons=["bad_amount"])
+
+        amt_min = amt * Decimal("0.98")
+        amt_max = amt * Decimal("1.02")
+        candidates = await self._arap.match_ap(amt_min, amt_max, counterparty)
+
+        if not candidates:
+            return HandlerMatchResult(
+                success=False,
+                reasons=["no_ap_match"],
+                needs_clarification=False,
+            )
+
+        doc_date = ocr.get("document_date") or ocr.get("date")
+        reference = ocr.get("reference_number") or ocr.get("document_number") or ""
+        scored = []
+        for c in candidates:
+            conf, reasons = self._dm.score_match(
+                c, amt, counterparty, doc_date, reference
+            )
+            scored.append((conf, c, reasons))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_conf, best_cand, best_reasons = scored[0]
+        best_cand.confidence = best_conf
+        best_cand.reasons = best_reasons
+
+        return HandlerMatchResult(
+            success=True,
+            candidates=[c for _, c, _ in scored],
+            best=best_cand,
+            reasons=["ap_match"],
+        )
+
+    async def resolve(
+        self,
+        match: HandlerMatchResult,
+        ocr: dict,
+        tenant_ctx: Any,
+    ) -> ResolvedAction:
+        if not match.success or match.best is None:
+            raise HandlerResolveError("no match to resolve")
+
+        conf = match.best.confidence
+        smart = SmartMatchResult(
+            doc_category="payment",
+            direction="out",
+            direction_confidence=1.0,
+            best_match=match.best,
+            alternatives=match.candidates,
+            confidence_level=(
+                "high" if conf >= 0.85 else "medium" if conf >= 0.60 else "low"
+            ),
+            needs_user_input=False,
+        )
+
+        resolved = await self._resolver._build_bill_payment_payload(smart, ocr)
+        resolved.payload["_meta_transfer_type"] = TransferType.BILL_PAYMENT.value
+        return resolved
+
+    def describe_match(self, match: HandlerMatchResult) -> str:
+        if not match.success or match.best is None:
+            return "Tidak ada tagihan yang cocok."
+        bm = match.best
+        return (
+            f"Pembayaran Rp {float(bm.amount):,.0f} ke {bm.counterparty} "
+            f"untuk {bm.label}."
+        )
