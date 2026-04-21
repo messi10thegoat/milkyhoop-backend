@@ -42,6 +42,45 @@ class _FallbackToV2PreviewSkip(Exception):
     """Signal to unified_chat: V3 cannot produce action; fall through to V2 inline preview."""
 
 
+# --- V2-compat mapping dicts (Task 6b) ---
+
+_TYPE_TO_CATEGORY: dict[TransferType, str] = {
+    TransferType.RECEIVE_PAYMENT: "payment",
+    TransferType.BILL_PAYMENT: "payment",
+    TransferType.CUSTOMER_DEPOSIT: "payment",
+    TransferType.VENDOR_DEPOSIT: "payment",
+    TransferType.CUSTOMER_REFUND: "payment",
+    TransferType.VENDOR_REFUND: "payment",
+    TransferType.EXPENSE_OPERATIONAL: "expense",
+    TransferType.BANK_FEE: "expense",
+    TransferType.PAYROLL: "expense",
+    TransferType.TAX_PAYMENT: "tax",
+    TransferType.BPJS_PAYMENT: "tax",
+    TransferType.LOAN_PAYMENT: "payment",
+    TransferType.OWNER_DRAWING: "payment",
+    TransferType.OWNER_CAPITAL: "payment",
+    TransferType.INTERNAL_TRANSFER: "payment",
+}
+
+_TYPE_TO_DIRECTION: dict[TransferType, str] = {
+    TransferType.RECEIVE_PAYMENT: "in",
+    TransferType.CUSTOMER_DEPOSIT: "in",
+    TransferType.VENDOR_REFUND: "in",
+    TransferType.OWNER_CAPITAL: "in",
+    TransferType.BILL_PAYMENT: "out",
+    TransferType.VENDOR_DEPOSIT: "out",
+    TransferType.CUSTOMER_REFUND: "out",
+    TransferType.EXPENSE_OPERATIONAL: "out",
+    TransferType.BANK_FEE: "out",
+    TransferType.PAYROLL: "out",
+    TransferType.TAX_PAYMENT: "out",
+    TransferType.BPJS_PAYMENT: "out",
+    TransferType.LOAN_PAYMENT: "out",
+    TransferType.OWNER_DRAWING: "out",
+    TransferType.INTERNAL_TRANSFER: "ambiguous",
+}
+
+
 # --- Result container ---
 
 
@@ -55,6 +94,137 @@ class IntakeResult:
     clarification_question: str = ""
     clarification_options: list[dict] = field(default_factory=list)
     log_trail: list[str] = field(default_factory=list)
+
+    # --- V2-compat shim (Task 6b) ---
+    # These @property accessors let V2-shape downstream code (unified_chat.py ~L2410-2440)
+    # consume V3 IntakeResult without changes. Remove after V2 deprecation.
+
+    @property
+    def doc_category(self) -> str:
+        """V2-compat: map TransferType → V2 doc_category string."""
+        if self.classification is None:
+            return "unknown"
+        return _TYPE_TO_CATEGORY.get(self.classification.type, "unknown")
+
+    @property
+    def direction(self) -> str:
+        """V2-compat: V3 TransferType → V2 direction. AMBIGUOUS/UNKNOWN → ambiguous."""
+        if self.classification is None:
+            return "ambiguous"
+        t = self.classification.type
+        if t in (TransferType.AMBIGUOUS, TransferType.UNKNOWN):
+            return "ambiguous"
+        return _TYPE_TO_DIRECTION.get(t, "ambiguous")
+
+    @property
+    def direction_source(self) -> str:
+        """V2-compat: best-effort mapping from classification reasons.
+
+        Phase 1 shim — may not preserve V2 semantics for edge cases. Remove post-V2.
+        """
+        if self.classification is None:
+            return "none"
+        reasons = self.classification.reasons or []
+        if "forced_type" in reasons or "legacy_direction_override" in reasons:
+            return "forced"
+        for sig in self.classification.signals_fired or []:
+            name = sig.get("name", "")
+            if name.startswith("amount_matches_open_invoice_AR"):
+                return "ar_match"
+            if name.startswith("amount_matches_open_bill_AP"):
+                return "ap_match"
+            if name.startswith("caption:"):
+                return "caption"
+            if name.startswith("doc_type=bank_transfer"):
+                return "ocr_transfer"
+        return "none"
+
+    @property
+    def best_match(self):
+        """V2-compat: handler_match.best (MatchCandidate or AccountRecommendation).
+
+        Returns None if no handler match available.
+        """
+        if self.handler_match is None:
+            return None
+        return self.handler_match.best
+
+    @property
+    def ar_matches(self) -> list:
+        """V2-compat: candidates list if RECEIVE_PAYMENT/CUSTOMER_DEPOSIT, else []."""
+        if self.handler_match is None or self.classification is None:
+            return []
+        if self.classification.type in (
+            TransferType.RECEIVE_PAYMENT,
+            TransferType.CUSTOMER_DEPOSIT,
+        ):
+            return list(self.handler_match.candidates or [])
+        return []
+
+    @property
+    def ap_matches(self) -> list:
+        """V2-compat: candidates list if BILL_PAYMENT/VENDOR_DEPOSIT, else []."""
+        if self.handler_match is None or self.classification is None:
+            return []
+        if self.classification.type in (
+            TransferType.BILL_PAYMENT,
+            TransferType.VENDOR_DEPOSIT,
+        ):
+            return list(self.handler_match.candidates or [])
+        return []
+
+    @property
+    def bank_id(self) -> Optional[str]:
+        """V2-compat: extract bank id from resolved_action.payload."""
+        if self.resolved_action is None:
+            return None
+        payload = self.resolved_action.payload or {}
+        val = payload.get("bank_account_id") or payload.get("paid_through_id")
+        return val or None
+
+    @property
+    def bank_display_name(self) -> Optional[str]:
+        """V2-compat: bank display name from resolved_action.payload."""
+        if self.resolved_action is None:
+            return None
+        payload = self.resolved_action.payload or {}
+        val = payload.get("bank_account_name") or payload.get("paid_through_name")
+        if val in (None, "", "(pilih rekening)"):
+            return None
+        return val
+
+    @property
+    def bank_candidates(self) -> list:
+        """V2-compat: bank clarification options (dict with id+label)."""
+        if self.resolved_action and self.resolved_action.clarification_options:
+            return [
+                {"id": opt.id, "label": opt.label}
+                for opt in self.resolved_action.clarification_options
+            ]
+        return [
+            {"id": o.get("id", ""), "label": o.get("label", "")}
+            for o in self.clarification_options
+            if isinstance(o, dict)
+        ]
+
+    @property
+    def needs_direction_clarification(self) -> bool:
+        """V2-compat: True if AMBIGUOUS clarification pending AND question about direction."""
+        if not self.needs_clarification:
+            return False
+        q = (self.clarification_question or "").lower()
+        if "masuk atau keluar" in q:
+            return True
+        if self.classification and self.classification.type == TransferType.AMBIGUOUS:
+            return True
+        return False
+
+    @property
+    def needs_bank_clarification(self) -> bool:
+        """V2-compat: True if resolved_action exists and needs_clarification for bank."""
+        if self.resolved_action is None:
+            return False
+        return bool(self.resolved_action.needs_clarification)
 
 
 # --- Pipeline ---
