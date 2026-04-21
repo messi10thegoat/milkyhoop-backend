@@ -734,15 +734,55 @@ async def send_message(request: Request, body: ChatMessageRequest):
                         _saved_ocr["forced_direction"] = _forced_dir
 
                         # Re-run via DocumentIntakePipeline with forced_direction
-                        from ..services.unified_agent.document_intake import (
-                            DocumentIntakePipeline as _DirPipeline,
+                        import os as _v3_dir_os
+
+                        _dir_intake_version = _v3_dir_os.environ.get(
+                            "DOC_INTAKE_VERSION", "v2"
                         )
+                        if _dir_intake_version == "v3":
+                            from ..services.unified_agent.document_intake_v3.pipeline import (
+                                DocumentIntakePipelineV3 as _DirPipeline,
+                            )
+                        else:
+                            from ..services.unified_agent.document_intake import (
+                                DocumentIntakePipeline as _DirPipeline,
+                            )
 
                         _dir_pool = await get_session_db_pool()
                         _dir_intake = _DirPipeline(_dir_pool, ctx["tenant_id"])
-                        _dir_result = await _dir_intake.process(
-                            _saved_ocr, caption=_saved_ocr.get("user_caption", "")
-                        )
+                        try:
+                            _dir_result = await _dir_intake.process(
+                                _saved_ocr,
+                                caption=_saved_ocr.get("user_caption", ""),
+                            )
+                        except Exception as _dir_err:
+                            # V3 skip exceptions — fall back to V2 on re-trigger
+                            if _dir_intake_version == "v3":
+                                from ..services.unified_agent.document_intake_v3.pipeline import (
+                                    _FallbackToGenericChatSkip as _V3GenDir,
+                                    _FallbackToV2PreviewSkip as _V3V2Dir,
+                                )
+
+                                if isinstance(_dir_err, (_V3GenDir, _V3V2Dir)):
+                                    logger.info(
+                                        "[DocIntakeV3] re-trigger fallback to V2: %s",
+                                        _dir_err,
+                                    )
+                                    from ..services.unified_agent.document_intake import (
+                                        DocumentIntakePipeline as _V2DirPipeline,
+                                    )
+
+                                    _dir_intake = _V2DirPipeline(
+                                        _dir_pool, ctx["tenant_id"]
+                                    )
+                                    _dir_result = await _dir_intake.process(
+                                        _saved_ocr,
+                                        caption=_saved_ocr.get("user_caption", ""),
+                                    )
+                                else:
+                                    raise
+                            else:
+                                raise
                         _dir_resolved = _dir_result.resolved_action
 
                         if _dir_resolved and _dir_resolved.needs_clarification:
@@ -2386,12 +2426,20 @@ Aturan:
                             )
                             raise _VisionGateSkip()
 
-                        # -- Document Intake V2: Match-First Pipeline --
-                        from ..services.unified_agent.document_intake import (
-                            DocumentIntakePipeline,
-                        )
+                        # -- Document Intake Pipeline (V2 default, V3 opt-in) --
+                        import os as _v3_os
 
-                        _intake = DocumentIntakePipeline(_ocr_pool, ctx["tenant_id"])
+                        _intake_version = _v3_os.environ.get("DOC_INTAKE_VERSION", "v2")
+                        if _intake_version == "v3":
+                            from ..services.unified_agent.document_intake_v3.pipeline import (
+                                DocumentIntakePipelineV3 as _IntakePipeline,
+                            )
+                        else:
+                            from ..services.unified_agent.document_intake import (
+                                DocumentIntakePipeline as _IntakePipeline,
+                            )
+
+                        _intake = _IntakePipeline(_ocr_pool, ctx["tenant_id"])
                         _t_match_start = _t_mod.perf_counter()
                         _intake_result = await _intake.process(
                             _ocr_data, caption=text or ""
@@ -2417,10 +2465,67 @@ Aturan:
                     except _VisionGateSkip:
                         raise  # Re-raise — must reach outer handler
                     except Exception as _match_err:
-                        logger.warning(
-                            "[DocIntakeV2] Pipeline failed (non-blocking): %s",
-                            _match_err,
-                        )
+                        # V3 skip exceptions — only raised when flag=v3
+                        if _intake_version == "v3":
+                            from ..services.unified_agent.document_intake_v3.pipeline import (
+                                _FallbackToGenericChatSkip as _V3Generic,
+                                _FallbackToV2PreviewSkip as _V3V2Fallback,
+                            )
+
+                            if isinstance(_match_err, _V3Generic):
+                                # V3 says "not a financial doc" — fall through to chat
+                                logger.info(
+                                    "[DocIntakeV3] generic-chat skip: %s",
+                                    _match_err,
+                                )
+                                raise _VisionGateSkip() from _match_err
+                            if isinstance(_match_err, _V3V2Fallback):
+                                # V3 couldn't produce action — re-run via V2 safety net
+                                logger.info(
+                                    "[DocIntakeV3] fallback to V2: %s",
+                                    _match_err,
+                                )
+                                from ..services.unified_agent.document_intake import (
+                                    DocumentIntakePipeline as _V2Pipeline,
+                                )
+
+                                _intake = _V2Pipeline(_ocr_pool, ctx["tenant_id"])
+                                _t_match_start = _t_mod.perf_counter()
+                                _intake_result = await _intake.process(
+                                    _ocr_data, caption=text or ""
+                                )
+                                _intake_elapsed = (
+                                    _t_mod.perf_counter() - _t_match_start
+                                ) * 1000
+                                logger.info(
+                                    "[DocIntakeV2-fallback] category=%s direction=%s(%s) match=%s bank=%s elapsed=%.0fms trail=%s",
+                                    _intake_result.doc_category,
+                                    _intake_result.direction,
+                                    _intake_result.direction_source,
+                                    _intake_result.best_match.label
+                                    if _intake_result.best_match
+                                    else "none",
+                                    "resolved"
+                                    if _intake_result.bank_id
+                                    else "needs_clarification",
+                                    _intake_elapsed,
+                                    " | ".join(_intake_result.log_trail),
+                                )
+                                # Fall through to downstream V1-compat code below
+                                _match_err = None  # clear — recovered
+                                # continue with normal flow (no re-raise)
+                                # Note: we can't `continue` a try-block; just pass
+                                pass
+                            else:
+                                logger.warning(
+                                    "[DocIntakeV3] Pipeline failed (non-blocking): %s",
+                                    _match_err,
+                                )
+                        else:
+                            logger.warning(
+                                "[DocIntakeV2] Pipeline failed (non-blocking): %s",
+                                _match_err,
+                            )
 
                     # Build V1-compat variables for downstream code
                     _match_result = None  # V1 compat
