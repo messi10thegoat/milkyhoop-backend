@@ -197,6 +197,14 @@ class DocumentIntakePipeline:
         if forced == "in":
             amount_min, amount_max = self._amount_range(amount, ocr)
             ar_raw = await self.matcher.match_ar(amount_min, amount_max, counterparty)
+            amount_float = float(amount) if amount else None
+            doc_date = ocr.get("doc_date") or ocr.get("date")
+            reference = ocr.get("reference") or ocr.get("invoice_number") or ""
+            for c in ar_raw:
+                c.confidence, c.reasons = self.matcher.score_match(
+                    c, amount_float, counterparty, doc_date, reference
+                )
+            ar_raw.sort(key=lambda c: c.confidence, reverse=True)
             result.ar_matches = ar_raw
             result.direction = "in"
             result.direction_source = "forced"
@@ -206,6 +214,14 @@ class DocumentIntakePipeline:
         if forced == "out":
             amount_min, amount_max = self._amount_range(amount, ocr)
             ap_raw = await self.matcher.match_ap(amount_min, amount_max, counterparty)
+            amount_float = float(amount) if amount else None
+            doc_date = ocr.get("doc_date") or ocr.get("date")
+            reference = ocr.get("reference") or ocr.get("invoice_number") or ""
+            for c in ap_raw:
+                c.confidence, c.reasons = self.matcher.score_match(
+                    c, amount_float, counterparty, doc_date, reference
+                )
+            ap_raw.sort(key=lambda c: c.confidence, reverse=True)
             result.ap_matches = ap_raw
             result.direction = "out"
             result.direction_source = "forced"
@@ -216,6 +232,21 @@ class DocumentIntakePipeline:
         amount_min, amount_max = self._amount_range(amount, ocr)
         ar_raw = await self.matcher.match_ar(amount_min, amount_max, counterparty)
         ap_raw = await self.matcher.match_ap(amount_min, amount_max, counterparty)
+
+        # Score candidates (match_ar/match_ap return confidence=0.0)
+        amount_float = float(amount) if amount else None
+        doc_date = ocr.get("doc_date") or ocr.get("date")
+        reference = ocr.get("reference") or ocr.get("invoice_number") or ""
+        for c in ar_raw:
+            c.confidence, c.reasons = self.matcher.score_match(
+                c, amount_float, counterparty, doc_date, reference
+            )
+        for c in ap_raw:
+            c.confidence, c.reasons = self.matcher.score_match(
+                c, amount_float, counterparty, doc_date, reference
+            )
+        ar_raw.sort(key=lambda c: c.confidence, reverse=True)
+        ap_raw.sort(key=lambda c: c.confidence, reverse=True)
 
         result.ar_matches = ar_raw
         result.ap_matches = ap_raw
