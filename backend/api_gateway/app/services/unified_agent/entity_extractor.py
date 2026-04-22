@@ -243,7 +243,7 @@ EXTRACTION_SCHEMAS = {
                             "query_item_detail",
                             "query_item_stock_card",
                             "query_item_transactions",
-    "query_item_sales_summary",
+                            "query_item_sales_summary",
                             "query_items_summary",
                             "query_items_low_stock",
                             "query_items_top_products",
@@ -1011,44 +1011,55 @@ def classify_query_intent(user_text: str) -> tuple:
     # ── Calc engine intents: superlative + ranking patterns ──
     # Re-enabled from DISABLED P2.1 — LLM Router unreliable for these intents.
     # Covers: "piutang paling besar", "siapa yang hutangnya terbesar", "vendor mana paling banyak kita hutangi"
+    # P1 root fix (2026-04-22): \b word boundary on `ar`/`ap` tokens.
+    # Previously unbounded `ar`/`ap` matched substring in "barang", "bayar",
+    # "besar", "apa" → 28+ false positives/7d hijacking via CALC_GUARD.
     if (
         _qre.search(
-            r"(?:piutang|ar).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+            r"(?:\bpiutang\b|\bar\b(?!\w)).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
             t,
         )
         or _qre.search(
-            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:piutang|ar)", t
+            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:\bpiutang\b|\bar\b(?!\w))",
+            t,
         )
         or _qre.search(
-            r"(?:pelanggan|customer).*(?:piutang|ar).*(?:paling|terbesar|terbanyak)", t
+            r"(?:pelanggan|customer).*(?:\bpiutang\b|\bar\b(?!\w)).*(?:paling|terbesar|terbanyak)",
+            t,
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
+            r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:\bpiutang\b|\bar\b(?!\w))",
+            t,
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
+            r"(?:ranking|peringkat).*(?:\bpiutang\b|\bar\b(?!\w)).*(?:pelanggan|customer)",
+            t,
         )
     ):
         return "calc_rank_customers_by_ar", None, None
     if (
         _qre.search(
-            r"(?:hutang|utang|\bap\b).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+            r"(?:\bhutang\b|\butang\b|\bap\b(?!\w)).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
             t,
         )
         or _qre.search(
-            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:hutang|utang|\bap\b)", t
+            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:\bhutang\b|\butang\b|\bap\b(?!\w))",
+            t,
         )
         or _qre.search(
-            r"(?:vendor|pemasok).*(?:hutang|utang).*(?:paling|terbesar|terbanyak)", t
+            r"(?:vendor|pemasok).*(?:\bhutang\b|\butang\b).*(?:paling|terbesar|terbanyak)",
+            t,
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|\bap\b)", t
+            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:\bhutang\b|\butang\b|\bap\b(?!\w))",
+            t,
         )
         or _qre.search(
-            r"(?:ranking|peringkat).*(?:hutang|utang|\bap\b).*(?:vendor|pemasok)", t
+            r"(?:ranking|peringkat).*(?:\bhutang\b|\butang\b|\bap\b(?!\w)).*(?:vendor|pemasok)",
+            t,
         )
         or _qre.search(
-            r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:hutang|hutangi)", t
+            r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:\bhutang\b|hutangi)", t
         )
     ):
         return "calc_rank_vendors_by_ap", None, None
@@ -1111,7 +1122,11 @@ def classify_query_intent(user_text: str) -> tuple:
     # ── Manufacturing query intents (code-driven, 0ms) ──
     # WO number detection: WO-XXXX-XXXXXX pattern
     _wo_match = _qre.search(r"(WO-\d{4}-\d{4,6})", t, _qre.IGNORECASE)
-    _bom_match = _qre.search(r"(?:bom(?:\s+code)?[:\s]+)?([A-Z][A-Z0-9]+-\d{3}(?:-[A-Z0-9]+)*)", t, _qre.IGNORECASE)
+    _bom_match = _qre.search(
+        r"(?:bom(?:\s+code)?[:\s]+)?([A-Z][A-Z0-9]+-\d{3}(?:-[A-Z0-9]+)*)",
+        t,
+        _qre.IGNORECASE,
+    )
 
     # Detail WO by number: "detail work order WO-2026-000031" or just "WO-2026-000031"
     if _wo_match:
@@ -1133,9 +1148,14 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_bom_detail", _bom_code, "bom_code"
 
     # List queries
-    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)",
+        t,
+    ):
         return "query_bom_list", None, None
-    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo\b|perintah\s+produksi)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo\b|perintah\s+produksi)", t
+    ):
         return "query_work_order_list", None, None
     if _qre.search(r"(?:daftar|list|semua)\s+(?:work\s*center|stasiun\s+kerja)", t):
         return "query_work_center_list", None, None
@@ -1153,7 +1173,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_work_order_cost_analysis", None, None
 
     # Status/filter queries
-    if _qre.search(r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan|in.progress)", t):
+    if _qre.search(
+        r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan|in.progress)", t
+    ):
         return "query_production_active", None, None
     if _qre.search(r"(?:jadwal|schedule)\s+(?:produksi|manufacturing)", t):
         return "query_production_schedule", None, None
@@ -1167,11 +1189,15 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_fg_receipts", None, None
 
     # ── FIX 2: Manufacturing calc intents (code-driven, override LLM) ──
-    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:aktif|active|berjalan)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:aktif|active|berjalan)", t
+    ):
         return "calc_count_work_orders_active", None, None
     if _qre.search(r"(?:berapa|jumlah|hitung).*(?:bom).*(?:aktif|active)", t):
         return "calc_count_bom_active", None, None
-    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:draft|belum\s+release)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:draft|belum\s+release)", t
+    ):
         return "calc_count_work_orders_draft", None, None
     if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*center|stasiun\s+kerja)", t):
         return "calc_count_work_centers", None, None
