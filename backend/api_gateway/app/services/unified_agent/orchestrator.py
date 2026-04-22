@@ -33,6 +33,7 @@ from .tool_registry import get_tools, get_tools_for_domains  # noqa: E402
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label  # noqa: E402
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .model_router import ModelRouter  # noqa: E402
+from .guard_arbiter import GuardArbiter  # noqa: E402
 from .correlation import TurnContext  # noqa: E402
 
 logger = logging.getLogger("unified_agent.orchestrator")
@@ -777,6 +778,7 @@ class UnifiedAgent:
 
     def __init__(self):
         self.router = LLMRouter.from_env()
+        self.guard_arbiter = GuardArbiter()
 
     async def _handle_chitchat(
         self,
@@ -5623,8 +5625,12 @@ class UnifiedAgent:
                 except Exception as _rec_err:
                     logger.warning("[REC_RESOLVE] Failed: %s", _rec_err)
 
-            # 3. ARAP GUARD (financial-critical only)
+            # ── P2 GUARD ARBITRATION (matrix v1.0) ─────────────────────────
+            # Replaces legacy sequential cascade with GuardArbiter primitive.
+            # CRUD_GUARD deferred — legacy block retained below.
+            # Ref: docs/plans/2026-04-22-guard-arbiter-phase-a-diffs.md
             from .entity_extractor import classify_query_intent
+            from .guard_arbiter import GuardMatch
 
             _qci_guard, _qci_entity_name, _ = classify_query_intent(user_text)
 
@@ -5635,48 +5641,102 @@ class UnifiedAgent:
                 "query_customer_ar",
                 "query_vendor_ap",
             }
-
-            _ARAP_DOMAIN = {
-                "query_ar_outstanding": {
-                    "query_ar_outstanding",
-                    "query_ar_invoices",
-                    "query_customer_ar",
-                },
-                "query_ar_invoices": {"query_ar_outstanding", "query_ar_invoices"},
-                "query_ap_outstanding": {"query_ap_outstanding", "query_vendor_ap"},
-                "query_customer_ar": {"query_customer_ar", "query_ar_outstanding"},
-                "query_vendor_ap": {"query_vendor_ap", "query_ap_outstanding"},
+            _MFG_INTENTS = {
+                "query_bom_list",
+                "query_bom_detail",
+                "query_bom_cost_breakdown",
+                "query_bom_materials_required",
+                "query_work_order_list",
+                "query_work_order_detail",
+                "query_work_order_cost_analysis",
+                "query_production_active",
+                "query_production_schedule",
+                "query_material_issues",
+                "query_fg_receipts",
+                "query_work_center_list",
+            }
+            _LIST_VS_OVERDUE = {
+                "query_customers_list": "query_customers_with_overdue",
+                "query_vendors_list": "query_vendors_with_overdue",
+            }
+            _SUMMARY_INTENTS = {"query_ap_outstanding", "query_ar_outstanding"}
+            _ENTITY_INTENTS = {"query_vendor_ap", "query_customer_ar"}
+            # Duplicated from _handle_contextual_drill_down _DRILLDOWN_MAP
+            # (Phase-B correction: real membership check, not mere last_intent presence)
+            _DRILLDOWN_MAP_KEYS = {
+                "query_ap_outstanding",
+                "query_ar_outstanding",
+                "query_bills_summary",
+                "query_sales_invoices_summary",
+                "query_expenses_summary",
             }
 
-            if _qci_guard in _ARAP_CRITICAL:
-                allowed = _ARAP_DOMAIN.get(_qci_guard, set())
-                # Summary vs entity-specific guard:
-                # "hutang berapa?" regex=query_ap_outstanding, Gemini=query_vendor_ap
-                # If no entity name extracted, regex (summary) is correct
-                _SUMMARY_INTENTS = {"query_ap_outstanding", "query_ar_outstanding"}
-                _ENTITY_INTENTS = {"query_vendor_ap", "query_customer_ar"}
-                if (
-                    _qci_guard in _SUMMARY_INTENTS
-                    and extraction.intent in _ENTITY_INTENTS
-                    and not extraction.entities.get("vendor_name")
-                    and not extraction.entities.get("customer_name")
-                    and not extraction.entities.get("name")
-                ):
-                    _tel_guard = "arap_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "arap_guard"
-                    _tel_guard_matches["arap_guard_summary"] = _qci_guard
-                    logger.warning(
-                        "[ARAP_GUARD] summary override: %s -> %s (no entity)",
-                        extraction.intent,
-                        _qci_guard,
+            # Build session_state-like dict for arbiter
+            _arb_state = {}
+            try:
+                _arb_state["last_domain"] = (
+                    (_state or {}).get("last_domain")
+                    if isinstance(_state, dict)
+                    else None
+                )
+            except Exception:
+                _arb_state["last_domain"] = None
+            try:
+                if isinstance(_state, dict):
+                    _arb_state["pending_clarification"] = _state.get(
+                        "pending_clarification"
                     )
-                    extraction.intent = _qci_guard
-                    if _qci_entity_name:
-                        extraction.entities["name"] = _qci_entity_name
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
+                    _arb_last_intent = _state.get("last_intent") or _state.get(
+                        "last_action_type"
+                    )
+                else:
+                    _arb_last_intent = None
+            except Exception:
+                _arb_last_intent = None
+
+            _gmatches: dict = {}
+
+            # REFORMAT
+            if (
+                _qci_guard == "reformat_as_table"
+                and extraction.intent != "reformat_as_table"
+            ):
+                _gmatches["REFORMAT_GUARD"] = GuardMatch(
+                    "REFORMAT_GUARD", "reformat_as_table"
+                )
+
+            # DRILL
+            if _qci_guard in ("contextual_drill_down", "drilldown_table"):
+                _ctx_ok = _arb_last_intent in _DRILLDOWN_MAP_KEYS
+                if extraction.intent not in (
+                    "contextual_drill_down",
+                    "drilldown_table",
+                    "reformat_as_table",
+                ):
+                    _gmatches["DRILL_GUARD"] = GuardMatch(
+                        "DRILL_GUARD", _qci_guard, metadata={"context_ok": _ctx_ok}
+                    )
+
+            # CALC
+            if (
+                _qci_guard
+                and _qci_guard.startswith("calc_")
+                and extraction.intent != _qci_guard
+            ):
+                _gmatches["CALC_GUARD"] = GuardMatch(
+                    "CALC_GUARD", _qci_guard, metadata={"same_family": False}
+                )
+
+            # MFG
+            if (
+                _qci_guard
+                and _qci_guard in _MFG_INTENTS
+                and extraction.intent != _qci_guard
+            ):
+                _gmatches["MFG_GUARD"] = GuardMatch("MFG_GUARD", _qci_guard)
+
+            # ARAP (+ nested SUMMARY)
+            if _qci_guard in _ARAP_CRITICAL:
                 _same_prefix = (
                     extraction.intent.startswith("query_ar_")
                     and _qci_guard.startswith("query_ar_")
@@ -5684,75 +5744,85 @@ class UnifiedAgent:
                     extraction.intent.startswith("query_ap_")
                     and _qci_guard.startswith("query_ap_")
                 )
-                if extraction.intent not in allowed and not _same_prefix:
-                    _tel_guard = "arap_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "arap_guard"
-                    _tel_guard_matches["arap_guard"] = _qci_guard
-                    logger.warning(
-                        "[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard
+                _gmatches["ARAP_GUARD"] = GuardMatch(
+                    "ARAP_GUARD", _qci_guard, metadata={"same_family": _same_prefix}
+                )
+                if (
+                    _qci_guard in _SUMMARY_INTENTS
+                    and extraction.intent in _ENTITY_INTENTS
+                    and not (extraction.entities or {}).get("vendor_name")
+                    and not (extraction.entities or {}).get("customer_name")
+                    and not (extraction.entities or {}).get("name")
+                ):
+                    _gmatches["ARAP_SUMMARY_GUARD"] = GuardMatch(
+                        "ARAP_SUMMARY_GUARD", _qci_guard
                     )
-                    extraction.intent = _qci_guard
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
 
-            # 3b. LIST vs OVERDUE GUARD
-            _LIST_VS_OVERDUE = {
-                "query_customers_list": "query_customers_with_overdue",
-                "query_vendors_list": "query_vendors_with_overdue",
-            }
-            for list_intent, overdue_intent in _LIST_VS_OVERDUE.items():
-                if _qci_guard == list_intent and extraction.intent == overdue_intent:
-                    _tel_guard = "list_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = list_intent
-                    _tel_decision_source = "list_guard"
-                    _tel_guard_matches["list_guard"] = list_intent
-                    logger.warning(
-                        "[LIST_GUARD] %s -> %s", extraction.intent, list_intent
-                    )
-                    extraction.intent = list_intent
-                    extraction.confidence = 1.0
+            # LIST
+            for _li, _oi in _LIST_VS_OVERDUE.items():
+                if _qci_guard == _li and extraction.intent == _oi:
+                    _gmatches["LIST_GUARD"] = GuardMatch("LIST_GUARD", _li)
                     break
 
-            # 3c-bis. REFORMAT GUARD — regex caught "tampilkan dalam tabel"
+            # QUERY_BOOST (weak-fallback; skipped when stronger guard present handled by arbiter)
             if (
-                _qci_guard == "reformat_as_table"
-                and extraction.intent != "reformat_as_table"
+                _qci_guard
+                and _qci_guard not in _ARAP_CRITICAL
+                and not _qci_guard.startswith("calc_")
+                and _qci_guard not in _MFG_INTENTS
+                and _qci_guard
+                not in ("reformat_as_table", "contextual_drill_down", "drilldown_table")
             ):
-                _tel_guard = "reformat_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = "reformat_as_table"
-                _tel_decision_source = "reformat_guard"
-                _tel_guard_matches["reformat_guard"] = "reformat_as_table"
-                logger.warning(
-                    "[REFORMAT_GUARD] %s -> reformat_as_table", extraction.intent
-                )
-                extraction.intent = "reformat_as_table"
-                extraction.confidence = 1.0
+                _gmatches["QUERY_BOOST"] = GuardMatch("QUERY_BOOST", _qci_guard)
+
+            _decision = self.guard_arbiter.decide(
+                llm_intent=extraction.intent,
+                llm_confidence=extraction.confidence,
+                llm_domain=getattr(extraction, "domain", None),
+                llm_needs_escalation=extraction.needs_escalation,
+                guard_matches=_gmatches,
+                session_state=_arb_state,
+                user_text=user_text,
+                context_hint=bool(_context_hint),
+            )
+
+            _llm_intent_orig = extraction.intent
+            _llm_conf_orig = extraction.confidence
+
+            if _decision.winner not in ("LLM", "REC", "NO_GUARD", "PENDING_CLAR"):
+                extraction.intent = _decision.final_intent
+                extraction.confidence = _decision.final_confidence
                 extraction.needs_escalation = False
+                if _qci_entity_name and not (extraction.entities or {}).get("name"):
+                    if not isinstance(extraction.entities, dict):
+                        extraction.entities = {}
+                    extraction.entities["name"] = _qci_entity_name
+                _tel_guard = _decision.winner.lower()
+                _tel_guard_from = _decision.guard_from
+                _tel_guard_to = _decision.guard_to
+                _tel_decision_source = _decision.winner.lower()
+                _tel_guard_matches.update(_decision.guard_matches)
+                logger.warning(
+                    "[GUARD_ARBITER] winner=%s %s -> %s policy=%s conflict=%s",
+                    _decision.winner,
+                    _llm_intent_orig,
+                    _decision.final_intent,
+                    _decision.policy_applied,
+                    _decision.conflict,
+                )
 
-            # 3c. DRILL-DOWN GUARD
-            if _qci_guard in ("contextual_drill_down", "drilldown_table"):
-                if extraction.intent not in (
-                    "contextual_drill_down",
-                    "drilldown_table",
-                    "reformat_as_table",
-                ):
-                    _tel_guard = "drill_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "drill_guard"
-                    _tel_guard_matches["drill_guard"] = _qci_guard
-                    logger.warning(
-                        "[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard
-                    )
-                    extraction.intent = _qci_guard
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
+            _tel_guard_arbitration = {
+                "winner": _decision.winner,
+                "final_intent": _decision.final_intent,
+                "final_confidence": _decision.final_confidence,
+                "guard_matches": _decision.guard_matches,
+                "policy_applied": _decision.policy_applied,
+                "conflict": _decision.conflict,
+                "llm_intent_original": _llm_intent_orig,
+                "llm_confidence_original": _llm_conf_orig,
+            }
 
-            # 4. CRUD GUARD (explicit action verbs only)
+            # 4. CRUD GUARD (deferred — legacy block retained verbatim)
             from .entity_extractor import classify_crud_intent
 
             _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
@@ -5781,92 +5851,19 @@ class UnifiedAgent:
                     if not extraction.entities.get(_code_name_field):
                         extraction.entities[_code_name_field] = _code_entity_name
 
-            # 5. QUERY BOOST (weak fallback — lowest priority)
-            if _qci_guard and _qci_guard not in _ARAP_CRITICAL:
-                if (
-                    extraction.intent in ("ambiguous", "query", "chitchat")
-                    or extraction.confidence < 0.5
-                    or extraction.needs_escalation
-                ):
-                    if not _context_hint:
-                        _tel_guard = "query_boost"
-                        _tel_guard_from = extraction.intent
-                        _tel_guard_to = _qci_guard
-                        _tel_decision_source = "query_boost"
-                        _tel_guard_matches["query_boost"] = _qci_guard
-                        logger.warning(
-                            "[QUERY_BOOST] %s (%.2f) → %s",
-                            extraction.intent,
-                            extraction.confidence,
-                            _qci_guard,
-                        )
-                        extraction.intent = _qci_guard
-                        extraction.confidence = 0.8
-                        extraction.needs_escalation = False
-
-            # 5b. CALC_GUARD: code classifier detected calc intent → always trust code over LLM
-            # Superlative queries like "piutang paling besar" get misclassified by LLM
-            if (
-                _qci_guard
-                and _qci_guard.startswith("calc_")
-                and extraction.intent != _qci_guard
-            ):
-                _tel_guard = "calc_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = _qci_guard
-                _tel_decision_source = "calc_guard"
-                _tel_guard_matches["calc_guard"] = _qci_guard
-                logger.warning("[CALC_GUARD] %s → %s", extraction.intent, _qci_guard)
-                extraction.intent = _qci_guard
-                extraction.confidence = 1.0
-                extraction.needs_escalation = False
-
-            # 5c. MANUFACTURING_GUARD: code classifier detected manufacturing intent → always trust code
-            # LLM router doesn't know manufacturing intents well, misroutes to items/generic
-            _MFG_INTENTS = {
-                "query_bom_list",
-                "query_bom_detail",
-                "query_bom_cost_breakdown",
-                "query_bom_materials_required",
-                "query_work_order_list",
-                "query_work_order_detail",
-                "query_work_order_cost_analysis",
-                "query_production_active",
-                "query_production_schedule",
-                "query_material_issues",
-                "query_fg_receipts",
-                "query_work_center_list",
-            }
-            if (
-                _qci_guard
-                and _qci_guard in _MFG_INTENTS
-                and extraction.intent != _qci_guard
-            ):
-                _tel_guard = "mfg_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = _qci_guard
-                _tel_decision_source = "mfg_guard"
-                _tel_guard_matches["mfg_guard"] = _qci_guard
-                logger.warning("[MFG_GUARD] %s -> %s", extraction.intent, _qci_guard)
-                extraction.intent = _qci_guard
-                extraction.confidence = 1.0
-                extraction.needs_escalation = False
-                if _qci_entity_name:
-                    extraction.entities["name"] = _qci_entity_name
-
-            # 6. DE-ESCALATION: if Gemini returned a pipeline-enabled query intent
-            # with needs_escalation=True, clear it so pipeline handles it
-            if (
-                extraction.needs_escalation
-                and extraction.intent.startswith("query_")
-                and is_pipeline_enabled(extraction.intent)
-                and not _context_hint  # don't de-escalate follow-ups
-            ):
+            # 6. DE-ESCALATION via arbiter helper
+            _new_esc, _de_fired = self.guard_arbiter.apply_de_escalate(
+                intent=extraction.intent,
+                needs_escalation=extraction.needs_escalation,
+                context_hint=bool(_context_hint),
+                is_pipeline_enabled_fn=is_pipeline_enabled,
+            )
+            if _de_fired:
                 _tel_guard = "de_escalate"
                 _tel_guard_from = extraction.intent
                 _tel_decision_source = "de_escalate"
                 logger.warning("[DE_ESCALATE] %s escalation cleared", extraction.intent)
-                extraction.needs_escalation = False
+            extraction.needs_escalation = _new_esc
 
             # ── DOC_DETAIL_GUARD: code classifier doc number → override to detail query ──
             if _qci_guard and _qci_guard.endswith("_detail") and _qci_entity_name:
@@ -5966,6 +5963,7 @@ class UnifiedAgent:
                         output_tokens=200,
                         response_type="pending",
                         response_length=0,
+                        guard_arbitration=locals().get("_tel_guard_arbitration"),
                     )
                 )
             except Exception:

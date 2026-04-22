@@ -5,24 +5,31 @@ Usage in unified_chat.py:
     from ..services.unified_agent.telemetry import record_telemetry
     asyncio.create_task(record_telemetry(db_pool, data))
 """
-import asyncio
 import logging
-from typing import Optional
 
 logger = logging.getLogger("unified_agent.telemetry")
 
 # gpt-4o-mini pricing (per 1M tokens)
-_PRICE_INPUT = 0.15 / 1_000_000   # $0.15 per 1M input
+_PRICE_INPUT = 0.15 / 1_000_000  # $0.15 per 1M input
 _PRICE_OUTPUT = 0.60 / 1_000_000  # $0.60 per 1M output
-_PRICE_CACHED = 0.075 / 1_000_000 # $0.075 per 1M cached
+_PRICE_CACHED = 0.075 / 1_000_000  # $0.075 per 1M cached
 
 
-def _estimate_cost(input_tokens: int, output_tokens: int, cached_tokens: int = 0,
-                   classifier_in: int = 0, classifier_out: int = 0) -> float:
+def _estimate_cost(
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int = 0,
+    classifier_in: int = 0,
+    classifier_out: int = 0,
+) -> float:
     """Estimate USD cost for a turn (agent + classifier)."""
     # Agent cost
     agent_input = max(0, input_tokens - cached_tokens)
-    cost = agent_input * _PRICE_INPUT + cached_tokens * _PRICE_CACHED + output_tokens * _PRICE_OUTPUT
+    cost = (
+        agent_input * _PRICE_INPUT
+        + cached_tokens * _PRICE_CACHED
+        + output_tokens * _PRICE_OUTPUT
+    )
     # Classifier cost
     cost += classifier_in * _PRICE_INPUT + classifier_out * _PRICE_OUTPUT
     return round(cost, 6)
@@ -59,8 +66,11 @@ async def record_telemetry(
 
     try:
         cost = _estimate_cost(
-            input_tokens, output_tokens, cached_tokens,
-            classifier_tokens_in, classifier_tokens_out,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            classifier_tokens_in,
+            classifier_tokens_out,
         )
 
         await db_pool.execute(
@@ -83,20 +93,37 @@ async def record_telemetry(
                 $18, $19,
                 $20, $21
             )""",
-            tenant_id, user_id, session_id,
-            intent, confidence, classifier_skipped,
-            classifier_tokens_in, classifier_tokens_out, classifier_latency_ms,
-            low_confidence_fallback, workflow_type,
-            tools_loaded, tools_called, iteration_count,
-            input_tokens, output_tokens, cached_tokens,
-            cost, total_latency_ms,
-            message_type, model_used,
+            tenant_id,
+            user_id,
+            session_id,
+            intent,
+            confidence,
+            classifier_skipped,
+            classifier_tokens_in,
+            classifier_tokens_out,
+            classifier_latency_ms,
+            low_confidence_fallback,
+            workflow_type,
+            tools_loaded,
+            tools_called,
+            iteration_count,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            cost,
+            total_latency_ms,
+            message_type,
+            model_used,
         )
 
         logger.info(
             "[TELEMETRY] intent=%s conf=%.2f cost=$%.4f tokens=%d+%d lat=%dms",
-            intent, confidence or 0, cost,
-            input_tokens, output_tokens, total_latency_ms,
+            intent,
+            confidence or 0,
+            cost,
+            input_tokens,
+            output_tokens,
+            total_latency_ms,
         )
     except Exception as e:
         logger.warning("[TELEMETRY] Record failed (non-fatal): %s", e)
@@ -106,7 +133,7 @@ async def record_telemetry(
 # Intent Decision Telemetry — Classification observability (v1.0)
 # ═══════════════════════════════════════════════════════════════════
 
-import json as _json
+import json as _json  # noqa: E402
 
 MODEL_COST_PER_1K = {
     "gemini-2.5-flash-lite": (0.000075, 0.0003),
@@ -130,7 +157,6 @@ class IntentTelemetry:
         self.pool = db_pool
         self.tenant_id = tenant_id
 
-    
     async def log_shadow(self, **kw):
         """Log LLM Router shadow comparison to intent_decision_log."""
         try:
@@ -138,7 +164,8 @@ class IntentTelemetry:
             if not pool:
                 return
             async with pool.acquire() as conn:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE intent_decision_log
                     SET llm_router_intent = $1,
                         llm_router_confidence = $2,
@@ -165,8 +192,8 @@ class IntentTelemetry:
                 )
         except Exception as e:
             import logging
-            logging.getLogger("telemetry").warning("[SHADOW_TEL] %s", e)
 
+            logging.getLogger("telemetry").warning("[SHADOW_TEL] %s", e)
 
     async def log_decision(self, **kw):
         try:
@@ -182,11 +209,11 @@ class IntentTelemetry:
                     context_hint_used, last_action_type,
                     pipeline_or_agent, model_used, total_latency_ms,
                     estimated_cost_usd, input_tokens, output_tokens,
-                    response_type, response_length
+                    response_type, response_length, guard_arbitration
                 ) VALUES (
                     $1, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                    $20, $21, $22, $23, $24, $25, $26, $27
+                    $20, $21, $22, $23, $24, $25, $26, $27, $28::jsonb
                 )
                 """,
                 self.tenant_id,
@@ -202,7 +229,9 @@ class IntentTelemetry:
                 kw.get("guard_from"),
                 kw.get("guard_to"),
                 kw.get("guard_conflict", False),
-                _json.dumps(kw.get("guard_conflict_detail") or {}) if kw.get("guard_conflict") else None,
+                _json.dumps(kw.get("guard_conflict_detail") or {})
+                if kw.get("guard_conflict")
+                else None,
                 kw.get("final_intent", "unknown"),
                 kw.get("final_confidence", 0.0),
                 kw.get("decision_source", "unknown"),
@@ -216,6 +245,9 @@ class IntentTelemetry:
                 kw.get("output_tokens", 0),
                 kw.get("response_type", "TEXT"),
                 kw.get("response_length", 0),
+                _json.dumps(kw.get("guard_arbitration"))
+                if kw.get("guard_arbitration")
+                else None,
             )
         except Exception as e:
             logger.warning("[TELEMETRY] intent log failed (non-fatal): %s", e)
@@ -232,7 +264,9 @@ class IntentTelemetry:
                     ORDER BY ts DESC LIMIT 1
                 )
                 """,
-                feedback, session_id, self.tenant_id,
+                feedback,
+                session_id,
+                self.tenant_id,
             )
         except Exception as e:
             logger.warning("[TELEMETRY] feedback failed (non-fatal): %s", e)
@@ -250,7 +284,8 @@ class IntentTelemetry:
                     ORDER BY ts DESC LIMIT 1
                 )
                 """,
-                session_id, self.tenant_id,
+                session_id,
+                self.tenant_id,
             )
         except Exception as e:
             logger.warning("[TELEMETRY] correction detect failed (non-fatal): %s", e)
