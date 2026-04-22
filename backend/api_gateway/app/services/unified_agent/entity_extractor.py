@@ -1008,6 +1008,23 @@ def classify_query_intent(user_text: str) -> tuple:
 
     t = user_text.strip().lower()
 
+    # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE
+    # AR/AP ranking so "barang ... terbanyak" routes to items, not AR.
+    # Previously DOA (0 firings in intent_decision_log all-time).
+    if _qre.search(
+        r"(?:\bstok\b|\bstock\b|\bpersediaan\b|\bbarang\b|\bitem\b).*(?:paling\s+besar|terbesar|paling\s+banyak|terbanyak|paling\s+tinggi|tertinggi)",
+        t,
+    ) or _qre.search(
+        r"(?:paling\s+besar|terbesar|paling\s+banyak|terbanyak|paling\s+tinggi|tertinggi).*(?:\bstok\b|\bstock\b|\bpersediaan\b)",
+        t,
+    ):
+        return "calc_rank_items_by_stock", None, None
+    if _qre.search(
+        r"(?:\bitem\b|\bbarang\b|\bproduk\b)\s+(?:terlaris|paling\s+laku|paling\s+banyak\s+terjual|top)",
+        t,
+    ):
+        return "calc_top_selling_items", None, None
+
     # ── Calc engine intents: superlative + ranking patterns ──
     # Re-enabled from DISABLED P2.1 — LLM Router unreliable for these intents.
     # Covers: "piutang paling besar", "siapa yang hutangnya terbesar", "vendor mana paling banyak kita hutangi"
