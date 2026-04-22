@@ -5589,6 +5589,34 @@ class UnifiedAgent:
                     extraction.entities["period"] = _prefilled_period
                     logger.warning("[P4_CLAR] pre-filled period from slot residue")
 
+            # ── P4 Downstream: Remap canonical clarification intents to executable ──
+            # P4 emit whitelist uses canonical names (calc_sum_ar, query_ar_summary, etc.)
+            # that are not registered in CALCULATION_TEMPLATES / PIPELINE_ENABLED_INTENTS.
+            # After resume (period filled), remap to the real pipeline intent so dispatch
+            # hits the AR/AP handler instead of falling through to the generic agent loop.
+            # Only applies when P4 resumed; fresh emits returned already.
+            if _resumed_from_clar and isinstance(extraction.intent, str):
+                # Map P4 canonical clarification intents (unregistered in
+                # templates/pipeline) to registered executable intents. AR/AP
+                # outstanding totals map to single-numeric calc templates;
+                # rank intents already exist so pass through unchanged.
+                _P4_INTENT_REMAP = {
+                    "calc_sum_ar": "calc_sum_invoices_outstanding",
+                    "calc_sum_ap": "calc_sum_bills_outstanding",
+                    "query_ar_summary": "query_ar_outstanding",
+                    "query_ap_summary": "query_ap_outstanding",
+                }
+                _remapped = _P4_INTENT_REMAP.get(extraction.intent)
+                if _remapped:
+                    logger.warning(
+                        "[P4_CLAR] downstream remap %s -> %s (period=%s)",
+                        extraction.intent,
+                        _remapped,
+                        (extraction.entities or {}).get("period"),
+                    )
+                    extraction.intent = _remapped
+            # ── end P4 downstream remap ──
+
         # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
         try:
             from .llm_intent_router import LLMIntentRouter
