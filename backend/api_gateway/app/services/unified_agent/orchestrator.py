@@ -5406,6 +5406,12 @@ class UnifiedAgent:
             None  # prevent UnboundLocalError if _intent not in ACTION/SIMPLE_READ
         )
         _state = None  # prevent UnboundLocalError
+        # ── P4: Clarification Slot state (ADR P4 v1.3) ──
+        _clar_event = None
+        _prefilled_period = None
+        _resumed_from_clar = False
+        _resumed_clar_intent = None
+        _resumed_clar_entities: Dict[str, Any] = {}
 
         if _intent in ("ACTION", "SIMPLE_READ"):
             # ═══ LLM-FIRST CLASSIFICATION (v3) ═══
@@ -5427,6 +5433,103 @@ class UnifiedAgent:
                         _ctx_summary = _state.to_context_string() or ""
                 except Exception:
                     pass
+
+            # ── P4: pending_clarification check (ADR P4 v1.3) ──────────────
+            # Ordering per ADR D2: pending_clarification → REC → guards → LLM.
+            # Runs BEFORE LLM extraction so fills short-circuit to parent intent.
+            if _state is not None:
+                try:
+                    from .clarification_slots import (
+                        load_pending_clarification,
+                        try_fill_period_slot,
+                        is_explicit_domain_switch,
+                        increment_reask,
+                        clear_pending_clarification,
+                        MAX_REASK,
+                        ABANDON_WORD_THRESHOLD,
+                    )
+                    from .db_utils import get_session_db_pool as _clar_pool_fn
+
+                    _clar_db = await _clar_pool_fn()
+
+                    _ss_dict = {
+                        "pending_clarification": getattr(
+                            _state, "pending_clarification", None
+                        ),
+                        "pending_clarification_expires_at": getattr(
+                            _state, "pending_clarification_expires_at", None
+                        ),
+                    }
+                    _pending_clar = load_pending_clarification(_ss_dict)
+                    _sess_id_for_clar = (
+                        getattr(tool_executor, "session_id", None)
+                        if tool_executor
+                        else None
+                    )
+                    if _pending_clar and _sess_id_for_clar:
+                        if _pending_clar.is_expired:
+                            await clear_pending_clarification(
+                                _clar_db, _sess_id_for_clar
+                            )
+                            _clar_event = "slot_abandoned_expired"
+                            _pending_clar = None
+                        elif is_explicit_domain_switch(
+                            user_text, _pending_clar.parent_intent
+                        ):
+                            await clear_pending_clarification(
+                                _clar_db, _sess_id_for_clar
+                            )
+                            _clar_event = "slot_abandoned_switch"
+                            _pending_clar = None
+                        else:
+                            _fill = try_fill_period_slot(user_text)
+                            if _fill.filled and not _fill.has_residue:
+                                await clear_pending_clarification(
+                                    _clar_db, _sess_id_for_clar
+                                )
+                                _clar_event = "slot_filled"
+                                _resumed_from_clar = True
+                                _resumed_clar_intent = _pending_clar.parent_intent
+                                _resumed_clar_entities = dict(
+                                    _pending_clar.parent_entities or {}
+                                )
+                                _resumed_clar_entities["period"] = _fill.resolved_value
+                            elif _fill.filled and _fill.has_residue:
+                                await clear_pending_clarification(
+                                    _clar_db, _sess_id_for_clar
+                                )
+                                _clar_event = "slot_filled_with_residue"
+                                _prefilled_period = _fill.resolved_value
+                            else:
+                                _word_count = len(user_text.split())
+                                if _word_count >= ABANDON_WORD_THRESHOLD:
+                                    await clear_pending_clarification(
+                                        _clar_db, _sess_id_for_clar
+                                    )
+                                    _clar_event = "slot_abandoned_switch"
+                                    _pending_clar = None
+                                elif _pending_clar.reask_count >= MAX_REASK:
+                                    await clear_pending_clarification(
+                                        _clar_db, _sess_id_for_clar
+                                    )
+                                    _clar_event = "slot_abandoned_expired"
+                                    _pending_clar = None
+                                else:
+                                    await increment_reask(
+                                        _clar_db, _sess_id_for_clar, _pending_clar
+                                    )
+                                    _clar_event = "slot_fill_failed_first"
+                                    # Emit simple reask response, matching AgentResponse shape
+                                    return AgentResponse(
+                                        message_type="text",
+                                        content=(
+                                            "Mohon sebutkan periode, misal: bulan ini, "
+                                            "30 hari terakhir, April 2026"
+                                        ),
+                                    )
+                except Exception as _clar_err:
+                    logger.warning("[P4_CLAR] check failed (non-fatal): %s", _clar_err)
+            # ── end P4 check ───────────────────────────────────────────────
 
             if _state:
                 _last_action = getattr(_state, "last_action_type", None)
@@ -5464,6 +5567,27 @@ class UnifiedAgent:
                 if isinstance(extraction.entities, dict)
                 else {}
             )
+
+            # ── P4: Apply clarification-slot resume / pre-fill ──
+            if _resumed_from_clar and _resumed_clar_intent:
+                extraction.intent = _resumed_clar_intent
+                extraction.confidence = 1.0
+                if not isinstance(extraction.entities, dict):
+                    extraction.entities = {}
+                for _k, _v in _resumed_clar_entities.items():
+                    if _v is not None:
+                        extraction.entities[_k] = _v
+                logger.warning(
+                    "[P4_CLAR] resumed intent=%s entities=%s",
+                    _resumed_clar_intent,
+                    list(_resumed_clar_entities.keys()),
+                )
+            elif _prefilled_period:
+                if not isinstance(extraction.entities, dict):
+                    extraction.entities = {}
+                if not extraction.entities.get("period"):
+                    extraction.entities["period"] = _prefilled_period
+                    logger.warning("[P4_CLAR] pre-filled period from slot residue")
 
         # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
         try:
@@ -5964,6 +6088,7 @@ class UnifiedAgent:
                         response_type="pending",
                         response_length=0,
                         guard_arbitration=locals().get("_tel_guard_arbitration"),
+                        clarification_event=_clar_event,
                     )
                 )
             except Exception:

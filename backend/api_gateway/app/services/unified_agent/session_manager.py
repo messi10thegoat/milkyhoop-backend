@@ -64,6 +64,9 @@ class StructuredState:
     last_response_items: Optional[List[Dict]] = None  # max 10
     active_entity: Optional[Dict] = None  # {type, name, id}
     last_numeric: Optional[Dict] = None  # {total, count, max, min}
+    # ── P4: Clarification Slot (ADR P4 v1.3) ──
+    pending_clarification: Optional[Dict] = None
+    pending_clarification_expires_at: Optional[Any] = None
 
     def to_context_string(self) -> str:
         """Convert to minimal injection string for LLM context."""
@@ -388,6 +391,14 @@ class SessionManager:
             last_numeric=json.loads(row["last_numeric"])
             if isinstance(row.get("last_numeric"), str) and row.get("last_numeric")
             else (row.get("last_numeric") or None),
+            # ── P4: Clarification Slot ──
+            pending_clarification=json.loads(row["pending_clarification"])
+            if isinstance(row.get("pending_clarification"), str)
+            and row.get("pending_clarification")
+            else (row.get("pending_clarification") or None),
+            pending_clarification_expires_at=row.get(
+                "pending_clarification_expires_at"
+            ),
         )
 
     async def update_state(self, session_id: str, **updates):
@@ -493,7 +504,10 @@ class SessionManager:
                     ],
                 )
 
-        elif tool_name in ("get_invoice_detail", "get_invoices", "get_customer_invoices") and data:
+        elif (
+            tool_name in ("get_invoice_detail", "get_invoices", "get_customer_invoices")
+            and data
+        ):
             # Handle different response shapes: list, {"items": [...]}, {"results": [...]}, or single dict
             if isinstance(data, list):
                 items = data
