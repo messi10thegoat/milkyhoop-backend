@@ -695,13 +695,16 @@ async def login(client):
     return r.json()["data"]["access_token"]
 
 
-async def send_message(client, token, text, conversation_id):
+async def send_message(client, token, text, conversation_id, session_id=None):
     start = time.time()
     try:
+        body = {"text": text, "conversation_id": conversation_id}
+        if session_id:
+            body["session_id"] = session_id
         r = await client.post(
             f"{BASE}/api/v3/chat/message",
             headers={"Authorization": f"Bearer {token}"},
-            json={"text": text, "conversation_id": conversation_id},
+            json=body,
             timeout=TIMEOUT,
         )
         latency = int((time.time() - start) * 1000)
@@ -716,6 +719,7 @@ async def send_message(client, token, text, conversation_id):
             "text": data.get("text", "")[:500],
             "message_type": data.get("message_type"),
             "model_used": data.get("model_used"),
+            "session_id": data.get("session_id"),
             "latency_ms": (
                 data.get("latency_ms")
                 if data.get("latency_ms") is not None
@@ -833,10 +837,15 @@ async def run_multi(client, token, results):
 
     for group in MULTI_TURN_GROUPS:
         conv_id = f"disc-m-{group['group']}-{int(time.time())}"
+        session_id = None
         print(f"\n-- Group {group['group']} --")
 
         for turn in group["turns"]:
-            r = await send_message(client, token, turn["text"], conv_id)
+            r = await send_message(client, token, turn["text"], conv_id, session_id)
+            # Echo server-generated session_id across turns so REC_FOLLOWUP
+            # can load chat_session_state for multi-turn pronoun/ordinal resolution.
+            if r.get("session_id"):
+                session_id = r["session_id"]
             issues = analyze(turn, r)
 
             status = "FAIL" if issues else "PASS"
