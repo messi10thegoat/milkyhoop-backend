@@ -716,7 +716,11 @@ async def send_message(client, token, text, conversation_id):
             "text": data.get("text", "")[:500],
             "message_type": data.get("message_type"),
             "model_used": data.get("model_used"),
-            "latency_ms": data.get("latency_ms", latency),
+            "latency_ms": (
+                data.get("latency_ms")
+                if data.get("latency_ms") is not None
+                else latency
+            ),
             "iterations": data.get("iterations"),
             "tool_calls": tool_calls,
             "intent": next(
