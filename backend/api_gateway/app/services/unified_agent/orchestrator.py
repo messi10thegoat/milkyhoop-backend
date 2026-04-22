@@ -5594,6 +5594,7 @@ class UnifiedAgent:
                         if _rec_followup:
                             extraction.intent = _rec_followup
                             extraction.confidence = 0.9
+                            _tel_decision_source = "rec_followup"
                             logger.warning(
                                 "[REC_FOLLOWUP] '%s' (%d words) → %s (domain=%s)",
                                 user_text[:30],
