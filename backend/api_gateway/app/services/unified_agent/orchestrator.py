@@ -5589,6 +5589,82 @@ class UnifiedAgent:
                     extraction.entities["period"] = _prefilled_period
                     logger.warning("[P4_CLAR] pre-filled period from slot residue")
 
+            # ── P4: Fresh emit for period-dependent intents w/o period ──
+            # Fires when (a) no pending slot was active, (b) LLM classified a
+            # canonical period-dependent intent, (c) entities lack `period`.
+            # Seeds slot + returns clarification question.
+            _P4_PERIOD_INTENTS = {
+                # Old seeded names (kept for backward compat with seeded tests)
+                "calc_sum_ar",
+                "calc_sum_ap",
+                "query_ar_summary",
+                "query_ap_summary",
+                # Canonical names (natural LLM output, post-C3 remap targets)
+                "calc_sum_invoices_outstanding",
+                "calc_sum_bills_outstanding",
+                "query_ar_outstanding",
+                "query_ap_outstanding",
+                # Rank intents (pass through to rank templates)
+                "calc_rank_customers_by_ar",
+                "calc_rank_vendors_by_ap",
+                # Expense period-dependent
+                "query_expenses_summary",
+                "calc_sum_expenses",
+                # Aging variants (Gemini sometimes emits query_ar_aging for bare
+                # "piutang total" — same period-dependence as outstanding)
+                "query_ar_aging",
+                "query_ap_aging",
+            }
+            try:
+                _ext_intent = getattr(extraction, "intent", "") or ""
+                _ext_ents = (
+                    dict(extraction.entities)
+                    if isinstance(extraction.entities, dict)
+                    else {}
+                )
+                _sess_id_fresh = (
+                    getattr(tool_executor, "session_id", None)
+                    if tool_executor
+                    else None
+                )
+                if (
+                    not _resumed_from_clar
+                    and not _prefilled_period
+                    and _ext_intent in _P4_PERIOD_INTENTS
+                    and not _ext_ents.get("period")
+                    and _sess_id_fresh
+                ):
+                    from .clarification_slots import emit_period_clarification
+                    from .db_utils import get_session_db_pool as _fresh_pool_fn
+
+                    _fresh_db = await _fresh_pool_fn()
+                    await emit_period_clarification(
+                        db=_fresh_db,
+                        session_id=_sess_id_fresh,
+                        parent_intent=_ext_intent,
+                        parent_entities={
+                            k: v for k, v in _ext_ents.items() if k != "period"
+                        },
+                    )
+                    _clar_event = "slot_emitted"
+                    logger.warning(
+                        "[P4_CLAR] fresh emit intent=%s session=%s",
+                        _ext_intent,
+                        _sess_id_fresh,
+                    )
+                    return AgentResponse(
+                        message_type="text",
+                        content=(
+                            "Untuk periode kapan? Misal: bulan ini, "
+                            "30 hari terakhir, April 2026."
+                        ),
+                    )
+            except Exception as _fresh_err:
+                logger.warning(
+                    "[P4_CLAR] fresh emit failed (non-fatal): %s", _fresh_err
+                )
+            # ── end P4 fresh emit ──
+
             # ── P4 Downstream: Remap canonical clarification intents to executable ──
             # P4 emit whitelist uses canonical names (calc_sum_ar, query_ar_summary, etc.)
             # that are not registered in CALCULATION_TEMPLATES / PIPELINE_ENABLED_INTENTS.
