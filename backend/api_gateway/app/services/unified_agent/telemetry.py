@@ -209,11 +209,13 @@ class IntentTelemetry:
                     context_hint_used, last_action_type,
                     pipeline_or_agent, model_used, total_latency_ms,
                     estimated_cost_usd, input_tokens, output_tokens,
-                    response_type, response_length, guard_arbitration
+                    response_type, response_length, guard_arbitration,
+                    clarification_event
                 ) VALUES (
                     $1, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                    $20, $21, $22, $23, $24, $25, $26, $27, $28::jsonb
+                    $20, $21, $22, $23, $24, $25, $26, $27, $28::jsonb,
+                    $29
                 )
                 """,
                 self.tenant_id,
@@ -248,6 +250,7 @@ class IntentTelemetry:
                 _json.dumps(kw.get("guard_arbitration"))
                 if kw.get("guard_arbitration")
                 else None,
+                kw.get("clarification_event"),
             )
         except Exception as e:
             logger.warning("[TELEMETRY] intent log failed (non-fatal): %s", e)

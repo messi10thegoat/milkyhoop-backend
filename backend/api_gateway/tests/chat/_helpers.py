@@ -162,3 +162,133 @@ async def assert_final_intent(
             f"Last events:\n  {_format_tail(events)}"
         )
     return intent_data
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# P4 Clarification-Slot helpers (ADR P4 v1.3)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def seed_pending_clarification(
+    db_pool,
+    session_id: str,
+    slot_type: str = "period",
+    parent_intent: str = "calc_sum_ar",
+    parent_entities: dict = None,
+    reask_count: int = 0,
+    expires_in_minutes: int = 5,
+) -> None:
+    """Seed chat_session_state.pending_clarification directly (test bypass).
+
+    Upserts a row keyed by session_id; chat_session_state uniques session_id.
+    """
+    import json as _json
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+    payload = {
+        "slot_type": slot_type,
+        "parent_intent": parent_intent,
+        "parent_entities": parent_entities or {},
+        "asked_at": now.isoformat(),
+        "reask_count": reask_count,
+    }
+    expires_at = now + timedelta(minutes=expires_in_minutes)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_state (session_id, tenant_id,
+                pending_clarification, pending_clarification_expires_at)
+            VALUES ($3::uuid, 'grapgrap', $1::jsonb, $2)
+            ON CONFLICT (session_id) DO UPDATE SET
+                pending_clarification = EXCLUDED.pending_clarification,
+                pending_clarification_expires_at =
+                    EXCLUDED.pending_clarification_expires_at
+            """,
+            _json.dumps(payload),
+            expires_at,
+            session_id,
+        )
+
+
+async def get_pending_clarification(db_pool, session_id: str):
+    """Return the pending_clarification payload (dict) or None."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT pending_clarification, pending_clarification_expires_at
+            FROM chat_session_state
+            WHERE session_id = $1::uuid
+            """,
+            session_id,
+        )
+    if not row or not row["pending_clarification"]:
+        return None
+    import json as _json
+
+    data = row["pending_clarification"]
+    return data if isinstance(data, dict) else _json.loads(data)
+
+
+async def get_clarification_event(db_pool, session_id: str, retries: int = 4):
+    """Return the most recent clarification_event for a session.
+
+    NOTE: intent_decision_log has no request_id col on this DB; we key on
+    session_id + order by ts DESC. Retries while gateway flushes telemetry.
+    """
+    import asyncio as _asyncio
+
+    for _ in range(retries):
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT clarification_event
+                FROM intent_decision_log
+                WHERE session_id = $1::uuid
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                session_id,
+            )
+        if row and row["clarification_event"] is not None:
+            return row["clarification_event"]
+        await _asyncio.sleep(0.7)
+    return None
+
+
+async def make_db_pool():
+    """Create asyncpg pool to the dev Postgres.
+
+    Works in both environments:
+    - Host shell: TEST_DB_HOST/PORT unset → uses 127.0.0.1:5433 (host-mapped)
+    - Inside api_gateway container: set TEST_DB_HOST=postgres TEST_DB_PORT=5432
+      (or rely on auto-detect: if 127.0.0.1:5433 refused, fallback to postgres:5432)
+
+    Creds match /root/milkyhoop-dev/.env (DATABASE_URL superuser).
+    """
+    import asyncpg
+    import os
+
+    host = os.environ.get("TEST_DB_HOST", "127.0.0.1")
+    port = int(os.environ.get("TEST_DB_PORT", "5433"))
+    # Auto-detect: if running inside api_gateway container, postgres hostname resolves
+    if host == "127.0.0.1":
+        try:
+            import socket
+
+            socket.gethostbyname("postgres")
+            # resolvable → we're in docker network
+            host = "postgres"
+            port = 5432
+        except Exception:
+            pass
+    return await asyncpg.create_pool(
+        host=host,
+        port=port,
+        user="postgres",
+        password="Proyek771977",  # pragma: allowlist secret (dev DB, not prod)
+        database="milkydb",
+        min_size=1,
+        max_size=3,
+    )
