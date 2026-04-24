@@ -30,6 +30,10 @@ from ..llm import LLMRouter, TaskComplexity, LLMMessage
 
 logger = logging.getLogger("unified_agent.session_manager")
 
+# Bucket A2 — after_resolve intent deny list (extracted to hook_gates module
+# to keep this file's line numbers stable for AST-based Bucket 0 regression).
+from .hook_gates import AFTER_RESOLVE_DENY_LIST  # noqa: E402
+
 
 # ============================================================================
 # DATA CLASSES
@@ -1274,7 +1278,20 @@ class StateUpdateHooks:
         intent: str,
         resolved_entities: dict,
     ):
-        """Update entity graph with resolved entities after pipeline resolution."""
+        """Update entity graph with resolved entities after pipeline resolution.
+
+        Bucket A2 gate: skip deny-listed intents (chitchat, MFG_*, reformat).
+        See AFTER_RESOLVE_DENY_LIST above for rationale and enumeration.
+        """
+        # ── Bucket A2 intent gate ──────────────────────────────────────────
+        if intent in AFTER_RESOLVE_DENY_LIST:
+            logger.info(
+                "after_resolve_skipped session=%s intent=%s reason=deny_list",
+                session_id,
+                intent,
+            )
+            return
+        # ───────────────────────────────────────────────────────────────────
         from .entity_graph import add_node, add_edge, _ensure_graph
 
         try:
