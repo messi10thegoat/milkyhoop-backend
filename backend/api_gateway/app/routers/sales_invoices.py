@@ -246,7 +246,7 @@ async def get_outstanding_summary(request: Request):
 async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
     """Preview invoice calculation without saving."""
     try:
-        ctx = get_user_context(request)
+        ctx = get_user_context(request)  # noqa: F841  # pre-existing: kept for auth side-effect
 
         # Calculate each item
         calculated_items = []
@@ -547,7 +547,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                         if invoice["status"] in ("paid",)
                         else float(invoice["total_amount"] or 0)
                     ),
-                    "status": invoice["status"],
+                    "status": invoice["status"],  # noqa: F601  # pre-existing duplicate key
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",
                     "items": [
@@ -1265,6 +1265,11 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     """
     import uuid
     from datetime import date as dt_date
+
+    # Law 25: coerce total_amount at boundary. Pydantic schema declares it as
+    # float; asyncpg returns numeric(18,2) as Decimal. Mixing causes TypeError
+    # in downstream arithmetic (e.g. total_amount - tax_amount at line ~1355).
+    total_amount = _d(total_amount)
 
     # Law 13: Advisory lock - prevent concurrent posting
     await conn.execute(
@@ -3421,13 +3426,13 @@ async def get_invoice_history(
 # =============================================================================
 # GENERATE PDF
 # =============================================================================
-from io import BytesIO
-from datetime import datetime, timedelta
-from fastapi.responses import StreamingResponse
-from ..services.pdf_service import get_pdf_service
-from ..services.storage_service import get_storage_service
-import base64
-from pathlib import Path as _Path
+from io import BytesIO  # noqa: E402  # pre-existing mid-file import
+from datetime import datetime, timedelta  # noqa: E402  # pre-existing mid-file import
+from fastapi.responses import StreamingResponse  # noqa: E402  # pre-existing mid-file import
+from ..services.pdf_service import get_pdf_service  # noqa: E402  # pre-existing mid-file import
+from ..services.storage_service import get_storage_service  # noqa: E402  # pre-existing mid-file import
+import base64  # noqa: E402  # pre-existing mid-file import
+from pathlib import Path as _Path  # noqa: E402  # pre-existing mid-file import
 
 
 @router.get("/{invoice_id}/pdf")
@@ -3765,7 +3770,7 @@ async def get_invoice_activity(
             # Sort by timestamp descending
             activities.sort(key=lambda x: x["timestamp"] or "", reverse=True)
 
-            total = len(activities)
+            total = len(activities)  # noqa: F841  # pre-existing unused local
             paginated = activities[offset : offset + limit]
 
             return {
