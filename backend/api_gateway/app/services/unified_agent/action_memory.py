@@ -146,7 +146,13 @@ class ActionMemory:
                 "[ACTION_MEMORY] Recorded: intent=%s key=%s", intent, structure_key[:60]
             )
         except Exception as e:
-            logger.warning("[ACTION_MEMORY] Failed to record: %s", e)
+            logger.warning(
+                "[ACTION_MEMORY] Failed to record: intent=%s structure_key=%s err=%s",
+                intent,
+                structure_key[:60] if structure_key else None,
+                e,
+                exc_info=True,
+            )
 
     async def suggest_pattern(self, intent, payload):
         if intent not in PATTERN_INTENTS:
@@ -221,7 +227,12 @@ class ActionMemory:
                 "usage_count": row["usage_count"],
             }
         except Exception as e:
-            logger.warning("[ACTION_MEMORY] suggest_pattern failed: %s", e)
+            logger.warning(
+                "[ACTION_MEMORY] suggest_pattern failed: intent=%s err=%s",
+                intent,
+                e,
+                exc_info=True,
+            )
             return None
 
     async def get_suggestion_text(self, intent, payload):
@@ -289,7 +300,13 @@ class ActionMemory:
                     "[ACTION_MEMORY] Paused pattern (3x reject): %s", structure_key[:60]
                 )
         except Exception as e:
-            logger.warning("[ACTION_MEMORY] record_rejection failed: %s", e)
+            logger.warning(
+                "[ACTION_MEMORY] record_rejection failed: intent=%s structure_key=%s err=%s",
+                intent,
+                structure_key[:60] if structure_key else None,
+                e,
+                exc_info=True,
+            )
 
     async def get_top_patterns_for_intent(self, intent: str, limit: int = 3) -> list:
         """Get top patterns for display in suggestion (confidence-ordered)."""
@@ -334,5 +351,10 @@ class ActionMemory:
                 )
             return results
         except Exception as e:
-            logger.warning("[ACTION_MEMORY] get_top_patterns failed: %s", e)
+            logger.warning(
+                "[ACTION_MEMORY] get_top_patterns failed: intent=%s err=%s",
+                intent,
+                e,
+                exc_info=True,
+            )
             return []

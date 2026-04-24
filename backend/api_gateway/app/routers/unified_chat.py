@@ -15,6 +15,7 @@ Endpoints:
 
 import base64
 import hashlib
+import asyncpg
 import json
 import logging
 import os
@@ -3202,9 +3203,11 @@ Aturan:
                             logger.info(
                                 "[DocSimple] Persisted document_context to Layer 2"
                             )
-                        except Exception as _l2_err:
-                            logger.warning(
-                                f"[DocSimple] Failed to persist Layer 2: {_l2_err}"
+                        except (asyncpg.PostgresError, json.JSONDecodeError) as _l2_err:
+                            logger.error(
+                                "[DocSimple] Failed to persist Layer 2: session=%s",
+                                session_id,
+                                exc_info=True,
                             )
 
                         _dir_word = (
@@ -4300,8 +4303,19 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
                             "[Confirm] crud_form cancel failed (non-fatal): %s", _wf_err
                         )
 
-            except Exception as hook_err:
-                logger.warning(f"[Confirm] Layer 2 hook failed (non-fatal): {hook_err}")
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                asyncpg.PostgresError,
+                json.JSONDecodeError,
+            ):
+                logger.error(
+                    "[Confirm] Layer 2 hook failed: session=%s action=%s",
+                    body.session_id,
+                    locals().get("action_type", "UNKNOWN"),
+                    exc_info=True,
+                )
 
             # Fallback: ensure FSM is IDLE even if hooks failed
             if body.session_id:
@@ -4443,8 +4457,19 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                     f"[Cancel] Layer 2 updated: session={body.session_id[:8]} "
                     f"action={action_type} status=rejected"
                 )
-        except Exception as hook_err:
-            logger.warning(f"[Cancel] Layer 2 hook failed (non-fatal): {hook_err}")
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            asyncpg.PostgresError,
+            json.JSONDecodeError,
+        ):
+            logger.error(
+                "[Cancel] Layer 2 hook failed: session=%s action=%s",
+                body.session_id,
+                locals().get("action_type", "UNKNOWN"),
+                exc_info=True,
+            )
 
         # === Edit mode: preserve pending_payload and set editing_mode ===
         if body.is_edit and body.session_id:
