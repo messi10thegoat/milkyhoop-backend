@@ -57,6 +57,8 @@ class EntityResolver:
         system_defaults: dict = None,
         entity_graph: dict = None,
         action_memory_suggestion: dict = None,
+        user_text: str = "",
+        session_id: str = "",
     ) -> ResolutionResult:
         modifiers = modifiers or []
         memory_state = memory_state or {}
@@ -92,11 +94,15 @@ class EntityResolver:
         if entities.get("account_name"):
             resolve_tasks.append(self._resolve_account(entities["account_name"]))
         if entities.get("work_order_number"):
-            resolve_tasks.append(self._resolve_work_order(entities["work_order_number"]))
+            resolve_tasks.append(
+                self._resolve_work_order(entities["work_order_number"])
+            )
         if entities.get("bom_code"):
             resolve_tasks.append(self._resolve_bom(entities["bom_code"]))
         if entities.get("work_center_name"):
-            resolve_tasks.append(self._resolve_work_center(entities["work_center_name"]))
+            resolve_tasks.append(
+                self._resolve_work_center(entities["work_center_name"])
+            )
 
         if resolve_tasks:
             resolved_entities = await asyncio.gather(
@@ -124,9 +130,19 @@ class EntityResolver:
 
         # Step A.5: Graph-based resolution for implicit references
         if entity_graph:
-            from .entity_graph import get_last_node, get_focus, _ensure_graph
+            from .entity_graph import (
+                get_last_node,
+                get_focus,
+                get_by_ordinal,
+                traverse,
+                _ensure_graph,
+            )
 
             graph = _ensure_graph(entity_graph)
+            _ltxt = (user_text or "").lower()
+            _sid = (session_id or "")[:8]
+
+            # Existing pronoun-style fallback for customer
             if not entities.get("customer_name") and "customer" not in result.resolved:
                 focus = get_focus(graph)
                 if focus and focus.get("type") == "customer":
@@ -154,6 +170,116 @@ class EntityResolver:
                         entity_type="vendor",
                         entity_id=last_vendor["id"],
                         entity_name=last_vendor["name"],
+                        confidence=0.85,
+                    )
+
+            # B2 Site 1 — pronoun-triggered traversal: "dia"/"itu"/"tadi"/"tersebut"
+            # + verb like "faktur"/"tagihan"/"invoice" -> direct_relation (Site 3).
+            # Otherwise plain pronoun stays as Site 1 (no-op here; existing logic
+            # above already resolved the entity; traverse is extra accelerator).
+            _PRONOUN_TOKENS = (" dia", " itu", " tadi", " tersebut", "nya ")
+            _has_pronoun = any(tok in f" {_ltxt} " for tok in _PRONOUN_TOKENS)
+            _wants_invoice = any(w in _ltxt for w in ("faktur", "invoice"))
+            _wants_bill = any(w in _ltxt for w in ("tagihan", "bill"))
+
+            # Determine "from" node for traversal: prefer already-resolved focus/customer/vendor
+            _from_node = get_focus(graph)
+            if not _from_node:
+                _from_node = get_last_node(graph, "customer") or get_last_node(
+                    graph, "vendor"
+                )
+
+            # B2 Site 3 — direct_relation: pronoun + document noun
+            if _has_pronoun and _from_node and (_wants_invoice or _wants_bill):
+                _target_type = "invoice" if _wants_invoice else "bill"
+                try:
+                    hits = traverse(
+                        graph,
+                        _from_node["_key"],
+                        max_depth=1,
+                        edge_type="owns",
+                        node_type_filter=_target_type,
+                    )
+                except (KeyError, TypeError):
+                    logger.error(
+                        "graph_traverse_failed session=%s from=%s",
+                        _sid,
+                        _from_node.get("_key"),
+                        exc_info=True,
+                    )
+                    hits = []
+                logger.info(
+                    "graph_traverse session=%s type=direct_relation depth=1 from=%s edge=owns hits=%d",
+                    _sid,
+                    _from_node.get("_key"),
+                    len(hits),
+                )
+                if hits:
+                    # Sort by ts desc — "terakhir"
+                    hits.sort(key=lambda n: n.get("ts", 0), reverse=True)
+                    pick = hits[0]
+                    _field = "invoice" if _target_type == "invoice" else "bill"
+                    if _field not in result.resolved:
+                        result.resolved[_field] = ResolvedEntity(
+                            entity_type=_field,
+                            entity_id=pick["id"],
+                            entity_name=pick.get("name", ""),
+                            confidence=0.85,
+                        )
+
+            # B2 Site 2 — ordinal_relation: "customer pertama hutangnya berapa?"
+            _ORDINALS = {
+                1: ("pertama", "nomor 1", "no 1", "no. 1"),
+                2: ("kedua", "nomor 2", "no 2", "no. 2"),
+                3: ("ketiga", "nomor 3", "no 3", "no. 3"),
+            }
+            _ord_idx = None
+            for idx, kws in _ORDINALS.items():
+                if any(k in _ltxt for k in kws):
+                    _ord_idx = idx
+                    break
+            if _ord_idx and ("customer" in _ltxt or "pelanggan" in _ltxt):
+                ord_node = get_by_ordinal(graph, "customer", _ord_idx)
+                if ord_node:
+                    if "customer" not in result.resolved:
+                        result.resolved["customer"] = ResolvedEntity(
+                            entity_type="customer",
+                            entity_id=ord_node["id"],
+                            entity_name=ord_node.get("name", ""),
+                            confidence=0.85,
+                        )
+                    if any(
+                        k in _ltxt for k in ("hutang", "piutang", "tagihan", "faktur")
+                    ):
+                        try:
+                            hits = traverse(
+                                graph,
+                                ord_node["_key"],
+                                max_depth=1,
+                                edge_type="owns",
+                                node_type_filter="invoice",
+                            )
+                        except (KeyError, TypeError):
+                            logger.error(
+                                "graph_traverse_failed session=%s from=%s",
+                                _sid,
+                                ord_node.get("_key"),
+                                exc_info=True,
+                            )
+                            hits = []
+                        logger.info(
+                            "graph_traverse session=%s type=ordinal_relation depth=1 from=%s edge=owns hits=%d",
+                            _sid,
+                            ord_node.get("_key"),
+                            len(hits),
+                        )
+            elif _ord_idx and ("vendor" in _ltxt or "pemasok" in _ltxt):
+                ord_node = get_by_ordinal(graph, "vendor", _ord_idx)
+                if ord_node and "vendor" not in result.resolved:
+                    result.resolved["vendor"] = ResolvedEntity(
+                        entity_type="vendor",
+                        entity_id=ord_node["id"],
+                        entity_name=ord_node.get("name", ""),
                         confidence=0.85,
                     )
 
@@ -997,22 +1123,25 @@ class EntityResolver:
             return None
 
     @staticmethod
-
-    async def _resolve_work_order(self, name_or_number: str) -> "Optional[ResolvedEntity]":
+    async def _resolve_work_order(
+        self, name_or_number: str
+    ) -> "Optional[ResolvedEntity]":
         """Resolve work order by order_number or partial match."""
         try:
             _q = name_or_number.strip()
             rows = await self.db.fetch(
                 "SELECT id::text, order_number, status "
                 "FROM production_orders WHERE tenant_id = $1 AND order_number ILIKE $2 LIMIT 1",
-                self.tenant_id, _q,
+                self.tenant_id,
+                _q,
             )
             if not rows:
                 rows = await self.db.fetch(
                     "SELECT id::text, order_number, status "
                     "FROM production_orders WHERE tenant_id = $1 AND order_number ILIKE $2 "
                     "ORDER BY created_at DESC LIMIT 1",
-                    self.tenant_id, f"%{_q}%",
+                    self.tenant_id,
+                    f"%{_q}%",
                 )
             if rows:
                 row = rows[0]
@@ -1032,14 +1161,16 @@ class EntityResolver:
             rows = await self.db.fetch(
                 "SELECT id::text, bom_code, bom_name, status "
                 "FROM bill_of_materials WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) LIMIT 1",
-                self.tenant_id, _q,
+                self.tenant_id,
+                _q,
             )
             if not rows:
                 rows = await self.db.fetch(
                     "SELECT id::text, bom_code, bom_name, status "
                     "FROM bill_of_materials WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) "
                     "ORDER BY created_at DESC LIMIT 1",
-                    self.tenant_id, f"%{_q}%",
+                    self.tenant_id,
+                    f"%{_q}%",
                 )
             if rows:
                 row = rows[0]
@@ -1052,21 +1183,25 @@ class EntityResolver:
             logger.warning(f"_resolve_bom error: {e}")
         return None
 
-    async def _resolve_work_center(self, name_or_code: str) -> "Optional[ResolvedEntity]":
+    async def _resolve_work_center(
+        self, name_or_code: str
+    ) -> "Optional[ResolvedEntity]":
         """Resolve work center by code or name."""
         try:
             _q = name_or_code.strip()
             rows = await self.db.fetch(
                 "SELECT id::text, code, name "
                 "FROM work_centers WHERE tenant_id = $1 AND (code ILIKE $2 OR name ILIKE $2) AND is_active = true LIMIT 1",
-                self.tenant_id, _q,
+                self.tenant_id,
+                _q,
             )
             if not rows:
                 rows = await self.db.fetch(
                     "SELECT id::text, code, name "
                     "FROM work_centers WHERE tenant_id = $1 AND (code ILIKE $2 OR name ILIKE $2) AND is_active = true "
                     "ORDER BY created_at DESC LIMIT 1",
-                    self.tenant_id, f"%{_q}%",
+                    self.tenant_id,
+                    f"%{_q}%",
                 )
             if rows:
                 row = rows[0]

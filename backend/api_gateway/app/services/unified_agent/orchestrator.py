@@ -1035,6 +1035,8 @@ class UnifiedAgent:
             system_defaults={"date": date.today().isoformat()},
             entity_graph=entity_graph,
             action_memory_suggestion=action_memory_suggestion,
+            user_text=user_text,
+            session_id=(tool_executor.session_id if tool_executor else "") or "",
         )
 
         # Update entity graph with resolved entities
