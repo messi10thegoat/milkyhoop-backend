@@ -22,6 +22,7 @@ CRITICAL RULES:
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
+import asyncpg
 import json
 import logging
 
@@ -216,8 +217,8 @@ class SessionManager:
                     f"[SESSION] Created session with provided ID {session_id[:8]}"
                 )
                 return session_id
-            except Exception as _e:
-                logger.warning(f"[SESSION] Create with ID failed (race?): {_e}")
+            except asyncpg.UniqueViolationError as _e:
+                logger.info("[SESSION] session-create race, fallback SELECT: %s", _e)
                 row = await self.db.fetchrow(
                     "SELECT id FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
                     session_id,
@@ -739,7 +740,9 @@ class SessionManager:
             summary = response.content or ""
         except Exception as e:
             logger.warning(
-                "[SUMMARY] LLM summary failed, falling back to rule-based: %s", e
+                "[SUMMARY] LLM summary failed, falling back to rule-based: %s",
+                e,
+                exc_info=True,
             )
             summary = self._rule_based_summary(messages)
 
@@ -837,7 +840,10 @@ class SessionManager:
                             if isinstance(e["result"], str)
                             else e["result"]
                         )
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError) as _json_err:
+                        logger.warning(
+                            "JSON decode failed: %s", _json_err, exc_info=True
+                        )
                         result_data = None
                 results.append(
                     {
@@ -1243,8 +1249,13 @@ class StateUpdateHooks:
             await StateUpdateHooks.after_confirm_pattern(
                 session_manager, session_id, action_type, result.get("payload", result)
             )
-        except Exception as e:
-            logger.warning(f"[ACTION_MEMORY] Hook failed: {e}")
+        except (asyncpg.PostgresError, json.JSONDecodeError):
+            logger.error(
+                "[ACTION_MEMORY] after_confirm_pattern failed: session=%s action=%s",
+                session_id,
+                action_type,
+                exc_info=True,
+            )
 
     @staticmethod
     async def after_reject(
@@ -1314,8 +1325,13 @@ class StateUpdateHooks:
                 len(graph["edges"]),
                 graph.get("focus"),
             )
-        except Exception as e:
-            logger.warning("[GRAPH] after_resolve failed (non-fatal): %s", e)
+        except (KeyError, TypeError, asyncpg.PostgresError):
+            logger.error(
+                "[GRAPH] after_resolve failed: session=%s intent=%s",
+                session_id,
+                intent,
+                exc_info=True,
+            )
 
     @staticmethod
     async def after_confirm_pattern(
@@ -1337,7 +1353,11 @@ class StateUpdateHooks:
             await am.record_pattern(intent, payload)
         except Exception as e:
             logger.warning(
-                "[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): %s", e
+                "[ACTION_MEMORY] after_confirm_pattern failed (non-fatal): session=%s action=%s err=%s",
+                session_id,
+                action_type,
+                e,
+                exc_info=True,
             )
 
     @staticmethod
@@ -1357,4 +1377,9 @@ class StateUpdateHooks:
                 json.dumps(payload),
             )
         except Exception as e:
-            logger.warning("[TELEMETRY] Memory event log failed: %s", e)
+            logger.warning(
+                "[TELEMETRY] Memory event log failed: event_type=%s err=%s",
+                event_type,
+                e,
+                exc_info=True,
+            )
