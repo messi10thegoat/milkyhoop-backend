@@ -7006,6 +7006,71 @@ class UnifiedAgent:
             LLMMessage(role=msg["role"], content=msg["content"]) for msg in system_msgs
         ]
 
+        # ── Bucket B1: inject L3 recent events on ACTION/ambiguous turns ──
+        # Skip QUERY_* / CHITCHAT / MFG_* / REFORMAT per L3_INJECT_DENY_LIST.
+        # Non-fatal: any failure must not break the LLM call.
+        try:
+            from .l3_prompt import (
+                L3_INJECT_DENY_LIST,
+                build_l3_context_block,
+            )
+
+            _b1_intent_lower = (_intent or "").lower()
+            _b1_sm = (
+                getattr(tool_executor, "session_manager", None)
+                if tool_executor
+                else None
+            )
+            _b1_sid = (
+                getattr(tool_executor, "session_id", None) if tool_executor else None
+            )
+            if _b1_intent_lower in L3_INJECT_DENY_LIST:
+                logger.debug(
+                    "[B1] l3_skipped session=%s intent=%s reason=deny_list",
+                    _b1_sid,
+                    _b1_intent_lower,
+                )
+            elif _b1_sm and _b1_sid:
+                _b1_events = await _b1_sm.get_recent_events(_b1_sid, limit=5)
+                _b1_block = build_l3_context_block(_b1_events, max_age_seconds=1800)
+                if _b1_block:
+                    messages.append(
+                        LLMMessage(
+                            role="system",
+                            content=f"## Recent session context\n{_b1_block}",
+                        )
+                    )
+                    logger.warning(
+                        "[B1] l3_injected session=%s intent=%s event_count=%d",
+                        _b1_sid,
+                        _b1_intent_lower,
+                        _b1_block.count("\n") + 1,
+                    )
+                else:
+                    logger.debug(
+                        "[B1] l3_skipped session=%s intent=%s reason=no_events",
+                        _b1_sid,
+                        _b1_intent_lower,
+                    )
+        except (KeyError, TypeError, ValueError, AttributeError, ImportError) as _b1_e:
+            logger.error(
+                "l3_injection_failed session=%s intent=%s err=%s",
+                getattr(tool_executor, "session_id", None) if tool_executor else None,
+                (_intent or "").lower(),
+                _b1_e,
+                exc_info=True,
+            )
+            # Non-fatal — proceed without L3 context
+        except Exception as _b1_e:  # asyncpg errors + anything unexpected
+            logger.error(
+                "l3_injection_failed_unexpected session=%s intent=%s err=%s",
+                getattr(tool_executor, "session_id", None) if tool_executor else None,
+                (_intent or "").lower(),
+                _b1_e,
+                exc_info=True,
+            )
+            # Non-fatal — proceed without L3 context
+
         # Conversation history injection
         if conversation_history:
             if chat_session_id:
