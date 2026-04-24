@@ -35,6 +35,7 @@ from ..services.unified_agent.telemetry import record_telemetry
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
 from ..services.unified_agent.orchestrator import _strip_draft_void_rows
 from ..services.action_executor_client import get_action_executor_client
+from ..services.action_service import CONFIRM_KEYWORDS, CANCEL_KEYWORDS
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
 from ..services.unified_agent.db_utils import get_session_db_pool
 from ..services.unified_agent.fsm import FSMState
@@ -684,22 +685,79 @@ async def send_message(request: Request, body: ChatMessageRequest):
 
     # Pending Action Guard: check pending_actions table (single source of truth)
     # No more FSM state sync — pending_actions row is always accurate.
-    if body.session_id:
+    #
+    # Bucket A1 (2026-04-24): when a pending action exists, try to route
+    # short natural-language confirm/reject utterances ("betul" / "batal")
+    # directly into /confirm or /cancel. Previously such utterances fell
+    # through to the NLU pipeline and `after_confirm` never fired, so
+    # `action_patterns` was empty forever. Only route on ≤3-token utterances
+    # to avoid hijacking "betul saya beli router" (Risk Flag 1).
+    if body.session_id and body.text:
         try:
             db_pool_guard = await get_session_db_pool()
-            has_pending = await db_pool_guard.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+            pending_row = await db_pool_guard.fetchrow(
+                "SELECT id FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = 'PENDING' "
+                "  AND expires_at > now() "
+                "ORDER BY created_at DESC LIMIT 1",
                 body.session_id,
             )
-            if has_pending:
+            pending_id = str(pending_row["id"]) if pending_row else None
+
+            if pending_id:
+                message_lower = body.text.lower().strip()
+                token_count = len(message_lower.split())
+
+                if token_count <= 3 and token_count > 0:
+                    tokens = set(message_lower.split())
+                    is_confirm = any(kw in tokens for kw in CONFIRM_KEYWORDS)
+                    is_cancel = any(kw in tokens for kw in CANCEL_KEYWORDS)
+
+                    if is_confirm and not is_cancel:
+                        logger.info(
+                            "[BucketA1] Natural-language CONFIRM routed: "
+                            "session=%s pending=%s text=%r",
+                            body.session_id[:8],
+                            pending_id[:8],
+                            body.text[:40],
+                        )
+                        return await confirm_action(
+                            request,
+                            ConfirmActionRequest(
+                                conversation_id=body.conversation_id,
+                                session_id=body.session_id,
+                                pending_action_id=pending_id,
+                            ),
+                        )
+                    if is_cancel and not is_confirm:
+                        logger.info(
+                            "[BucketA1] Natural-language CANCEL routed: "
+                            "session=%s pending=%s text=%r",
+                            body.session_id[:8],
+                            pending_id[:8],
+                            body.text[:40],
+                        )
+                        return await cancel_action(
+                            request,
+                            CancelActionRequest(
+                                conversation_id=body.conversation_id,
+                                session_id=body.session_id,
+                                pending_action_id=pending_id,
+                            ),
+                        )
+
+                # Fall-through block: pending exists but utterance is not a
+                # short confirm/reject — preserve old UX (block new work).
                 return ChatMessageResponse(
                     message_type="TEXT",
                     text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
                     session_id=body.session_id,
                 )
+        except HTTPException:
+            raise
         except Exception:
-            pass  # Non-fatal, proceed normally
+            logger.exception("[BucketA1] Pending-action dispatch failed (non-fatal)")
+            # Non-fatal — proceed to normal NLU pipeline
 
     # ── Bank selection re-trigger (from document clarification) ──
     # When user taps a bank option from CLARIFICATION, text = bank_account_id (UUID).
@@ -1526,7 +1584,7 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
             db_pool_guard = await get_session_db_pool()
             _has_pending_stream = await db_pool_guard.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+                "WHERE conversation_id = $1 AND status = 'PENDING' AND expires_at > now())",
                 body.session_id,
             )
             if _has_pending_stream:
@@ -1754,7 +1812,7 @@ async def send_message_with_files(
             )
             _has_pending_upload = await db_pool_guard.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = PENDING AND expires_at > now())",
+                "WHERE conversation_id = $1 AND status = 'PENDING' AND expires_at > now())",
                 session_id,
             )
             if _has_pending_upload:

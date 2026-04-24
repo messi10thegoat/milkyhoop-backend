@@ -14,13 +14,11 @@ IRON LAW COMPLIANCE:
 - Law 10: No direct journal creation. BillsService handles that.
 - Law 14: Idempotency keys on all mutations.
 """
-import asyncio
 import json
 import logging
 import os
 import uuid
 from datetime import datetime, timedelta
-from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
@@ -33,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Pending action TTL: 15 minutes + 30 second grace period
 PENDING_ACTION_TTL = 15 * 60 + 30
 REDIS_PREFIX = "action:"
+
 
 class LLMClassifier:
     """
@@ -115,7 +114,10 @@ Rules:
                     json={
                         "model": "gpt-4o-mini",
                         "messages": [
-                            {"role": "system", "content": LLMClassifier.SYSTEM_PROMPT_CLASSIFY},
+                            {
+                                "role": "system",
+                                "content": LLMClassifier.SYSTEM_PROMPT_CLASSIFY,
+                            },
                             {"role": "user", "content": text},
                         ],
                         "max_tokens": 200,
@@ -127,12 +129,16 @@ Rules:
                 content = data["choices"][0]["message"]["content"].strip()
                 # Strip markdown code blocks if present
                 if content.startswith("```"):
-                    content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    content = (
+                        content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    )
                     if content.endswith("```"):
                         content = content[:-3]
                     content = content.strip()
                 result = json.loads(content)
-                logger.info(f"LLM classify: intent={result.get('intent')}, action={result.get('action_type')}, confidence={result.get('confidence')}")
+                logger.info(
+                    f"LLM classify: intent={result.get('intent')}, action={result.get('action_type')}, confidence={result.get('confidence')}"
+                )
                 return result
         except Exception as e:
             logger.error(f"LLM classification failed: {e}")
@@ -156,7 +162,10 @@ Rules:
                     json={
                         "model": "gpt-4o-mini",
                         "messages": [
-                            {"role": "system", "content": LLMClassifier.SYSTEM_PROMPT_PARSE},
+                            {
+                                "role": "system",
+                                "content": LLMClassifier.SYSTEM_PROMPT_PARSE,
+                            },
                             {"role": "user", "content": text},
                         ],
                         "max_tokens": 1000,
@@ -168,22 +177,20 @@ Rules:
                 content = data["choices"][0]["message"]["content"].strip()
                 # Strip markdown code blocks if present
                 if content.startswith("```"):
-                    content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    content = (
+                        content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    )
                     if content.endswith("```"):
                         content = content[:-3]
                     content = content.strip()
                 result = json.loads(content)
-                logger.info(f"LLM parse: vendor={result.get('vendor_name')}, items={len(result.get('items', []))}")
+                logger.info(
+                    f"LLM parse: vendor={result.get('vendor_name')}, items={len(result.get('items', []))}"
+                )
                 return result
         except Exception as e:
             logger.error(f"LLM parsing failed: {e}")
             return None
-
-
-
-
-
-
 
     SYSTEM_PROMPT_CONVO = """Kamu adalah Milky, asisten akuntansi cerdas untuk aplikasi MilkyHoop.
 
@@ -209,7 +216,9 @@ Rules:
 - Kalau ditanya di luar akuntansi, jawab singkat lalu arahkan kembali"""
 
     @staticmethod
-    async def generate_response(text: str, intent: str = None, context: str = None) -> str:
+    async def generate_response(
+        text: str, intent: str = None, context: str = None
+    ) -> str:
         """Generate natural conversational response via OpenAI."""
         api_key = os.getenv("OPENAI_API_KEY", "")
         if not api_key:
@@ -245,33 +254,83 @@ Rules:
             return None
 
 
-
-
 # === INTENT CLASSIFICATION (Keyword-based for Sprint 1) ===
 
 ACTION_KEYWORDS = {
     "CREATE_PURCHASE_INVOICE": [
-        "faktur pembelian", "faktur beli", "catat faktur", "input faktur",
-        "buat faktur pembelian", "terima faktur", "faktur dari",
-        "purchase invoice", "bill", "tagihan dari",
+        "faktur pembelian",
+        "faktur beli",
+        "catat faktur",
+        "input faktur",
+        "buat faktur pembelian",
+        "terima faktur",
+        "faktur dari",
+        "purchase invoice",
+        "bill",
+        "tagihan dari",
     ],
     "CREATE_VENDOR": [
-        "tambah vendor", "daftar vendor", "vendor baru",
-        "tambah supplier", "supplier baru",
+        "tambah vendor",
+        "daftar vendor",
+        "vendor baru",
+        "tambah supplier",
+        "supplier baru",
     ],
     "MAKE_PAYMENT": [
-        "bayar", "pembayaran", "transfer ke", "bayar tagihan",
-        "lunasi", "bayar faktur",
+        "bayar",
+        "pembayaran",
+        "transfer ke",
+        "bayar tagihan",
+        "lunasi",
+        "bayar faktur",
     ],
 }
 
 READ_KEYWORDS = [
-    "berapa", "apa", "lihat", "tampilkan", "cek", "saldo",
-    "laporan", "report", "aging", "neraca", "kenapa", "mengapa",
+    "berapa",
+    "apa",
+    "lihat",
+    "tampilkan",
+    "cek",
+    "saldo",
+    "laporan",
+    "report",
+    "aging",
+    "neraca",
+    "kenapa",
+    "mengapa",
 ]
 
-CONFIRM_KEYWORDS = ["lanjutkan", "ya", "yes", "ok", "oke", "setuju", "confirm", "proceed"]
-CANCEL_KEYWORDS = ["batal", "cancel", "tidak", "no", "jangan", "stop"]
+CONFIRM_KEYWORDS = [
+    "lanjutkan",
+    "ya",
+    "yes",
+    "ok",
+    "oke",
+    "setuju",
+    "confirm",
+    "proceed",
+    "lanjut",
+    "iya",
+    "konfirmasi",
+    "betul",
+    "benar",
+    "gas",
+]
+CANCEL_KEYWORDS = [
+    "batal",
+    "cancel",
+    "tidak",
+    "no",
+    "jangan",
+    "stop",
+    "nggak",
+    "ngga",
+    "gak",
+]
+REJECT_KEYWORDS = CANCEL_KEYWORDS
+
+
 class ActionService:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
@@ -282,8 +341,9 @@ class ActionService:
             redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
             redis_password = os.getenv("REDIS_PASSWORD", "")
             self._redis = aioredis.Redis.from_url(
-                redis_url, password=redis_password if redis_password else None,
-                decode_responses=True
+                redis_url,
+                password=redis_password if redis_password else None,
+                decode_responses=True,
             )
         return self._redis
 
@@ -307,9 +367,17 @@ class ActionService:
             confidence = llm_result.get("confidence", 0)
 
             # Accept LLM result if confidence >= 0.6
-            if confidence >= 0.6 and intent in ("ACTION", "READ", "CONFIRM", "CANCEL", "UNCLEAR"):
+            if confidence >= 0.6 and intent in (
+                "ACTION",
+                "READ",
+                "CONFIRM",
+                "CANCEL",
+                "UNCLEAR",
+            ):
                 return (intent, action_type)
-            logger.info(f"LLM confidence too low ({confidence}), falling back to keywords")
+            logger.info(
+                f"LLM confidence too low ({confidence}), falling back to keywords"
+            )
 
         # Fallback: keyword matching
         text_lower = text.lower().strip()
@@ -351,8 +419,10 @@ class ActionService:
             result = {
                 "vendor_name": llm_result.get("vendor_name"),
                 "invoice_number": llm_result.get("invoice_number"),
-                "bill_date": llm_result.get("bill_date") or datetime.now().strftime("%Y-%m-%d"),
-                "due_date": llm_result.get("due_date") or (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "bill_date": llm_result.get("bill_date")
+                or datetime.now().strftime("%Y-%m-%d"),
+                "due_date": llm_result.get("due_date")
+                or (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
                 "tax_rate": llm_result.get("tax_rate", 11),
                 "tax_inclusive": llm_result.get("tax_inclusive", False),
                 "items": llm_result.get("items", []),
@@ -381,17 +451,19 @@ class ActionService:
         """
         items = []
         for item in data.get("items", []):
-            items.append({
-                "product_name": item.get("name", item.get("product_name", "")),
-                "product_code": item.get("code", item.get("product_code", "")),
-                "qty": item.get("qty", item.get("quantity", 0)),
-                "unit": item.get("unit", "pcs"),
-                "price": item.get("price", item.get("unit_price", 0)),
-                "discount_percent": item.get("discount_percent", 0),
-                "batch_no": item.get("batch_no", None),
-                "exp_date": item.get("exp_date", None),
-                "bonus_qty": item.get("bonus_qty", 0),
-            })
+            items.append(
+                {
+                    "product_name": item.get("name", item.get("product_name", "")),
+                    "product_code": item.get("code", item.get("product_code", "")),
+                    "qty": item.get("qty", item.get("quantity", 0)),
+                    "unit": item.get("unit", "pcs"),
+                    "price": item.get("price", item.get("unit_price", 0)),
+                    "discount_percent": item.get("discount_percent", 0),
+                    "batch_no": item.get("batch_no", None),
+                    "exp_date": item.get("exp_date", None),
+                    "bonus_qty": item.get("bonus_qty", 0),
+                }
+            )
 
         return {
             "vendor_id": data.get("vendor_id"),
@@ -399,7 +471,9 @@ class ActionService:
             "invoice_number": data.get("invoice_number"),
             "ref_no": data.get("ref_no"),
             "bill_date": data.get("bill_date", datetime.now().strftime("%Y-%m-%d")),
-            "due_date": data.get("due_date", (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")),
+            "due_date": data.get(
+                "due_date", (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+            ),
             "tax_rate": data.get("tax_rate", 11),
             "tax_inclusive": data.get("tax_inclusive", False),
             "invoice_discount_percent": data.get("invoice_discount_percent", 0),
@@ -428,48 +502,59 @@ class ActionService:
         if action_type == "CREATE_PURCHASE_INVOICE":
             # Check vendor
             if not payload.get("vendor_id") and not payload.get("vendor_name"):
-                errors.append({
-                    "layer": "INVARIANTS",
-                    "code": "VENDOR_REQUIRED",
-                    "message": "Vendor harus diisi (ID atau nama)."
-                })
+                errors.append(
+                    {
+                        "layer": "INVARIANTS",
+                        "code": "VENDOR_REQUIRED",
+                        "message": "Vendor harus diisi (ID atau nama).",
+                    }
+                )
 
             # Check items
             if not payload.get("items") or len(payload["items"]) == 0:
-                errors.append({
-                    "layer": "INVARIANTS",
-                    "code": "ITEMS_REQUIRED",
-                    "message": "Minimal 1 item harus diisi."
-                })
+                errors.append(
+                    {
+                        "layer": "INVARIANTS",
+                        "code": "ITEMS_REQUIRED",
+                        "message": "Minimal 1 item harus diisi.",
+                    }
+                )
 
             # Check item amounts
             for i, item in enumerate(payload.get("items", [])):
                 if item.get("qty", 0) <= 0:
-                    errors.append({
-                        "layer": "INVARIANTS",
-                        "code": "INVALID_QTY",
-                        "message": f"Item {i+1}: quantity harus > 0."
-                    })
+                    errors.append(
+                        {
+                            "layer": "INVARIANTS",
+                            "code": "INVALID_QTY",
+                            "message": f"Item {i+1}: quantity harus > 0.",
+                        }
+                    )
                 if item.get("price", 0) <= 0:
-                    errors.append({
-                        "layer": "INVARIANTS",
-                        "code": "INVALID_PRICE",
-                        "message": f"Item {i+1}: harga harus > 0."
-                    })
+                    errors.append(
+                        {
+                            "layer": "INVARIANTS",
+                            "code": "INVALID_PRICE",
+                            "message": f"Item {i+1}: harga harus > 0.",
+                        }
+                    )
 
             # Check if vendor exists (if vendor_id provided)
             if payload.get("vendor_id"):
                 async with self.pool.acquire() as conn:
                     vendor = await conn.fetchrow(
                         "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                        uuid.UUID(payload["vendor_id"]), tenant_id
+                        uuid.UUID(payload["vendor_id"]),
+                        tenant_id,
                     )
                     if not vendor:
-                        errors.append({
-                            "layer": "ACCOUNTING_RULES",
-                            "code": "VENDOR_NOT_FOUND",
-                            "message": f"Vendor dengan ID {payload['vendor_id']} tidak ditemukan."
-                        })
+                        errors.append(
+                            {
+                                "layer": "ACCOUNTING_RULES",
+                                "code": "VENDOR_NOT_FOUND",
+                                "message": f"Vendor dengan ID {payload['vendor_id']} tidak ditemukan.",
+                            }
+                        )
 
             # Check period is open (gracefully skip if table missing)
             bill_date = payload.get("bill_date", datetime.now().strftime("%Y-%m-%d"))
@@ -481,14 +566,17 @@ class ActionService:
                         WHERE tenant_id = $1
                           AND $2::date BETWEEN start_date AND end_date
                         """,
-                        tenant_id, bill_date
+                        tenant_id,
+                        bill_date,
                     )
                     if period and period["status"] != "OPEN":
-                        errors.append({
-                            "layer": "ACCOUNTING_RULES",
-                            "code": "PERIOD_CLOSED",
-                            "message": f"Periode akuntansi untuk tanggal {bill_date} sudah ditutup."
-                        })
+                        errors.append(
+                            {
+                                "layer": "ACCOUNTING_RULES",
+                                "code": "PERIOD_CLOSED",
+                                "message": f"Periode akuntansi untuk tanggal {bill_date} sudah ditutup.",
+                            }
+                        )
             except Exception as e:
                 logger.warning(f"Period check skipped: {e}")
 
@@ -498,11 +586,13 @@ class ActionService:
                 for item in payload.get("items", [])
             )
             if total > 100_000_000_000:  # 100 miliar
-                errors.append({
-                    "layer": "POLICY",
-                    "code": "AMOUNT_SANITY_CHECK",
-                    "message": f"Total Rp{total:,.0f} sangat besar. Pastikan nominal benar."
-                })
+                errors.append(
+                    {
+                        "layer": "POLICY",
+                        "code": "AMOUNT_SANITY_CHECK",
+                        "message": f"Total Rp{total:,.0f} sangat besar. Pastikan nominal benar.",
+                    }
+                )
 
             # Validate items exist in master data (products table)
             # Iron Law 6: Source Traceability - every item must link to master data
@@ -516,15 +606,12 @@ class ActionService:
                     # Replace items with enriched versions (includes product_id, item_type)
                     payload["items"] = enriched_items
 
-
         return (len(errors) == 0, errors)
 
     # =========================================================
     # ITEM MASTER DATA VALIDATION
     # =========================================================
-    async def validate_items_against_master(
-        self, tenant_id: str, items: list
-    ) -> tuple:
+    async def validate_items_against_master(self, tenant_id: str, items: list) -> tuple:
         """
         Validate each item exists in products master data.
         Returns (enriched_items, errors).
@@ -538,13 +625,17 @@ class ActionService:
 
         async with self.pool.acquire() as conn:
             for i, item in enumerate(items):
-                product_name = (item.get("product_name") or item.get("name") or "").strip()
+                product_name = (
+                    item.get("product_name") or item.get("name") or ""
+                ).strip()
                 if not product_name:
-                    errors.append({
-                        "layer": "INVARIANTS",
-                        "code": "ITEM_NAME_REQUIRED",
-                        "message": f"Item {i+1}: nama produk harus diisi."
-                    })
+                    errors.append(
+                        {
+                            "layer": "INVARIANTS",
+                            "code": "ITEM_NAME_REQUIRED",
+                            "message": f"Item {i+1}: nama produk harus diisi.",
+                        }
+                    )
                     continue
 
                 # Search by exact name (case-insensitive)
@@ -558,7 +649,8 @@ class ActionService:
                       AND LOWER(nama_produk) = LOWER($2)
                       AND deleted_at IS NULL
                     """,
-                    tenant_id, product_name
+                    tenant_id,
+                    product_name,
                 )
 
                 if not product:
@@ -572,56 +664,90 @@ class ActionService:
                           AND LOWER(nama_produk) LIKE LOWER($2)
                         LIMIT 3
                         """,
-                        tenant_id, "%" + product_name + "%"
+                        tenant_id,
+                        "%" + product_name + "%",
                     )
                     suggestion = ""
                     if similar:
                         names = [r["nama_produk"] for r in similar]
                         suggestion = " Produk serupa: " + ", ".join(names) + "."
 
-                    errors.append({
-                        "layer": "MASTER_DATA",
-                        "code": "ITEM_NOT_FOUND",
-                        "message": "Item '" + product_name + "' tidak ditemukan di master data Barang & Jasa. Tambahkan terlebih dahulu melalui menu Produk & Jasa." + suggestion
-                    })
+                    errors.append(
+                        {
+                            "layer": "MASTER_DATA",
+                            "code": "ITEM_NOT_FOUND",
+                            "message": "Item '"
+                            + product_name
+                            + "' tidak ditemukan di master data Barang & Jasa. Tambahkan terlebih dahulu melalui menu Produk & Jasa."
+                            + suggestion,
+                        }
+                    )
                     continue
 
                 # Check if active
                 if product["status"] != "active":
-                    errors.append({
-                        "layer": "MASTER_DATA",
-                        "code": "ITEM_INACTIVE",
-                        "message": "Item '" + product_name + "' tidak aktif (status: " + str(product["status"]) + ")."
-                    })
+                    errors.append(
+                        {
+                            "layer": "MASTER_DATA",
+                            "code": "ITEM_INACTIVE",
+                            "message": "Item '"
+                            + product_name
+                            + "' tidak aktif (status: "
+                            + str(product["status"])
+                            + ").",
+                        }
+                    )
                     continue
 
                 # Check if available for purchases
                 if product["for_purchases"] is False:
-                    errors.append({
-                        "layer": "MASTER_DATA",
-                        "code": "ITEM_NOT_FOR_PURCHASE",
-                        "message": "Item '" + product_name + "' tidak tersedia untuk pembelian. Update di master data."
-                    })
+                    errors.append(
+                        {
+                            "layer": "MASTER_DATA",
+                            "code": "ITEM_NOT_FOR_PURCHASE",
+                            "message": "Item '"
+                            + product_name
+                            + "' tidak tersedia untuk pembelian. Update di master data.",
+                        }
+                    )
                     continue
 
                 # Validate item_type is defined
                 if not product["item_type"]:
-                    errors.append({
-                        "layer": "MASTER_DATA",
-                        "code": "ITEM_TYPE_MISSING",
-                        "message": "Item '" + product_name + "' belum memiliki tipe (goods/service/non_inventory). Update di master data Barang & Jasa."
-                    })
+                    errors.append(
+                        {
+                            "layer": "MASTER_DATA",
+                            "code": "ITEM_TYPE_MISSING",
+                            "message": "Item '"
+                            + product_name
+                            + "' belum memiliki tipe (goods/service/non_inventory). Update di master data Barang & Jasa.",
+                        }
+                    )
                     continue
 
                 # Enrich item with master data
                 enriched = dict(item)
                 enriched["product_id"] = str(product["id"])
-                enriched["product_name"] = product["nama_produk"]  # Canonical name from master
+                enriched["product_name"] = product[
+                    "nama_produk"
+                ]  # Canonical name from master
                 enriched["item_type"] = product["item_type"]
                 enriched["track_inventory"] = product["track_inventory"]
-                enriched["purchase_account_id"] = str(product["purchase_account_id"]) if product["purchase_account_id"] else None
-                enriched["inventory_account_id"] = str(product["inventory_account_id"]) if product["inventory_account_id"] else None
-                enriched["cogs_account_id"] = str(product["cogs_account_id"]) if product["cogs_account_id"] else None
+                enriched["purchase_account_id"] = (
+                    str(product["purchase_account_id"])
+                    if product["purchase_account_id"]
+                    else None
+                )
+                enriched["inventory_account_id"] = (
+                    str(product["inventory_account_id"])
+                    if product["inventory_account_id"]
+                    else None
+                )
+                enriched["cogs_account_id"] = (
+                    str(product["cogs_account_id"])
+                    if product["cogs_account_id"]
+                    else None
+                )
 
                 # Use master data unit if not specified
                 if not enriched.get("unit") or enriched["unit"] == "pcs":
@@ -642,20 +768,33 @@ class ActionService:
 
         subtotal = sum(item.get("qty", 0) * item.get("price", 0) for item in items)
         item_discount = sum(
-            int(item.get("qty", 0) * item.get("price", 0) * item.get("discount_percent", 0) / 100)
+            int(
+                item.get("qty", 0)
+                * item.get("price", 0)
+                * item.get("discount_percent", 0)
+                / 100
+            )
             for item in items
         )
         after_item_discount = subtotal - item_discount
 
         inv_disc_pct = payload.get("invoice_discount_percent", 0)
         inv_disc_amt = payload.get("invoice_discount_amount", 0)
-        invoice_discount = int(after_item_discount * inv_disc_pct / 100) if inv_disc_pct > 0 else inv_disc_amt
+        invoice_discount = (
+            int(after_item_discount * inv_disc_pct / 100)
+            if inv_disc_pct > 0
+            else inv_disc_amt
+        )
 
         after_invoice_discount = after_item_discount - invoice_discount
 
         cash_disc_pct = payload.get("cash_discount_percent", 0)
         cash_disc_amt = payload.get("cash_discount_amount", 0)
-        cash_discount = int(after_invoice_discount * cash_disc_pct / 100) if cash_disc_pct > 0 else cash_disc_amt
+        cash_discount = (
+            int(after_invoice_discount * cash_disc_pct / 100)
+            if cash_disc_pct > 0
+            else cash_disc_amt
+        )
 
         dpp = payload.get("dpp_manual") or (after_invoice_discount - cash_discount)
         tax_amount = int(dpp * tax_rate / 100)
@@ -672,7 +811,9 @@ class ActionService:
             "grand_total": grand_total,
         }
 
-    def generate_journal_preview(self, action_type: str, calc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def generate_journal_preview(
+        self, action_type: str, calc: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Generate journal line preview. NOT actual journal - just display."""
         if action_type == "CREATE_PURCHASE_INVOICE":
             lines = []
@@ -680,9 +821,17 @@ class ActionService:
             tax_amount = calc["tax_amount"]
             total = calc["grand_total"]
 
-            lines.append({"account_name": "Pembelian Barang", "debit": purchase_amount, "credit": 0})
+            lines.append(
+                {
+                    "account_name": "Pembelian Barang",
+                    "debit": purchase_amount,
+                    "credit": 0,
+                }
+            )
             if tax_amount > 0:
-                lines.append({"account_name": "PPN Masukan", "debit": tax_amount, "credit": 0})
+                lines.append(
+                    {"account_name": "PPN Masukan", "debit": tax_amount, "credit": 0}
+                )
             lines.append({"account_name": "Hutang Usaha", "debit": 0, "credit": total})
             return lines
 
@@ -732,10 +881,14 @@ class ActionService:
         key = f"{REDIS_PREFIX}{tenant_id}:{pending_id}"
         await redis.setex(key, PENDING_ACTION_TTL, json.dumps(pending_data))
 
-        logger.info(f"Pending action created: {pending_id} type={action_type} tenant={tenant_id}")
+        logger.info(
+            f"Pending action created: {pending_id} type={action_type} tenant={tenant_id}"
+        )
         return pending_data
 
-    async def get_pending_action(self, tenant_id: str, pending_id: str) -> Optional[Dict[str, Any]]:
+    async def get_pending_action(
+        self, tenant_id: str, pending_id: str
+    ) -> Optional[Dict[str, Any]]:
         """Get pending action from Redis."""
         redis = await self._get_redis()
         key = f"{REDIS_PREFIX}{tenant_id}:{pending_id}"
@@ -744,7 +897,9 @@ class ActionService:
             return json.loads(data)
         return None
 
-    async def update_pending_status(self, tenant_id: str, pending_id: str, status: str) -> bool:
+    async def update_pending_status(
+        self, tenant_id: str, pending_id: str, status: str
+    ) -> bool:
         """Update pending action status. Returns False if not found or version mismatch."""
         redis = await self._get_redis()
         key = f"{REDIS_PREFIX}{tenant_id}:{pending_id}"
@@ -754,7 +909,9 @@ class ActionService:
 
         pending = json.loads(data)
         if pending["status"] not in ("PENDING",):
-            logger.warning(f"Cannot update action {pending_id}: status={pending['status']}")
+            logger.warning(
+                f"Cannot update action {pending_id}: status={pending['status']}"
+            )
             return False
 
         pending["status"] = status
@@ -778,14 +935,26 @@ class ActionService:
         """
         pending = await self.get_pending_action(tenant_id, pending_id)
         if not pending:
-            return {"success": False, "error": "EXPIRED", "message": "Aksi sudah expired. Silakan ulangi."}
+            return {
+                "success": False,
+                "error": "EXPIRED",
+                "message": "Aksi sudah expired. Silakan ulangi.",
+            }
 
         if pending["status"] != "PENDING":
-            return {"success": False, "error": "INVALID_STATE", "message": f"Aksi sudah dalam status {pending['status']}."}
+            return {
+                "success": False,
+                "error": "INVALID_STATE",
+                "message": f"Aksi sudah dalam status {pending['status']}.",
+            }
 
         # Mark as EXECUTING (optimistic lock via version)
         if not await self.update_pending_status(tenant_id, pending_id, "EXECUTING"):
-            return {"success": False, "error": "CONCURRENCY", "message": "Aksi sedang diproses oleh request lain."}
+            return {
+                "success": False,
+                "error": "CONCURRENCY",
+                "message": "Aksi sedang diproses oleh request lain.",
+            }
 
         action_type = pending["action_type"]
         payload = pending["payload"]
@@ -807,26 +976,45 @@ class ActionService:
                     }
                 else:
                     await self.update_pending_status(tenant_id, pending_id, "FAILED")
-                    return {"success": False, "error": "EXECUTION_FAILED", "message": result.get("message", "Gagal membuat faktur.")}
+                    return {
+                        "success": False,
+                        "error": "EXECUTION_FAILED",
+                        "message": result.get("message", "Gagal membuat faktur."),
+                    }
             else:
                 await self.update_pending_status(tenant_id, pending_id, "FAILED")
-                return {"success": False, "error": "UNSUPPORTED", "message": f"Action type {action_type} belum didukung."}
+                return {
+                    "success": False,
+                    "error": "UNSUPPORTED",
+                    "message": f"Action type {action_type} belum didukung.",
+                }
 
         except Exception as e:
             logger.error(f"Action execution failed: {pending_id}: {e}", exc_info=True)
             # Rollback to PENDING so user can retry (IRON LAW 14: idempotency protects)
             await self.update_pending_status(tenant_id, pending_id, "PENDING")
-            return {"success": False, "error": "INTERNAL_ERROR", "message": "Terjadi kesalahan. Silakan coba lagi."}
+            return {
+                "success": False,
+                "error": "INTERNAL_ERROR",
+                "message": "Terjadi kesalahan. Silakan coba lagi.",
+            }
 
     async def _execute_create_purchase_invoice(
-        self, tenant_id: str, user_id: str, payload: Dict[str, Any], idempotency_key: str
+        self,
+        tenant_id: str,
+        user_id: str,
+        payload: Dict[str, Any],
+        idempotency_key: str,
     ) -> Dict[str, Any]:
         """Execute CREATE_PURCHASE_INVOICE via existing BillsService. Law 0: Kernel executes."""
         import sys
+
         sys.path.insert(0, "/app/backend/services")
         from ..services.bills_service import BillsService
+
         try:
             from accounting_kernel.integration.facade import AccountingFacade
+
             facade = AccountingFacade(self.pool)
         except ImportError:
             facade = None
@@ -840,7 +1028,8 @@ class ActionService:
             async with self.pool.acquire() as conn:
                 existing = await conn.fetchrow(
                     "SELECT id, name FROM vendors WHERE tenant_id = $1 AND LOWER(name) = LOWER($2)",
-                    tenant_id, payload["vendor_name"]
+                    tenant_id,
+                    payload["vendor_name"],
                 )
                 if existing:
                     payload["vendor_id"] = str(existing["id"])
@@ -849,9 +1038,13 @@ class ActionService:
         # Convert date strings to date objects and map field names for BillsService
         bill_payload = dict(payload)
         if isinstance(bill_payload.get("bill_date"), str):
-            bill_payload["issue_date"] = datetime.strptime(bill_payload.pop("bill_date"), "%Y-%m-%d").date()
+            bill_payload["issue_date"] = datetime.strptime(
+                bill_payload.pop("bill_date"), "%Y-%m-%d"
+            ).date()
         if isinstance(bill_payload.get("due_date"), str):
-            bill_payload["due_date"] = datetime.strptime(bill_payload["due_date"], "%Y-%m-%d").date()
+            bill_payload["due_date"] = datetime.strptime(
+                bill_payload["due_date"], "%Y-%m-%d"
+            ).date()
         bill_payload["items"] = [
             {
                 "product_id": item.get("product_id"),
@@ -877,11 +1070,15 @@ class ActionService:
 
         if result.get("success"):
             bill_data = result.get("data", {})
-            entities_created.append({
-                "type": "bill",
-                "id": str(bill_data.get("id", "")),
-                "label": bill_data.get("invoice_number", bill_data.get("bill_number", ""))
-            })
+            entities_created.append(
+                {
+                    "type": "bill",
+                    "id": str(bill_data.get("id", "")),
+                    "label": bill_data.get(
+                        "invoice_number", bill_data.get("bill_number", "")
+                    ),
+                }
+            )
 
             grand_total = bill_data.get("amount", bill_data.get("grand_total", 0))
             return {
@@ -889,10 +1086,13 @@ class ActionService:
                 "entities_created": entities_created,
                 "impact": {
                     "hutang_usaha": f"+{grand_total:,}",
-                }
+                },
             }
         else:
-            return {"success": False, "message": result.get("message", "Failed to create bill")}
+            return {
+                "success": False,
+                "message": result.get("message", "Failed to create bill"),
+            }
 
     # =========================================================
     # CANCEL ACTION
@@ -912,7 +1112,9 @@ class ActionService:
 
         pending["status"] = "CANCELLED"
         pending["version"] += 1
-        await redis.setex(key, 300, json.dumps(pending))  # Keep for 5 min for status query
+        await redis.setex(
+            key, 300, json.dumps(pending)
+        )  # Keep for 5 min for status query
         logger.info(f"Action cancelled: {pending_id}")
         return True
 
@@ -925,41 +1127,50 @@ class ActionService:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE tenant_id = $1 AND LOWER(name) LIKE LOWER($2) LIMIT 1",
-                tenant_id, f"%{name}%"
+                tenant_id,
+                f"%{name}%",
             )
             if row:
                 return {"id": str(row["id"]), "name": row["name"]}
         return None
 
-    async def find_products(self, tenant_id: str, names: list[str]) -> list[Dict[str, Any]]:
+    async def find_products(
+        self, tenant_id: str, names: list[str]
+    ) -> list[Dict[str, Any]]:
         """Search products by name (case-insensitive partial match). Returns list of matches."""
         results = []
         async with self.pool.acquire() as conn:
             for name in names:
                 rows = await conn.fetch(
-                    """SELECT id, nama_produk, satuan, item_type, purchase_price, 
+                    """SELECT id, nama_produk, satuan, item_type, purchase_price,
                               sales_price, status, for_purchases, for_sales
-                       FROM products 
-                       WHERE tenant_id = $1 
+                       FROM products
+                       WHERE tenant_id = $1
                          AND LOWER(nama_produk) LIKE LOWER($2)
                          AND status = 'active'
                        LIMIT 3""",
-                    tenant_id, f"%{name}%"
+                    tenant_id,
+                    f"%{name}%",
                 )
                 for row in rows:
-                    results.append({
-                        "id": str(row["id"]),
-                        "nama_produk": row["nama_produk"],
-                        "satuan": row["satuan"],
-                        "item_type": row["item_type"],
-                        "purchase_price": float(row["purchase_price"]) if row["purchase_price"] else None,
-                        "sales_price": float(row["sales_price"]) if row["sales_price"] else None,
-                        "for_purchases": row["for_purchases"],
-                        "for_sales": row["for_sales"],
-                    })
+                    results.append(
+                        {
+                            "id": str(row["id"]),
+                            "nama_produk": row["nama_produk"],
+                            "satuan": row["satuan"],
+                            "item_type": row["item_type"],
+                            "purchase_price": float(row["purchase_price"])
+                            if row["purchase_price"]
+                            else None,
+                            "sales_price": float(row["sales_price"])
+                            if row["sales_price"]
+                            else None,
+                            "for_purchases": row["for_purchases"],
+                            "for_sales": row["for_sales"],
+                        }
+                    )
         return results
 
-    
     async def search_master_data(self, tenant_id: str, text: str) -> Dict[str, Any]:
         """
         General-purpose master data search. Extracts entity names from any text
@@ -982,7 +1193,10 @@ class ActionService:
                         json={
                             "model": "gpt-4o-mini",
                             "messages": [
-                                {"role": "system", "content": "Extract vendor and product names from the user text. Return JSON only: {\"vendors\": [\"name1\"], \"products\": [\"name1\"]}. If none mentioned, return empty arrays."},
+                                {
+                                    "role": "system",
+                                    "content": 'Extract vendor and product names from the user text. Return JSON only: {"vendors": ["name1"], "products": ["name1"]}. If none mentioned, return empty arrays.',
+                                },
                                 {"role": "user", "content": text},
                             ],
                             "max_tokens": 200,
@@ -1026,14 +1240,14 @@ class ActionService:
 
         return result
 
-async def lookup_master_data(self, tenant_id: str, text: str) -> Dict[str, Any]:
+    async def lookup_master_data(self, tenant_id: str, text: str) -> Dict[str, Any]:
         """
         Use LLM to extract vendor/product mentions from text,
         then look them up in the database. Returns context dict.
         """
         # Use LLM to extract entity names
         parsed = await self.parse_purchase_invoice_text(text)
-        
+
         result = {
             "vendor": None,
             "vendor_found": False,
@@ -1061,16 +1275,17 @@ async def lookup_master_data(self, tenant_id: str, text: str) -> Dict[str, Any]:
             if item_names:
                 found_products = await self.find_products(tenant_id, item_names)
                 result["products"] = found_products
-                
+
                 # Match found products to requested items
                 found_names_lower = {p["nama_produk"].lower() for p in found_products}
                 for item in items:
                     item_name = item.get("name", "").lower()
-                    matched = any(item_name in fn or fn in item_name for fn in found_names_lower)
+                    matched = any(
+                        item_name in fn or fn in item_name for fn in found_names_lower
+                    )
                     if matched:
                         result["products_found"].append(item.get("name"))
                     else:
                         result["products_not_found"].append(item.get("name"))
 
         return result
-
