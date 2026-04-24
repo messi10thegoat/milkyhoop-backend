@@ -4192,6 +4192,52 @@ async def _confirm_direct_action(
                 action_result=result_data,
             )
 
+            # Bucket A1.5: fire after_confirm hook for direct actions so
+            # action_patterns / L2 state get updated on this path too. The
+            # non-direct path (ActionExecutor) already fires this hook below.
+            # Single source of truth: only here (not at caller).
+            if session_id:
+                try:
+                    sm_hook = SessionManager(
+                        db_pool=pool, tenant_id=tenant_id, user_id=user_id
+                    )
+                    # Use action_key directly (lowercase intent) so downstream
+                    # record_pattern PATTERN_INTENTS check matches (e.g.
+                    # "create_sales_invoice"). state.last_action_type may be
+                    # uppercase legacy form.
+                    _action_type = action_key
+                    # Pass the ORIGINAL payload under "payload" so
+                    # after_confirm_pattern -> record_pattern sees
+                    # customer_id/vendor_id/items for structure_key.
+                    _hook_result = {
+                        "success": True,
+                        "action_type": action_key.upper(),
+                        "entity_id": str(entity_id),
+                        "entity_type": config.entity_type,
+                        "result_data": result_data,
+                        "payload": payload,
+                    }
+                    await StateUpdateHooks.after_confirm(
+                        sm_hook, session_id, _action_type, _hook_result
+                    )
+                    logger.info(
+                        "[HOOK] after_confirm (direct): session=%s action=%s",
+                        session_id[:8],
+                        _action_type,
+                    )
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    asyncpg.PostgresError,
+                    json.JSONDecodeError,
+                ) as _hook_err:
+                    logger.error(
+                        "[HOOK] after_confirm (direct) failed: session=%s err=%s",
+                        session_id[:8] if session_id else "-",
+                        _hook_err,
+                    )
+
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
                 text=_composed["text"],
@@ -4283,6 +4329,7 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
                 da_pool2,
                 request,
                 payload_overrides=body.payload_overrides,
+                session_id=body.session_id,
             )
 
         # FSM: AWAITING_CONFIRMATION -> EXECUTING
