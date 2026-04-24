@@ -95,7 +95,7 @@ A_SITES = [
     # (file_tree_key, approx_line, must_contain_any_of, context_hint)
     (
         "unified_chat",
-        4306,
+        4364,
         {
             "KeyError",
             "TypeError",
@@ -107,7 +107,7 @@ A_SITES = [
     ),
     (
         "unified_chat",
-        4454,
+        4518,
         {
             "KeyError",
             "TypeError",
@@ -131,7 +131,7 @@ A_SITES = [
     ),
     (
         "unified_chat",
-        3206,
+        3264,
         {"asyncpg.PostgresError", "json.JSONDecodeError"},
         "A5 DocSimple L2 persist",
     ),
