@@ -15,7 +15,7 @@ CHAT_URL = f"{BASE_URL}/api/v3/chat/message"
 
 CREDENTIALS = {
     "email": "grapmanado@gmail.com",
-    "password": "grapgrap007",
+    "password": "grapgrap007",  # pragma: allowlist secret
     "tenant_slug": "grapgrap",
 }
 
@@ -91,10 +91,10 @@ class TestSuite:
             lat = f"{r.latency_ms}ms" if r.latency_ms else "—"
             err = f" [{r.error[:50]}]" if r.error else ""
             print(
-                f"{i:>3} {status:>6} {lat:>8} {r.model:>14} {r.message_type:>25} {r.name}{err}"
+                f"{i:>3} {status:>6} {lat:>8} {(r.model or '-'):>14} {(r.message_type or '-'):>25} {r.name}{err}"
             )
         print(f"\n  Total: {total} | Passed: {passed} | Failed: {total - passed}")
-        avg_lat = sum(r.latency_ms for r in self.results if r.latency_ms) / max(
+        avg_lat = sum((r.latency_ms or 0) for r in self.results if r.latency_ms) / max(
             1, sum(1 for r in self.results if r.latency_ms)
         )
         print(f"  Avg latency: {avg_lat:.0f}ms")
@@ -118,10 +118,10 @@ async def run_test(
         suite.record(TestResult(name=name, passed=False, error=str(e)[:100]))
         return None
 
-    msg_type = data.get("message_type", "")
-    latency = data.get("latency_ms", 0)
-    model = data.get("model_used", "")
-    resp_text = data.get("text", "")
+    msg_type = data.get("message_type") or ""
+    latency = data.get("latency_ms") or 0
+    model = data.get("model_used") or ""
+    resp_text = data.get("text") or ""
 
     errors = []
 

@@ -95,7 +95,7 @@ A_SITES = [
     # (file_tree_key, approx_line, must_contain_any_of, context_hint)
     (
         "unified_chat",
-        4364,
+        4412,
         {
             "KeyError",
             "TypeError",
@@ -107,7 +107,7 @@ A_SITES = [
     ),
     (
         "unified_chat",
-        4518,
+        4566,
         {
             "KeyError",
             "TypeError",
