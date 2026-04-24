@@ -1,0 +1,9 @@
+# Development + test dependencies for MilkyHoop backend
+# Install in dev container: pip install -r requirements-dev.txt
+# Added 2026-04-21 to support Document Intake V3 parity suite (tests/chat/test_intake_v3/)
+
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-cov>=4.1
+pytest-mock>=3.12
+httpx>=0.25

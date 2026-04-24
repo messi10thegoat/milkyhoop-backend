@@ -33,6 +33,7 @@ from .tool_registry import get_tools, get_tools_for_domains  # noqa: E402
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label  # noqa: E402
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .model_router import ModelRouter  # noqa: E402
+from .guard_arbiter import GuardArbiter  # noqa: E402
 from .correlation import TurnContext  # noqa: E402
 
 logger = logging.getLogger("unified_agent.orchestrator")
@@ -777,6 +778,7 @@ class UnifiedAgent:
 
     def __init__(self):
         self.router = LLMRouter.from_env()
+        self.guard_arbiter = GuardArbiter()
 
     async def _handle_chitchat(
         self,
@@ -3231,36 +3233,41 @@ class UnifiedAgent:
 
         # Resolve work order by number -> get ID for {id} endpoints
         _WO_RESOLVE_INTENTS = {
-            "query_work_order_detail", "query_work_order_cost_analysis",
+            "query_work_order_detail",
+            "query_work_order_cost_analysis",
         }
-        if (
-            "{id}" in endpoint
-            and extraction.intent in _WO_RESOLVE_INTENTS
-        ):
-            _wo_name = extraction.entities.get("name") or extraction.entities.get("work_order_number")
+        if "{id}" in endpoint and extraction.intent in _WO_RESOLVE_INTENTS:
+            _wo_name = extraction.entities.get("name") or extraction.entities.get(
+                "work_order_number"
+            )
             if _wo_name:
                 from .db_utils import get_session_db_pool
+
                 _wo_pool = await get_session_db_pool()
                 logger.warning("[MFG_RESOLVE_WO] Looking up: %s", _wo_name)
                 _wo_rows = await _wo_pool.fetch(
                     "SELECT id::text, order_number FROM production_orders "
                     "WHERE tenant_id = $1 AND order_number ILIKE $2 LIMIT 1",
-                    context.tenant_id, str(_wo_name).strip(),
+                    context.tenant_id,
+                    str(_wo_name).strip(),
                 )
                 if not _wo_rows:
                     _wo_rows = await _wo_pool.fetch(
                         "SELECT id::text, order_number FROM production_orders "
                         "WHERE tenant_id = $1 AND order_number ILIKE $2 "
                         "ORDER BY created_at DESC LIMIT 1",
-                        context.tenant_id, f"%{str(_wo_name).strip()}%",
+                        context.tenant_id,
+                        f"%{str(_wo_name).strip()}%",
                     )
                 if _wo_rows:
                     endpoint = endpoint.replace("{id}", _wo_rows[0]["id"])
-                    logger.warning("[MFG_RESOLVE_WO] Found: %s -> %s", _wo_name, _wo_rows[0]["id"])
+                    logger.warning(
+                        "[MFG_RESOLVE_WO] Found: %s -> %s", _wo_name, _wo_rows[0]["id"]
+                    )
                 else:
                     return AgentResponse(
                         message_type="TEXT",
-                        content=f"Work order \'{_wo_name}\' tidak ditemukan.",
+                        content=f"Work order '{_wo_name}' tidak ditemukan.",
                         iterations=1,
                         model_used="pipeline",
                         total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -3276,36 +3283,44 @@ class UnifiedAgent:
 
         # Resolve BOM by code -> get ID for {id} endpoints
         _BOM_RESOLVE_INTENTS = {
-            "query_bom_detail", "query_bom_cost_breakdown", "query_bom_materials_required",
+            "query_bom_detail",
+            "query_bom_cost_breakdown",
+            "query_bom_materials_required",
         }
-        if (
-            "{id}" in endpoint
-            and extraction.intent in _BOM_RESOLVE_INTENTS
-        ):
-            _bom_name = extraction.entities.get("name") or extraction.entities.get("bom_code")
+        if "{id}" in endpoint and extraction.intent in _BOM_RESOLVE_INTENTS:
+            _bom_name = extraction.entities.get("name") or extraction.entities.get(
+                "bom_code"
+            )
             if _bom_name:
                 from .db_utils import get_session_db_pool
+
                 _bom_pool = await get_session_db_pool()
                 logger.warning("[MFG_RESOLVE_BOM] Looking up: %s", _bom_name)
                 _bom_rows = await _bom_pool.fetch(
                     "SELECT id::text, bom_code FROM bill_of_materials "
                     "WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) LIMIT 1",
-                    context.tenant_id, str(_bom_name).strip(),
+                    context.tenant_id,
+                    str(_bom_name).strip(),
                 )
                 if not _bom_rows:
                     _bom_rows = await _bom_pool.fetch(
                         "SELECT id::text, bom_code FROM bill_of_materials "
                         "WHERE tenant_id = $1 AND (bom_code ILIKE $2 OR bom_name ILIKE $2) "
                         "ORDER BY created_at DESC LIMIT 1",
-                        context.tenant_id, f"%{str(_bom_name).strip()}%",
+                        context.tenant_id,
+                        f"%{str(_bom_name).strip()}%",
                     )
                 if _bom_rows:
                     endpoint = endpoint.replace("{id}", _bom_rows[0]["id"])
-                    logger.warning("[MFG_RESOLVE_BOM] Found: %s -> %s", _bom_name, _bom_rows[0]["id"])
+                    logger.warning(
+                        "[MFG_RESOLVE_BOM] Found: %s -> %s",
+                        _bom_name,
+                        _bom_rows[0]["id"],
+                    )
                 else:
                     return AgentResponse(
                         message_type="TEXT",
-                        content=f"BOM \'{_bom_name}\' tidak ditemukan.",
+                        content=f"BOM '{_bom_name}' tidak ditemukan.",
                         iterations=1,
                         model_used="pipeline",
                         total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -3648,9 +3663,11 @@ class UnifiedAgent:
                 if hasattr(self, "_ecm") and query_params is not None:
                     # Build synthetic schema from query_config.query_params
                     _synth_props = {}
-                    for _qp in (query_config.query_params or []):
+                    for _qp in query_config.query_params or []:
                         _synth_props[_qp.name] = {"type": "string"}
-                    _synth_schema = {"parameters": {"properties": _synth_props, "required": []}}
+                    _synth_schema = {
+                        "parameters": {"properties": _synth_props, "required": []}
+                    }
                     query_params = self._ecm.inject_missing_params(
                         query_config.action_key, _synth_schema, query_params
                     )
@@ -3666,7 +3683,9 @@ class UnifiedAgent:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as e:
-            logger.warning(f"[QUERY_PIPELINE] REST call failed, falling back to agent loop: {e}")
+            logger.warning(
+                f"[QUERY_PIPELINE] REST call failed, falling back to agent loop: {e}"
+            )
             raise RuntimeError(f"Query pipeline REST failed: {e}")
 
         await emit(
@@ -3696,56 +3715,95 @@ class UnifiedAgent:
 
         # ECM (Phase 1+2) — pipeline path: seed from session state
         try:
-            from .entity_context_manager import EntityContextManager, build_schema_needs_cache
+            from .entity_context_manager import (
+                EntityContextManager,
+                build_schema_needs_cache,
+            )
             from .tool_registry import get_tools as _gt_ecm
+
             if not hasattr(self, "_ecm"):
                 self._ecm = EntityContextManager()
                 build_schema_needs_cache(_gt_ecm())
             self._ecm.advance_turn()
 
             # Seed ECM from existing session state (persisted in Redis)
-            if tool_executor and getattr(tool_executor, "session_manager", None) and getattr(tool_executor, "session_id", None):
+            if (
+                tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
                 try:
-                    _seed_state = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                    _seed_state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
                     if _seed_state:
                         from .entity_context_manager import Entity
+
                         if getattr(_seed_state, "active_customer_id", None):
-                            self._ecm.push_entity(Entity(
-                                type="customer",
-                                id=_seed_state.active_customer_id,
-                                name=getattr(_seed_state, "active_customer_name", None),
-                                source="session_seed", turn=0,
-                            ))
+                            self._ecm.push_entity(
+                                Entity(
+                                    type="customer",
+                                    id=_seed_state.active_customer_id,
+                                    name=getattr(
+                                        _seed_state, "active_customer_name", None
+                                    ),
+                                    source="session_seed",
+                                    turn=0,
+                                )
+                            )
                         if getattr(_seed_state, "active_vendor_id", None):
-                            self._ecm.push_entity(Entity(
-                                type="vendor",
-                                id=_seed_state.active_vendor_id,
-                                name=getattr(_seed_state, "active_vendor_name", None),
-                                source="session_seed", turn=0,
-                            ))
+                            self._ecm.push_entity(
+                                Entity(
+                                    type="vendor",
+                                    id=_seed_state.active_vendor_id,
+                                    name=getattr(
+                                        _seed_state, "active_vendor_name", None
+                                    ),
+                                    source="session_seed",
+                                    turn=0,
+                                )
+                            )
                         if getattr(_seed_state, "active_invoice_id", None):
-                            self._ecm.push_entity(Entity(
-                                type="invoice",
-                                id=_seed_state.active_invoice_id,
-                                number=getattr(_seed_state, "active_invoice_number", None),
-                                source="session_seed", turn=0,
-                            ))
+                            self._ecm.push_entity(
+                                Entity(
+                                    type="invoice",
+                                    id=_seed_state.active_invoice_id,
+                                    number=getattr(
+                                        _seed_state, "active_invoice_number", None
+                                    ),
+                                    source="session_seed",
+                                    turn=0,
+                                )
+                            )
                         if getattr(_seed_state, "active_bill_id", None):
-                            self._ecm.push_entity(Entity(
-                                type="bill",
-                                id=_seed_state.active_bill_id,
-                                number=getattr(_seed_state, "active_bill_number", None),
-                                source="session_seed", turn=0,
-                            ))
+                            self._ecm.push_entity(
+                                Entity(
+                                    type="bill",
+                                    id=_seed_state.active_bill_id,
+                                    number=getattr(
+                                        _seed_state, "active_bill_number", None
+                                    ),
+                                    source="session_seed",
+                                    turn=0,
+                                )
+                            )
                         # Seed from active_entity (set by calc_rank pipeline)
                         _ae = getattr(_seed_state, "active_entity", None)
-                        if _ae and isinstance(_ae, dict) and _ae.get("type") and _ae.get("name"):
-                            self._ecm.push_entity(Entity(
-                                type=_ae["type"],
-                                id=_ae.get("id"),
-                                name=_ae["name"],
-                                source="session_seed_active_entity", turn=0,
-                            ))
+                        if (
+                            _ae
+                            and isinstance(_ae, dict)
+                            and _ae.get("type")
+                            and _ae.get("name")
+                        ):
+                            self._ecm.push_entity(
+                                Entity(
+                                    type=_ae["type"],
+                                    id=_ae.get("id"),
+                                    name=_ae["name"],
+                                    source="session_seed_active_entity",
+                                    turn=0,
+                                )
+                            )
                 except Exception as _seed_err:
                     logger.debug("[ECM] session seed failed: %s", _seed_err)
             _ecm_extracted = self._ecm.ingest_tool_result(
@@ -5072,6 +5130,22 @@ class UnifiedAgent:
 
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
+            # P5: Emit intent_classified SSE meta event (test correlation)
+            try:
+                import uuid as _uuid_ic
+
+                _req_id_ic = str(_uuid_ic.uuid4())
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": _req_id_ic,
+                        "final_intent": "chitchat",
+                        "decision_source": "infer_intent_shortcircuit",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
             # Phase B.2: Check for resume prompt + Tier 2 preferences
             _resume_hint = ""
             _pref_hint = ""
@@ -5522,6 +5596,7 @@ class UnifiedAgent:
                         if _rec_followup:
                             extraction.intent = _rec_followup
                             extraction.confidence = 0.9
+                            _tel_decision_source = "rec_followup"
                             logger.warning(
                                 "[REC_FOLLOWUP] '%s' (%d words) → %s (domain=%s)",
                                 user_text[:30],
@@ -5550,8 +5625,12 @@ class UnifiedAgent:
                 except Exception as _rec_err:
                     logger.warning("[REC_RESOLVE] Failed: %s", _rec_err)
 
-            # 3. ARAP GUARD (financial-critical only)
+            # ── P2 GUARD ARBITRATION (matrix v1.0) ─────────────────────────
+            # Replaces legacy sequential cascade with GuardArbiter primitive.
+            # CRUD_GUARD deferred — legacy block retained below.
+            # Ref: docs/plans/2026-04-22-guard-arbiter-phase-a-diffs.md
             from .entity_extractor import classify_query_intent
+            from .guard_arbiter import GuardMatch
 
             _qci_guard, _qci_entity_name, _ = classify_query_intent(user_text)
 
@@ -5562,48 +5641,102 @@ class UnifiedAgent:
                 "query_customer_ar",
                 "query_vendor_ap",
             }
-
-            _ARAP_DOMAIN = {
-                "query_ar_outstanding": {
-                    "query_ar_outstanding",
-                    "query_ar_invoices",
-                    "query_customer_ar",
-                },
-                "query_ar_invoices": {"query_ar_outstanding", "query_ar_invoices"},
-                "query_ap_outstanding": {"query_ap_outstanding", "query_vendor_ap"},
-                "query_customer_ar": {"query_customer_ar", "query_ar_outstanding"},
-                "query_vendor_ap": {"query_vendor_ap", "query_ap_outstanding"},
+            _MFG_INTENTS = {
+                "query_bom_list",
+                "query_bom_detail",
+                "query_bom_cost_breakdown",
+                "query_bom_materials_required",
+                "query_work_order_list",
+                "query_work_order_detail",
+                "query_work_order_cost_analysis",
+                "query_production_active",
+                "query_production_schedule",
+                "query_material_issues",
+                "query_fg_receipts",
+                "query_work_center_list",
+            }
+            _LIST_VS_OVERDUE = {
+                "query_customers_list": "query_customers_with_overdue",
+                "query_vendors_list": "query_vendors_with_overdue",
+            }
+            _SUMMARY_INTENTS = {"query_ap_outstanding", "query_ar_outstanding"}
+            _ENTITY_INTENTS = {"query_vendor_ap", "query_customer_ar"}
+            # Duplicated from _handle_contextual_drill_down _DRILLDOWN_MAP
+            # (Phase-B correction: real membership check, not mere last_intent presence)
+            _DRILLDOWN_MAP_KEYS = {
+                "query_ap_outstanding",
+                "query_ar_outstanding",
+                "query_bills_summary",
+                "query_sales_invoices_summary",
+                "query_expenses_summary",
             }
 
-            if _qci_guard in _ARAP_CRITICAL:
-                allowed = _ARAP_DOMAIN.get(_qci_guard, set())
-                # Summary vs entity-specific guard:
-                # "hutang berapa?" regex=query_ap_outstanding, Gemini=query_vendor_ap
-                # If no entity name extracted, regex (summary) is correct
-                _SUMMARY_INTENTS = {"query_ap_outstanding", "query_ar_outstanding"}
-                _ENTITY_INTENTS = {"query_vendor_ap", "query_customer_ar"}
-                if (
-                    _qci_guard in _SUMMARY_INTENTS
-                    and extraction.intent in _ENTITY_INTENTS
-                    and not extraction.entities.get("vendor_name")
-                    and not extraction.entities.get("customer_name")
-                    and not extraction.entities.get("name")
-                ):
-                    _tel_guard = "arap_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "arap_guard"
-                    _tel_guard_matches["arap_guard_summary"] = _qci_guard
-                    logger.warning(
-                        "[ARAP_GUARD] summary override: %s -> %s (no entity)",
-                        extraction.intent,
-                        _qci_guard,
+            # Build session_state-like dict for arbiter
+            _arb_state = {}
+            try:
+                _arb_state["last_domain"] = (
+                    (_state or {}).get("last_domain")
+                    if isinstance(_state, dict)
+                    else None
+                )
+            except Exception:
+                _arb_state["last_domain"] = None
+            try:
+                if isinstance(_state, dict):
+                    _arb_state["pending_clarification"] = _state.get(
+                        "pending_clarification"
                     )
-                    extraction.intent = _qci_guard
-                    if _qci_entity_name:
-                        extraction.entities["name"] = _qci_entity_name
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
+                    _arb_last_intent = _state.get("last_intent") or _state.get(
+                        "last_action_type"
+                    )
+                else:
+                    _arb_last_intent = None
+            except Exception:
+                _arb_last_intent = None
+
+            _gmatches: dict = {}
+
+            # REFORMAT
+            if (
+                _qci_guard == "reformat_as_table"
+                and extraction.intent != "reformat_as_table"
+            ):
+                _gmatches["REFORMAT_GUARD"] = GuardMatch(
+                    "REFORMAT_GUARD", "reformat_as_table"
+                )
+
+            # DRILL
+            if _qci_guard in ("contextual_drill_down", "drilldown_table"):
+                _ctx_ok = _arb_last_intent in _DRILLDOWN_MAP_KEYS
+                if extraction.intent not in (
+                    "contextual_drill_down",
+                    "drilldown_table",
+                    "reformat_as_table",
+                ):
+                    _gmatches["DRILL_GUARD"] = GuardMatch(
+                        "DRILL_GUARD", _qci_guard, metadata={"context_ok": _ctx_ok}
+                    )
+
+            # CALC
+            if (
+                _qci_guard
+                and _qci_guard.startswith("calc_")
+                and extraction.intent != _qci_guard
+            ):
+                _gmatches["CALC_GUARD"] = GuardMatch(
+                    "CALC_GUARD", _qci_guard, metadata={"same_family": False}
+                )
+
+            # MFG
+            if (
+                _qci_guard
+                and _qci_guard in _MFG_INTENTS
+                and extraction.intent != _qci_guard
+            ):
+                _gmatches["MFG_GUARD"] = GuardMatch("MFG_GUARD", _qci_guard)
+
+            # ARAP (+ nested SUMMARY)
+            if _qci_guard in _ARAP_CRITICAL:
                 _same_prefix = (
                     extraction.intent.startswith("query_ar_")
                     and _qci_guard.startswith("query_ar_")
@@ -5611,75 +5744,85 @@ class UnifiedAgent:
                     extraction.intent.startswith("query_ap_")
                     and _qci_guard.startswith("query_ap_")
                 )
-                if extraction.intent not in allowed and not _same_prefix:
-                    _tel_guard = "arap_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "arap_guard"
-                    _tel_guard_matches["arap_guard"] = _qci_guard
-                    logger.warning(
-                        "[ARAP_GUARD] %s → %s", extraction.intent, _qci_guard
+                _gmatches["ARAP_GUARD"] = GuardMatch(
+                    "ARAP_GUARD", _qci_guard, metadata={"same_family": _same_prefix}
+                )
+                if (
+                    _qci_guard in _SUMMARY_INTENTS
+                    and extraction.intent in _ENTITY_INTENTS
+                    and not (extraction.entities or {}).get("vendor_name")
+                    and not (extraction.entities or {}).get("customer_name")
+                    and not (extraction.entities or {}).get("name")
+                ):
+                    _gmatches["ARAP_SUMMARY_GUARD"] = GuardMatch(
+                        "ARAP_SUMMARY_GUARD", _qci_guard
                     )
-                    extraction.intent = _qci_guard
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
 
-            # 3b. LIST vs OVERDUE GUARD
-            _LIST_VS_OVERDUE = {
-                "query_customers_list": "query_customers_with_overdue",
-                "query_vendors_list": "query_vendors_with_overdue",
-            }
-            for list_intent, overdue_intent in _LIST_VS_OVERDUE.items():
-                if _qci_guard == list_intent and extraction.intent == overdue_intent:
-                    _tel_guard = "list_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = list_intent
-                    _tel_decision_source = "list_guard"
-                    _tel_guard_matches["list_guard"] = list_intent
-                    logger.warning(
-                        "[LIST_GUARD] %s -> %s", extraction.intent, list_intent
-                    )
-                    extraction.intent = list_intent
-                    extraction.confidence = 1.0
+            # LIST
+            for _li, _oi in _LIST_VS_OVERDUE.items():
+                if _qci_guard == _li and extraction.intent == _oi:
+                    _gmatches["LIST_GUARD"] = GuardMatch("LIST_GUARD", _li)
                     break
 
-            # 3c-bis. REFORMAT GUARD — regex caught "tampilkan dalam tabel"
+            # QUERY_BOOST (weak-fallback; skipped when stronger guard present handled by arbiter)
             if (
-                _qci_guard == "reformat_as_table"
-                and extraction.intent != "reformat_as_table"
+                _qci_guard
+                and _qci_guard not in _ARAP_CRITICAL
+                and not _qci_guard.startswith("calc_")
+                and _qci_guard not in _MFG_INTENTS
+                and _qci_guard
+                not in ("reformat_as_table", "contextual_drill_down", "drilldown_table")
             ):
-                _tel_guard = "reformat_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = "reformat_as_table"
-                _tel_decision_source = "reformat_guard"
-                _tel_guard_matches["reformat_guard"] = "reformat_as_table"
-                logger.warning(
-                    "[REFORMAT_GUARD] %s -> reformat_as_table", extraction.intent
-                )
-                extraction.intent = "reformat_as_table"
-                extraction.confidence = 1.0
+                _gmatches["QUERY_BOOST"] = GuardMatch("QUERY_BOOST", _qci_guard)
+
+            _decision = self.guard_arbiter.decide(
+                llm_intent=extraction.intent,
+                llm_confidence=extraction.confidence,
+                llm_domain=getattr(extraction, "domain", None),
+                llm_needs_escalation=extraction.needs_escalation,
+                guard_matches=_gmatches,
+                session_state=_arb_state,
+                user_text=user_text,
+                context_hint=bool(_context_hint),
+            )
+
+            _llm_intent_orig = extraction.intent
+            _llm_conf_orig = extraction.confidence
+
+            if _decision.winner not in ("LLM", "REC", "NO_GUARD", "PENDING_CLAR"):
+                extraction.intent = _decision.final_intent
+                extraction.confidence = _decision.final_confidence
                 extraction.needs_escalation = False
+                if _qci_entity_name and not (extraction.entities or {}).get("name"):
+                    if not isinstance(extraction.entities, dict):
+                        extraction.entities = {}
+                    extraction.entities["name"] = _qci_entity_name
+                _tel_guard = _decision.winner.lower()
+                _tel_guard_from = _decision.guard_from
+                _tel_guard_to = _decision.guard_to
+                _tel_decision_source = _decision.winner.lower()
+                _tel_guard_matches.update(_decision.guard_matches)
+                logger.warning(
+                    "[GUARD_ARBITER] winner=%s %s -> %s policy=%s conflict=%s",
+                    _decision.winner,
+                    _llm_intent_orig,
+                    _decision.final_intent,
+                    _decision.policy_applied,
+                    _decision.conflict,
+                )
 
-            # 3c. DRILL-DOWN GUARD
-            if _qci_guard in ("contextual_drill_down", "drilldown_table"):
-                if extraction.intent not in (
-                    "contextual_drill_down",
-                    "drilldown_table",
-                    "reformat_as_table",
-                ):
-                    _tel_guard = "drill_guard"
-                    _tel_guard_from = extraction.intent
-                    _tel_guard_to = _qci_guard
-                    _tel_decision_source = "drill_guard"
-                    _tel_guard_matches["drill_guard"] = _qci_guard
-                    logger.warning(
-                        "[DRILL_GUARD] %s -> %s", extraction.intent, _qci_guard
-                    )
-                    extraction.intent = _qci_guard
-                    extraction.confidence = 1.0
-                    extraction.needs_escalation = False
+            _tel_guard_arbitration = {
+                "winner": _decision.winner,
+                "final_intent": _decision.final_intent,
+                "final_confidence": _decision.final_confidence,
+                "guard_matches": _decision.guard_matches,
+                "policy_applied": _decision.policy_applied,
+                "conflict": _decision.conflict,
+                "llm_intent_original": _llm_intent_orig,
+                "llm_confidence_original": _llm_conf_orig,
+            }
 
-            # 4. CRUD GUARD (explicit action verbs only)
+            # 4. CRUD GUARD (deferred — legacy block retained verbatim)
             from .entity_extractor import classify_crud_intent
 
             _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
@@ -5708,85 +5851,19 @@ class UnifiedAgent:
                     if not extraction.entities.get(_code_name_field):
                         extraction.entities[_code_name_field] = _code_entity_name
 
-            # 5. QUERY BOOST (weak fallback — lowest priority)
-            if _qci_guard and _qci_guard not in _ARAP_CRITICAL:
-                if (
-                    extraction.intent in ("ambiguous", "query", "chitchat")
-                    or extraction.confidence < 0.5
-                    or extraction.needs_escalation
-                ):
-                    if not _context_hint:
-                        _tel_guard = "query_boost"
-                        _tel_guard_from = extraction.intent
-                        _tel_guard_to = _qci_guard
-                        _tel_decision_source = "query_boost"
-                        _tel_guard_matches["query_boost"] = _qci_guard
-                        logger.warning(
-                            "[QUERY_BOOST] %s (%.2f) → %s",
-                            extraction.intent,
-                            extraction.confidence,
-                            _qci_guard,
-                        )
-                        extraction.intent = _qci_guard
-                        extraction.confidence = 0.8
-                        extraction.needs_escalation = False
-
-            # 5b. CALC_GUARD: code classifier detected calc intent → always trust code over LLM
-            # Superlative queries like "piutang paling besar" get misclassified by LLM
-            if (
-                _qci_guard
-                and _qci_guard.startswith("calc_")
-                and extraction.intent != _qci_guard
-            ):
-                _tel_guard = "calc_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = _qci_guard
-                _tel_decision_source = "calc_guard"
-                _tel_guard_matches["calc_guard"] = _qci_guard
-                logger.warning("[CALC_GUARD] %s → %s", extraction.intent, _qci_guard)
-                extraction.intent = _qci_guard
-                extraction.confidence = 1.0
-                extraction.needs_escalation = False
-
-            # 5c. MANUFACTURING_GUARD: code classifier detected manufacturing intent → always trust code
-            # LLM router doesn't know manufacturing intents well, misroutes to items/generic
-            _MFG_INTENTS = {
-                "query_bom_list", "query_bom_detail", "query_bom_cost_breakdown",
-                "query_bom_materials_required", "query_work_order_list",
-                "query_work_order_detail", "query_work_order_cost_analysis",
-                "query_production_active", "query_production_schedule",
-                "query_material_issues", "query_fg_receipts", "query_work_center_list",
-            }
-            if (
-                _qci_guard
-                and _qci_guard in _MFG_INTENTS
-                and extraction.intent != _qci_guard
-            ):
-                _tel_guard = "mfg_guard"
-                _tel_guard_from = extraction.intent
-                _tel_guard_to = _qci_guard
-                _tel_decision_source = "mfg_guard"
-                _tel_guard_matches["mfg_guard"] = _qci_guard
-                logger.warning("[MFG_GUARD] %s -> %s", extraction.intent, _qci_guard)
-                extraction.intent = _qci_guard
-                extraction.confidence = 1.0
-                extraction.needs_escalation = False
-                if _qci_entity_name:
-                    extraction.entities["name"] = _qci_entity_name
-
-            # 6. DE-ESCALATION: if Gemini returned a pipeline-enabled query intent
-            # with needs_escalation=True, clear it so pipeline handles it
-            if (
-                extraction.needs_escalation
-                and extraction.intent.startswith("query_")
-                and is_pipeline_enabled(extraction.intent)
-                and not _context_hint  # don't de-escalate follow-ups
-            ):
+            # 6. DE-ESCALATION via arbiter helper
+            _new_esc, _de_fired = self.guard_arbiter.apply_de_escalate(
+                intent=extraction.intent,
+                needs_escalation=extraction.needs_escalation,
+                context_hint=bool(_context_hint),
+                is_pipeline_enabled_fn=is_pipeline_enabled,
+            )
+            if _de_fired:
                 _tel_guard = "de_escalate"
                 _tel_guard_from = extraction.intent
                 _tel_decision_source = "de_escalate"
                 logger.warning("[DE_ESCALATE] %s escalation cleared", extraction.intent)
-                extraction.needs_escalation = False
+            extraction.needs_escalation = _new_esc
 
             # ── DOC_DETAIL_GUARD: code classifier doc number → override to detail query ──
             if _qci_guard and _qci_guard.endswith("_detail") and _qci_entity_name:
@@ -5810,6 +5887,25 @@ class UnifiedAgent:
                 extraction.intent,
                 extraction.confidence,
             )
+
+            # P5: Emit intent_classified SSE meta event (test correlation).
+            # Fires AFTER all guards lock final_intent, BEFORE response generation.
+            # Fire-and-forget: never blocks response even on failure.
+            try:
+                import uuid as _uuid_ic
+
+                _req_id_ic = str(_uuid_ic.uuid4())
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": _req_id_ic,
+                        "final_intent": str(extraction.intent or ""),
+                        "decision_source": str(_tel_decision_source or "unknown"),
+                        "confidence": float(extraction.confidence or 0.0),
+                    },
+                )
+            except Exception:
+                pass
 
             # ── Telemetry: fire-and-forget log ──
             _tel_guard_conflict = len(_tel_guard_matches) > 1
@@ -5867,6 +5963,7 @@ class UnifiedAgent:
                         output_tokens=200,
                         response_type="pending",
                         response_length=0,
+                        guard_arbitration=locals().get("_tel_guard_arbitration"),
                     )
                 )
             except Exception:
@@ -5879,9 +5976,8 @@ class UnifiedAgent:
             # LLM_ROUTER_PRIMARY handles dispatch with better accuracy. The guards above
             # (ARAP, CALC, CRUD, QUERY_BOOST) still apply and correct extraction.intent,
             # but actual pipeline dispatch defers to LLM_ROUTER_PRIMARY.
-            if (
-                extraction.intent.startswith("calc_")
-                and is_pipeline_enabled(extraction.intent)
+            if extraction.intent.startswith("calc_") and is_pipeline_enabled(
+                extraction.intent
             ):
                 from .calculation_engine import (
                     is_calculation_intent,
@@ -5953,17 +6049,30 @@ class UnifiedAgent:
                             if hasattr(self, "_ecm") and _rec_items:
                                 for _ci in _rec_items[:5]:
                                     if isinstance(_ci, dict):
-                                        for _cei in self._ecm._extract_entities_from_dict(_ci, extraction.intent):
+                                        for (
+                                            _cei
+                                        ) in self._ecm._extract_entities_from_dict(
+                                            _ci, extraction.intent
+                                        ):
                                             self._ecm.push_entity(_cei)
                                 # Also push active_entity directly
                                 if _rec_kw.get("active_entity"):
                                     _ae2 = _rec_kw["active_entity"]
                                     from .entity_context_manager import Entity
-                                    self._ecm.push_entity(Entity(
-                                        type=_ae2["type"], id=_ae2.get("id"),
-                                        name=_ae2.get("name"), source=extraction.intent, turn=self._ecm.current_turn,
-                                    ))
-                                logger.warning("[ECM] calc_rank ingested: %s", self._ecm.get_stats())
+
+                                    self._ecm.push_entity(
+                                        Entity(
+                                            type=_ae2["type"],
+                                            id=_ae2.get("id"),
+                                            name=_ae2.get("name"),
+                                            source=extraction.intent,
+                                            turn=self._ecm.current_turn,
+                                        )
+                                    )
+                                logger.warning(
+                                    "[ECM] calc_rank ingested: %s",
+                                    self._ecm.get_stats(),
+                                )
                         except Exception:
                             pass
 
@@ -6273,31 +6382,52 @@ class UnifiedAgent:
                 # ── Query regex override: trust deterministic regex over LLM ──
                 # When regex classify_query_intent matched (confidence 1.0) and
                 # LLM Router disagrees, trust regex for item-specific queries.
-                if _qci_guard and _qci_guard != _lr_intent and _qci_guard.startswith(("query_item_", "query_item_sales")):
+                if (
+                    _qci_guard
+                    and _qci_guard != _lr_intent
+                    and _qci_guard.startswith(("query_item_", "query_item_sales"))
+                ):
                     logger.warning(
                         "[QUERY_REGEX_OVERRIDE] Trusting regex %s over LLM %s",
-                        _qci_guard, _lr_intent,
+                        _qci_guard,
+                        _lr_intent,
                     )
                     _lr_intent = _qci_guard
                     _llm_extraction.intent = _qci_guard
-                    if _qci_entity_name and not _llm_extraction.entities.get("item_name"):
+                    if _qci_entity_name and not _llm_extraction.entities.get(
+                        "item_name"
+                    ):
                         _llm_extraction.entities["item_name"] = _qci_entity_name
 
                 # ── Manufacturing intent trust: code classifier always wins ──
                 _MFG_QUERY_INTENTS = {
-                    "query_bom_list", "query_bom_detail", "query_bom_cost_breakdown",
-                    "query_bom_materials_required", "query_work_order_list",
-                    "query_work_order_detail", "query_work_order_cost_analysis",
-                    "query_production_active", "query_production_schedule",
-                    "query_material_issues", "query_fg_receipts", "query_work_center_list",
-                    "calc_count_work_orders_active", "calc_count_bom_active",
-                    "calc_count_work_orders_draft", "calc_count_work_centers",
+                    "query_bom_list",
+                    "query_bom_detail",
+                    "query_bom_cost_breakdown",
+                    "query_bom_materials_required",
+                    "query_work_order_list",
+                    "query_work_order_detail",
+                    "query_work_order_cost_analysis",
+                    "query_production_active",
+                    "query_production_schedule",
+                    "query_material_issues",
+                    "query_fg_receipts",
+                    "query_work_center_list",
+                    "calc_count_work_orders_active",
+                    "calc_count_bom_active",
+                    "calc_count_work_orders_draft",
+                    "calc_count_work_centers",
                     "calc_rank_work_orders_by_quantity",
                 }
-                if _qci_guard and _qci_guard in _MFG_QUERY_INTENTS and _qci_guard != _lr_intent:
+                if (
+                    _qci_guard
+                    and _qci_guard in _MFG_QUERY_INTENTS
+                    and _qci_guard != _lr_intent
+                ):
                     logger.warning(
                         "[MFG_OVERRIDE] Trusting code %s over LLM %s",
-                        _qci_guard, _lr_intent,
+                        _qci_guard,
+                        _lr_intent,
                     )
                     _lr_intent = _qci_guard
                     _llm_extraction.intent = _qci_guard
@@ -6599,6 +6729,7 @@ class UnifiedAgent:
                             )
                     except Exception as _q_err:
                         import traceback as _tb_q
+
                         logger.warning(
                             "[LLM_ROUTER_PRIMARY] query pipeline failed: %s\n%s",
                             _q_err,
@@ -6706,34 +6837,85 @@ class UnifiedAgent:
         thinking_stages: List[str] = []
 
         # EntityContextManager (Phase 1+2: shadow ingest + active injection)
-        from .entity_context_manager import EntityContextManager, Entity, build_schema_needs_cache
+        from .entity_context_manager import (
+            EntityContextManager,
+            Entity,
+            build_schema_needs_cache,
+        )
         from .tool_registry import get_tools as get_all_tools
+
         _ecm = EntityContextManager()
         _ecm.advance_turn()
         build_schema_needs_cache(get_all_tools())  # cached after first call
 
         # Seed ECM from existing session state (persisted in Redis)
-        if tool_executor and getattr(tool_executor, "session_manager", None) and getattr(tool_executor, "session_id", None):
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
             try:
-                _seed = await tool_executor.session_manager.get_state(tool_executor.session_id)
+                _seed = await tool_executor.session_manager.get_state(
+                    tool_executor.session_id
+                )
                 if _seed:
                     if getattr(_seed, "active_customer_id", None):
-                        _ecm.push_entity(Entity(type="customer", id=_seed.active_customer_id,
-                            name=getattr(_seed, "active_customer_name", None), source="session_seed", turn=0))
+                        _ecm.push_entity(
+                            Entity(
+                                type="customer",
+                                id=_seed.active_customer_id,
+                                name=getattr(_seed, "active_customer_name", None),
+                                source="session_seed",
+                                turn=0,
+                            )
+                        )
                     if getattr(_seed, "active_vendor_id", None):
-                        _ecm.push_entity(Entity(type="vendor", id=_seed.active_vendor_id,
-                            name=getattr(_seed, "active_vendor_name", None), source="session_seed", turn=0))
+                        _ecm.push_entity(
+                            Entity(
+                                type="vendor",
+                                id=_seed.active_vendor_id,
+                                name=getattr(_seed, "active_vendor_name", None),
+                                source="session_seed",
+                                turn=0,
+                            )
+                        )
                     if getattr(_seed, "active_invoice_id", None):
-                        _ecm.push_entity(Entity(type="invoice", id=_seed.active_invoice_id,
-                            number=getattr(_seed, "active_invoice_number", None), source="session_seed", turn=0))
+                        _ecm.push_entity(
+                            Entity(
+                                type="invoice",
+                                id=_seed.active_invoice_id,
+                                number=getattr(_seed, "active_invoice_number", None),
+                                source="session_seed",
+                                turn=0,
+                            )
+                        )
                     if getattr(_seed, "active_bill_id", None):
-                        _ecm.push_entity(Entity(type="bill", id=_seed.active_bill_id,
-                            number=getattr(_seed, "active_bill_number", None), source="session_seed", turn=0))
+                        _ecm.push_entity(
+                            Entity(
+                                type="bill",
+                                id=_seed.active_bill_id,
+                                number=getattr(_seed, "active_bill_number", None),
+                                source="session_seed",
+                                turn=0,
+                            )
+                        )
                     # Seed from active_entity (set by calc_rank pipeline)
                     _ae = getattr(_seed, "active_entity", None)
-                    if _ae and isinstance(_ae, dict) and _ae.get("type") and _ae.get("name"):
-                        _ecm.push_entity(Entity(type=_ae["type"], id=_ae.get("id"),
-                            name=_ae["name"], source="session_seed_active_entity", turn=0))
+                    if (
+                        _ae
+                        and isinstance(_ae, dict)
+                        and _ae.get("type")
+                        and _ae.get("name")
+                    ):
+                        _ecm.push_entity(
+                            Entity(
+                                type=_ae["type"],
+                                id=_ae.get("id"),
+                                name=_ae["name"],
+                                source="session_seed_active_entity",
+                                turn=0,
+                            )
+                        )
             except Exception:
                 pass
 
@@ -7236,7 +7418,11 @@ class UnifiedAgent:
                     # ECM Phase 2: inject missing entity params from context
                     try:
                         from .tool_registry import get_tools as _gat
-                        _tool_schema = next((t for t in _gat() if t["name"] == tc_item.function_name), {})
+
+                        _tool_schema = next(
+                            (t for t in _gat() if t["name"] == tc_item.function_name),
+                            {},
+                        )
                         if _tool_schema and tc_item.arguments:
                             tc_item.arguments = _ecm.inject_missing_params(
                                 tc_item.function_name, _tool_schema, tc_item.arguments
@@ -7332,7 +7518,9 @@ class UnifiedAgent:
                     # ECM shadow ingest (Phase 1)
                     try:
                         if result.get("success") and result.get("data"):
-                            _ecm.ingest_tool_result(tc.function_name, tc.arguments or {}, result.get("data"))
+                            _ecm.ingest_tool_result(
+                                tc.function_name, tc.arguments or {}, result.get("data")
+                            )
                     except Exception:
                         pass
 
@@ -7438,9 +7626,14 @@ class UnifiedAgent:
                 # ECM Phase 2: inject missing entity params from context
                 try:
                     from .tool_registry import get_tools as _gat2
-                    _tool_schema2 = next((t for t in _gat2() if t["name"] == tool_name), {})
+
+                    _tool_schema2 = next(
+                        (t for t in _gat2() if t["name"] == tool_name), {}
+                    )
                     if _tool_schema2 and tool_args:
-                        tool_args = _ecm.inject_missing_params(tool_name, _tool_schema2, tool_args)
+                        tool_args = _ecm.inject_missing_params(
+                            tool_name, _tool_schema2, tool_args
+                        )
                 except Exception:
                     pass
 
@@ -7503,7 +7696,9 @@ class UnifiedAgent:
                 # ECM shadow ingest (Phase 1)
                 try:
                     if result.get("success") and result.get("data"):
-                        _ecm.ingest_tool_result(tool_name, tool_args or {}, result.get("data"))
+                        _ecm.ingest_tool_result(
+                            tool_name, tool_args or {}, result.get("data")
+                        )
                 except Exception:
                     pass
 

@@ -243,7 +243,7 @@ EXTRACTION_SCHEMAS = {
                             "query_item_detail",
                             "query_item_stock_card",
                             "query_item_transactions",
-    "query_item_sales_summary",
+                            "query_item_sales_summary",
                             "query_items_summary",
                             "query_items_low_stock",
                             "query_items_top_products",
@@ -1006,49 +1006,56 @@ def classify_query_intent(user_text: str) -> tuple:
     """Code-driven query intent classifier. 0ms, deterministic."""
     import re as _qre
 
+    # P1 systemic (2026-04-22): \b-anchored domain tokens + superlative vocab
+    # live in domain_vocab.py. Adding a new ranking domain = 1 DOMAIN_TOKENS
+    # entry + 1 classify branch using rank_pattern(domain).
+    from .domain_vocab import DOMAIN_TOKENS as _DT
+    from .domain_vocab import rank_pattern as _rank
+
     t = user_text.strip().lower()
+
+    # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE
+    # AR/AP ranking so "barang ... terbanyak" routes to items, not AR.
+    # Previously DOA (0 firings in intent_decision_log all-time).
+    if _rank("stock").search(t):
+        return "calc_rank_items_by_stock", None, None
+    if _qre.search(
+        r"(?:\bitem\b|\bbarang\b|\bproduk\b)\s+(?:terlaris|paling\s+laku|paling\s+banyak\s+terjual|top)",
+        t,
+    ):
+        return "calc_top_selling_items", None, None
 
     # ── Calc engine intents: superlative + ranking patterns ──
     # Re-enabled from DISABLED P2.1 — LLM Router unreliable for these intents.
-    # Covers: "piutang paling besar", "siapa yang hutangnya terbesar", "vendor mana paling banyak kita hutangi"
+    # Covers: "piutang paling besar", "siapa yang hutangnya terbesar",
+    #         "vendor mana paling banyak kita hutangi"
+    # P1 systemic (2026-04-22): AR/AP uses rank_pattern("ar"/"ap") from
+    # domain_vocab.py. Secondary "pelanggan/ranking..." variants use inline
+    # _DT[...] tokens to keep their richer multi-term structure.
     if (
-        _qre.search(
-            r"(?:piutang|ar).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+        _rank("ar").search(t)
+        or _qre.search(
+            rf"(?:pelanggan|customer).*{_DT['ar']}.*(?:paling|terbesar|terbanyak)",
             t,
         )
         or _qre.search(
-            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:piutang|ar)", t
+            rf"(?:ranking|peringkat).*(?:pelanggan|customer).*{_DT['ar']}", t
         )
         or _qre.search(
-            r"(?:pelanggan|customer).*(?:piutang|ar).*(?:paling|terbesar|terbanyak)", t
-        )
-        or _qre.search(
-            r"(?:ranking|peringkat).*(?:pelanggan|customer).*(?:piutang|ar)", t
-        )
-        or _qre.search(
-            r"(?:ranking|peringkat).*(?:piutang|ar).*(?:pelanggan|customer)", t
+            rf"(?:ranking|peringkat).*{_DT['ar']}.*(?:pelanggan|customer)", t
         )
     ):
         return "calc_rank_customers_by_ar", None, None
     if (
-        _qre.search(
-            r"(?:hutang|utang|\bap\b).*(?:paling\s+besar|terbesar|paling\s+banyak|paling\s+tinggi)",
+        _rank("ap").search(t)
+        or _qre.search(
+            rf"(?:vendor|pemasok).*{_DT['ap']}.*(?:paling|terbesar|terbanyak)",
             t,
         )
+        or _qre.search(rf"(?:ranking|peringkat).*(?:vendor|pemasok).*{_DT['ap']}", t)
+        or _qre.search(rf"(?:ranking|peringkat).*{_DT['ap']}.*(?:vendor|pemasok)", t)
         or _qre.search(
-            r"(?:paling\s+besar|terbesar|paling\s+banyak).*(?:hutang|utang|\bap\b)", t
-        )
-        or _qre.search(
-            r"(?:vendor|pemasok).*(?:hutang|utang).*(?:paling|terbesar|terbanyak)", t
-        )
-        or _qre.search(
-            r"(?:ranking|peringkat).*(?:vendor|pemasok).*(?:hutang|utang|\bap\b)", t
-        )
-        or _qre.search(
-            r"(?:ranking|peringkat).*(?:hutang|utang|\bap\b).*(?:vendor|pemasok)", t
-        )
-        or _qre.search(
-            r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:hutang|hutangi)", t
+            r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:\bhutang\b|hutangi)", t
         )
     ):
         return "calc_rank_vendors_by_ap", None, None
@@ -1111,7 +1118,11 @@ def classify_query_intent(user_text: str) -> tuple:
     # ── Manufacturing query intents (code-driven, 0ms) ──
     # WO number detection: WO-XXXX-XXXXXX pattern
     _wo_match = _qre.search(r"(WO-\d{4}-\d{4,6})", t, _qre.IGNORECASE)
-    _bom_match = _qre.search(r"(?:bom(?:\s+code)?[:\s]+)?([A-Z][A-Z0-9]+-\d{3}(?:-[A-Z0-9]+)*)", t, _qre.IGNORECASE)
+    _bom_match = _qre.search(
+        r"(?:bom(?:\s+code)?[:\s]+)?([A-Z][A-Z0-9]+-\d{3}(?:-[A-Z0-9]+)*)",
+        t,
+        _qre.IGNORECASE,
+    )
 
     # Detail WO by number: "detail work order WO-2026-000031" or just "WO-2026-000031"
     if _wo_match:
@@ -1133,9 +1144,14 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_bom_detail", _bom_code, "bom_code"
 
     # List queries
-    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua|lihat)\s+(?:bom|bill\s+of\s+materials|resep\s+produksi)",
+        t,
+    ):
         return "query_bom_list", None, None
-    if _qre.search(r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo\b|perintah\s+produksi)", t):
+    if _qre.search(
+        r"(?:daftar|list|semua|lihat)\s+(?:work\s*order|wo\b|perintah\s+produksi)", t
+    ):
         return "query_work_order_list", None, None
     if _qre.search(r"(?:daftar|list|semua)\s+(?:work\s*center|stasiun\s+kerja)", t):
         return "query_work_center_list", None, None
@@ -1153,7 +1169,9 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_work_order_cost_analysis", None, None
 
     # Status/filter queries
-    if _qre.search(r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan|in.progress)", t):
+    if _qre.search(
+        r"(?:wo|work\s*order|produksi)\s+(?:aktif|active|berjalan|in.progress)", t
+    ):
         return "query_production_active", None, None
     if _qre.search(r"(?:jadwal|schedule)\s+(?:produksi|manufacturing)", t):
         return "query_production_schedule", None, None
@@ -1167,11 +1185,15 @@ def classify_query_intent(user_text: str) -> tuple:
         return "query_fg_receipts", None, None
 
     # ── FIX 2: Manufacturing calc intents (code-driven, override LLM) ──
-    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:aktif|active|berjalan)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:aktif|active|berjalan)", t
+    ):
         return "calc_count_work_orders_active", None, None
     if _qre.search(r"(?:berapa|jumlah|hitung).*(?:bom).*(?:aktif|active)", t):
         return "calc_count_bom_active", None, None
-    if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:draft|belum\s+release)", t):
+    if _qre.search(
+        r"(?:berapa|jumlah|hitung).*(?:work\s*order|wo\b).*(?:draft|belum\s+release)", t
+    ):
         return "calc_count_work_orders_draft", None, None
     if _qre.search(r"(?:berapa|jumlah|hitung).*(?:work\s*center|stasiun\s+kerja)", t):
         return "calc_count_work_centers", None, None
