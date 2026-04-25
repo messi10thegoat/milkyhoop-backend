@@ -1579,16 +1579,102 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
     ctx = _get_user_context(request)
 
     # Pending Action Guard (streaming endpoint)
+    # BucketA1.7 (2026-04-25): mirror A1's natural-language confirm/reject
+    # dispatch from /message into /message/stream. Without this, "betul"/
+    # "batal" after a preview gets blocked by the guard and after_confirm
+    # never fires for production users (frontend uses SSE).
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            _has_pending_stream = await db_pool_guard.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = 'PENDING' AND expires_at > now())",
+            pending_row_stream = await db_pool_guard.fetchrow(
+                "SELECT id FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = 'PENDING' "
+                "  AND expires_at > now() "
+                "ORDER BY created_at DESC LIMIT 1",
                 body.session_id,
             )
-            if _has_pending_stream:
-                # Return as a single SSE event
+            pending_id_stream = (
+                str(pending_row_stream["id"]) if pending_row_stream else None
+            )
+
+            if pending_id_stream:
+                _confirm_resp_stream = None
+                if body.text:
+                    message_lower = body.text.lower().strip()
+                    token_count = len(message_lower.split())
+                    if token_count <= 3 and token_count > 0:
+                        tokens = set(message_lower.split())
+                        is_confirm = any(kw in tokens for kw in CONFIRM_KEYWORDS)
+                        is_cancel = any(kw in tokens for kw in CANCEL_KEYWORDS)
+                        try:
+                            if is_confirm and not is_cancel:
+                                logger.info(
+                                    "[BucketA1] Stream NL CONFIRM routed: "
+                                    "session=%s pending=%s text=%r",
+                                    body.session_id[:8],
+                                    pending_id_stream[:8],
+                                    body.text[:40],
+                                )
+                                _confirm_resp_stream = await confirm_action(
+                                    request,
+                                    ConfirmActionRequest(
+                                        conversation_id=body.conversation_id,
+                                        session_id=body.session_id,
+                                        pending_action_id=pending_id_stream,
+                                    ),
+                                )
+                            elif is_cancel and not is_confirm:
+                                logger.info(
+                                    "[BucketA1] Stream NL CANCEL routed: "
+                                    "session=%s pending=%s text=%r",
+                                    body.session_id[:8],
+                                    pending_id_stream[:8],
+                                    body.text[:40],
+                                )
+                                _confirm_resp_stream = await cancel_action(
+                                    request,
+                                    CancelActionRequest(
+                                        conversation_id=body.conversation_id,
+                                        session_id=body.session_id,
+                                        pending_action_id=pending_id_stream,
+                                    ),
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            asyncpg.PostgresError,
+                            json.JSONDecodeError,
+                        ) as _disp_err:
+                            logger.error(
+                                "[BucketA1] Stream NL dispatch failed: %s",
+                                _disp_err,
+                                exc_info=True,
+                            )
+                            _confirm_resp_stream = None
+
+                if _confirm_resp_stream is not None:
+                    _resp_payload = (
+                        _confirm_resp_stream.model_dump()
+                        if hasattr(_confirm_resp_stream, "model_dump")
+                        else dict(_confirm_resp_stream)
+                    )
+
+                    async def _confirm_dispatch_gen(payload=_resp_payload):
+                        yield f"data: {_json_stream.dumps({'event': 'DONE', 'data': payload}, default=str)}\n\n"
+
+                    return StreamingResponse(
+                        _confirm_dispatch_gen(),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        },
+                    )
+
+                # Fall-through: pending exists but utterance is not a short
+                # confirm/reject — preserve old "Ada aksi menunggu" UX.
                 async def _guard_gen():
                     _resp = {
                         "event": "DONE",
@@ -1609,8 +1695,12 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
                         "X-Accel-Buffering": "no",
                     },
                 )
+        except HTTPException:
+            raise
         except Exception:
-            pass
+            logger.exception(
+                "[BucketA1] Stream pending-action dispatch failed (non-fatal)"
+            )
 
     # Build tenant context for tool executor
     tenant_context = TenantContext(
@@ -1810,19 +1900,87 @@ async def send_message_with_files(
                 tenant_id=ctx["tenant_id"],
                 user_id=ctx["user_id"],
             )
-            _has_pending_upload = await db_pool_guard.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = 'PENDING' AND expires_at > now())",
+            # BucketA1.7 (2026-04-25): mirror A1's natural-language confirm/
+            # reject dispatch from /message into /message/upload. Without this,
+            # short "betul"/"batal" replies on file-upload chat get blocked.
+            pending_row_upload = await db_pool_guard.fetchrow(
+                "SELECT id FROM pending_actions "
+                "WHERE conversation_id = $1 AND status = 'PENDING' "
+                "  AND expires_at > now() "
+                "ORDER BY created_at DESC LIMIT 1",
                 session_id,
             )
-            if _has_pending_upload:
+            pending_id_upload = (
+                str(pending_row_upload["id"]) if pending_row_upload else None
+            )
+
+            if pending_id_upload:
+                if text:
+                    message_lower = text.lower().strip()
+                    token_count = len(message_lower.split())
+                    if token_count <= 3 and token_count > 0:
+                        tokens = set(message_lower.split())
+                        is_confirm = any(kw in tokens for kw in CONFIRM_KEYWORDS)
+                        is_cancel = any(kw in tokens for kw in CANCEL_KEYWORDS)
+                        try:
+                            if is_confirm and not is_cancel:
+                                logger.info(
+                                    "[BucketA1] Upload NL CONFIRM routed: "
+                                    "session=%s pending=%s text=%r",
+                                    session_id[:8],
+                                    pending_id_upload[:8],
+                                    text[:40],
+                                )
+                                return await confirm_action(
+                                    request,
+                                    ConfirmActionRequest(
+                                        conversation_id=conversation_id,
+                                        session_id=session_id,
+                                        pending_action_id=pending_id_upload,
+                                    ),
+                                )
+                            if is_cancel and not is_confirm:
+                                logger.info(
+                                    "[BucketA1] Upload NL CANCEL routed: "
+                                    "session=%s pending=%s text=%r",
+                                    session_id[:8],
+                                    pending_id_upload[:8],
+                                    text[:40],
+                                )
+                                return await cancel_action(
+                                    request,
+                                    CancelActionRequest(
+                                        conversation_id=conversation_id,
+                                        session_id=session_id,
+                                        pending_action_id=pending_id_upload,
+                                    ),
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            asyncpg.PostgresError,
+                            json.JSONDecodeError,
+                        ) as _disp_err:
+                            logger.error(
+                                "[BucketA1] Upload NL dispatch failed: %s",
+                                _disp_err,
+                                exc_info=True,
+                            )
+
+                # Fall-through: pending exists but utterance is not a short
+                # confirm/reject — preserve old "Ada aksi menunggu" UX.
                 return ChatMessageResponse(
                     message_type="TEXT",
                     text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
                     session_id=session_id,
                 )
+        except HTTPException:
+            raise
         except Exception:
-            pass
+            logger.exception(
+                "[BucketA1] Upload pending-action dispatch failed (non-fatal)"
+            )
 
     # ── Recon Upload Shortcut: bypass LLM when CSV+recon text detected ──
     # This prevents conversation history from confusing the LLM into thinking
