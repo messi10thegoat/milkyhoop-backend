@@ -144,6 +144,7 @@ from .middleware.auth_middleware import AuthMiddleware
 from .middleware.rate_limit_middleware import RateLimitMiddleware
 from .middleware.rbac_middleware import RBACMiddleware
 from .middleware.security_headers_middleware import SecurityHeadersMiddleware
+from .middleware.cache_control import CacheControlMiddleware
 from .middleware.account_lockout_middleware import AccountLockoutMiddleware
 from .middleware.request_id_middleware import RequestIDMiddleware
 from .middleware.waf_middleware import WAFMiddleware
@@ -269,6 +270,7 @@ if FLE_AVAILABLE and settings.FLE_ENABLED:
 patch_asyncpg_pool()
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CacheControlMiddleware)
 
 # 2. Request ID Tracking (for audit trail)
 app.add_middleware(RequestIDMiddleware)

@@ -15,6 +15,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     - MIME-type sniffing
     - Information disclosure
     - Cross-site scripting
+
+    NOTE: Cache-Control is owned by CacheControlMiddleware (registered after
+    this middleware). Do NOT set Cache-Control here.
     """
 
     def __init__(self, app):
@@ -57,15 +60,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "form-action 'self';"
             )
             # HSTS - force HTTPS (only in production with valid cert)
-            response.headers["Strict-Transport-Security"] = (
-                "max-age=31536000; includeSubDomains; preload"
-            )
-
-        # Cache control for sensitive endpoints
-        if "/api/auth/" in request.url.path or "/api/user/" in request.url.path:
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+            response.headers[
+                "Strict-Transport-Security"
+            ] = "max-age=31536000; includeSubDomains; preload"
 
         # Remove server identification headers
         if "server" in response.headers:
