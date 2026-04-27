@@ -1,0 +1,97 @@
+# Behavioral fixture for objective smart-bot measurement
+# Each scenario = multi-turn conversation with per-turn acceptance
+# Run via: python tests/chat/run_behavioral_fixtures.py
+#
+# This fixture is the OBJECTIVE measurement Batch 3+ uses to track progress
+# to "smart bot" goal. Each batch must NOT decrease this score.
+#
+# Authoring discipline:
+#   - Real friction scenarios from owner dogfood, not synthetic
+#   - Acceptance is observable from response/DB, not subjective coherence
+#   - Scenarios are deterministic given fixture data setup
+#   - Add new scenarios for new bugs found; keep existing as regression
+
+version: 1
+seeded_count: 5
+target_count: 30  # full coverage authored in Batch 3 first task
+
+scenarios:
+  - id: konveksi_invoice_create_basic
+    description: Owner creates invoice for known customer with inline price
+    setup:
+      ensure_customer_exists: "Maju Jaya"
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent: create_sales_invoice
+        expect_entities_resolved: ["customer:Maju Jaya"]
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+        expect_action_succeeded: true
+        expect_pattern_row_written: true
+        expect_db_delta:
+          sales_invoices: +1
+
+  - id: ar_query_drill_down
+    description: 5-turn AR drill-down maintaining customer context
+    turns:
+      - user: "piutang total"
+        expect_intent: query_customer_ar
+        expect_response_contains_amount: true
+      - user: "siapa yang paling besar?"
+        expect_response_contains_customer_name: true
+        expect_session_active_entity_type: customer
+      - user: "per faktur dia"
+        expect_intent_one_of: [query_sales_invoices_unpaid, query_ar_invoices]
+        expect_b2_graph_traverse_fired: true
+      - user: "yang pertama jatuh tempo kapan?"
+        expect_response_contains_date: true
+      - user: "totalkan yang overdue"
+        expect_response_contains_amount: true
+
+  - id: pronoun_resolution_after_create
+    description: B2 graph traversal — pronoun "dia" resolves to recent customer
+    turns:
+      - user: "customer Maju Jaya hutangnya berapa?"
+        expect_response_contains_amount: true
+      - user: "faktur terakhir dia"
+        expect_b2_graph_traverse_fired: true
+        expect_response_contains_invoice_number: true
+        expect_response_references_entity: "Maju Jaya"
+
+  - id: workflow_clarification_path
+    description: Insufficient detail triggers clarification, owner provides, completes
+    turns:
+      - user: "buat faktur"
+        expect_response_type: TEXT
+        expect_response_asks_clarification: true
+      - user: "untuk Maju Jaya"
+        expect_response_asks_clarification: true
+      - user: "kaos 5 pcs 75 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+        expect_action_succeeded: true
+
+  - id: cancel_flow
+    description: Natural-language cancel after preview
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "batal"
+        expect_response_type: TEXT
+        expect_response_contains: "dilewati"
+        expect_db_delta:
+          sales_invoices: 0
+
+# Authoring slots reserved for Batch 3 (target 30 total):
+# - L3 injection scenarios ("tadi saya buat apa")
+# - Pattern suggestion CTA scenarios ("seperti biasanya")
+# - Bill creation parallel to invoice
+# - Multi-customer disambiguation
+# - Vendor flow scenarios
+# - Bank transfer scenarios
+# - Stock adjustment scenarios
+# - Period clarification scenarios
+# - Error recovery scenarios (failed invoice retry)
+# - REC + period combined scenarios
