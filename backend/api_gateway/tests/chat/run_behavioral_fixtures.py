@@ -240,11 +240,13 @@ async def main():
         "--output", default="/tmp/behavioral_run_%d.json" % int(time.time())
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--offset", type=int, default=0)
     args = parser.parse_args()
 
     fixtures_path = Path(__file__).parent / "fixtures" / "behavioral_scenarios.yaml"
     fixtures = yaml.safe_load(fixtures_path.read_text())
     scenarios = fixtures["scenarios"]
+    scenarios = scenarios[args.offset :]
     if args.limit:
         scenarios = scenarios[: args.limit]
 
