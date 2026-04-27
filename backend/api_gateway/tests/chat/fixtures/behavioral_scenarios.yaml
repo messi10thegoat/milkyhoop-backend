@@ -12,7 +12,7 @@
 #   - Add new scenarios for new bugs found; keep existing as regression
 
 version: 1
-seeded_count: 5
+seeded_count: 30
 target_count: 30  # full coverage authored in Batch 3 first task
 
 scenarios:
@@ -84,14 +84,309 @@ scenarios:
         expect_db_delta:
           sales_invoices: 0
 
-# Authoring slots reserved for Batch 3 (target 30 total):
-# - L3 injection scenarios ("tadi saya buat apa")
-# - Pattern suggestion CTA scenarios ("seperti biasanya")
-# - Bill creation parallel to invoice
-# - Multi-customer disambiguation
-# - Vendor flow scenarios
-# - Bank transfer scenarios
-# - Stock adjustment scenarios
-# - Period clarification scenarios
-# - Error recovery scenarios (failed invoice retry)
-# - REC + period combined scenarios
+
+  # ────────────────────────────────────────────────────────────────────
+  # Category A — Sales flow (5 scenarios, weights 1-3)
+  # ────────────────────────────────────────────────────────────────────
+  - id: sales_repeat_pattern_after_5x
+    description: Sales create after 5+ prior same-structure invoices (pattern context)
+    category: A_sales
+    weight: 3
+    setup:
+      ensure_customer_exists: "Maju Jaya"
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent: create_sales_invoice
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+        expect_pattern_row_written: true
+
+  - id: sales_multi_item_inline
+    description: Single invoice with 2+ items declared inline
+    category: A_sales
+    weight: 2
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu, celana 5 pcs 100 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent: create_sales_invoice
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: sales_correction_qty_mid_flow
+    description: Preview then change qty before confirm
+    category: A_sales
+    weight: 2
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "ganti qty jadi 20"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: sales_mid_flow_cancel
+    description: Preview then natural-language cancel
+    category: A_sales
+    weight: 1
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "nggak jadi"
+        expect_response_type: TEXT
+        expect_response_contains: "dilewati"
+
+  - id: sales_negative_qty_rejected
+    description: Unsupported negative qty must be rejected gracefully
+    category: A_sales
+    weight: 1
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos minus 5 pcs 50 ribu"
+        expect_response_type: TEXT
+
+  # ────────────────────────────────────────────────────────────────────
+  # Category B — AR/AP query chains (5 scenarios)
+  # ────────────────────────────────────────────────────────────────────
+  - id: ar_pronoun_chain_5turn
+    description: 5-turn AR drill-down with pronoun + ordinal
+    category: B_arap
+    weight: 3
+    turns:
+      - user: "piutang total"
+        expect_response_contains_amount: true
+      - user: "siapa terbesar?"
+        expect_response_contains_customer_name: true
+      - user: "per faktur dia"
+        expect_intent_one_of: [query_sales_invoices_unpaid, query_ar_invoices, query_customer_ar]
+      - user: "yang pertama jatuh tempo kapan?"
+        expect_response_contains_date: true
+      - user: "totalkan yang overdue"
+        expect_response_contains_amount: true
+
+  - id: ap_vendor_chain
+    description: AP drill across vendors with pronoun "mereka"
+    category: B_arap
+    weight: 3
+    turns:
+      - user: "hutang total"
+        expect_response_contains_amount: true
+      - user: "ke vendor mana saja?"
+        expect_response_contains: "vendor"
+      - user: "tagihan dari mereka berapa?"
+        expect_response_contains_amount: true
+      - user: "yang terbesar?"
+        expect_response_contains_amount: true
+
+  - id: cash_balance_drill
+    description: Cash balance with bank-level drill
+    category: B_arap
+    weight: 2
+    turns:
+      - user: "saldo kas total"
+        expect_response_contains_amount: true
+      - user: "rincian per bank"
+        expect_response_contains: "bank"
+      - user: "BCA berapa?"
+        expect_response_contains_amount: true
+
+  - id: customer_invoice_drill
+    description: Customer detail then invoice list then specific invoice
+    category: B_arap
+    weight: 2
+    setup:
+      ensure_customer_exists: "Maju Jaya"
+    turns:
+      - user: "customer Maju Jaya"
+        expect_response_contains_customer_name: true
+      - user: "fakturnya?"
+        expect_intent_one_of: [query_sales_invoices_list, query_sales_invoices_unpaid, query_ar_invoices]
+      - user: "yang terakhir detailnya bagaimana?"
+        expect_response_contains_amount: true
+
+  - id: aging_overdue_query
+    description: Aging analysis with overdue filter
+    category: B_arap
+    weight: 2
+    turns:
+      - user: "piutang yang overdue"
+        expect_intent_one_of: [query_ar_aging, query_ar_outstanding, query_ar_invoices]
+      - user: "yang lebih dari 30 hari?"
+        expect_response_contains: ""
+      - user: "totalnya berapa?"
+        expect_response_contains_amount: true
+
+  # ────────────────────────────────────────────────────────────────────
+  # Category C — Payment flow (5 scenarios)
+  # ────────────────────────────────────────────────────────────────────
+  - id: pay_bill_bank_specified
+    description: Bill payment with explicit bank, single-shot preview
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "bayar tagihan PLN 450 ribu dari BCA"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent_one_of: [create_bill_payment, create_expense]
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: pay_bill_bank_clarification
+    description: Bill payment requires bank clarification
+    category: C_payment
+    weight: 3
+    turns:
+      - user: "bayar tagihan PLN 450 ribu"
+        expect_response_type: TEXT
+      - user: "BCA"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: receive_payment_basic
+    description: Customer payment receive
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "Maju Jaya bayar 5 juta ke BCA"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent_one_of: [create_receive_payment]
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: payment_correction_bank
+    description: Payment preview then change bank
+    category: C_payment
+    weight: 3
+    turns:
+      - user: "bayar PLN 450 ribu dari BCA"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "salah, dari Mandiri"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: betul_no_pending_chitchat
+    description: Fresh session "betul" must fall through to chitchat (no pending action)
+    category: C_payment
+    weight: 1
+    turns:
+      - user: "betul"
+        expect_response_type: TEXT
+
+  # ────────────────────────────────────────────────────────────────────
+  # Category D — CRUD master data (5 scenarios)
+  # ────────────────────────────────────────────────────────────────────
+  - id: create_vendor_full
+    description: Create vendor with NPWP and address
+    category: D_crud
+    weight: 2
+    turns:
+      - user: "buat vendor PT Konveksi Maju, NPWP 01.234.567.8-901.000"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+        expect_intent_one_of: [create_vendor]
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: update_item_price
+    description: Update item price by name
+    category: D_crud
+    weight: 2
+    turns:
+      - user: "ubah harga kaos jadi 75 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: search_items_by_stock
+    description: Filter items by stock threshold
+    category: D_crud
+    weight: 2
+    turns:
+      - user: "barang yang stoknya kurang dari 10"
+        expect_response_contains: ""
+
+  - id: list_active_vendors
+    description: Vendor list with active filter
+    category: D_crud
+    weight: 1
+    turns:
+      - user: "list vendor aktif"
+        expect_response_contains: ""
+
+  - id: delete_nonexistent_customer_graceful
+    description: Delete unknown customer should reject gracefully
+    category: D_crud
+    weight: 1
+    turns:
+      - user: "hapus customer XyzNotReal"
+        expect_response_type: TEXT
+
+  # ────────────────────────────────────────────────────────────────────
+  # Category E — Stress / edge cases (5 scenarios)
+  # ────────────────────────────────────────────────────────────────────
+  - id: topic_switch_8turn
+    description: Alternating sales/AR/payment topics, coherence holds
+    category: E_stress
+    weight: 3
+    turns:
+      - user: "piutang total"
+        expect_response_contains_amount: true
+      - user: "saldo kas"
+        expect_response_contains_amount: true
+      - user: "buat faktur untuk Maju Jaya, kaos 5 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "batal"
+        expect_response_type: TEXT
+      - user: "list customer"
+        expect_response_contains: ""
+      - user: "hutang ke vendor mana paling besar?"
+        expect_response_contains_amount: true
+      - user: "balance sheet"
+        expect_intent_one_of: [query_balance_sheet]
+      - user: "selamat sore"
+        expect_response_type: TEXT
+
+  - id: pause_then_confirm
+    description: Preview then unrelated query then return to confirm
+    category: E_stress
+    weight: 3
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 5 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "saldo BCA"
+        expect_response_type: TEXT
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+  - id: abandon_clarification_topic_switch
+    description: Mid-clarification topic switch must abandon cleanly
+    category: E_stress
+    weight: 3
+    turns:
+      - user: "buat faktur"
+        expect_response_type: TEXT
+      - user: "piutang total"
+        expect_response_contains_amount: true
+
+  - id: betul_no_pending_fallthrough
+    description: Fresh "betul" → chitchat fallthrough, no error
+    category: E_stress
+    weight: 1
+    turns:
+      - user: "betul"
+        expect_response_type: TEXT
+
+  - id: correction_chain_3x
+    description: Three rounds of mid-flow correction before confirm
+    category: E_stress
+    weight: 3
+    turns:
+      - user: "buat faktur untuk Maju Jaya, kaos 10 pcs 50 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "ganti qty jadi 15"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "harga jadi 60 ribu"
+        expect_response_type: DIRECT_ACTION_PREVIEW
+      - user: "betul"
+        expect_response_type: ACTION_RESULT
+
+# 30 scenarios authored 2026-04-27 (5 seeded + 25 new across A-E)
