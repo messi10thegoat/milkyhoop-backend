@@ -532,15 +532,18 @@ KITA bayar vendor/supplier (BILL_PAYMENT):
 - "lunasi tagihan <NAMA>"              -> create_bill_payment
 - "bayar PB-<nomor>"                   -> create_bill_payment
 
-KITA bayar utility/expense (EXPENSE):
-- "bayar PLN/PDAM/internet/listrik <amount>" -> create_expense
+KITA bayar utility/expense (EXPENSE) — HANYA jika TANPA kata "tagihan":
+- "bayar PLN/PDAM/internet/listrik <amount>"  -> create_expense
+- TAPI "bayar tagihan PLN/PDAM/listrik ..."   -> create_bill_payment (vendor utility, lihat blok BILL_PAYMENT)
+Discriminator: kata "tagihan" memaksa create_bill_payment.
 
 Contoh konkret:
 - "Maju Jaya bayar 5 juta ke BCA" -> create_receive_payment, customer_name="Maju Jaya", amount=5000000, bank_name="BCA"
 - "bayar PT Sumber Makmur 3 juta dari Mandiri" -> create_bill_payment, vendor_name="PT Sumber Makmur"
 - "terima transfer dari Toko Anggrek 2 juta" -> create_receive_payment, customer_name="Toko Anggrek"
 - "lunasi tagihan Knitto 8 juta" -> create_bill_payment, vendor_name="Knitto"
-- "bayar PLN 450 ribu dari BCA" -> create_expense (utility, NOT vendor payment)
+- "bayar PLN 450 ribu dari BCA" -> create_expense (utility, langsung beban, TANPA "tagihan")
+- "bayar tagihan PLN 450 ribu dari BCA" -> create_bill_payment, vendor_name="PLN" (PLN sebagai vendor)
 
 == QUERY (specific mappings) ==
 - "berapa stok X?" / "cek barang X" / "detail barang X" -> query_item_detail

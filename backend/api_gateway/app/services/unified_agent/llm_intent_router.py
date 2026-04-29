@@ -147,9 +147,10 @@ RULES:
       "bayar ke <NAMA-vendor>" → create_bill_payment.
       "lunasi tagihan <NAMA>" → create_bill_payment.
       "bayar PB-<nomor>" → create_bill_payment.
-    KITA bayar utility → create_expense:
-      "bayar PLN/PDAM/internet/listrik X" → create_expense (NOT bill_payment).
-    Contoh: "Maju Jaya bayar 5 juta ke BCA" → create_receive_payment. "bayar PT Sumber 3 juta" → create_bill_payment. "bayar PLN 450rb" → create_expense.
+    KITA bayar utility → create_expense (HANYA tanpa kata "tagihan"):
+      "bayar PLN/PDAM/internet/listrik X" (tanpa "tagihan") → create_expense.
+      "bayar tagihan PLN/PDAM/listrik X"                    → create_bill_payment (vendor utility).
+    Contoh: "Maju Jaya bayar 5 juta ke BCA" → create_receive_payment. "bayar PT Sumber 3 juta" → create_bill_payment. "bayar PLN 450rb" → create_expense. "bayar tagihan PLN 450rb" → create_bill_payment.
 20. ENTITY FROM HISTORY (CRITICAL): Jika user refer entity dari respons BOT sebelumnya, extract NAMA LENGKAP dari riwayat, BUKAN dari user text saja.
     "poloshirt harganya?" setelah bot sebut "Poloshirt Hitam + Bordir (42 pcs)" → item_name="Poloshirt Hitam + Bordir".
     "detail Sintia" setelah bot sebut "Sintia Runtuwene (Rp 175.000)" → customer_name="Sintia Runtuwene".
