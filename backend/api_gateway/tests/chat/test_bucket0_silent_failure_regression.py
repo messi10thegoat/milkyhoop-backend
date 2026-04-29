@@ -119,13 +119,13 @@ A_SITES = [
     ),
     (
         "session_manager",
-        1254,
+        1260,
         {"asyncpg.PostgresError", "json.JSONDecodeError"},
         "A3 after_confirm_pattern outer",
     ),
     (
         "session_manager",
-        1330,
+        1349,
         {"KeyError", "TypeError", "asyncpg.PostgresError"},
         "A4 after_resolve",
     ),

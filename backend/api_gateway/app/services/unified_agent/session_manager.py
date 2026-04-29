@@ -53,7 +53,10 @@ class StructuredState:
     active_bill_id: Optional[str] = None
     active_bill_number: Optional[str] = None
     active_items: List[Dict] = field(default_factory=list)
+    # current_period stores the JSON-serialized resolved period dict
+    # ({kind,start_date,end_date,label}) or None. ADR P4.1 sticky period.
     current_period: Optional[str] = None
+    current_period_expires_at: Optional[Any] = None
     last_action_type: Optional[str] = None
     last_action_status: Optional[str] = None
     last_action_result: Optional[Dict] = None
@@ -364,6 +367,7 @@ class SessionManager:
             if isinstance(row["active_items"], str) and row["active_items"]
             else (row["active_items"] or []),
             current_period=row["current_period"],
+            current_period_expires_at=row.get("current_period_expires_at"),
             last_action_type=row["last_action_type"],
             last_action_status=row["last_action_status"],
             last_action_result=json.loads(row["last_action_result"])
