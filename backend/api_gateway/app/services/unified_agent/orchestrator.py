@@ -5496,6 +5496,37 @@ class UnifiedAgent:
                                     _pending_clar.parent_entities or {}
                                 )
                                 _resumed_clar_entities["period"] = _fill.resolved_value
+                                # P4.1: sticky WRITE on clarification resume.
+                                try:
+                                    from datetime import (
+                                        datetime as _dt_rw,
+                                        timedelta as _td_rw,
+                                        timezone as _tz_rw,
+                                    )
+                                    import json as _json_rw
+
+                                    _exp_rw = _dt_rw.now(_tz_rw.utc) + _td_rw(
+                                        minutes=30
+                                    )
+                                    await tool_executor.session_manager.update_state(
+                                        _sess_id_for_clar,
+                                        current_period=_json_rw.dumps(
+                                            _fill.resolved_value
+                                        ),
+                                        current_period_expires_at=_exp_rw,
+                                    )
+                                    logger.warning(
+                                        "[P4_STICKY] write (resume) session=%s period=%s",
+                                        _sess_id_for_clar,
+                                        _fill.resolved_value.get("label")
+                                        if isinstance(_fill.resolved_value, dict)
+                                        else _fill.resolved_value,
+                                    )
+                                except Exception as _rw_err:
+                                    logger.warning(
+                                        "[P4_STICKY] write (resume) failed: %s",
+                                        _rw_err,
+                                    )
                             elif _fill.filled and _fill.has_residue:
                                 await clear_pending_clarification(
                                     _clar_db, _sess_id_for_clar
@@ -5636,31 +5667,130 @@ class UnifiedAgent:
                     and not _ext_ents.get("period")
                     and _sess_id_fresh
                 ):
-                    from .clarification_slots import emit_period_clarification
-                    from .db_utils import get_session_db_pool as _fresh_pool_fn
+                    # Batch 3 Bucket 1: try inline period parse BEFORE emitting
+                    # clarification. entity_extractor often misses period tokens
+                    # like "bulan ini" / "30 hari terakhir"; reuse the slot-fill
+                    # resolver as the canonical fallback. Skip clarification when
+                    # period is detectable inline (no residue beyond threshold).
+                    from .clarification_slots import try_fill_period_slot
 
-                    _fresh_db = await _fresh_pool_fn()
-                    await emit_period_clarification(
-                        db=_fresh_db,
-                        session_id=_sess_id_fresh,
-                        parent_intent=_ext_intent,
-                        parent_entities={
-                            k: v for k, v in _ext_ents.items() if k != "period"
-                        },
-                    )
-                    _clar_event = "slot_emitted"
-                    logger.warning(
-                        "[P4_CLAR] fresh emit intent=%s session=%s",
-                        _ext_intent,
-                        _sess_id_fresh,
-                    )
-                    return AgentResponse(
-                        message_type="text",
-                        content=(
-                            "Untuk periode kapan? Misal: bulan ini, "
-                            "30 hari terakhir, April 2026."
-                        ),
-                    )
+                    _inline_fill = try_fill_period_slot(user_text)
+
+                    # P4.1 (ADR addendum): sticky read.
+                    # If user_text doesn't mention a period (inline-fill missed),
+                    # check session-level sticky period (30-min TTL). Honors R4:
+                    # never short-circuit when user provided period tokens — let
+                    # inline-fill / D6 residue handling arbitrate.
+                    _sticky_hit = False
+                    if (
+                        not _inline_fill.filled
+                        and _state is not None
+                        and getattr(_state, "current_period", None)
+                        and getattr(_state, "current_period_expires_at", None)
+                    ):
+                        try:
+                            from datetime import (
+                                datetime as _dt_mod,
+                                timezone as _tz_mod,
+                            )
+                            import json as _json_p41
+
+                            _exp = _state.current_period_expires_at
+                            _now_p41 = _dt_mod.now(_tz_mod.utc)
+                            if _exp and _exp > _now_p41:
+                                _sticky_raw = _state.current_period
+                                _sticky_dict = (
+                                    _sticky_raw
+                                    if isinstance(_sticky_raw, dict)
+                                    else _json_p41.loads(_sticky_raw)
+                                )
+                                extraction.entities["period"] = _sticky_dict
+                                _ext_ents["period"] = _sticky_dict
+                                _prefilled_period = _sticky_dict
+                                _sticky_hit = True
+                                logger.warning(
+                                    "[P4_STICKY] hit session=%s period=%s",
+                                    _sess_id_fresh,
+                                    _sticky_dict.get("label")
+                                    if isinstance(_sticky_dict, dict)
+                                    else _sticky_dict,
+                                )
+                        except Exception as _sticky_err:
+                            logger.warning(
+                                "[P4_STICKY] read failed (non-fatal): %s",
+                                _sticky_err,
+                            )
+
+                    if _sticky_hit:
+                        pass  # period injected from sticky; skip emit
+                    elif _inline_fill.filled and not _inline_fill.has_residue:
+                        extraction.entities["period"] = _inline_fill.resolved_value
+                        _ext_ents["period"] = _inline_fill.resolved_value
+                        _label = (
+                            _inline_fill.resolved_value.get("label")
+                            if isinstance(_inline_fill.resolved_value, dict)
+                            else _inline_fill.resolved_value
+                        )
+                        # P4.1: sticky WRITE — persist resolved period for
+                        # subsequent turns (30-min TTL).
+                        try:
+                            from datetime import (
+                                datetime as _dt_w,
+                                timedelta as _td_w,
+                                timezone as _tz_w,
+                            )
+                            import json as _json_w
+
+                            _expires_w = _dt_w.now(_tz_w.utc) + _td_w(minutes=30)
+                            await tool_executor.session_manager.update_state(
+                                _sess_id_fresh,
+                                current_period=_json_w.dumps(
+                                    _inline_fill.resolved_value
+                                ),
+                                current_period_expires_at=_expires_w,
+                            )
+                            logger.warning(
+                                "[P4_STICKY] write session=%s period=%s ttl=30min",
+                                _sess_id_fresh,
+                                _label,
+                            )
+                        except Exception as _w_err:
+                            logger.warning(
+                                "[P4_STICKY] write failed (non-fatal): %s",
+                                _w_err,
+                            )
+                        logger.warning(
+                            "[P4_CLAR] inline period skip-emit intent=%s session=%s period=%s",
+                            _ext_intent,
+                            _sess_id_fresh,
+                            _label,
+                        )
+                    else:
+                        from .clarification_slots import emit_period_clarification
+                        from .db_utils import get_session_db_pool as _fresh_pool_fn
+
+                        _fresh_db = await _fresh_pool_fn()
+                        await emit_period_clarification(
+                            db=_fresh_db,
+                            session_id=_sess_id_fresh,
+                            parent_intent=_ext_intent,
+                            parent_entities={
+                                k: v for k, v in _ext_ents.items() if k != "period"
+                            },
+                        )
+                        _clar_event = "slot_emitted"
+                        logger.warning(
+                            "[P4_CLAR] fresh emit intent=%s session=%s",
+                            _ext_intent,
+                            _sess_id_fresh,
+                        )
+                        return AgentResponse(
+                            message_type="text",
+                            content=(
+                                "Untuk periode kapan? Misal: bulan ini, "
+                                "30 hari terakhir, April 2026."
+                            ),
+                        )
             except Exception as _fresh_err:
                 logger.warning(
                     "[P4_CLAR] fresh emit failed (non-fatal): %s", _fresh_err
