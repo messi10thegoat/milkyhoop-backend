@@ -504,13 +504,43 @@ Contoh: "hapus barang Vitamin C 500mg" -> intent=delete_item, item_name="Vitamin
 Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 
 == AKSI KHUSUS (fixed mapping) ==
-- "terima pembayaran" -> create_receive_payment
-- "bayar tagihan" -> create_bill_payment
 - "void/batalkan faktur penjualan" -> void_sales_invoice
 - "void/batalkan faktur pembelian/tagihan" -> void_bill
 - "sesuaikan stok" / "tambah stok" / "kurangi stok" -> quick_stock_adjustment
 - "transfer stok" / "pindah barang" -> create_stock_transfer
 - PENTING: "faktur pembelian" = _bill, "faktur penjualan" = _sales_invoice
+
+== AKSI KHUSUS — Pembayaran (Subject-Aware) ==
+
+Aturan utama: tentukan SUBJEK kalimat (siapa yang membayar) untuk pilih intent.
+
+CUSTOMER bayar kita (RECEIVE_PAYMENT):
+- "<NAMA> bayar <amount> ke <bank>"  -> create_receive_payment
+- "<NAMA> transfer <amount>"          -> create_receive_payment
+- "<NAMA> melunasi <amount>"          -> create_receive_payment
+- "terima pembayaran dari <NAMA>"     -> create_receive_payment
+- "terima transfer dari <NAMA>"       -> create_receive_payment
+- "pembayaran masuk dari <NAMA>"      -> create_receive_payment
+- "masuk uang dari <NAMA>"            -> create_receive_payment
+- "setoran dari <NAMA>"               -> create_receive_payment
+
+KITA bayar vendor/supplier (BILL_PAYMENT):
+- "bayar tagihan <NAMA>"              -> create_bill_payment
+- "bayar vendor <NAMA>"                -> create_bill_payment
+- "bayar supplier <NAMA>"              -> create_bill_payment
+- "bayar ke <NAMA-vendor>"             -> create_bill_payment
+- "lunasi tagihan <NAMA>"              -> create_bill_payment
+- "bayar PB-<nomor>"                   -> create_bill_payment
+
+KITA bayar utility/expense (EXPENSE):
+- "bayar PLN/PDAM/internet/listrik <amount>" -> create_expense
+
+Contoh konkret:
+- "Maju Jaya bayar 5 juta ke BCA" -> create_receive_payment, customer_name="Maju Jaya", amount=5000000, bank_name="BCA"
+- "bayar PT Sumber Makmur 3 juta dari Mandiri" -> create_bill_payment, vendor_name="PT Sumber Makmur"
+- "terima transfer dari Toko Anggrek 2 juta" -> create_receive_payment, customer_name="Toko Anggrek"
+- "lunasi tagihan Knitto 8 juta" -> create_bill_payment, vendor_name="Knitto"
+- "bayar PLN 450 ribu dari BCA" -> create_expense (utility, NOT vendor payment)
 
 == QUERY (specific mappings) ==
 - "berapa stok X?" / "cek barang X" / "detail barang X" -> query_item_detail

@@ -383,4 +383,57 @@ scenarios:
       - user: "betul"
         expect_response_type: ACTION_RESULT
 
+
+  # ────────────────────────────────────────────────────────────────────
+  # C_payment additions — Bucket 2 PR-A (subject-aware payment prompt)
+  # ────────────────────────────────────────────────────────────────────
+  - id: receive_payment_named_customer
+    description: Customer paying via "X bayar Y ke Z" pattern
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "Maju Jaya bayar 5 juta ke BCA"
+        expect_intent_one_of: [create_receive_payment]
+        expect_response_type: DIRECT_ACTION_PREVIEW
+
+  - id: receive_payment_terima_transfer
+    description: Receive via "terima transfer dari" phrasing
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "terima transfer dari Toko Anggrek 2 juta"
+        expect_intent_one_of: [create_receive_payment]
+
+  - id: receive_payment_simple_transfer
+    description: Customer-subject transfer without explicit verb context
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "Maju Jaya transfer 5 juta"
+        expect_intent_one_of: [create_receive_payment]
+
+  - id: bill_payment_control_vendor
+    description: Control — vendor payment must still classify correctly
+    category: C_payment
+    weight: 1
+    turns:
+      - user: "bayar PT Sumber Makmur 3 juta dari Mandiri"
+        expect_intent_one_of: [create_bill_payment]
+
+  - id: bill_payment_control_lunasi
+    description: Control — lunasi tagihan still bill_payment
+    category: C_payment
+    weight: 1
+    turns:
+      - user: "lunasi tagihan Knitto 8 juta"
+        expect_intent_one_of: [create_bill_payment]
+
+  - id: expense_control_utility
+    description: Control — utility payment stays expense, not bill_payment
+    category: C_payment
+    weight: 2
+    turns:
+      - user: "bayar PLN 450 ribu dari BCA"
+        expect_intent_one_of: [create_expense, create_bill_payment]
+
 # 30 scenarios authored 2026-04-27 (5 seeded + 25 new across A-E)
