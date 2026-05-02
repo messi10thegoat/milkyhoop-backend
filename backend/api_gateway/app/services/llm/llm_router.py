@@ -22,40 +22,45 @@ class TaskComplexity(Enum):
 
 
 MODEL_ROUTING: Dict[TaskComplexity, Dict[str, str]] = {
-    TaskComplexity.SIMPLE_READ:  {"provider": "openai", "model": "gpt-4o-mini"},
+    TaskComplexity.SIMPLE_READ: {"provider": "openai", "model": "gpt-4o-mini"},
     TaskComplexity.COMPLEX_READ: {"provider": "openai", "model": "gpt-4o-mini"},
-    TaskComplexity.ACTION:       {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"},
-    TaskComplexity.SELF_CORRECT: {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"},
+    TaskComplexity.ACTION: {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"},
+    TaskComplexity.SELF_CORRECT: {
+        "provider": "openai",
+        "model": "gpt-4o-mini-2024-07-18",
+    },
 }
 
 
 # Task-type routing: maps semantic task types to provider + model
 TASK_TYPE_ROUTING: Dict[str, Dict[str, str]] = {
-    "extraction":     {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "shadow_router":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "field_extract":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "polish":         {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "clarification":  {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "chitchat":       {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "extraction": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "shadow_router": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "field_extract": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "polish": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "clarification": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "chitchat": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
     "vision_extract": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "agent_loop":     {"provider": "openai", "model": "gpt-4o-mini"},
-    "planning":       {"provider": "openai", "model": "gpt-4o-mini"},
-    "vision_ocr":     {"provider": "openai", "model": "gpt-4o"},
-    "fallback":       {"provider": "openai", "model": "gpt-4o-mini"},
+    "agent_loop": {"provider": "openai", "model": "gpt-4o-mini"},
+    "planning": {"provider": "openai", "model": "gpt-4o-mini"},
+    "vision_ocr": {"provider": "openai", "model": "gpt-4o"},
+    "fallback": {"provider": "openai", "model": "gpt-4o-mini"},
 }
 
 # Circuit breaker constants
 CB_FAILURE_THRESHOLD = 3
-CB_FAILURE_WINDOW = 60.0      # seconds
-CB_COOLDOWN = 300.0            # 5 minutes
+CB_FAILURE_WINDOW = 60.0  # seconds
+CB_COOLDOWN = 300.0  # 5 minutes
 
 
 class _CircuitBreaker:
     """Per-provider circuit breaker. Opens after N failures in a window."""
 
     def __init__(self):
-        self._failures: Dict[str, List[float]] = {}  # provider -> list of failure timestamps
-        self._open_until: Dict[str, float] = {}       # provider -> reopen time
+        self._failures: Dict[
+            str, List[float]
+        ] = {}  # provider -> list of failure timestamps
+        self._open_until: Dict[str, float] = {}  # provider -> reopen time
 
     def record_failure(self, provider: str) -> None:
         now = time.monotonic()
@@ -69,7 +74,8 @@ class _CircuitBreaker:
             self._failures[provider] = []
             logger.warning(
                 "Circuit breaker OPEN for provider %s — falling back for %.0fs",
-                provider, CB_COOLDOWN,
+                provider,
+                CB_COOLDOWN,
             )
 
     def record_success(self, provider: str) -> None:
@@ -102,7 +108,11 @@ class LLMRouter:
 
         for complexity, config in self.routing.items():
             if config["provider"] not in self.clients:
-                logger.warning("Provider %s for %s not registered", config["provider"], complexity.value)
+                logger.warning(
+                    "Provider %s for %s not registered",
+                    config["provider"],
+                    complexity.value,
+                )
 
     # ── Legacy interface (backwards compat) ──────────────────────────
 
@@ -110,7 +120,9 @@ class LLMRouter:
         config = self.routing[complexity]
         provider = config["provider"]
         if provider not in self.clients:
-            raise KeyError(f"Provider {provider} not registered. Available: {list(self.clients.keys())}")
+            raise KeyError(
+                f"Provider {provider} not registered. Available: {list(self.clients.keys())}"
+            )
         return self.clients[provider], config["model"]
 
     # ── Task-type routing with circuit breaker ───────────────────────
@@ -126,7 +138,9 @@ class LLMRouter:
             fallback = self.task_routing["fallback"]
             provider = fallback["provider"]
             model = fallback["model"]
-            logger.info("Circuit breaker: rerouting %s → %s/%s", task_type, provider, model)
+            logger.info(
+                "Circuit breaker: rerouting %s → %s/%s", task_type, provider, model
+            )
 
         if provider not in self.clients:
             # Provider not available, fall back to OpenAI
@@ -172,9 +186,31 @@ class LLMRouter:
             fb_provider = fallback_cfg["provider"]
             fb_model = fallback_cfg["model"]
             if fb_provider != provider and fb_provider in self.clients:
-                logger.info("Falling back to %s/%s for task_type=%s", fb_provider, fb_model, task_type)
+                logger.info(
+                    "Falling back to %s/%s for task_type=%s",
+                    fb_provider,
+                    fb_model,
+                    task_type,
+                )
                 fb_client = self.clients[fb_provider]
                 kwargs["model"] = fb_model
+                # Gemini-style json_schema (additionalProperties true / missing)
+                # fails OpenAI strict mode (returns 400). Relax strict on fallback so
+                # the request succeeds; structure may be looser but call goes through.
+                if fb_provider == "openai":
+                    rf = kwargs.get("response_format")
+                    if isinstance(rf, dict) and rf.get("type") == "json_schema":
+                        rf_copy = dict(rf)
+                        js = rf_copy.get("json_schema")
+                        if isinstance(js, dict) and js.get("strict") is True:
+                            js_copy = dict(js)
+                            js_copy["strict"] = False
+                            rf_copy["json_schema"] = js_copy
+                            kwargs["response_format"] = rf_copy
+                            logger.info(
+                                "[LLM_ROUTER] Relaxed json_schema strict for OpenAI fallback (task_type=%s)",
+                                task_type,
+                            )
                 return await fb_client.chat(**kwargs)
             raise
 
@@ -198,6 +234,8 @@ class LLMRouter:
             logger.info("LLM provider registered: gemini")
 
         if not clients:
-            raise RuntimeError("No LLM provider configured. Set OPENAI_API_KEY at minimum.")
+            raise RuntimeError(
+                "No LLM provider configured. Set OPENAI_API_KEY at minimum."
+            )
 
         return cls(clients=clients)
