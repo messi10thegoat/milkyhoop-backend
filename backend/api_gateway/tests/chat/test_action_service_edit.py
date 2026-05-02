@@ -1,12 +1,12 @@
 """Bucket 3 Step 1 — ActionService.edit_pending_action unit tests.
 
-Per DOCS/plans/2026-04-29-mid-flow-edit-diagnosis.md (v2). Pure data layer:
-no dispatch routing, no behavioral fixtures here.
+Per DOCS/plans/2026-04-29-mid-flow-edit-diagnosis.md (v3): storage = Postgres
+pending_actions.action_plan JSONB (sales-invoice DIRECT_ACTION path).
 """
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -21,94 +21,113 @@ from app.services.action_service import (
 # ────────────────────────────────────────────────────────────────────
 
 
-def make_service() -> ActionService:
-    """Build an ActionService with a mocked asyncpg pool (unused in these tests)."""
-    pool = MagicMock()
-    return ActionService(pool=pool)
-
-
-def make_pending(
-    *,
-    status: str = "PENDING",
-    payload: dict | None = None,
-    version: int = 1,
-) -> dict:
-    """Construct a Redis-envelope-shaped pending dict for mocking get_pending_action."""
+def make_payload() -> dict:
     return {
-        "id": "pend-1",
-        "tenant_id": "tenant-1",
-        "status": status,
-        "version": version,
-        "action_type": "create_sales_invoice",
-        "payload": payload
-        if payload is not None
-        else {
-            "customer_id": "cust-1",
-            "customer_name": "Maju Jaya",
-            "invoice_date": "2026-04-29",
-            "due_date": "2026-05-29",
-            "tax_rate": 0,
-            "items": [{"description": "kaos", "quantity": 10, "unit_price": 50000}],
-        },
+        "customer_id": "cust-1",
+        "customer_name": "Maju Jaya",
+        "invoice_date": "2026-04-29",
+        "due_date": "2026-05-29",
+        "tax_rate": 0,
+        "items": [{"description": "kaos", "quantity": 10, "unit_price": 50000}],
     }
 
 
-class _FakeRedis:
-    """Minimal async stub for redis.asyncio interface used by edit_pending_action."""
+class _FakeConn:
+    """asyncpg connection mock supporting set_config, advisory lock, fetchrow,
+    execute (UPDATE), and async context-manager `transaction()`."""
 
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-        self.setex_calls: list[tuple[str, int, str]] = []
+    def __init__(self, row: dict | None):
+        self._row = row
+        self.execute = AsyncMock(return_value="UPDATE 1")
+        self.executed_calls: list[tuple] = []
+        # capture UPDATE payloads
+        # capture original (unused, kept for reference)
+        _ = self.execute
 
-    async def setex(self, key: str, ttl: int, value: str) -> None:
-        self.setex_calls.append((key, ttl, value))
-        self.store[key] = value
+        async def _exec(sql, *args):
+            self.executed_calls.append((sql, args))
+            return "OK"
+
+        self.execute = _exec  # type: ignore
+
+    async def fetchrow(self, sql, *args):
+        return self._row
+
+    def transaction(self):
+        conn = self
+
+        class _TxnCM:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _TxnCM()
+
+
+class _FakePool:
+    def __init__(self, conn: _FakeConn):
+        self._conn = conn
+
+    def acquire(self):
+        conn = self._conn
+
+        class _CM:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _CM()
+
+
+def make_service_with_row(row: dict | None) -> tuple[ActionService, _FakeConn]:
+    conn = _FakeConn(row)
+    pool = _FakePool(conn)
+    svc = ActionService(pool=pool)  # type: ignore[arg-type]
+    return svc, conn
+
+
+def make_pg_row(
+    *, status: str = "PENDING", version: int = 1, payload: dict | None = None
+) -> dict:
+    import uuid as _u
+    from datetime import datetime, timedelta
+
+    return {
+        "id": _u.uuid4(),
+        "status": status,
+        "version": version,
+        "action_plan": payload if payload is not None else make_payload(),
+        "expires_at": datetime.utcnow() + timedelta(seconds=900),
+    }
+
+
+VALID_PENDING_ID = "11111111-1111-1111-1111-111111111111"
 
 
 # ────────────────────────────────────────────────────────────────────
-# T7 — detect_edit_intent precedence (sync, runs first; no async deps)
+# T7 — detect_edit_intent precedence (sync)
 # ────────────────────────────────────────────────────────────────────
 
 
 def test_t7_detect_edit_intent_precedence():
-    # pure edit
     assert detect_edit_intent("ganti qty jadi 20") is True
     assert detect_edit_intent("ubah jadi mandiri") is True
     assert detect_edit_intent("koreksi harga") is True
     assert detect_edit_intent("tambah kaos") is True
-    # X-jadi-Y pattern (no edit keyword, but matches regex)
     assert detect_edit_intent("qty 20 aja jadi 25") is True
-    # confirm precedence (overlap)
     assert detect_edit_intent("betul ganti") is False
     assert detect_edit_intent("ya ganti aja") is False
-    # cancel precedence (overlap)
     assert detect_edit_intent("batal ganti") is False
     assert detect_edit_intent("jangan ubah") is False
-    # pure confirm / cancel
     assert detect_edit_intent("betul") is False
     assert detect_edit_intent("batal") is False
-    # empty / whitespace
     assert detect_edit_intent("") is False
     assert detect_edit_intent("   ") is False
-    # unrelated
     assert detect_edit_intent("apa kabar") is False
-
-
-# ────────────────────────────────────────────────────────────────────
-# Async test fixtures
-# ────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def fake_redis():
-    return _FakeRedis()
-
-
-@pytest.fixture
-def service(fake_redis):
-    svc = make_service()
-    svc._get_redis = AsyncMock(return_value=fake_redis)
-    return svc
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -117,13 +136,13 @@ def service(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_t1_qty_edit_regex(service, fake_redis):
-    pending = make_pending(version=1)
-    service.get_pending_action = AsyncMock(return_value=pending)
+async def test_t1_qty_edit_regex():
+    row = make_pg_row()
+    svc, conn = make_service_with_row(row)
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-1",
+        pending_id=VALID_PENDING_ID,
         text="ganti qty jadi 20",
         action_key="create_sales_invoice",
     )
@@ -131,16 +150,14 @@ async def test_t1_qty_edit_regex(service, fake_redis):
     assert result["success"] is True, result
     assert result["version"] == 2
     assert result["payload"]["items"][0]["quantity"] == 20
-    # original unit_price preserved
     assert result["payload"]["items"][0]["unit_price"] == 50000
-    # Redis setex called once
-    assert len(fake_redis.setex_calls) == 1
-    key, ttl, blob = fake_redis.setex_calls[0]
-    assert key == "action:tenant-1:pend-1"
-    assert ttl > 0
-    written = json.loads(blob)
-    assert written["payload"]["items"][0]["quantity"] == 20
-    assert written["version"] == 2
+    # UPDATE call captured
+    update_calls = [c for c in conn.executed_calls if "UPDATE pending_actions" in c[0]]
+    assert len(update_calls) == 1
+    sql, args = update_calls[0]
+    written_payload = json.loads(args[0])
+    assert written_payload["items"][0]["quantity"] == 20
+    assert args[1] == 2  # version
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -149,15 +166,14 @@ async def test_t1_qty_edit_regex(service, fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_t2_unknown_field(service):
-    pending = make_pending()
-    service.get_pending_action = AsyncMock(return_value=pending)
-    # Force LLM path to return an unknown-field patch
-    service._extract_patch_llm = AsyncMock(return_value={"warna": "merah"})
+async def test_t2_unknown_field():
+    row = make_pg_row()
+    svc, _ = make_service_with_row(row)
+    svc._extract_patch_llm = AsyncMock(return_value={"warna": "merah"})
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-1",
+        pending_id=VALID_PENDING_ID,
         text="ubah warna jadi merah",
         action_key="create_sales_invoice",
     )
@@ -168,18 +184,17 @@ async def test_t2_unknown_field(service):
 
 
 # ────────────────────────────────────────────────────────────────────
-# T3 — Expired pending → EXPIRED
+# T3 — Expired / not-found pending → EXPIRED
 # ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_t3_expired_pending(service):
-    # get_pending_action returns None when Redis key is gone (TTL expired)
-    service.get_pending_action = AsyncMock(return_value=None)
+async def test_t3_expired_pending():
+    svc, _ = make_service_with_row(None)
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-gone",
+        pending_id=VALID_PENDING_ID,
         text="ganti qty jadi 20",
         action_key="create_sales_invoice",
     )
@@ -194,25 +209,22 @@ async def test_t3_expired_pending(service):
 
 
 @pytest.mark.asyncio
-async def test_t4_customer_swap_revalidates(service):
-    pending = make_pending()
-    service.get_pending_action = AsyncMock(return_value=pending)
-    # LLM returns a customer_name-only patch
-    service._extract_patch_llm = AsyncMock(return_value={"customer_name": "Toko ABC"})
-    # Spy on _revalidate_action_plan
+async def test_t4_customer_swap_revalidates():
+    row = make_pg_row()
+    svc, _ = make_service_with_row(row)
+    svc._extract_patch_llm = AsyncMock(return_value={"customer_name": "Toko ABC"})
     revalidate_spy = AsyncMock(return_value=(True, []))
-    service._revalidate_action_plan = revalidate_spy
+    svc._revalidate_action_plan = revalidate_spy
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-1",
+        pending_id=VALID_PENDING_ID,
         text="ganti customer jadi Toko ABC",
         action_key="create_sales_invoice",
     )
 
     assert result["success"] is True
     revalidate_spy.assert_awaited_once()
-    # The new payload passed in must contain the swapped customer_name
     args, _ = revalidate_spy.call_args
     _, payload_arg, action_key_arg = args
     assert payload_arg["customer_name"] == "Toko ABC"
@@ -225,13 +237,13 @@ async def test_t4_customer_swap_revalidates(service):
 
 
 @pytest.mark.asyncio
-async def test_t5_multi_field_atomic(service):
-    pending = make_pending()
-    service.get_pending_action = AsyncMock(return_value=pending)
+async def test_t5_multi_field_atomic():
+    row = make_pg_row()
+    svc, _ = make_service_with_row(row)
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-1",
+        pending_id=VALID_PENDING_ID,
         text="ganti qty jadi 20, harga jadi 60 ribu",
         action_key="create_sales_invoice",
     )
@@ -248,18 +260,16 @@ async def test_t5_multi_field_atomic(service):
 
 
 @pytest.mark.asyncio
-async def test_t6_ambiguous_llm(service):
-    pending = make_pending()
-    service.get_pending_action = AsyncMock(return_value=pending)
-    # Use a phrasing the regex won't match (no "jadi N" + no edit keyword
-    # that survives precedence) so we drop into the LLM path.
-    service._extract_patch_llm = AsyncMock(
+async def test_t6_ambiguous_llm():
+    row = make_pg_row()
+    svc, _ = make_service_with_row(row)
+    svc._extract_patch_llm = AsyncMock(
         return_value={"_error": "ambiguous", "reason": "interrogative, not an edit"}
     )
 
-    result = await service.edit_pending_action(
+    result = await svc.edit_pending_action(
         tenant_id="tenant-1",
-        pending_id="pend-1",
+        pending_id=VALID_PENDING_ID,
         text="kalau qty hasilnya berapa ya?",
         action_key="create_sales_invoice",
     )

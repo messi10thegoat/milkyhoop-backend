@@ -1164,6 +1164,54 @@ class ActionService:
     # EDIT PENDING ACTION (Bucket 3 Step 1)
     # =========================================================
 
+    async def get_pending_action_pg(
+        self, tenant_id: str, pending_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Read pending_actions row from Postgres (sales-invoice DIRECT_ACTION path).
+
+        Returns dict shaped like Redis envelope (status, version, payload, action_type)
+        or None if not found / expired.
+        """
+        import uuid as _uuid_mod
+
+        try:
+            pending_uuid = _uuid_mod.UUID(pending_id)
+        except (ValueError, TypeError):
+            return None
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+            except Exception:
+                pass
+            row = await conn.fetchrow(
+                """SELECT id, status, version, action_type, action_id,
+                          action_plan, expires_at
+                     FROM pending_actions
+                    WHERE id = $1 AND tenant_id = $2""",
+                pending_uuid,
+                tenant_id,
+            )
+            if not row:
+                return None
+            ap_raw = row["action_plan"]
+            if isinstance(ap_raw, str):
+                payload = json.loads(ap_raw)
+            else:
+                payload = ap_raw or {}
+            return {
+                "id": str(row["id"]),
+                "status": row["status"],
+                "version": row["version"],
+                "action_type": row["action_type"],
+                "action_id": row["action_id"],
+                "payload": payload if isinstance(payload, dict) else {},
+                "expires_at": row["expires_at"].isoformat()
+                if row["expires_at"]
+                else None,
+            }
+
     async def edit_pending_action(
         self,
         tenant_id: str,
@@ -1173,35 +1221,32 @@ class ActionService:
     ) -> Dict[str, Any]:
         """Apply an edit patch to a pending action's payload, re-validate, refresh TTL.
 
-        Storage = Redis envelope (action:{tenant}:{pending_id}); the mutable shape is
-        under top-level field `payload`. Architecture verdict per
-        DOCS/plans/2026-04-29-mid-flow-edit-diagnosis.md (v2).
+        Storage = Postgres `pending_actions.action_plan` JSONB (sales-invoice
+        DIRECT_ACTION path writes here; mirror confirm_action at unified_chat.py:4587).
+        Iron Law 13: per-pending advisory lock keyed by f"PENDING_ACTION:{pending_id}".
 
         Returns:
             {success: True, payload: {...}, version: N, action_plan: {...}, preview: {...}}
             or {success: False, error: <code>, message: str}
         """
-        # 1. Load envelope
-        pending = await self.get_pending_action(tenant_id, pending_id)
-        if not pending:
+        import uuid as _uuid_mod
+
+        # 1. Validate UUID
+        try:
+            pending_uuid = _uuid_mod.UUID(pending_id)
+        except (ValueError, TypeError):
             return {
                 "success": False,
                 "error": "EXPIRED",
                 "message": "Aksi sudah expired. Silakan ulangi.",
             }
-        if pending.get("status") != "PENDING":
-            return {
-                "success": False,
-                "error": "INVALID_STATE",
-                "message": f"Aksi sudah dalam status {pending.get('status')}.",
-            }
 
-        payload_current = pending.get("payload", {}) or {}
-
-        # 2. Resolve FieldSpec via direct_action_registry
+        # 2. Resolve FieldSpec via direct_action_registry (storage-agnostic)
         from .unified_agent.direct_action_registry import get_direct_action
 
-        spec = get_direct_action(action_key)
+        # action_key may arrive uppercased from Postgres action_type column
+        spec_key = (action_key or "").lower()
+        spec = get_direct_action(spec_key)
         if not spec:
             return {
                 "success": False,
@@ -1210,80 +1255,142 @@ class ActionService:
             }
         fieldspec_names = [f.name for f in spec.fields]
 
-        # 3. Extract patch — regex first, LLM fallback
-        patch = self._extract_patch_regex(text, payload_current, fieldspec_names)
-        if patch is None:
-            patch = await self._extract_patch_llm(
-                text, payload_current, action_key, fieldspec_names
-            )
+        async with self.pool.acquire() as conn:
+            # RLS context
+            try:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+            except Exception:
+                pass
 
-        if patch.get("_error") == "ambiguous":
-            return {
-                "success": False,
-                "error": "AMBIGUOUS_FIELD",
-                "message": patch.get(
-                    "reason", "Edit tidak jelas. Sebutkan field-nya secara spesifik."
-                ),
-            }
+            async with conn.transaction():
+                # Iron Law 13: advisory lock keyed by pending_id
+                lock_key = f"PENDING_ACTION:{pending_id}"
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", lock_key
+                )
 
-        # 4. Validate patch fields against FieldSpec
-        unknown_fields = [
-            k
-            for k in patch.keys()
-            if k not in fieldspec_names and k != "items" and not k.startswith("_")
-        ]
-        if unknown_fields:
-            return {
-                "success": False,
-                "error": "UNKNOWN_FIELD",
-                "message": f"Field tidak dikenali: {', '.join(unknown_fields)}",
-            }
+                # 3. SELECT FOR UPDATE
+                row = await conn.fetchrow(
+                    """SELECT id, status, version, action_plan, expires_at
+                         FROM pending_actions
+                        WHERE id = $1 AND tenant_id = $2
+                        FOR UPDATE""",
+                    pending_uuid,
+                    tenant_id,
+                )
+                if not row:
+                    return {
+                        "success": False,
+                        "error": "EXPIRED",
+                        "message": "Aksi sudah expired. Silakan ulangi.",
+                    }
 
-        # 5. Apply patch
-        payload_new = dict(payload_current)
-        if "items" in patch:
-            payload_new["items"] = self._apply_line_resolver(
-                payload_current.get("items", []) or [], patch["items"]
-            )
-        for k, v in patch.items():
-            if k == "items" or k.startswith("_"):
-                continue
-            payload_new[k] = v
+                if row["status"] != "PENDING":
+                    return {
+                        "success": False,
+                        "error": "INVALID_STATE",
+                        "message": f"Aksi sudah dalam status {row['status']}.",
+                    }
 
-        # 6. Re-validate
-        is_valid, errors = await self._revalidate_action_plan(
-            tenant_id, payload_new, action_key
-        )
-        if not is_valid:
-            msg = "; ".join([e.get("message", e.get("code", "?")) for e in errors])
-            return {
-                "success": False,
-                "error": "VALIDATION_FAILED",
-                "message": msg or "Validasi gagal.",
-            }
+                # action_plan column may be JSONB (dict) or str depending on driver
+                ap_raw = row["action_plan"]
+                if isinstance(ap_raw, str):
+                    payload_current = json.loads(ap_raw)
+                else:
+                    payload_current = ap_raw or {}
+                if not isinstance(payload_current, dict):
+                    payload_current = {}
 
-        # 7. Write back to Redis envelope, refresh TTL
-        pending["payload"] = payload_new
-        pending["version"] = int(pending.get("version", 0)) + 1
-        pending["updated_at"] = datetime.utcnow().isoformat()
+                # 4. Extract patch — regex first, LLM fallback
+                patch = self._extract_patch_regex(
+                    text, payload_current, fieldspec_names
+                )
+                if patch is None:
+                    patch = await self._extract_patch_llm(
+                        text, payload_current, spec_key, fieldspec_names
+                    )
 
-        redis = await self._get_redis()
-        key = f"{REDIS_PREFIX}{tenant_id}:{pending_id}"
-        await redis.setex(key, PENDING_ACTION_TTL, json.dumps(pending, default=str))
+                if patch.get("_error") == "ambiguous":
+                    return {
+                        "success": False,
+                        "error": "AMBIGUOUS_FIELD",
+                        "message": patch.get(
+                            "reason",
+                            "Edit tidak jelas. Sebutkan field-nya secara spesifik.",
+                        ),
+                    }
+
+                # 5. Validate patch fields against FieldSpec
+                unknown_fields = [
+                    k
+                    for k in patch.keys()
+                    if k not in fieldspec_names
+                    and k != "items"
+                    and not k.startswith("_")
+                ]
+                if unknown_fields:
+                    return {
+                        "success": False,
+                        "error": "UNKNOWN_FIELD",
+                        "message": f"Field tidak dikenali: {', '.join(unknown_fields)}",
+                    }
+
+                # 6. Apply patch
+                payload_new = dict(payload_current)
+                if "items" in patch:
+                    payload_new["items"] = self._apply_line_resolver(
+                        payload_current.get("items", []) or [], patch["items"]
+                    )
+                for k, v in patch.items():
+                    if k == "items" or k.startswith("_"):
+                        continue
+                    payload_new[k] = v
+
+                # 7. Re-validate
+                is_valid, errors = await self._revalidate_action_plan(
+                    tenant_id, payload_new, spec_key
+                )
+                if not is_valid:
+                    msg = "; ".join(
+                        [e.get("message", e.get("code", "?")) for e in errors]
+                    )
+                    return {
+                        "success": False,
+                        "error": "VALIDATION_FAILED",
+                        "message": msg or "Validasi gagal.",
+                    }
+
+                # 8. Persist: UPDATE action_plan + version+1, refresh expires_at
+                new_version = int(row["version"] or 1) + 1
+                new_expires = datetime.utcnow() + timedelta(seconds=PENDING_ACTION_TTL)
+                await conn.execute(
+                    """UPDATE pending_actions
+                          SET action_plan = $1::jsonb,
+                              version = $2,
+                              expires_at = $3
+                        WHERE id = $4 AND tenant_id = $5 AND status = 'PENDING'""",
+                    json.dumps(payload_new, default=str),
+                    new_version,
+                    new_expires,
+                    pending_uuid,
+                    tenant_id,
+                )
 
         logger.info(
             "[BUCKET3_EDIT] applied tenant=%s pending=%s patch_keys=%s version=%s",
             tenant_id,
             pending_id,
             list(patch.keys()),
-            pending["version"],
+            new_version,
         )
 
         return {
             "success": True,
             "payload": payload_new,
-            "action_plan": payload_new,  # alias for diagnosis-spec callers
-            "version": pending["version"],
+            "action_plan": payload_new,
+            "version": new_version,
             "preview": payload_new,
         }
 

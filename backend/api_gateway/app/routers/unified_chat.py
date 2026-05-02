@@ -5115,7 +5115,7 @@ async def edit_action(request: Request, body: EditActionRequest):
 
     Flow:
       1. Auth + tenant context (mirror confirm_action).
-      2. Load pending envelope from Redis via action_service.get_pending_action.
+      2. Load pending row from Postgres via action_service.get_pending_action_pg.
       3. Delegate to action_service.edit_pending_action (regex/LLM patch + revalidate).
       4. On success: insert NEW chat_messages bot row with edit's preview_snapshot,
          mark prior bot row metadata.superseded_by = new_message_id (Phase D).
@@ -5131,7 +5131,7 @@ async def edit_action(request: Request, body: EditActionRequest):
         # 1. Load pending envelope from Redis
         _as_pool = await get_session_db_pool()
         action_service = ActionService(_as_pool)
-        pending = await action_service.get_pending_action(
+        pending = await action_service.get_pending_action_pg(
             tenant_id, body.pending_action_id
         )
         if not pending:
