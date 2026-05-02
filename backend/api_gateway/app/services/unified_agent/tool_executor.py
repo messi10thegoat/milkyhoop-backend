@@ -191,7 +191,7 @@ from .tutorial_progress import (  # noqa: E402
 
 logger = logging.getLogger("unified_agent.tool_executor")
 # ─── Phase 2C: Tool Response Cache ───────────────────────────────────────────
-import time as _cache_time
+import time as _cache_time  # noqa: E402
 
 TOOL_CACHE_TTL = 300  # 5 minutes
 _cache_logger = __import__("logging").getLogger("unified_agent.cache")
@@ -1052,6 +1052,46 @@ class ToolExecutor:
 
         # Apply defaults
         payload = apply_defaults(action_key, payload)
+
+        # === BUCKET 4: Reject negative/zero qty at preview-build ===
+        # Iron Law: invalid invariants (qty <= 0) must NOT reach pending_actions.action_plan.
+        if action_key == "create_sales_invoice":
+            _qty_violations = []
+            _items_for_check = payload.get("items") or []
+            if isinstance(_items_for_check, list):
+                for _idx, _it in enumerate(_items_for_check):
+                    if not isinstance(_it, dict):
+                        continue
+                    _q_raw = _it.get("quantity", _it.get("qty"))
+                    try:
+                        _q_val = float(_q_raw) if _q_raw is not None else None
+                    except (ValueError, TypeError):
+                        _q_val = None
+                    if _q_val is not None and _q_val <= 0:
+                        _desc = (
+                            _it.get("description")
+                            or _it.get("item_name")
+                            or _it.get("name")
+                            or f"item #{_idx + 1}"
+                        )
+                        _qty_violations.append((_desc, _q_val))
+            if _qty_violations:
+                _lines = [
+                    f"'{d}' qty={int(q) if q == int(q) else q}"
+                    for (d, q) in _qty_violations
+                ]
+                logger.warning(
+                    "[BUCKET4_NEGQTY] rejected violations=%s payload_items=%s",
+                    _qty_violations,
+                    _items_for_check,
+                )
+                _msg = (
+                    "Quantity tidak valid: "
+                    + ", ".join(_lines)
+                    + ". Qty harus lebih dari 0."
+                )
+                return {"message_type": "TEXT", "text": _msg}
+        # === END BUCKET 4 ===
 
         # === JOURNAL PREVIEW (after normalization + validation + defaults) ===
         journal_preview = None
@@ -1981,9 +2021,7 @@ class ToolExecutor:
                 if resp.status_code == 200:
                     bill_data = resp.json()
                     unpaid_bills.extend(
-                        bill_data.get(
-                            "items", normalize_api_response(bill_data)
-                        )
+                        bill_data.get("items", normalize_api_response(bill_data))
                     )
 
             if not unpaid_bills:
@@ -2106,9 +2144,7 @@ class ToolExecutor:
                 if resp.status_code == 200:
                     inv_data = resp.json()
                     unpaid_invoices.extend(
-                        inv_data.get(
-                            "items", normalize_api_response(inv_data)
-                        )
+                        inv_data.get("items", normalize_api_response(inv_data))
                     )
 
             if not unpaid_invoices:
@@ -3744,9 +3780,9 @@ class ToolExecutor:
 
         # Keep top-level tax_rate for build_review_card_payload; REST layer handles stripping
         try:
-            top_tax_rate = float(payload.get("tax_rate") or 0) or None
+            top_tax_rate = float(payload.get("tax_rate") or 0) or None  # noqa: F841
         except (ValueError, TypeError):
-            top_tax_rate = None
+            top_tax_rate = None  # noqa: F841
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Customer name lookup
@@ -3828,7 +3864,7 @@ class ToolExecutor:
                         _parsed_tr = float(_m.group(1).replace(",", "."))
                         payload["tax_rate"] = _parsed_tr
                         _cur_tr = _parsed_tr
-                        top_tax_rate = _parsed_tr
+                        _top_tax_rate = _parsed_tr  # noqa: F841 (kept for parity)
                     except (ValueError, TypeError):
                         pass
 
@@ -4721,11 +4757,7 @@ class ToolExecutor:
 
     def _chart_expense_breakdown(self, data, spec: dict) -> dict:
         """Transform top-expenses into donut."""
-        items = (
-            data
-            if isinstance(data, list)
-            else normalize_api_response(data)
-        )
+        items = data if isinstance(data, list) else normalize_api_response(data)
         if not isinstance(items, list):
             items = []
         spec["slices"] = [
@@ -4743,11 +4775,7 @@ class ToolExecutor:
 
     def _chart_top_customers(self, data, spec: dict) -> dict:
         """Transform pendapatan into horizontal bar."""
-        items = (
-            data
-            if isinstance(data, list)
-            else normalize_api_response(data)
-        )
+        items = data if isinstance(data, list) else normalize_api_response(data)
         if not isinstance(items, list):
             items = []
         top = items[:5]
@@ -4766,11 +4794,7 @@ class ToolExecutor:
 
     def _chart_ar_aging(self, data, spec: dict) -> dict:
         """Transform aging-trend into line chart."""
-        items = (
-            data
-            if isinstance(data, list)
-            else normalize_api_response(data)
-        )
+        items = data if isinstance(data, list) else normalize_api_response(data)
         if not isinstance(items, list):
             items = []
         spec["labels"] = [
@@ -5364,9 +5388,7 @@ class ToolExecutor:
 
     def _chart_sales_trend(self, data: dict, spec: dict) -> dict:
         """Transform daily-summary into line chart."""
-        items = (
-            normalize_api_response(data)
-        )
+        items = normalize_api_response(data)
         if isinstance(items, list) and items:
             spec["labels"] = [str(i.get("date", i.get("tanggal", ""))) for i in items]
             spec["datasets"] = [
@@ -5714,7 +5736,6 @@ class ToolExecutor:
         }
 
 
-
 def normalize_api_response(data) -> list:
     """Extract entity list from any API response shape.
 
@@ -5730,9 +5751,22 @@ def normalize_api_response(data) -> list:
         return [data] if data else []
 
     # Check known list keys (order = most common first)
-    for key in ("data", "items", "results", "invoices", "bills",
-                "expenses", "accounts", "vendors", "customers",
-                "alerts", "projections", "trend", "line_items", "lines"):
+    for key in (
+        "data",
+        "items",
+        "results",
+        "invoices",
+        "bills",
+        "expenses",
+        "accounts",
+        "vendors",
+        "customers",
+        "alerts",
+        "projections",
+        "trend",
+        "line_items",
+        "lines",
+    ):
         val = data.get(key)
         if isinstance(val, list):
             return val
@@ -5755,8 +5789,17 @@ def normalize_api_response_or_dict(data) -> any:
     if not isinstance(data, dict):
         return data
 
-    for key in ("data", "items", "results", "invoices", "bills",
-                "expenses", "accounts", "vendors", "customers"):
+    for key in (
+        "data",
+        "items",
+        "results",
+        "invoices",
+        "bills",
+        "expenses",
+        "accounts",
+        "vendors",
+        "customers",
+    ):
         val = data.get(key)
         if isinstance(val, list):
             return val
