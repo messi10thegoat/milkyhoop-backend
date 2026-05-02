@@ -35,7 +35,12 @@ from ..services.unified_agent.telemetry import record_telemetry
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
 from ..services.unified_agent.orchestrator import _strip_draft_void_rows
 from ..services.action_executor_client import get_action_executor_client
-from ..services.action_service import CONFIRM_KEYWORDS, CANCEL_KEYWORDS
+from ..services.action_service import (
+    ActionService,
+    CONFIRM_KEYWORDS,
+    CANCEL_KEYWORDS,
+    detect_edit_intent,
+)
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
 from ..services.unified_agent.db_utils import get_session_db_pool
 from ..services.unified_agent.fsm import FSMState
@@ -440,6 +445,23 @@ class CancelActionRequest(BaseModel):
     )
 
 
+class EditActionRequest(BaseModel):
+    """Request to edit a pending action's payload via natural-language patch.
+
+    Bucket 3 Step 2 (2026-04-29): parity with confirm/cancel for mid-flow edits.
+    """
+
+    conversation_id: str = Field(..., description="Conversation session ID")
+    session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+    pending_action_id: str = Field(..., description="ID of the pending action to edit")
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Natural-language edit instruction",
+    )
+
+
 class ChatMessageResponse(BaseModel):
     """Unified response from agent chat endpoints."""
 
@@ -745,6 +767,28 @@ async def send_message(request: Request, body: ChatMessageRequest):
                                 pending_action_id=pending_id,
                             ),
                         )
+
+                # BucketA1.8 (2026-04-29): mid-flow edit dispatch — parity with A1.7.
+                # detect_edit_intent has CONFIRM/CANCEL precedence built-in,
+                # so safe to evaluate after the short-token confirm/cancel block.
+                # NOTE: token_count <= 3 gate is intentionally NOT applied here —
+                # edits are typically 3-6 tokens ("qty jadi 5", "harga jadi 100rb").
+                if detect_edit_intent(body.text):
+                    logger.info(
+                        "[BucketA1.8] NL EDIT routed: session=%s pending=%s text=%r",
+                        body.session_id[:8],
+                        pending_id[:8],
+                        body.text[:60],
+                    )
+                    return await edit_action(
+                        request,
+                        EditActionRequest(
+                            conversation_id=body.conversation_id,
+                            session_id=body.session_id,
+                            pending_action_id=pending_id,
+                            text=body.text,
+                        ),
+                    )
 
                 # Fall-through block: pending exists but utterance is not a
                 # short confirm/reject — preserve old UX (block new work).
@@ -1673,6 +1717,58 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
                         },
                     )
 
+                # BucketA1.8 (2026-04-29): stream NL edit dispatch — parity with A1.7.
+                # No token_count cap (edits are 3-6 tokens). Safe after confirm/cancel
+                # because detect_edit_intent enforces CONFIRM/CANCEL precedence internally.
+                if body.text and detect_edit_intent(body.text):
+                    try:
+                        logger.info(
+                            "[BucketA1.8] Stream NL EDIT routed: session=%s pending=%s text=%r",
+                            body.session_id[:8],
+                            pending_id_stream[:8],
+                            body.text[:60],
+                        )
+                        _edit_resp_stream = await edit_action(
+                            request,
+                            EditActionRequest(
+                                conversation_id=body.conversation_id,
+                                session_id=body.session_id,
+                                pending_action_id=pending_id_stream,
+                                text=body.text,
+                            ),
+                        )
+                        _edit_payload = (
+                            _edit_resp_stream.model_dump()
+                            if hasattr(_edit_resp_stream, "model_dump")
+                            else dict(_edit_resp_stream)
+                        )
+
+                        async def _edit_dispatch_gen(payload=_edit_payload):
+                            yield f"data: {_json_stream.dumps({'event': 'DONE', 'data': payload}, default=str)}\n\n"
+
+                        return StreamingResponse(
+                            _edit_dispatch_gen(),
+                            media_type="text/event-stream",
+                            headers={
+                                "Cache-Control": "no-cache",
+                                "Connection": "keep-alive",
+                                "X-Accel-Buffering": "no",
+                            },
+                        )
+                    except (
+                        KeyError,
+                        TypeError,
+                        ValueError,
+                        asyncpg.PostgresError,
+                        json.JSONDecodeError,
+                    ) as _edit_err:
+                        logger.error(
+                            "[BucketA1.8] Stream NL EDIT dispatch failed: %s",
+                            _edit_err,
+                            exc_info=True,
+                        )
+                        # Fall through to guard TEXT below
+
                 # Fall-through: pending exists but utterance is not a short
                 # confirm/reject — preserve old "Ada aksi menunggu" UX.
                 async def _guard_gen():
@@ -1967,6 +2063,39 @@ async def send_message_with_files(
                                 _disp_err,
                                 exc_info=True,
                             )
+
+                # BucketA1.8 (2026-04-29): upload NL edit dispatch — parity with A1.7.
+                # No token_count cap (edits are 3-6 tokens).
+                if text and detect_edit_intent(text):
+                    try:
+                        logger.info(
+                            "[BucketA1.8] Upload NL EDIT routed: session=%s pending=%s text=%r",
+                            session_id[:8],
+                            pending_id_upload[:8],
+                            text[:60],
+                        )
+                        return await edit_action(
+                            request,
+                            EditActionRequest(
+                                conversation_id=conversation_id,
+                                session_id=session_id,
+                                pending_action_id=pending_id_upload,
+                                text=text,
+                            ),
+                        )
+                    except (
+                        KeyError,
+                        TypeError,
+                        ValueError,
+                        asyncpg.PostgresError,
+                        json.JSONDecodeError,
+                    ) as _edit_err:
+                        logger.error(
+                            "[BucketA1.8] Upload NL EDIT dispatch failed: %s",
+                            _edit_err,
+                            exc_info=True,
+                        )
+                        # Fall through to guard TEXT below
 
                 # Fall-through: pending exists but utterance is not a short
                 # confirm/reject — preserve old "Ada aksi menunggu" UX.
@@ -4973,3 +5102,162 @@ async def record_feedback(request: Request):
     except Exception as e:
         logger.warning("[FEEDBACK] Record failed: %s", e)
         return {"success": False, "error": str(e)[:100]}
+
+
+# =============================================================================
+# POST /action/edit — Apply NL edit patch to pending action (Bucket 3 Step 2)
+# =============================================================================
+
+
+@router.post("/action/edit", response_model=ChatMessageResponse)
+async def edit_action(request: Request, body: EditActionRequest):
+    """Apply a natural-language edit to a pending action's payload.
+
+    Flow:
+      1. Auth + tenant context (mirror confirm_action).
+      2. Load pending row from Postgres via action_service.get_pending_action_pg.
+      3. Delegate to action_service.edit_pending_action (regex/LLM patch + revalidate).
+      4. On success: insert NEW chat_messages bot row with edit's preview_snapshot,
+         mark prior bot row metadata.superseded_by = new_message_id (Phase D).
+      5. Return DIRECT_ACTION_PREVIEW with same pending_action_id.
+
+    On failure: return TEXT with error message (no clarification flow in Step 2).
+    """
+    ctx = _get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    _ = ctx.get("user_id")  # reserved for future audit logging
+
+    try:
+        # 1. Load pending envelope from Redis
+        _as_pool = await get_session_db_pool()
+        action_service = ActionService(_as_pool)
+        pending = await action_service.get_pending_action_pg(
+            tenant_id, body.pending_action_id
+        )
+        if not pending:
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text="Aksi sudah expired. Silakan ulangi.",
+                session_id=body.session_id,
+                pending_action_id=body.pending_action_id,
+                trace_id=str(uuid_mod.uuid4()),
+            )
+
+        action_key = (
+            pending.get("action_type")
+            or pending.get("action_key")
+            or pending.get("action_id")
+        )
+        if not action_key:
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text="Tidak dapat menentukan jenis aksi. Silakan ulangi.",
+                session_id=body.session_id,
+                pending_action_id=body.pending_action_id,
+                trace_id=str(uuid_mod.uuid4()),
+            )
+
+        # 2. Apply edit
+        result = await action_service.edit_pending_action(
+            tenant_id=tenant_id,
+            pending_id=body.pending_action_id,
+            text=body.text,
+            action_key=action_key,
+        )
+
+        if not result.get("success"):
+            logger.info(
+                "[BucketA1.8] edit failed: pending=%s err=%s msg=%s",
+                body.pending_action_id[:8],
+                result.get("error"),
+                result.get("message"),
+            )
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text=result.get("message") or "Edit gagal. Silakan coba lagi.",
+                session_id=body.session_id,
+                pending_action_id=body.pending_action_id,
+                trace_id=str(uuid_mod.uuid4()),
+            )
+
+        new_payload = result.get("payload") or result.get("preview") or {}
+        new_version = result.get("version")
+
+        # 3. Phase D: write NEW chat_messages bot row + supersede prior preview row
+        new_message_id = str(uuid_mod.uuid4())
+        try:
+            if body.session_id:
+                _md_pool = await get_session_db_pool()
+                # Mark prior preview row(s) as superseded by this new message
+                await _md_pool.execute(
+                    """
+                    UPDATE chat_messages
+                       SET metadata = jsonb_set(
+                           COALESCE(metadata, '{}'::jsonb),
+                           '{superseded_by}',
+                           to_jsonb($3::text)
+                       )
+                     WHERE tenant_id = $1
+                       AND metadata->>'pending_action_id' = $2
+                       AND (metadata->>'superseded_by') IS NULL
+                       AND COALESCE(metadata->>'action_status', '') <> 'COMPLETED'
+                    """,
+                    tenant_id,
+                    body.pending_action_id,
+                    new_message_id,
+                )
+
+                # Insert new bot row carrying the edit preview snapshot
+                _new_metadata = {
+                    "pending_action_id": body.pending_action_id,
+                    "action_status": "PENDING_EDITED",
+                    "preview_snapshot": new_payload,
+                    "version": new_version,
+                    "message_type": "DIRECT_ACTION_PREVIEW",
+                }
+                await _md_pool.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        id, session_id, tenant_id, role, content,
+                        message_type, metadata
+                    ) VALUES (
+                        $1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb
+                    )
+                    """,
+                    new_message_id,
+                    body.session_id,
+                    tenant_id,
+                    "assistant",
+                    "[edit applied]",
+                    "DIRECT_ACTION_PREVIEW",
+                    json.dumps(_new_metadata, default=str),
+                )
+        except Exception as _md_err:
+            logger.warning(
+                "[BucketA1.8] Phase-D metadata persistence failed (non-fatal): %s",
+                _md_err,
+            )
+
+        logger.info(
+            "[BucketA1.8] edit applied: tenant=%s pending=%s version=%s",
+            tenant_id,
+            body.pending_action_id[:8],
+            new_version,
+        )
+
+        return ChatMessageResponse(
+            message_id=new_message_id,
+            message_type="DIRECT_ACTION_PREVIEW",
+            text="Edit diterapkan. Silakan tinjau perubahan dan konfirmasi.",
+            data=new_payload,
+            session_id=body.session_id,
+            pending_action_id=body.pending_action_id,
+            trace_id=str(uuid_mod.uuid4()),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(
+            "[BucketA1.8] edit_action failed for %s", body.pending_action_id
+        )
+        raise HTTPException(status_code=500, detail=f"Edit failed: {str(e)}")

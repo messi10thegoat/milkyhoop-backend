@@ -331,6 +331,48 @@ CANCEL_KEYWORDS = [
 REJECT_KEYWORDS = CANCEL_KEYWORDS
 
 
+# ============ BUCKET 3 STEP 1: MID-FLOW EDIT ============
+EDIT_KEYWORDS = [
+    "ganti",
+    "ubah",
+    "edit",
+    "koreksi",
+    "ralat",
+    "tambah",
+    "hapus",
+]
+EDIT_PATTERNS = [
+    re.compile(
+        r"\b(qty|jumlah|harga|bank|customer|pelanggan|item|tanggal|due|jatuh\s+tempo|diskon|pajak)\b.*\b(jadi|menjadi|=|ke)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(jadi|menjadi)\b\s+\d", re.IGNORECASE),
+    re.compile(r"\b(tambah|hapus)\b\s+\w+", re.IGNORECASE),
+]
+
+
+def detect_edit_intent(text: str) -> bool:
+    """Return True if text expresses an edit on a pending action.
+
+    Confirm/cancel keywords take precedence on overlap (e.g. "betul ganti"
+    routes to confirm, "batal ganti" routes to cancel).
+    """
+    if not text:
+        return False
+    text_lower = text.lower().strip()
+    tokens = set(text_lower.split())
+    if any(kw in tokens for kw in CONFIRM_KEYWORDS):
+        return False
+    if any(kw in tokens for kw in CANCEL_KEYWORDS):
+        return False
+    if any(kw in tokens for kw in EDIT_KEYWORDS):
+        return True
+    for pattern in EDIT_PATTERNS:
+        if pattern.search(text_lower):
+            return True
+    return False
+
+
 class ActionService:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
@@ -1117,6 +1159,412 @@ class ActionService:
         )  # Keep for 5 min for status query
         logger.info(f"Action cancelled: {pending_id}")
         return True
+
+    # =========================================================
+    # EDIT PENDING ACTION (Bucket 3 Step 1)
+    # =========================================================
+
+    async def get_pending_action_pg(
+        self, tenant_id: str, pending_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Read pending_actions row from Postgres (sales-invoice DIRECT_ACTION path).
+
+        Returns dict shaped like Redis envelope (status, version, payload, action_type)
+        or None if not found / expired.
+        """
+        import uuid as _uuid_mod
+
+        try:
+            pending_uuid = _uuid_mod.UUID(pending_id)
+        except (ValueError, TypeError):
+            return None
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+            except Exception:
+                pass
+            row = await conn.fetchrow(
+                """SELECT id, status, version, action_type, action_id,
+                          action_plan, expires_at
+                     FROM pending_actions
+                    WHERE id = $1 AND tenant_id = $2""",
+                pending_uuid,
+                tenant_id,
+            )
+            if not row:
+                return None
+            ap_raw = row["action_plan"]
+            if isinstance(ap_raw, str):
+                payload = json.loads(ap_raw)
+            else:
+                payload = ap_raw or {}
+            return {
+                "id": str(row["id"]),
+                "status": row["status"],
+                "version": row["version"],
+                "action_type": row["action_type"],
+                "action_id": row["action_id"],
+                "payload": payload if isinstance(payload, dict) else {},
+                "expires_at": row["expires_at"].isoformat()
+                if row["expires_at"]
+                else None,
+            }
+
+    async def edit_pending_action(
+        self,
+        tenant_id: str,
+        pending_id: str,
+        text: str,
+        action_key: str,
+    ) -> Dict[str, Any]:
+        """Apply an edit patch to a pending action's payload, re-validate, refresh TTL.
+
+        Storage = Postgres `pending_actions.action_plan` JSONB (sales-invoice
+        DIRECT_ACTION path writes here; mirror confirm_action at unified_chat.py:4587).
+        Iron Law 13: per-pending advisory lock keyed by f"PENDING_ACTION:{pending_id}".
+
+        Returns:
+            {success: True, payload: {...}, version: N, action_plan: {...}, preview: {...}}
+            or {success: False, error: <code>, message: str}
+        """
+        import uuid as _uuid_mod
+
+        # 1. Validate UUID
+        try:
+            pending_uuid = _uuid_mod.UUID(pending_id)
+        except (ValueError, TypeError):
+            return {
+                "success": False,
+                "error": "EXPIRED",
+                "message": "Aksi sudah expired. Silakan ulangi.",
+            }
+
+        # 2. Resolve FieldSpec via direct_action_registry (storage-agnostic)
+        from .unified_agent.direct_action_registry import get_direct_action
+
+        # action_key may arrive uppercased from Postgres action_type column
+        spec_key = (action_key or "").lower()
+        spec = get_direct_action(spec_key)
+        if not spec:
+            return {
+                "success": False,
+                "error": "UNKNOWN_ACTION",
+                "message": f"action_key tidak dikenali: {action_key}",
+            }
+        fieldspec_names = [f.name for f in spec.fields]
+
+        async with self.pool.acquire() as conn:
+            # RLS context
+            try:
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+            except Exception:
+                pass
+
+            async with conn.transaction():
+                # Iron Law 13: advisory lock keyed by pending_id
+                lock_key = f"PENDING_ACTION:{pending_id}"
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", lock_key
+                )
+
+                # 3. SELECT FOR UPDATE
+                row = await conn.fetchrow(
+                    """SELECT id, status, version, action_plan, expires_at
+                         FROM pending_actions
+                        WHERE id = $1 AND tenant_id = $2
+                        FOR UPDATE""",
+                    pending_uuid,
+                    tenant_id,
+                )
+                if not row:
+                    return {
+                        "success": False,
+                        "error": "EXPIRED",
+                        "message": "Aksi sudah expired. Silakan ulangi.",
+                    }
+
+                if row["status"] != "PENDING":
+                    return {
+                        "success": False,
+                        "error": "INVALID_STATE",
+                        "message": f"Aksi sudah dalam status {row['status']}.",
+                    }
+
+                # action_plan column may be JSONB (dict) or str depending on driver
+                ap_raw = row["action_plan"]
+                if isinstance(ap_raw, str):
+                    payload_current = json.loads(ap_raw)
+                else:
+                    payload_current = ap_raw or {}
+                if not isinstance(payload_current, dict):
+                    payload_current = {}
+
+                # 4. Extract patch — regex first, LLM fallback
+                patch = self._extract_patch_regex(
+                    text, payload_current, fieldspec_names
+                )
+                if patch is None:
+                    patch = await self._extract_patch_llm(
+                        text, payload_current, spec_key, fieldspec_names
+                    )
+
+                if patch.get("_error") == "ambiguous":
+                    return {
+                        "success": False,
+                        "error": "AMBIGUOUS_FIELD",
+                        "message": patch.get(
+                            "reason",
+                            "Edit tidak jelas. Sebutkan field-nya secara spesifik.",
+                        ),
+                    }
+
+                # 5. Validate patch fields against FieldSpec
+                unknown_fields = [
+                    k
+                    for k in patch.keys()
+                    if k not in fieldspec_names
+                    and k != "items"
+                    and not k.startswith("_")
+                ]
+                if unknown_fields:
+                    return {
+                        "success": False,
+                        "error": "UNKNOWN_FIELD",
+                        "message": f"Field tidak dikenali: {', '.join(unknown_fields)}",
+                    }
+
+                # 6. Apply patch
+                payload_new = dict(payload_current)
+                if "items" in patch:
+                    payload_new["items"] = self._apply_line_resolver(
+                        payload_current.get("items", []) or [], patch["items"]
+                    )
+                for k, v in patch.items():
+                    if k == "items" or k.startswith("_"):
+                        continue
+                    payload_new[k] = v
+
+                # 7. Re-validate
+                is_valid, errors = await self._revalidate_action_plan(
+                    tenant_id, payload_new, spec_key
+                )
+                if not is_valid:
+                    msg = "; ".join(
+                        [e.get("message", e.get("code", "?")) for e in errors]
+                    )
+                    return {
+                        "success": False,
+                        "error": "VALIDATION_FAILED",
+                        "message": msg or "Validasi gagal.",
+                    }
+
+                # 8. Persist: UPDATE action_plan + version+1, refresh expires_at
+                new_version = int(row["version"] or 1) + 1
+                new_expires = datetime.utcnow() + timedelta(seconds=PENDING_ACTION_TTL)
+                await conn.execute(
+                    """UPDATE pending_actions
+                          SET action_plan = $1::jsonb,
+                              version = $2,
+                              expires_at = $3
+                        WHERE id = $4 AND tenant_id = $5 AND status = 'PENDING'""",
+                    json.dumps(payload_new, default=str),
+                    new_version,
+                    new_expires,
+                    pending_uuid,
+                    tenant_id,
+                )
+
+        logger.info(
+            "[BUCKET3_EDIT] applied tenant=%s pending=%s patch_keys=%s version=%s",
+            tenant_id,
+            pending_id,
+            list(patch.keys()),
+            new_version,
+        )
+
+        return {
+            "success": True,
+            "payload": payload_new,
+            "action_plan": payload_new,
+            "version": new_version,
+            "preview": payload_new,
+        }
+
+    def _extract_patch_regex(
+        self, text: str, payload: dict, fieldspec_names: list
+    ) -> Optional[Dict[str, Any]]:
+        """Deterministic regex extraction for common edit patterns. Returns None on no match."""
+        text_lower = text.lower().strip()
+        patch: Dict[str, Any] = {}
+
+        # qty / jumlah jadi N
+        m = re.search(r"\b(?:qty|jumlah)\s+(?:jadi|menjadi|=|ke)\s+(\d+)\b", text_lower)
+        if m:
+            patch.setdefault("items", [{}])[0]["quantity"] = int(m.group(1))
+
+        # harga jadi N (with ribu/rb/juta/jt unit)
+        m = re.search(
+            r"\bharga\s+(?:jadi|menjadi|=|ke)\s+(\d+)\s*(ribu|rb|juta|jt)?\b",
+            text_lower,
+        )
+        if m:
+            amount = int(m.group(1))
+            unit = (m.group(2) or "").lower()
+            if unit in ("ribu", "rb"):
+                amount *= 1_000
+            elif unit in ("juta", "jt"):
+                amount *= 1_000_000
+            patch.setdefault("items", [{}])[0]["unit_price"] = amount
+
+        # pajak jadi N
+        m = re.search(r"\bpajak\s+(?:jadi|menjadi|=|ke)\s+(\d+)\s*%?", text_lower)
+        if m and "tax_rate" in fieldspec_names:
+            patch["tax_rate"] = int(m.group(1))
+
+        # diskon jadi N
+        m = re.search(r"\bdiskon\s+(?:jadi|menjadi|=|ke)\s+(\d+)\s*%?", text_lower)
+        if m and "discount_percent" in fieldspec_names:
+            patch["discount_percent"] = int(m.group(1))
+
+        return patch if patch else None
+
+    async def _extract_patch_llm(
+        self,
+        text: str,
+        payload: dict,
+        action_key: str,
+        fieldspec_names: list,
+    ) -> Dict[str, Any]:
+        """LLM fallback (gpt-4o-mini JSON-mode). Returns patch dict or {_error: ambiguous}."""
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            return {
+                "_error": "ambiguous",
+                "reason": "LLM extractor unavailable (no API key)",
+            }
+
+        prompt = (
+            f"Given pending action payload: {json.dumps(payload, default=str)}\n"
+            f"Action key: {action_key}\n"
+            f"Allowed fields (FieldSpec): {fieldspec_names}\n"
+            f'User says: "{text}"\n\n'
+            "Return JSON patch with ONLY changed fields. Format:\n"
+            '  {"field_name": new_value, ...}\n'
+            "For item line edits use:\n"
+            '  {"items": [{"description": "kaos", "quantity": 20}]}\n'
+            "(line resolver matches by description ILIKE).\n\n"
+            "If the field is not in FieldSpec OR the intent is ambiguous, return:\n"
+            '  {"_error": "ambiguous", "reason": "..."}\n\n'
+            "Never invent field names not in FieldSpec. JSON only, no preamble."
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 500,
+                        "temperature": 0.1,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                resp.raise_for_status()
+                content = resp.json()["choices"][0]["message"]["content"].strip()
+                return json.loads(content)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[BUCKET3_EDIT] LLM extractor failed: %s", exc, exc_info=True
+            )
+            return {"_error": "ambiguous", "reason": f"Extractor error: {exc}"}
+
+    def _apply_line_resolver(self, items_current: list, line_patch: list) -> list:
+        """Merge line patch into existing items.
+
+        Match strategy: by `description` substring (case-insensitive) against
+        existing description / product_name. No match → append as new line.
+        Patch with no `description` is applied to the first existing line
+        (regex extractor always falls back here).
+        """
+        items_new: list = [dict(item) for item in items_current]
+
+        for patch_item in line_patch:
+            if "description" in patch_item and patch_item["description"]:
+                desc_lower = str(patch_item["description"]).lower()
+                matched = False
+                for item in items_new:
+                    desc = str(
+                        item.get("description") or item.get("product_name") or ""
+                    ).lower()
+                    if desc_lower in desc:
+                        for k, v in patch_item.items():
+                            if k != "description":
+                                item[k] = v
+                        matched = True
+                        break
+                if not matched:
+                    items_new.append(dict(patch_item))
+            else:
+                if items_new:
+                    for k, v in patch_item.items():
+                        items_new[0][k] = v
+                else:
+                    items_new.append(dict(patch_item))
+
+        return items_new
+
+    async def _revalidate_action_plan(
+        self, tenant_id: str, payload: dict, action_key: str
+    ) -> Tuple[bool, List[Dict[str, Any]]]:
+        """Lightweight post-patch validation.
+
+        Step 1 scope: required fields + qty>0 + price>0 sanity.
+        Step 2 will wire in the full preview/validation pipeline reuse from
+        unified_chat.py:3727 (customer re-resolution, journal preview re-run).
+        """
+        errors: List[Dict[str, Any]] = []
+
+        if action_key == "create_sales_invoice":
+            if not payload.get("customer_id") and not payload.get("customer_name"):
+                errors.append(
+                    {"code": "CUSTOMER_REQUIRED", "message": "Customer harus diisi."}
+                )
+            items = payload.get("items") or []
+            if not items:
+                errors.append({"code": "ITEMS_REQUIRED", "message": "Minimal 1 item."})
+            for idx, item in enumerate(items):
+                qty = item.get("quantity", item.get("qty", 0))
+                try:
+                    qty_num = float(qty)
+                except (TypeError, ValueError):
+                    qty_num = 0
+                if qty_num <= 0:
+                    errors.append(
+                        {
+                            "code": "INVALID_QTY",
+                            "message": f"Item {idx + 1}: qty harus > 0.",
+                        }
+                    )
+                price = item.get("unit_price", item.get("price", 0))
+                try:
+                    price_num = float(price)
+                except (TypeError, ValueError):
+                    price_num = 0
+                if price_num <= 0:
+                    errors.append(
+                        {
+                            "code": "INVALID_PRICE",
+                            "message": f"Item {idx + 1}: harga harus > 0.",
+                        }
+                    )
+
+        return (len(errors) == 0, errors)
 
     # =========================================================
     # VENDOR LOOKUP
