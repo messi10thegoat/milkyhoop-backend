@@ -23,6 +23,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.public_paths = {
             "/healthz",
             "/health",
+            "/ready",
+            "/version",
             "/docs",
             "/openapi.json",
             "/favicon.ico",

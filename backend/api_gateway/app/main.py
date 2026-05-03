@@ -739,6 +739,49 @@ async def healthz():
     return {"status": "healthy", "phase": "2", "middleware": "active"}
 
 
+@app.get("/ready")
+async def ready():
+    """Readiness probe — checks DB + Redis connectivity. 200 if both OK, 503 otherwise."""
+    from fastapi.responses import JSONResponse
+
+    checks = {"db": False, "redis": False}
+    try:
+        from .services.db_pool import get_db_pool
+
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchval("SELECT 1")
+            checks["db"] = r == 1
+    except Exception as e:
+        checks["db_error"] = str(e)[:200]
+    try:
+        from .services.redis_client import get_redis
+
+        rc = await get_redis()
+        if rc is not None:
+            await rc.ping()
+            checks["redis"] = True
+    except Exception as e:
+        checks["redis_error"] = str(e)[:200]
+    if not (checks["db"] and checks["redis"]):
+        return JSONResponse(
+            status_code=503, content={"status": "not_ready", "checks": checks}
+        )
+    return {"status": "ready", "checks": checks}
+
+
+@app.get("/version")
+async def version():
+    """Version info: commit SHA + build time + app version. Read from env (set by deploy script)."""
+    import os
+
+    return {
+        "commit": (os.environ.get("GIT_SHA") or "unknown")[:12],
+        "build_time": os.environ.get("BUILD_TIME") or "unknown",
+        "version": os.environ.get("APP_VERSION") or "0.3.0",
+    }
+
+
 # ===========================================
 # ALIAS ENDPOINTS FOR AUDIT COMPATIBILITY
 # ===========================================
