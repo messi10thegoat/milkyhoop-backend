@@ -132,8 +132,9 @@ fi
 PREV_SHA=$(git rev-parse HEAD) || die "git rev-parse failed"
 log "PREV_SHA=$PREV_SHA"
 
-# Service exists check
-if ! docker compose -f "$REPO/docker-compose.yml" config --services 2>/dev/null | grep -qx "$SERVICE"; then
+# Service exists check (avoid pipefail/SIGPIPE: capture then grep)
+SERVICES=$(docker compose -f "$REPO/docker-compose.yml" config --services 2>/dev/null || true)
+if ! echo "$SERVICES" | grep -qx "$SERVICE"; then
     die "service '$SERVICE' not found in docker-compose.yml"
 fi
 
