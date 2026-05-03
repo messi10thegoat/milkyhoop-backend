@@ -7,6 +7,11 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response as _PromResponse
+from prometheus_client import (
+    generate_latest as _prom_generate,
+    CONTENT_TYPE_LATEST as _prom_ct,
+)
 
 # Import routers
 from .routers import health
@@ -339,6 +344,15 @@ async def shutdown_event():
         logger.info("Auth Service connection closed")
     except Exception as e:
         logger.error(f"Error closing Auth Service connection: {e}")
+
+
+# Prometheus metrics endpoint
+# OBSERVABILITY-API-GATEWAY-METRICS-001: wire /metrics to fix Day 2 scrape gap.
+# Route handler (not app.mount) to avoid trailing-slash 307 redirect that
+# breaks Prometheus scrapes. Auth bypass added in AuthMiddleware.public_paths.
+@app.get("/metrics", include_in_schema=False)
+def _prometheus_metrics():
+    return _PromResponse(content=_prom_generate(), media_type=_prom_ct)
 
 
 # Include routers - Industry Standard Route Structure

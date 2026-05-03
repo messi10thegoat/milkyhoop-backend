@@ -25,6 +25,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/health",
             "/ready",
             "/version",
+            "/metrics",
             "/docs",
             "/openapi.json",
             "/favicon.ico",
