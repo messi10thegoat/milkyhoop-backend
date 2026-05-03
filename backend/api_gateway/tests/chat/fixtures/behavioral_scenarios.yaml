@@ -157,7 +157,7 @@ scenarios:
       - user: "siapa terbesar?"
         expect_response_contains_customer_name: true
       - user: "per faktur dia"
-        expect_intent_one_of: [query_sales_invoices_unpaid, query_ar_invoices, query_customer_ar]
+        expect_intent_one_of: [query_sales_invoices_unpaid, query_ar_invoices, query_customer_ar, drilldown_table, contextual_drill_down]
       - user: "yang pertama jatuh tempo kapan?"
         expect_response_contains_date: true
       - user: "totalkan yang overdue"

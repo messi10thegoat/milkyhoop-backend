@@ -1264,6 +1264,12 @@ def classify_query_intent(user_text: str) -> tuple:
                 t,
             )
         )
+        or bool(
+            _qre.search(
+                r"^(?:per|tampilkan\s+per|breakdown\s+per|detail\s+per)\s+(?:faktur|tagihan|invoice|vendor|pelanggan|customer)\b",
+                t,
+            )
+        )
     )
 
     # If drill-down signal detected AND has AP/AR keyword → route to drilldown
@@ -1278,6 +1284,10 @@ def classify_query_intent(user_text: str) -> tuple:
         _is_drilldown = True
 
     if _is_drilldown and (_has_ap or _has_ar):
+        return "drilldown_table", None, None
+    # Bare drill-down follow-up ("per faktur", "per vendor"); AP/AR keyword absent
+    # but session context will supply the topic via DRILL_GUARD context_ok check.
+    if _is_drilldown and not (_has_ap or _has_ar):
         return "drilldown_table", None, None
     # Drilldown even without AP/AR keyword if "faktur/tagihan" + filter keyword present
     _has_filter = bool(
