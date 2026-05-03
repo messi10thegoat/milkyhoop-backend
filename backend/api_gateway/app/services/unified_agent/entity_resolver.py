@@ -516,6 +516,14 @@ class EntityResolver:
             if entities.get(field_name) is not None:
                 payload[field_name] = entities[field_name]
 
+        # 4C: deterministic payment gate — map `amount` -> `total_amount`
+        # for payment intents whose registry FieldSpec is named `total_amount`.
+        # Without this, validate_payload misses the required field and the
+        # pipeline emits a TEXT clarification instead of DIRECT_ACTION_PREVIEW.
+        if intent in ("create_receive_payment", "create_bill_payment"):
+            if payload.get("amount") is not None and not payload.get("total_amount"):
+                payload["total_amount"] = payload["amount"]
+
         # Registry-aware field injection (Stage 2 extracts exact registry names)
         from .direct_action_registry import get_direct_action
 
