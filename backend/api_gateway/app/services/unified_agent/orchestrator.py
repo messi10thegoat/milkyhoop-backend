@@ -1015,7 +1015,7 @@ class UnifiedAgent:
                         and "unit_price" not in _s2_result
                     ):
                         del merged_entities["unit_price"]
-                        logger.info(
+                        logger.warning(
                             "[PIPELINE] Removed false-positive unit_price "
                             "(Stage 2 has purchase_price only)"
                         )
@@ -1390,7 +1390,7 @@ class UnifiedAgent:
                                 if _email:
                                     merged_for_wf["email"] = _email.group(0)
 
-                            logger.info(
+                            logger.warning(
                                 "[WF_OCR] Injected fields from persisted OCR (%d chars)",
                                 len(_ocr_text_saved),
                             )
@@ -3602,7 +3602,7 @@ class UnifiedAgent:
                     )
                     if _rec_result.get("entity_id"):
                         _resolved_id = _rec_result["entity_id"]
-                        logger.info(
+                        logger.warning(
                             "[QUERY_PIPELINE] Resolved via REC doc-ref: %s",
                             _resolved_id[:8] if _resolved_id else "?",
                         )
@@ -5969,18 +5969,47 @@ class UnifiedAgent:
             if _state:
                 try:
                     from .entity_resolver import EntityResolver
+                    from .llm_intent_router import (
+                        _proper_noun_matches as _bug1_pnm_2,
+                    )
 
                     _rec_resolved = EntityResolver.resolve_from_session(
                         user_text, _state
                     )
                     if _rec_resolved:
+                        # BUG #1 FIX: skip name+id pair on proper noun mismatch.
+                        _name_to_id_2 = {
+                            "customer_name": "customer_id",
+                            "vendor_name": "vendor_id",
+                            "item_name": "item_id",
+                        }
+                        _skip_ids_2 = set()
+                        _skipped_any_2 = False
+                        for _name_key, _id_key in _name_to_id_2.items():
+                            _candidate = _rec_resolved.get(_name_key)
+                            if _candidate and not _bug1_pnm_2(
+                                user_text or "", str(_candidate)
+                            ):
+                                _skip_ids_2.add(_name_key)
+                                _skip_ids_2.add(_id_key)
+                                _skipped_any_2 = True
+                                logger.warning(
+                                    "[BUG1_GUARD] orchestrator skipped REC merge %s=%r user_text=%r (proper noun mismatch)",
+                                    _name_key,
+                                    str(_candidate)[:50],
+                                    (user_text or "")[:120],
+                                )
                         for _rk, _rv in _rec_resolved.items():
+                            if _rk in _skip_ids_2:
+                                continue
                             if _rk != "_resolved_item" and not extraction.entities.get(
                                 _rk
                             ):
                                 extraction.entities[_rk] = _rv
                         logger.warning(
-                            "[REC_RESOLVE] Merged: %s", list(_rec_resolved.keys())
+                            "[REC_RESOLVE] Merged: %s%s",
+                            list(_rec_resolved.keys()),
+                            " (some skipped by BUG1_GUARD)" if _skipped_any_2 else "",
                         )
                 except Exception as _rec_err:
                     logger.warning("[REC_RESOLVE] Failed: %s", _rec_err)
@@ -6680,16 +6709,46 @@ class UnifiedAgent:
         if _state and extraction:
             try:
                 from .entity_resolver import EntityResolver as _RecResolverPre
+                from .llm_intent_router import (
+                    _proper_noun_matches as _bug1_pnm_pre,
+                )
 
                 _rec_pre = _RecResolverPre.resolve_from_session(user_text, _state)
                 if _rec_pre:
                     if not isinstance(extraction.entities, dict):
                         extraction.entities = {}
+                    # BUG #1 FIX: skip name+id pair if user_text has a different
+                    # explicit proper-noun.
+                    _name_to_id_pre = {
+                        "customer_name": "customer_id",
+                        "vendor_name": "vendor_id",
+                        "item_name": "item_id",
+                    }
+                    _skip_ids_pre = set()
+                    _skipped_any_pre = False
+                    for _name_key, _id_key in _name_to_id_pre.items():
+                        _candidate = _rec_pre.get(_name_key)
+                        if _candidate and not _bug1_pnm_pre(
+                            user_text or "", str(_candidate)
+                        ):
+                            _skip_ids_pre.add(_name_key)
+                            _skip_ids_pre.add(_id_key)
+                            _skipped_any_pre = True
+                            logger.warning(
+                                "[BUG1_GUARD] orchestrator skipped REC_PRE merge %s=%r user_text=%r (proper noun mismatch)",
+                                _name_key,
+                                str(_candidate)[:50],
+                                (user_text or "")[:120],
+                            )
                     for _rk, _rv in _rec_pre.items():
+                        if _rk in _skip_ids_pre:
+                            continue
                         if _rk != "_resolved_item" and not extraction.entities.get(_rk):
                             extraction.entities[_rk] = _rv
                     logger.warning(
-                        "[REC_RESOLVE_PRE] Merged: %s", list(_rec_pre.keys())
+                        "[REC_RESOLVE_PRE] Merged: %s%s",
+                        list(_rec_pre.keys()),
+                        " (some skipped by BUG1_GUARD)" if _skipped_any_pre else "",
                     )
             except Exception as _rec_pre_err:
                 logger.warning("[REC_RESOLVE_PRE] Failed: %s", _rec_pre_err)
@@ -6718,20 +6777,52 @@ class UnifiedAgent:
                 if _state:
                     try:
                         from .entity_resolver import EntityResolver as _RecLLM
+                        from .llm_intent_router import (
+                            _proper_noun_matches as _bug1_pnm_rec,
+                        )
 
                         _rec_llm = _RecLLM.resolve_from_session(user_text, _state)
                         if _rec_llm:
                             if not isinstance(_llm_extraction.entities, dict):
                                 _llm_extraction.entities = {}
+                            # BUG #1 FIX: if user_text has an explicit different
+                            # proper-noun name reference, do NOT merge stale name
+                            # fields from session resolver. Treat name fields and
+                            # their corresponding *_id together so we don't end up
+                            # with a name-id mismatch.
+                            _name_to_id = {
+                                "customer_name": "customer_id",
+                                "vendor_name": "vendor_id",
+                                "item_name": "item_id",
+                            }
+                            _skip_ids = set()
+                            _skipped_any = False
+                            for _name_key, _id_key in _name_to_id.items():
+                                _candidate = _rec_llm.get(_name_key)
+                                if _candidate and not _bug1_pnm_rec(
+                                    user_text or "", str(_candidate)
+                                ):
+                                    _skip_ids.add(_name_key)
+                                    _skip_ids.add(_id_key)
+                                    _skipped_any = True
+                                    logger.warning(
+                                        "[BUG1_GUARD] orchestrator skipped REC merge %s=%r user_text=%r (proper noun mismatch)",
+                                        _name_key,
+                                        str(_candidate)[:50],
+                                        (user_text or "")[:120],
+                                    )
                             for _rk, _rv in _rec_llm.items():
+                                if _rk in _skip_ids:
+                                    continue
                                 if (
                                     _rk != "_resolved_item"
                                     and not _llm_extraction.entities.get(_rk)
                                 ):
                                     _llm_extraction.entities[_rk] = _rv
                             logger.warning(
-                                "[REC_RESOLVE_LLM] Merged into llm_extraction: %s",
+                                "[REC_RESOLVE_LLM] Merged into llm_extraction: %s%s",
                                 list(_rec_llm.keys()),
+                                " (some skipped by BUG1_GUARD)" if _skipped_any else "",
                             )
                     except Exception as _rec_llm_err:
                         logger.warning("[REC_RESOLVE_LLM] Failed: %s", _rec_llm_err)
@@ -6833,9 +6924,27 @@ class UnifiedAgent:
                 # LLM Router often returns correct intent but empty entities.
                 # Code classifier (extraction) extracts entities reliably.
                 # Merge code classifier entities into LLM extraction if missing.
+                # BUG #1 FIX: gate name-field merges with proper-noun guard so
+                # that a stale entity from history/state cannot override an
+                # explicit different proper noun in the current user message.
                 if extraction and extraction.entities:
+                    from .llm_intent_router import (
+                        _proper_noun_matches as _bug1_pnm_merge,
+                    )
+
+                    _name_fields = {"customer_name", "vendor_name", "item_name"}
                     for _ek, _ev in extraction.entities.items():
                         if _ek not in _llm_extraction.entities and _ev:
+                            if _ek in _name_fields and not _bug1_pnm_merge(
+                                user_text or "", str(_ev)
+                            ):
+                                logger.warning(
+                                    "[BUG1_GUARD] orchestrator skipped merge %s=%r user_text=%r (proper noun mismatch)",
+                                    _ek,
+                                    str(_ev)[:50],
+                                    (user_text or "")[:120],
+                                )
+                                continue
                             _llm_extraction.entities[_ek] = _ev
                             logger.warning(
                                 "[LLM_ROUTER_PRIMARY] merged entity %s=%s from code classifier",
@@ -6860,6 +6969,14 @@ class UnifiedAgent:
                         )
                         if _sess:
                             _lr_i = _llm_extraction.intent or ""
+                            # BUG #1 FIX: proper-noun guard — if user_text contains a
+                            # 2+ word Capitalized phrase that does NOT overlap with the
+                            # active entity name, do NOT inject (user is referencing a
+                            # different entity).
+                            from .llm_intent_router import (
+                                _proper_noun_matches as _bug1_pnm,
+                            )
+
                             # Customer context for AR/customer queries
                             if _lr_i in (
                                 "query_customer_ar",
@@ -6869,13 +6986,22 @@ class UnifiedAgent:
                                 "query_sales_invoices_list",
                                 "query_customer_invoices",
                             ) and getattr(_sess, "active_customer_name", None):
-                                _llm_extraction.entities[
-                                    "customer_name"
-                                ] = _sess.active_customer_name
-                                logger.warning(
-                                    "[LLM_ROUTER_PRIMARY] injected customer_name=%s from session",
-                                    _sess.active_customer_name,
-                                )
+                                if _bug1_pnm(
+                                    user_text or "", _sess.active_customer_name or ""
+                                ):
+                                    _llm_extraction.entities[
+                                        "customer_name"
+                                    ] = _sess.active_customer_name
+                                    logger.warning(
+                                        "[LLM_ROUTER_PRIMARY] injected customer_name=%s from session",
+                                        _sess.active_customer_name,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[BUG1_GUARD] orchestrator skipped customer_name inject: active=%r user_text=%r (proper noun mismatch)",
+                                        _sess.active_customer_name,
+                                        (user_text or "")[:120],
+                                    )
                             # Vendor context for AP/vendor queries
                             elif _lr_i in (
                                 "query_vendor_ap",
@@ -6883,13 +7009,22 @@ class UnifiedAgent:
                                 "query_ap_outstanding",
                                 "query_bills_list",
                             ) and getattr(_sess, "active_vendor_name", None):
-                                _llm_extraction.entities[
-                                    "vendor_name"
-                                ] = _sess.active_vendor_name
-                                logger.warning(
-                                    "[LLM_ROUTER_PRIMARY] injected vendor_name=%s from session",
-                                    _sess.active_vendor_name,
-                                )
+                                if _bug1_pnm(
+                                    user_text or "", _sess.active_vendor_name or ""
+                                ):
+                                    _llm_extraction.entities[
+                                        "vendor_name"
+                                    ] = _sess.active_vendor_name
+                                    logger.warning(
+                                        "[LLM_ROUTER_PRIMARY] injected vendor_name=%s from session",
+                                        _sess.active_vendor_name,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[BUG1_GUARD] orchestrator skipped vendor_name inject: active=%r user_text=%r (proper noun mismatch)",
+                                        _sess.active_vendor_name,
+                                        (user_text or "")[:120],
+                                    )
                             # Item context for item queries
                             elif _lr_i in (
                                 "query_item_detail",
@@ -7360,7 +7495,7 @@ class UnifiedAgent:
         complexity = tier_to_complexity.get(
             model_choice.tier, TaskComplexity.SIMPLE_READ
         )
-        logger.info(
+        logger.warning(
             f"[MODEL] tier={model_choice.tier} reason='{model_choice.reason}' -> complexity={complexity.value}"
         )
 
@@ -7690,7 +7825,7 @@ class UnifiedAgent:
                 # --- Observability: log turn context ---
                 try:
                     if turn_ctx:
-                        logger.info(
+                        logger.warning(
                             f"[OBSERVABILITY] turn_context={turn_ctx.to_log_dict()}"
                         )
                 except Exception:
@@ -7867,7 +8002,7 @@ class UnifiedAgent:
                     return_exceptions=True,
                 )
                 par_ms = int((time.time() - par_start) * 1000)
-                logger.info(
+                logger.warning(
                     f"[PERF] parallel_tools={len(parallel_tcs)} total_ms={par_ms}"
                 )
 
@@ -8149,7 +8284,7 @@ class UnifiedAgent:
 
                     try:
                         if turn_ctx:
-                            logger.info(
+                            logger.warning(
                                 f"[OBSERVABILITY] turn_context={turn_ctx.to_log_dict()}"
                             )
                     except Exception:
@@ -8188,7 +8323,7 @@ class UnifiedAgent:
 
                     try:
                         if turn_ctx:
-                            logger.info(
+                            logger.warning(
                                 f"[OBSERVABILITY] turn_context={turn_ctx.to_log_dict()}"
                             )
                     except Exception:
@@ -8224,7 +8359,7 @@ class UnifiedAgent:
 
                     try:
                         if turn_ctx:
-                            logger.info(
+                            logger.warning(
                                 f"[OBSERVABILITY] turn_context={turn_ctx.to_log_dict()}"
                             )
                     except Exception:
@@ -8257,7 +8392,7 @@ class UnifiedAgent:
                 logger.info("[MODEL] Upgraded to ACTION after propose_action")
             elif iteration > 2 and complexity != TaskComplexity.ACTION:
                 complexity = TaskComplexity.SELF_CORRECT
-                logger.info(
+                logger.warning(
                     f"[MODEL] Upgraded to SELF_CORRECT at iteration {iteration + 1}"
                 )
             client, current_model = self.router.get_client_and_model(complexity)

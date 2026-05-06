@@ -7,11 +7,46 @@ Phase 1: shadow. Phase 2: primary.
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("llm_intent_router")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BUG #1 FIX — proper-noun guard for active_entity injection
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_PROPER_NOUN_RE = re.compile(r"\b[A-Z][a-zA-ZÀ-ÿ']+(?:\s+[A-Z][a-zA-ZÀ-ÿ']+)+\b")
+_TOKEN_RE = re.compile(r"\b[A-Za-zÀ-ÿ']{2,}\b")
+
+
+def _proper_noun_matches(user_text: str, active_name: str) -> bool:
+    """Return True if user_text appears to reference active_name.
+
+    Uses case-insensitive token-set overlap: any 2+ char token from active_name
+    appearing in user_text counts as a match. Conservative behavior:
+      - Empty inputs → True (preserve current behavior; no override signal).
+      - No 2-word proper noun in user_text → True (e.g. pronouns, lowercase
+        references; let pre-existing carry-over logic decide).
+      - 2+ Capitalized-Word phrase in user_text that doesn't overlap with any
+        active_name token → False (explicit different entity reference; skip
+        injection).
+      - Lowercase substring overlap (e.g. "maju jaya") → True via the no-proper-
+        noun branch, downstream resolver handles disambiguation.
+    """
+    if not user_text or not active_name:
+        return True  # nothing to compare; preserve current behavior
+    proper_nouns = _PROPER_NOUN_RE.findall(user_text)
+    if not proper_nouns:
+        return True  # no explicit proper noun in user message → keep active context
+    active_tokens = {t.lower() for t in _TOKEN_RE.findall(active_name)}
+    for pn in proper_nouns:
+        pn_tokens = {t.lower() for t in _TOKEN_RE.findall(pn)}
+        if pn_tokens & active_tokens:
+            return True  # overlap → user referencing same entity
+    return False  # explicit different proper noun → override
 
 
 @dataclass
@@ -157,7 +192,22 @@ RULES:
     "hutang ke Knitto?" setelah bot sebut "Knitto Textile Holis" → vendor_name="Knitto Textile Holis".
     "harganya?" / "stoknya?" / "piutangnya?" / "hutangnya?" → ambil entity dari riwayat terdekat.
     Juga berlaku untuk pronoun: "mereka"/"dia"/"di situ" → resolve ke entity dari riwayat.
-    DILARANG jawab "sebutkan nama" jika entity bisa di-resolve dari riwayat."""
+    DILARANG jawab "sebutkan nama" jika entity bisa di-resolve dari riwayat.
+
+23. ACTIVE ENTITY OVERRIDE (CRITICAL — BUG #1 FIX): Jika SESSION STATE ada "Entitas aktif: X" TAPI user menyebut NAMA PROPER (2+ kata kapital) yang BERBEDA dari X, IGNORE Entitas aktif. Extract nama yang user sebut.
+    Contoh A (pronoun → carry-over):
+      == SESSION STATE ==
+      Entitas aktif: PT Maju Jaya (customer)
+      == PESAN ==
+      faktur dia berapa?
+      → {"intent":"query_customer_ar","entities":{"customer_name":"PT Maju Jaya"},"ready":true}
+    Contoh B (explicit different name → override):
+      == SESSION STATE ==
+      Entitas aktif: PT Maju Jaya (customer)
+      == PESAN ==
+      Judita Kandou itu ada piutang berapa?
+      → {"intent":"query_customer_ar","entities":{"customer_name":"Judita Kandou"},"ready":true}
+    DILARANG: Mengganti nama yang user sebut dengan Entitas aktif. DILARANG: Bilang "ada kekeliruan" — tidak ada kekeliruan, user memang merujuk entitas berbeda."""
 
 
 ROUTER_RESPONSE_SCHEMA = {
@@ -241,9 +291,17 @@ class LLMIntentRouter:
                 )
             if entity_memory.get("active_entity"):
                 _ent = entity_memory["active_entity"]
-                _session_parts.append(
-                    f"Entitas aktif: {_ent.get('name', '?')} ({_ent.get('type', '?')})"
-                )
+                _ent_name = _ent.get("name", "")
+                if _proper_noun_matches(user_text, _ent_name):
+                    _session_parts.append(
+                        f"Entitas aktif: {_ent_name or '?'} ({_ent.get('type', '?')})"
+                    )
+                else:
+                    logger.info(
+                        "[BUG1_GUARD] active_entity=%r user_text=%r → skipping injection (proper noun mismatch)",
+                        _ent_name,
+                        (user_text or "")[:120],
+                    )
             if entity_memory.get("last_numeric"):
                 _num = entity_memory["last_numeric"]
                 if _num.get("total") is not None:
