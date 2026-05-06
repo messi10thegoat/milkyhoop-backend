@@ -359,7 +359,8 @@ async def list_invoices(
                     param_idx += 1
 
             if customer_id:
-                conditions.append(f"si.customer_id = ${param_idx}::uuid")
+                # Bug #1.5: customer_id column is TEXT, not UUID — drop cast
+                conditions.append(f"si.customer_id = ${param_idx}")
                 params.append(customer_id)
                 param_idx += 1
 
@@ -3957,7 +3958,7 @@ async def upload_invoice_attachment(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+            await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
 
             inv = await conn.fetchrow(
                 "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
@@ -4021,7 +4022,7 @@ async def list_invoice_attachments(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
 
         inv = await conn.fetchrow(
             "SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
@@ -4076,7 +4077,7 @@ async def delete_invoice_attachment(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
 
         row = await conn.fetchrow(
             """SELECT sa.id, sa.file_path FROM sales_invoice_attachments sa
@@ -4113,7 +4114,7 @@ async def download_invoice_attachment(
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = {tenant_id}")
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
         row = await conn.fetchrow(
             """SELECT sa.filename, sa.file_path, sa.mime_type
             FROM sales_invoice_attachments sa

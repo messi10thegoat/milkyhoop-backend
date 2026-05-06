@@ -1270,6 +1270,28 @@ def classify_query_intent(user_text: str) -> tuple:
                 t,
             )
         )
+        # Bug #1.5: natural-language drill-down requests for invoice/bill detail
+        # "minta data fakturnya", "data fakturnya", "info faktur", "kasih faktur"
+        or bool(
+            _qre.search(
+                r"(?:minta|kasih|tampilkan|lihat|cek|info|data|daftar|list)\s+(?:data\s+)?(?:faktur|tagihan|invoice|bill)(?:nya)?",
+                t,
+            )
+        )
+        # "fakturnya apa", "faktur mana", "tagihan yang mana"
+        or bool(
+            _qre.search(
+                r"(?:faktur|tagihan|invoice|bill)(?:nya)?\s+(?:apa(?:\s+(?:saja|aja|sih))?|mana|yang\s+mana)",
+                t,
+            )
+        )
+        # "penjualan apa", "pembelian apa sih" — paired with AR/AP keyword elsewhere via _has_ar/_has_ap
+        or bool(
+            _qre.search(
+                r"(?:penjualan|pembelian|transaksi)\s+(?:apa(?:\s+(?:saja|aja|sih))?|mana|yang\s+mana)",
+                t,
+            )
+        )
     )
 
     # If drill-down signal detected AND has AP/AR keyword → route to drilldown

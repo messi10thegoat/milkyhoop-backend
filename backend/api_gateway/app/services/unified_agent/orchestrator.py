@@ -3004,9 +3004,48 @@ class UnifiedAgent:
         2 LLM calls total: extraction (done) + polish (~800ms).
         """
         import time as _time
+        import re as _re_dd
         import httpx
 
         start_time = _time.time()
+
+        # Bug #1.5: AR/AP drill-down redirect — when user asks for invoice/bill
+        # detail with an entity name, query_customer_ar / query_vendor_ap returns
+        # only summary. Redirect to *_list with customer_id/vendor_id filter so
+        # the response includes per-faktur breakdown.
+        _bug15_redirect = None  # "customer" | "vendor" | None
+        try:
+            _t_dd = (user_text or "").lower()
+            _drill_signals = (
+                r"(?:minta|kasih|tampilkan|lihat|cek|info|data|daftar|list)\s+"
+                r"(?:data\s+)?(?:faktur|tagihan|invoice|bill)(?:nya)?"
+                r"|(?:faktur|tagihan|invoice|bill)(?:nya)?\s+"
+                r"(?:apa(?:\s+(?:saja|aja|sih))?|mana|yang\s+mana)"
+                r"|(?:penjualan|pembelian|transaksi)\s+"
+                r"(?:apa(?:\s+(?:saja|aja|sih))?|mana|yang\s+mana)"
+                r"|\b(?:rincian|rinci|breakdown|detailnya|rinciannya|per\s+faktur)\b"
+            )
+            if extraction.intent in (
+                "query_customer_ar",
+                "query_vendor_ap",
+            ) and _re_dd.search(_drill_signals, _t_dd):
+                _orig = extraction.intent
+                if extraction.intent == "query_customer_ar":
+                    extraction.intent = "query_sales_invoices_list"
+                    _bug15_redirect = "customer"
+                else:
+                    extraction.intent = "query_bills_list"
+                    _bug15_redirect = "vendor"
+                extraction.confidence = 1.0
+                extraction.needs_escalation = False
+                logger.warning(
+                    "[BUG15_DRILL_REDIRECT] %s -> %s user='%s'",
+                    _orig,
+                    extraction.intent,
+                    user_text[:80],
+                )
+        except Exception as _dd_err:
+            logger.warning("[BUG15_DRILL_REDIRECT] error: %s", _dd_err)
 
         async def emit(event_type, data):
             if event_callback:
@@ -3045,6 +3084,55 @@ class UnifiedAgent:
         # Default: exclude draft & void for bills/invoices lists (hutang/piutang accuracy)
         if query_config.action_key in ("query_bills_list", "query_sales_invoices_list"):
             query_params["status"] = "active"
+
+        # Bug #1.5: when redirected from customer_ar / vendor_ap, resolve entity
+        # name to ID and inject as query param so the list filters to that entity.
+        if _bug15_redirect == "customer":
+            _cname_dd = extraction.entities.get(
+                "customer_name"
+            ) or extraction.entities.get("name")
+            if _cname_dd:
+                try:
+                    from .entity_resolver import EntityResolver
+                    from .db_utils import get_session_db_pool
+
+                    _pool_dd = await get_session_db_pool()
+                    _res_dd = EntityResolver(_pool_dd, context.tenant_id)
+                    _r_c = await _res_dd._resolve_customer(_cname_dd)
+                    if _r_c and _r_c.entity_id and _r_c.confidence >= 0.5:
+                        query_params["customer_id"] = _r_c.entity_id
+                        logger.warning(
+                            "[BUG15_DRILL_REDIRECT] resolved customer_name=%s -> id=%s",
+                            _cname_dd,
+                            _r_c.entity_id,
+                        )
+                except Exception as _r_err:
+                    logger.warning(
+                        "[BUG15_DRILL_REDIRECT] customer resolve failed: %s", _r_err
+                    )
+        elif _bug15_redirect == "vendor":
+            _vname_dd = extraction.entities.get(
+                "vendor_name"
+            ) or extraction.entities.get("name")
+            if _vname_dd:
+                try:
+                    from .entity_resolver import EntityResolver
+                    from .db_utils import get_session_db_pool
+
+                    _pool_dd = await get_session_db_pool()
+                    _res_dd = EntityResolver(_pool_dd, context.tenant_id)
+                    _r_v = await _res_dd._resolve_vendor(_vname_dd)
+                    if _r_v and _r_v.entity_id and _r_v.confidence >= 0.5:
+                        query_params["vendor_id"] = _r_v.entity_id
+                        logger.warning(
+                            "[BUG15_DRILL_REDIRECT] resolved vendor_name=%s -> id=%s",
+                            _vname_dd,
+                            _r_v.entity_id,
+                        )
+                except Exception as _r_err:
+                    logger.warning(
+                        "[BUG15_DRILL_REDIRECT] vendor resolve failed: %s", _r_err
+                    )
 
         # Resolve item by name -> get ID for {id} endpoints
         if "{id}" in endpoint and extraction.entities.get("item_name"):
@@ -3952,6 +4040,11 @@ class UnifiedAgent:
             "query_bills_summary": "query_bills_list",
             "query_sales_invoices_summary": "query_sales_invoices_list",
             "query_expenses_summary": "query_expenses_list",
+            # Bug #1.5: customer/vendor AR/AP drill-down to invoice/bill list
+            "query_customer_ar": "query_sales_invoices_list",
+            "query_vendor_ap": "query_bills_list",
+            "calc_rank_customers_by_ar": "query_sales_invoices_list",
+            "calc_rank_vendors_by_ap": "query_bills_list",
         }
 
         target_intent = _DRILLDOWN_MAP.get(_last_intent)
@@ -6058,14 +6151,35 @@ class UnifiedAgent:
                 "query_bills_summary",
                 "query_sales_invoices_summary",
                 "query_expenses_summary",
+                # Bug #1.5: customer/vendor AR/AP drill-down
+                "query_customer_ar",
+                "query_vendor_ap",
+                "calc_rank_customers_by_ar",
+                "calc_rank_vendors_by_ap",
             }
 
             # Build session_state-like dict for arbiter
             _arb_state = {}
+            # Bug #1.5: ensure _state is loaded — earlier code only loads when
+            # _intent in (ACTION, SIMPLE_READ); for COMPLEX_READ etc. _state stays None.
+            if (
+                _state is None
+                and tool_executor
+                and getattr(tool_executor, "session_manager", None)
+                and getattr(tool_executor, "session_id", None)
+            ):
+                try:
+                    _state = await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                except Exception:
+                    _state = None
             try:
                 _arb_state["last_domain"] = (
                     (_state or {}).get("last_domain")
                     if isinstance(_state, dict)
+                    else getattr(_state, "last_domain", None)
+                    if _state is not None
                     else None
                 )
             except Exception:
@@ -6077,6 +6191,14 @@ class UnifiedAgent:
                     )
                     _arb_last_intent = _state.get("last_intent") or _state.get(
                         "last_action_type"
+                    )
+                elif _state is not None:
+                    # Bug #1.5: SessionState object (not dict) — read attrs
+                    _arb_state["pending_clarification"] = getattr(
+                        _state, "pending_clarification", None
+                    )
+                    _arb_last_intent = getattr(_state, "last_intent", None) or getattr(
+                        _state, "last_action_type", None
                     )
                 else:
                     _arb_last_intent = None
