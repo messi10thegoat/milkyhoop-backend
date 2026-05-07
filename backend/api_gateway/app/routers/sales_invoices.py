@@ -220,6 +220,43 @@ async def get_outstanding_summary(request: Request):
             """
             row = await conn.fetchrow(query, tenant_id)
 
+            # Fix A: per-customer aggregation for deterministic AR rollup intent.
+            # Iron Law 1: numbers come from compute_ar_outstanding() (journal-derived).
+            # Iron Law 25: keep Decimal precision via str() serialization.
+            by_customer_query = """
+                WITH ar AS (
+                    SELECT customer_id, customer_name, invoice_id, outstanding
+                    FROM compute_ar_outstanding($1)
+                )
+                SELECT
+                    ar.customer_id,
+                    -- Group by customer_id only; resolve display name from
+                    -- master (customers.nama) first, then fall back to any
+                    -- snapshot name on the invoice. Avoids duplicate rows when
+                    -- legacy invoice snapshots disagree with current master.
+                    COALESCE(MAX(c.nama), MAX(ar.customer_name), '(Tanpa Pelanggan)') AS name,
+                    COUNT(ar.invoice_id) AS invoice_count,
+                    COALESCE(SUM(ar.outstanding), 0) AS total_outstanding
+                FROM ar
+                LEFT JOIN customers c
+                       ON c.id = ar.customer_id AND c.tenant_id = $1
+                GROUP BY ar.customer_id
+                HAVING COALESCE(SUM(ar.outstanding), 0) > 0
+                ORDER BY total_outstanding DESC
+            """
+            by_customer_rows = await conn.fetch(by_customer_query, tenant_id)
+            by_customer = [
+                {
+                    "customer_id": str(r["customer_id"])
+                    if r["customer_id"] is not None
+                    else None,
+                    "name": r["name"],
+                    "count": int(r["invoice_count"]),
+                    "total_outstanding": str(r["total_outstanding"]),
+                }
+                for r in by_customer_rows
+            ]
+
             return {
                 "success": True,
                 "data": {
@@ -229,6 +266,7 @@ async def get_outstanding_summary(request: Request):
                     "overdue_count": int(row["overdue_count"]),
                     "current_count": int(row["current_count"]),
                     "customer_count": int(row["customer_count"]),
+                    "by_customer": by_customer,
                 },
             }
 

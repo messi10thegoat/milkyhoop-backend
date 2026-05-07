@@ -1642,8 +1642,12 @@ def classify_query_intent(user_text: str) -> tuple:
 
     # Contextual drill-down — "per faktur", "breakdown", "detailnya" after a summary query
     # Returns drilldown_table — orchestrator resolves to correct pipeline query using session state
+    # Fix A (Bug C+G+I): tightened drilldown_table regex.
+    # Per-customer/per-vendor rollups now route to query_ar_by_customer /
+    # query_ap_by_vendor (deterministic, bypasses LLM polish). Drilldown_table
+    # only fires for FAKTUR/TAGIHAN/INVOICE/BILL-level (item-level) breakdowns.
     if _qre.search(
-        r"(?:rekapan|rekap|breakdown|rincian|detail)\s+(?:per|tiap|masing-masing)\s+(?:faktur|tagihan|invoice|bill|pelanggan|customer|vendor|pemasok)",
+        r"(?:rekapan|rekap|breakdown|rincian|detail)\s+(?:per|tiap|masing-masing)\s+(?:faktur|tagihan|invoice|bill)",
         t,
     ):
         return "drilldown_table", None, None

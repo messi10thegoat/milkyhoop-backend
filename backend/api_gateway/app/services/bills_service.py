@@ -20,14 +20,14 @@ from decimal import Decimal
 
 _Dec = Decimal
 
-import asyncpg
-import uuid as uuid_module
+import asyncpg  # noqa: E402
+import uuid as uuid_module  # noqa: E402
 
-from .resolve_account import resolve_account_id
-from .unit_helpers import convert_to_base_unit
+from .resolve_account import resolve_account_id  # noqa: E402
+from .unit_helpers import convert_to_base_unit  # noqa: E402
 
-from ..utils.sorting import build_order_by_clause
-from ..utils.money import cents_to_decimal_string
+from ..utils.sorting import build_order_by_clause  # noqa: E402
+from ..utils.money import cents_to_decimal_string  # noqa: E402
 
 # Law 16: Journal-derived amount_paid CTE (used by list_bills, get_outstanding_summary)
 # Computes per-bill paid amount from journal_lines via BOTH payment table paths
@@ -2291,6 +2291,42 @@ class BillsService:
 
             row = await conn.fetchrow(query, tenant_id)
 
+            # Fix A: per-vendor aggregation for deterministic AP rollup intent.
+            # Iron Law 1: journal-derived via compute_ap_outstanding().
+            # Iron Law 25: Decimal serialized as str.
+            by_vendor_query = """
+                WITH ap AS (
+                    SELECT vendor_id, vendor_name, bill_id, outstanding
+                    FROM compute_ap_outstanding($1)
+                )
+                SELECT
+                    ap.vendor_id,
+                    -- Group by vendor_id only; resolve display name from master
+                    -- first, then fall back to bill snapshot. Prevents duplicate
+                    -- rows when legacy bill snapshots disagree with master.
+                    COALESCE(MAX(v.name), MAX(ap.vendor_name), '(Tanpa Vendor)') AS name,
+                    COUNT(ap.bill_id) AS bill_count,
+                    COALESCE(SUM(ap.outstanding), 0) AS total_outstanding
+                FROM ap
+                LEFT JOIN vendors v
+                       ON v.id = ap.vendor_id AND v.tenant_id = $1
+                GROUP BY ap.vendor_id
+                HAVING COALESCE(SUM(ap.outstanding), 0) > 0
+                ORDER BY total_outstanding DESC
+            """
+            by_vendor_rows = await conn.fetch(by_vendor_query, tenant_id)
+            by_vendor = [
+                {
+                    "vendor_id": str(r["vendor_id"])
+                    if r["vendor_id"] is not None
+                    else None,
+                    "name": r["name"],
+                    "count": int(r["bill_count"]),
+                    "total_outstanding": str(r["total_outstanding"]),
+                }
+                for r in by_vendor_rows
+            ]
+
             total_outstanding = int(row["total_outstanding"])
             overdue_amount = int(row["overdue_amount"])
             unpaid_amount = int(row["unpaid_amount"])
@@ -2326,6 +2362,8 @@ class BillsService:
                         "due_within_7_days": int(row["due_within_7_days_amount"]),
                         "due_within_7_days_count": row["due_within_7_days_count"],
                     },
+                    # Fix A: per-vendor breakdown for deterministic AP rollup intent
+                    "by_vendor": by_vendor,
                     # Legacy fields for backward compatibility
                     "total_outstanding": total_outstanding,
                     "total_count": row["total_count"],

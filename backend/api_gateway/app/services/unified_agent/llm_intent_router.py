@@ -102,7 +102,7 @@ SALES DOCUMENT DISTINCTION (CRITICAL — jangan tertukar):
 update_vendor, update_customer, update_item, update_bank_account, update_warehouse
 delete_vendor, delete_customer, delete_item, delete_warehouse, delete_bank_account
 void_sales_invoice, void_bill, void_expense, void_bill_payment, void_receive_payment, reverse_journal
-query_ar_outstanding, query_ap_outstanding, query_ar_invoices, query_ar_aging, query_ap_aging, query_customer_ar, query_vendor_ap, query_customers_with_overdue, query_vendors_with_overdue
+query_ar_outstanding, query_ap_outstanding, query_ar_by_customer, query_ap_by_vendor, query_ar_invoices, query_ar_aging, query_ap_aging, query_customer_ar, query_vendor_ap, query_customers_with_overdue, query_vendors_with_overdue
 query_items_search, query_item_detail, query_items_summary, query_items_low_stock, query_items_no_stock, query_warehouse_stock
 query_sales_invoices_list, query_sales_invoice_detail, query_sales_invoices_summary, query_sales_invoices_unpaid, query_sales_invoices_overdue
 query_bills_list, query_bill_detail, query_bills_summary, query_bills_unpaid, query_bills_overdue
@@ -132,6 +132,7 @@ RULES:
 1. "daftar/list/semua/lihat/ringkasan/detail/cari" = QUERY. "buat/tambah/bikin/catat/daftarkan/input" = CREATE.
    "daftar barang/produk" → query_items_search. "ringkasan barang" → query_items_summary. "detail X" → query_X_detail.
 2. "hutang/utang" tanpa vendor → query_ap_outstanding. "hutang ke X" → query_vendor_ap. "piutang" tanpa pelanggan → query_ar_outstanding. "piutang X" → query_customer_ar. "piutang siapa saja" → query_ar_invoices. "aging" → query_ar/ap_aging.
+    PER-ENTITY ROLLUP (Fix A): "rekap/tabel per pelanggan", "siapa pelanggan dengan piutang (>X)", "pelanggan piutang terbesar (rekap)", "rekap piutang per pelanggan/customer" → query_ar_by_customer. "rekap/tabel per vendor", "vendor mana yang utangnya/hutangnya paling besar", "rekap utang/hutang per vendor", "vendor dengan hutang terbesar" → query_ap_by_vendor. BEDA dari query_ar_invoices (single-customer drill-down per faktur) — by_customer = aggregated breakdown across all customers.
 3. "hapus vendor X"→delete_vendor. "hapus barang X"→delete_item. Entity keyword setelah "hapus" = type.
 4. "catat biaya/beban" → create_expense. "catat pembelian dari vendor" → create_bill. Tanpa vendor = expense.
 5. "rekening bank/BCA" → create_bank_account. "akun beban/pendapatan" → create_account. "ke BCA" = bank_name.

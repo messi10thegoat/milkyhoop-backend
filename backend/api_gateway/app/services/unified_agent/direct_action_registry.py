@@ -2692,6 +2692,50 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         ],
         query_params=[],
     ),
+    # Fix A (Bug C+G+I): deterministic per-customer / per-vendor rollups.
+    # response_format="summary" with deterministic Python template — orchestrator
+    # short-circuits LLM polish for these two action_keys (Iron Law 1).
+    "query_ar_by_customer": QueryActionConfig(
+        action_key="query_ar_by_customer",
+        display_name="Piutang per Pelanggan",
+        rest_endpoint="/api/sales-invoices/outstanding-summary",
+        response_format="summary",
+        description=(
+            "Rekap piutang outstanding per pelanggan (deterministic — bypasses LLM polish). "
+            "Sumber: compute_ar_outstanding() (journal-derived). Iron Law 1 compliant."
+        ),
+        signal_words=[
+            "rekap per pelanggan",
+            "rekap piutang per pelanggan",
+            "tabel per pelanggan",
+            "per pelanggan dalam tabel",
+            "siapa pelanggan dengan piutang",
+            "pelanggan piutang terbesar",
+            "rekap piutang per customer",
+        ],
+        query_params=[],
+    ),
+    "query_ap_by_vendor": QueryActionConfig(
+        action_key="query_ap_by_vendor",
+        display_name="Utang per Vendor",
+        rest_endpoint="/api/bills/outstanding-summary",
+        response_format="summary",
+        description=(
+            "Rekap utang outstanding per vendor (deterministic — bypasses LLM polish). "
+            "Sumber: compute_ap_outstanding() (journal-derived). Iron Law 1 compliant."
+        ),
+        signal_words=[
+            "rekap per vendor",
+            "rekap hutang per vendor",
+            "rekap utang per vendor",
+            "tabel per vendor",
+            "per vendor dalam tabel",
+            "vendor mana yang utangnya paling besar",
+            "vendor mana yang hutangnya paling besar",
+            "vendor dengan hutang terbesar",
+        ],
+        query_params=[],
+    ),
     # Kas & Bank
     "query_bank_accounts_list": QueryActionConfig(
         action_key="query_bank_accounts_list",

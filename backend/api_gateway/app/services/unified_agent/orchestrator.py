@@ -3915,14 +3915,20 @@ class UnifiedAgent:
             },
         )
 
-        response_text = await self._polish_query_response(
-            query_config=query_config,
-            data=data,
-            user_text=user_text,
-            entity_name=extraction.entities.get("item_name")
-            or extraction.entities.get("warehouse_name")
-            or "",
-        )
+        # Fix A (Bug C+G+I): deterministic-template short-circuit for journal-derived
+        # per-customer/per-vendor rollups. Bypasses LLM polish entirely so numbers
+        # cannot be hallucinated. Iron Law 1 enforced at the function layer.
+        if query_config.action_key in ("query_ar_by_customer", "query_ap_by_vendor"):
+            response_text = self._render_ar_ap_by_entity(query_config, data)
+        else:
+            response_text = await self._polish_query_response(
+                query_config=query_config,
+                data=data,
+                user_text=user_text,
+                entity_name=extraction.entities.get("item_name")
+                or extraction.entities.get("warehouse_name")
+                or "",
+            )
 
         await emit(
             "THINKING_STEP",
@@ -4332,6 +4338,69 @@ class UnifiedAgent:
             model_used="pipeline",
             total_latency_ms=int((_time.time() - start_time) * 1000),
         )
+
+    def _render_ar_ap_by_entity(self, query_config, data) -> str:
+        """Fix A (Bug C+G+I): deterministic Bahasa template for per-customer/per-vendor
+        outstanding rollups. NO LLM. Numbers come straight from journal-derived
+        endpoint payload (compute_ar_outstanding / compute_ap_outstanding).
+        Iron Law 1: no hallucinated financials. Iron Law 25: amounts are Decimal-safe (str).
+        """
+        from decimal import Decimal as _D
+
+        payload = (
+            data.get("data")
+            if isinstance(data, dict) and isinstance(data.get("data"), dict)
+            else data
+        )
+        if not isinstance(payload, dict):
+            payload = {}
+
+        is_ar = query_config.action_key == "query_ar_by_customer"
+        rows_key = "by_customer" if is_ar else "by_vendor"
+        entity_label_singular = "pelanggan" if is_ar else "vendor"
+        kind_label = "piutang" if is_ar else "utang"
+        rows = payload.get(rows_key) or []
+
+        def _fmt_rp(v) -> str:
+            try:
+                d = _D(str(v))
+            except Exception:
+                d = _D(0)
+            n = int(d.quantize(_D("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        if not rows:
+            return f"Belum ada {entity_label_singular} dengan {kind_label} outstanding saat ini."
+
+        lines = [f"Per {entity_label_singular} dengan {kind_label} outstanding:", ""]
+        # Cap to top 15 to keep response readable; show "+N lainnya" tail
+        TOP_N = 15
+        shown = rows[:TOP_N]
+        for r in shown:
+            name = r.get("name") or "(Tanpa Nama)"
+            amt = _fmt_rp(r.get("total_outstanding", 0))
+            cnt = int(r.get("count", 0) or 0)
+            faktur_word = "faktur" if is_ar else "tagihan"
+            lines.append(f"• {name} — {amt} ({cnt} {faktur_word})")
+
+        remaining = len(rows) - len(shown)
+        if remaining > 0:
+            lines.append(f"• (+{remaining} {entity_label_singular} lainnya)")
+
+        # Sum from rows (NOT from a separate scalar) so the printed total reconciles
+        # with the per-row breakdown by construction.
+        total = _D(0)
+        for r in rows:
+            try:
+                total += _D(str(r.get("total_outstanding", 0)))
+            except Exception:
+                pass
+
+        lines.append("")
+        lines.append(
+            f"Total: {_fmt_rp(total)} dari {len(rows)} {entity_label_singular}."
+        )
+        return "\n".join(lines)
 
     async def _polish_query_response(
         self, query_config, data, user_text, entity_name=""
