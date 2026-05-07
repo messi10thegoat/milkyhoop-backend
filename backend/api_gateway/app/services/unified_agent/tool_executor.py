@@ -3110,10 +3110,93 @@ class ToolExecutor:
         if not items or not isinstance(items, list):
             return payload
 
+        user_text = getattr(self, "user_text", "") or ""
+
         for item in items:
             if not isinstance(item, dict):
                 continue
             item_id = item.get("item_id")
+
+            # BUG-item-slot fix (2026-05-07): reverse lookup mirror of BUG-02 customer pattern
+            if not item_id:
+                name_hint = (
+                    item.get("description") or item.get("item_name") or item.get("name")
+                )
+                if name_hint and isinstance(name_hint, str) and name_hint.strip():
+                    name_hint = name_hint.strip()
+                    # Mention check: name_hint must appear (token-wise) in user_text;
+                    # else it is likely customer/vendor name bleed.
+                    _ut_lower = user_text.lower()
+                    _hint_tokens = [t for t in name_hint.lower().split() if len(t) >= 2]
+                    _mentioned = bool(_hint_tokens) and all(
+                        t in _ut_lower for t in _hint_tokens
+                    )
+                    if _mentioned:
+                        search_resp = await self._fetch_entity(
+                            client,
+                            f"/api/items?search={name_hint}&limit=5&status=active",
+                        )
+                        results = []
+                        if search_resp:
+                            results = (
+                                search_resp
+                                if isinstance(search_resp, list)
+                                else search_resp.get("items", [])
+                            )
+                        if not results:
+                            # No master match. If name_hint looks like a proper noun
+                            # (Capitalized multi-word), treat as customer-bleed and null out.
+                            import re as _re
+
+                            if _re.match(
+                                r"^[A-Z][a-zA-ZÀ-ÿ']+(?:\s+[A-Z][a-zA-ZÀ-ÿ']+)+$",
+                                name_hint,
+                            ):
+                                logger.info(
+                                    f"BUG-item-slot: Nulled proper-noun bleed (no master match) name={name_hint}"
+                                )
+                                item["item_id"] = None
+                                item["description"] = None
+                            # Else preserve free-text description (e.g. "jasa konsultasi")
+                        if results:
+                            exact = next(
+                                (
+                                    r
+                                    for r in results
+                                    if (r.get("name") or r.get("nama_produk") or "")
+                                    .strip()
+                                    .lower()
+                                    == name_hint.lower()
+                                ),
+                                None,
+                            )
+                            resolved = exact or results[0]
+                            rid = resolved.get("id") or resolved.get("item_id")
+                            if rid:
+                                item["item_id"] = rid
+                                item_id = rid
+                                rname = (
+                                    resolved.get("name")
+                                    or resolved.get("nama_produk")
+                                    or name_hint
+                                )
+                                item["description"] = rname
+                                if not item.get("unit_price"):
+                                    item["unit_price"] = (
+                                        resolved.get("selling_price")
+                                        or resolved.get("sales_price")
+                                        or 0
+                                    )
+                                logger.info(
+                                    f"BUG-item-slot: Resolved item_id={rid} from name={name_hint}"
+                                )
+                    else:
+                        # Customer-bleed signal: proper noun in name_hint not in user_text
+                        logger.info(
+                            f"BUG-item-slot: Rejected customer-bleed item description={name_hint}"
+                        )
+                        item["item_id"] = None
+                        item["description"] = None
             if not item_id:
                 continue
             # Only fetch if we need description

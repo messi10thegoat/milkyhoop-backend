@@ -2141,6 +2141,21 @@ def build_intent_prompt(intent: str, collected: dict) -> str:
         '- Angka: "5 juta" = 5000000, "500 ribu" = 500000, "15rb" = 15000.',
     ]
 
+    # BUG-item-slot fix (2026-05-07): constrain items[].description to barang/jasa
+    _CREATE_SHAPE_INTENTS = {
+        "create_sales_invoice",
+        "create_bill",
+        "create_quote",
+        "create_sales_order",
+        "create_credit_note",
+        "create_vendor_credit",
+    }
+    if intent in _CREATE_SHAPE_INTENTS:
+        parts.append(
+            "- items[].description HARUS nama barang/jasa, BUKAN nama pelanggan/vendor."
+        )
+        parts.append("- Jika ragu, biarkan items=[].")
+
     if collected:
         collected_clean = {
             k: v for k, v in collected.items() if v is not None and k != "date"
