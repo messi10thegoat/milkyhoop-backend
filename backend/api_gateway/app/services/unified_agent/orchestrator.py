@@ -4402,6 +4402,273 @@ class UnifiedAgent:
         )
         return "\n".join(lines)
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Fix B (Bug C+G+I): Numeric Invariant Guard for LLM polish path
+    # Iron Law 1 enforcement — prevent LLM hallucinating Rp numerals.
+    # ─────────────────────────────────────────────────────────────────────
+    def _extract_idr_numerals(self, text: str) -> set:
+        """Extract all financial numerals from polished text.
+        Permissive (over-detect rather than miss). Indonesian conventions:
+          - Thousand separator = '.'  (Rp 1.176.000)
+          - Magnitude words: 'juta' = 1e6, 'miliar' = 1e9, 'ribu' = 1e3
+          - Decimal separator = ',' (rare in this context, ignored)
+        Returns set[int] of detected base values.
+        """
+        import re as _re
+
+        out = set()
+        if not text:
+            return out
+
+        # Pattern A: "Rp 1.176.000" / "Rp1.176.000" / "Rp 5.400.000,00"
+        for m in _re.finditer(r"[Rr][Pp]\.?\s*([\d][\d.,]*)", text):
+            raw = m.group(1)
+            # Strip trailing decimals ",NN"
+            raw = _re.sub(r",\d+$", "", raw)
+            digits = raw.replace(".", "").replace(",", "")
+            if digits.isdigit():
+                try:
+                    out.add(int(digits))
+                except ValueError:
+                    pass
+
+        # Pattern B: "1,2 juta" / "1.5 miliar" / "500 ribu" (with or without Rp)
+        mag_map = {
+            "ribu": 1_000,
+            "juta": 1_000_000,
+            "miliar": 1_000_000_000,
+            "milyar": 1_000_000_000,
+        }
+        for m in _re.finditer(
+            r"(\d+(?:[.,]\d+)?)\s*(ribu|juta|miliar|milyar)\b",
+            text,
+            flags=_re.IGNORECASE,
+        ):
+            num_raw, mag = m.group(1), m.group(2).lower()
+            try:
+                # Treat "1,2" or "1.2" as 1.2 (decimal). For magnitude phrases
+                # the separator is decimal not thousand.
+                num_norm = num_raw.replace(",", ".")
+                base = float(num_norm) * mag_map[mag]
+                out.add(int(round(base)))
+            except (ValueError, KeyError):
+                pass
+
+        # Pattern C: standalone large numerals with thousand separators "1.176.000"
+        # Require at least one '.' to avoid catching counts like "10".
+        for m in _re.finditer(r"(?<![\d.,])(\d{1,3}(?:\.\d{3})+)(?![\d.,])", text):
+            digits = m.group(1).replace(".", "")
+            if digits.isdigit():
+                try:
+                    out.add(int(digits))
+                except ValueError:
+                    pass
+
+        return out
+
+    def _compute_allowed_numerals(self, payload, insight_text: str = "") -> set:
+        """Walk payload + insight text and collect ALL legitimate numerals.
+        STRICT MODE: no rounding tolerance. If LLM emits "1,2 juta" for an
+        actual 1.176.000 value, that's a hallucination per Iron Law 1.
+        Insight engine numerals are whitelisted (trusted upstream); if insight
+        itself hallucinates, file a separate bug.
+        """
+        from decimal import Decimal as _D
+
+        allowed = set()
+        # Always allow trivial integers — counts, page numbers, "0"
+        for i in range(0, 51):
+            allowed.add(i)
+
+        def _add_num(v):
+            try:
+                if isinstance(v, bool):
+                    return
+                if isinstance(v, (int, float)):
+                    n = int(round(float(v)))
+                    allowed.add(n)
+                    allowed.add(abs(n))
+                elif isinstance(v, _D):
+                    allowed.add(int(v.quantize(_D("1"))))
+                elif isinstance(v, str):
+                    s = v.strip().replace(",", ".")
+                    # Only convert if looks numeric
+                    try:
+                        d = _D(s)
+                        allowed.add(int(d.quantize(_D("1"))))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Recursive walk — collect every numeric leaf
+        def _walk(obj, depth=0):
+            if depth > 8:
+                return
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    _walk(v, depth + 1)
+            elif isinstance(obj, list):
+                for v in obj:
+                    _walk(v, depth + 1)
+            else:
+                _add_num(obj)
+
+        _walk(payload)
+
+        # Compute common derived sums (totals across items)
+        try:
+            items = None
+            if isinstance(payload, dict):
+                for k in ("items", "data", "by_customer", "by_vendor", "rows"):
+                    if isinstance(payload.get(k), list):
+                        items = payload[k]
+                        break
+            if items:
+                # Sum of common amount fields
+                for amt_field in (
+                    "amount",
+                    "total_outstanding",
+                    "amount_due",
+                    "subtotal",
+                    "grand_total",
+                    "total",
+                    "balance",
+                ):
+                    s = _D(0)
+                    has_any = False
+                    for it in items:
+                        if isinstance(it, dict) and it.get(amt_field) is not None:
+                            try:
+                                s += _D(str(it.get(amt_field, 0) or 0))
+                                has_any = True
+                            except Exception:
+                                pass
+                    if has_any:
+                        allowed.add(int(s.quantize(_D("1"))))
+                # amount - amount_paid (drilldown pattern)
+                s2 = _D(0)
+                has_any2 = False
+                for it in items:
+                    if isinstance(it, dict) and "amount" in it:
+                        try:
+                            s2 += _D(str(it.get("amount", 0) or 0)) - _D(
+                                str(it.get("amount_paid", 0) or 0)
+                            )
+                            has_any2 = True
+                        except Exception:
+                            pass
+                if has_any2:
+                    allowed.add(int(s2.quantize(_D("1"))))
+        except Exception:
+            pass
+
+        # Whitelist insight engine numerals — trust upstream (separate bug if wrong)
+        if insight_text:
+            allowed |= self._extract_idr_numerals(insight_text)
+
+        return allowed
+
+    def _validate_numeric_invariant(self, llm_output: str, allowed: set):
+        """Returns (is_valid, violating_numerals_set)."""
+        seen = self._extract_idr_numerals(llm_output)
+        violations = {n for n in seen if n not in allowed}
+        return (len(violations) == 0, violations)
+
+    def _render_financial_list_fallback(self, payload, intent: str) -> str:
+        """Deterministic fail-closed renderer for financial list intents.
+        NO LLM. Numbers come straight from payload. Used when invariant
+        guard catches LLM hallucination.
+        """
+        from decimal import Decimal as _D
+
+        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+        if not isinstance(payload, dict):
+            payload = {}
+
+        items = []
+        for k in ("items", "data", "by_customer", "by_vendor", "rows"):
+            if isinstance(payload.get(k), list):
+                items = payload[k]
+                break
+
+        def _fmt_rp(v) -> str:
+            try:
+                d = _D(str(v or 0))
+            except Exception:
+                d = _D(0)
+            n = int(d.quantize(_D("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        if not items:
+            return "Belum ada data untuk ditampilkan."
+
+        lines = [f"Data {intent.replace('_', ' ')}:", ""]
+        TOP_N = 15
+        shown = items[:TOP_N]
+        total = _D(0)
+        for it in shown:
+            if not isinstance(it, dict):
+                lines.append(f"• {it}")
+                continue
+            name = (
+                it.get("name")
+                or it.get("nama")
+                or it.get("invoice_number")
+                or it.get("bill_number")
+                or it.get("description")
+                or "(Tanpa Nama)"
+            )
+            amt_val = (
+                it.get("total_outstanding")
+                if it.get("total_outstanding") is not None
+                else (
+                    it.get("amount_due")
+                    if it.get("amount_due") is not None
+                    else it.get("amount", 0)
+                )
+            )
+            try:
+                total += _D(str(amt_val or 0))
+            except Exception:
+                pass
+            lines.append(f"• {name} — {_fmt_rp(amt_val)}")
+        remaining = len(items) - len(shown)
+        if remaining > 0:
+            lines.append(f"• (+{remaining} lainnya)")
+        lines.append("")
+        lines.append(f"Total: {_fmt_rp(total)} dari {len(items)} item.")
+        return "\n".join(lines)
+
+    def _payload_looks_like_financial_list(self, data) -> bool:
+        """Heuristic: payload is a financial list eligible for invariant guard."""
+        d = data
+        if isinstance(d, dict) and isinstance(d.get("data"), dict):
+            d = d["data"]
+        if not isinstance(d, dict):
+            return False
+        for k in ("items", "by_customer", "by_vendor", "rows"):
+            v = d.get(k)
+            if isinstance(v, list) and v:
+                # Quick check: any dict child has a financial field
+                for it in v[:3]:
+                    if isinstance(it, dict):
+                        if any(
+                            f in it
+                            for f in (
+                                "amount",
+                                "amount_due",
+                                "amount_paid",
+                                "total_outstanding",
+                                "subtotal",
+                                "grand_total",
+                                "balance",
+                            )
+                        ):
+                            return True
+        return False
+
     async def _polish_query_response(
         self, query_config, data, user_text, entity_name=""
     ):
@@ -4504,10 +4771,12 @@ class UnifiedAgent:
 
         compact_str = _json.dumps(compact, ensure_ascii=False, default=str)[:2500]
 
-        # Pre-compute totals for drilldown — prevent Gemini from hallucinating totals
+        # Pre-compute totals — prevent Gemini from hallucinating totals.
+        # Fix B: generalized from drilldown-only to ALL financial list responses.
         _precomputed = ""
-        if hasattr(self, "_drilldown_context") and self._drilldown_context:
-            _dc = self._drilldown_context
+        _dc = getattr(self, "_drilldown_context", None) or {}
+        _is_financial_list = self._payload_looks_like_financial_list(data)
+        if _dc or _is_financial_list:
             try:
                 _items = []
                 if isinstance(data, dict):
@@ -4546,7 +4815,8 @@ class UnifiedAgent:
                 )
             except Exception:
                 pass
-            self._drilldown_context = None  # Reset
+            if getattr(self, "_drilldown_context", None):
+                self._drilldown_context = None  # Reset
 
         # ── Insight Engine: rule-based interpretation ──
         _insight_text = ""
@@ -4585,11 +4855,39 @@ class UnifiedAgent:
                 max_tokens=1500,
             )
             self._last_polish_model = getattr(response, "model", None) or "pipeline"
-            return (
-                response.content or ""
-            ).strip() or "Data ditemukan tapi gagal diformat."
+            polished = (response.content or "").strip()
+
+            # Fix B: Numeric Invariant Guard (Iron Law 1)
+            # Validate LLM output Rp numerals against precomputed allowed set.
+            # If any numeral outside set → fail-closed to deterministic renderer.
+            if polished and _is_financial_list:
+                try:
+                    _allowed = self._compute_allowed_numerals(data, _insight_text)
+                    _ok, _violations = self._validate_numeric_invariant(
+                        polished, _allowed
+                    )
+                    if not _ok:
+                        logger.warning(
+                            "[INVARIANT_GUARD] Polish hallucination blocked for %s: "
+                            "violating numerals=%s allowed_size=%d preview=%r",
+                            query_config.action_key,
+                            sorted(_violations)[:5],
+                            len(_allowed),
+                            polished[:200],
+                        )
+                        return self._render_financial_list_fallback(
+                            data, query_config.action_key
+                        )
+                except Exception as _ge:
+                    logger.warning("[INVARIANT_GUARD] check failed: %s", _ge)
+
+            return polished or "Data ditemukan tapi gagal diformat."
         except Exception as e:
             logger.warning(f"[QUERY_PIPELINE] LLM polish failed, using template: {e}")
+            if self._payload_looks_like_financial_list(data):
+                return self._render_financial_list_fallback(
+                    data, query_config.action_key
+                )
             return f"{query_config.display_name}:\n{_json.dumps(compact, ensure_ascii=False, indent=2, default=str)[:500]}"
 
     def _compact_current_data(self, entity_type: str, data: dict) -> dict:
