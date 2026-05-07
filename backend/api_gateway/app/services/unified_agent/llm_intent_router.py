@@ -133,6 +133,7 @@ RULES:
    "daftar barang/produk" → query_items_search. "ringkasan barang" → query_items_summary. "detail X" → query_X_detail.
 2. "hutang/utang" tanpa vendor → query_ap_outstanding. "hutang ke X" → query_vendor_ap. "piutang" tanpa pelanggan → query_ar_outstanding. "piutang X" → query_customer_ar. "piutang siapa saja" → query_ar_invoices. "aging" → query_ar/ap_aging.
     PER-ENTITY ROLLUP (Fix A): "rekap/tabel per pelanggan", "siapa pelanggan dengan piutang (>X)", "pelanggan piutang terbesar (rekap)", "rekap piutang per pelanggan/customer" → query_ar_by_customer. "rekap/tabel per vendor", "vendor mana yang utangnya/hutangnya paling besar", "rekap utang/hutang per vendor", "vendor dengan hutang terbesar" → query_ap_by_vendor. BEDA dari query_ar_invoices (single-customer drill-down per faktur) — by_customer = aggregated breakdown across all customers.
+    DISAMBIGUASI WAJIB (Fix A v2): "siapa pelanggan dengan piutang lebih dari/di atas/>X" / "pelanggan dengan piutang minimal X" / "pelanggan piutangnya lebih dari X" → query_ar_by_customer (BUKAN query_customers_with_overdue, BUKAN query_ar_outstanding). "overdue/jatuh tempo/terlambat" wajib eksplisit di teks user untuk query_customers_with_overdue. Threshold amount tanpa kata "overdue" = filter rollup, BUKAN overdue. Analogue AP: "vendor dengan hutang lebih dari X" / "siapa vendor utangnya >X" → query_ap_by_vendor.
 3. "hapus vendor X"→delete_vendor. "hapus barang X"→delete_item. Entity keyword setelah "hapus" = type.
 4. "catat biaya/beban" → create_expense. "catat pembelian dari vendor" → create_bill. Tanpa vendor = expense.
 5. "rekening bank/BCA" → create_bank_account. "akun beban/pendapatan" → create_account. "ke BCA" = bank_name.
@@ -141,7 +142,7 @@ RULES:
 7. Angka: "5 juta"→5000000, "500rb"→500000. READY=true jika required fields lengkap.
 8. Chitchat: greeting/thanks/identity → chitchat. Single number/ambigu tanpa workflow → chitchat.
 9. Workflow aktif: jawaban apapun (bukan "batal/cancel") = slot_fill intent workflow, BUKAN intent baru.
-10. "overdue/jatuh tempo pelanggan" → query_customers_with_overdue. "overdue vendor" → query_vendors_with_overdue.
+10. "overdue/jatuh tempo/terlambat pelanggan" → query_customers_with_overdue. "overdue vendor" → query_vendors_with_overdue. JANGAN pakai query_customers_with_overdue jika kata "overdue/jatuh tempo/terlambat" TIDAK ADA di pesan user — gunakan query_ar_by_customer untuk filter amount/threshold/rollup.
 11. Clarification max 3 field sekaligus. Prioritas: entity utama → item → qty+harga.
 12. Single word tanpa workflow: nama barang → query_item_detail. Nama orang → query_customer_detail.
 13. MULTI-TURN: Jika riwayat percakapan menunjukkan ACTIVE CREATE/UPDATE workflow, jawaban pendek

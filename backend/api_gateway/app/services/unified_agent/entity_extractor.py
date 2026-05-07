@@ -328,6 +328,8 @@ EXTRACTION_SCHEMAS = {
                             "query_items_no_stock",
                             "query_customers_with_overdue",
                             "query_vendors_with_overdue",
+                            "query_ar_by_customer",
+                            "query_ap_by_vendor",
                             "query_sales_invoices_unpaid",
                             "query_bills_by_vendor",
                             "query_bills_unpaid",
@@ -1057,6 +1059,58 @@ def classify_query_intent(user_text: str) -> tuple:
         t,
     ):
         return "calc_top_selling_items", None, None
+
+    # ── Fix A v2 (2026-05-06): Per-entity AR/AP rollup — deterministic ──
+    # Catches "siapa pelanggan dengan piutang [lebih dari X]", "rekap piutang per
+    # pelanggan", "pelanggan mana yang piutangnya >X", and AP analogues. Routes
+    # to query_ar_by_customer / query_ap_by_vendor (deterministic renderer,
+    # bypasses LLM polish). MUST fire before the AR/AP ranking and AR fallback
+    # blocks below — both LLM extractor and LLM router previously misrouted
+    # this phrasing to query_customers_with_overdue / query_ar_outstanding.
+    if (
+        _qre.search(
+            r"(?:siapa|pelanggan\s+mana|rekap(?:an)?|breakdown|tabel|tampilkan|daftar)\b"
+            r".{0,40}\b(?:pelanggan|customer)\b.{0,40}\bpiutang\b",
+            t,
+        )
+        or _qre.search(
+            r"\bpiutang\b.{0,40}\b(?:per|tiap|masing-masing)\s+(?:pelanggan|customer)\b",
+            t,
+        )
+        or _qre.search(
+            r"\b(?:pelanggan|customer)\b.{0,30}\bpiutang(?:nya)?\b.{0,20}"
+            r"(?:lebih\s+dari|di\s*atas|>\s*=?|minimal|min\.?)\b",
+            t,
+        )
+        or _qre.search(
+            r"\bpiutang(?:nya)?\b.{0,20}(?:lebih\s+dari|di\s*atas|>\s*=?|minimal|min\.?)"
+            r".{0,40}\b(?:pelanggan|customer)\b",
+            t,
+        )
+    ):
+        return "query_ar_by_customer", None, None
+    if (
+        _qre.search(
+            r"(?:vendor\s+mana|siapa\s+vendor|rekap(?:an)?|breakdown|tabel|tampilkan|daftar)\b"
+            r".{0,40}\b(?:vendor|pemasok|supplier)\b.{0,40}\b(?:hutang|utang)\b",
+            t,
+        )
+        or _qre.search(
+            r"\b(?:hutang|utang)\b.{0,40}\b(?:per|tiap|masing-masing)\s+(?:vendor|pemasok|supplier)\b",
+            t,
+        )
+        or _qre.search(
+            r"\b(?:vendor|pemasok|supplier)\b.{0,30}\b(?:hutang|utang)(?:nya)?\b.{0,20}"
+            r"(?:lebih\s+dari|di\s*atas|>\s*=?|minimal|min\.?)\b",
+            t,
+        )
+        or _qre.search(
+            r"\b(?:hutang|utang)(?:nya)?\b.{0,20}(?:lebih\s+dari|di\s*atas|>\s*=?|minimal|min\.?)"
+            r".{0,40}\b(?:vendor|pemasok|supplier)\b",
+            t,
+        )
+    ):
+        return "query_ap_by_vendor", None, None
 
     # ── Calc engine intents: superlative + ranking patterns ──
     # Re-enabled from DISABLED P2.1 — LLM Router unreliable for these intents.
