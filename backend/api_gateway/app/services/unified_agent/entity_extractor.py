@@ -726,6 +726,14 @@ PIPELINE_ENABLED_INTENTS = {
     "query_ar_outstanding",
     "query_ar_invoices",
     "query_ap_outstanding",
+    # Fix C+G+I bundle (2026-05-06): per-entity AR/AP rollups MUST be in the
+    # pipeline gate so LLM-router-upgraded intents reach the deterministic
+    # _render_ar_ap_by_entity dispatcher (orchestrator.py:3921). Without this,
+    # the LLM router upgrade emits no-pipeline-match and falls to the agent
+    # loop + LLM polish, defeating Fix A bypass-polish and re-introducing
+    # fabricated names (Bug G) and Iron-Law-1 numeric drift (Bug I).
+    "query_ar_by_customer",  # FIX_CGI_PIPELINE_GATE
+    "query_ap_by_vendor",  # FIX_CGI_PIPELINE_GATE
     "query_cash_balance",
     # Kas & Bank
     "query_bank_accounts_list",
