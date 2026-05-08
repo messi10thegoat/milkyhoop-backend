@@ -1957,13 +1957,57 @@ class UnifiedAgent:
                         "[PIPELINE] Workflow create failed (non-fatal): %s", _wf_err2
                     )
 
-            # Build natural clarification via LLM
-            clarification_text = await self._natural_clarification(
-                intent=extraction.intent,
-                collected=merged_entities,
-                missing_labels=resolution.clarifications,
-                resolution=resolution,
-            )
+            # Phase 4 UX polish: deterministic clarification when customer/vendor name
+            # was provided but not resolved to a master record. Without this, LLM
+            # clarification often says "Pelanggan tidak ditemukan" without actionable
+            # follow-up — user has to guess the next step. Surface the exact register
+            # command so user can copy-paste and proceed.
+            _name_unresolved = None
+            _entity_label = None
+            _register_cmd = None
+            _intent_to_check = extraction.intent or ""
+            if _intent_to_check in (
+                "create_sales_invoice",
+                "create_quote",
+                "create_credit_note",
+                "create_receive_payment",
+                "create_customer_deposit",
+            ):
+                _provided = (merged_entities or {}).get("customer_name")
+                _resolved_id = (resolution.payload or {}).get("customer_id")
+                if _provided and isinstance(_provided, str) and not _resolved_id:
+                    _name_unresolved = _provided.strip()
+                    _entity_label = "Pelanggan"
+                    _register_cmd = f"tambah pelanggan {_name_unresolved}"
+            elif _intent_to_check in (
+                "create_bill",
+                "create_vendor_credit",
+                "create_bill_payment",
+                "create_vendor_deposit",
+            ):
+                _provided = (merged_entities or {}).get("vendor_name")
+                _resolved_id = (resolution.payload or {}).get("vendor_id")
+                if _provided and isinstance(_provided, str) and not _resolved_id:
+                    _name_unresolved = _provided.strip()
+                    _entity_label = "Vendor"
+                    _register_cmd = f"tambah vendor {_name_unresolved}"
+
+            if _name_unresolved and _entity_label and _register_cmd:
+                clarification_text = (
+                    f"{_entity_label} **'{_name_unresolved}'** belum terdaftar di "
+                    f"modul {_entity_label}.\n\n"
+                    f"Daftarkan dulu dengan ketik:\n\n"
+                    f"`{_register_cmd}`\n\n"
+                    f"Lalu kirim ulang permintaan ini."
+                )
+            else:
+                # Build natural clarification via LLM
+                clarification_text = await self._natural_clarification(
+                    intent=extraction.intent,
+                    collected=merged_entities,
+                    missing_labels=resolution.clarifications,
+                    resolution=resolution,
+                )
 
             await emit(
                 "THINKING_DONE",
