@@ -3271,7 +3271,25 @@ class ToolExecutor:
             payload["invoice_date"] = today
             payload.pop("due_date", None)  # force recompute since base date changed
 
-        self._add_due_date(payload)
+        # Default due_date: lookup customer.payment_terms_days. Falls back to 30
+        # (industry NET-30) when customer isn't yet resolved or column is null.
+        # Ticket: 2026-05-07-default-due-date-from-customer-payment-terms.
+        _terms_days = 30
+        _early_cid = payload.get("customer_id")
+        if _early_cid and ("due_date" not in payload or not payload.get("due_date")):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as _terms_client:
+                    _cust = await self._fetch_entity(
+                        _terms_client, f"/api/customers/{_early_cid}"
+                    )
+                    if _cust and _cust.get("payment_terms_days") is not None:
+                        _terms_days = int(_cust["payment_terms_days"])
+            except Exception as _terms_err:
+                logger.debug(
+                    "[enrich_sales_invoice] payment_terms_days lookup failed: %s",
+                    _terms_err,
+                )
+        self._add_due_date(payload, days=_terms_days)
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Customer name lookup
