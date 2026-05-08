@@ -226,6 +226,12 @@ class DocumentActionResolver:
         )
         payment_date = ocr_data.get("document_date") or ocr_data.get("date")
 
+        # Default payment_date to today if OCR did not extract (prevents schema fail -> TEXT fallback)
+        if not payment_date or payment_date in ("-", "null", "None", "none"):
+            from datetime import date as _date_today
+
+            payment_date = _date_today.today().isoformat()
+
         # For incoming payments: match destination_account_number (our account that receives money)
         bank_name = (
             ocr_data.get("destination_account_number")  # OCR: "Ke 8295032185"
