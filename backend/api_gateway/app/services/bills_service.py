@@ -778,6 +778,34 @@ class BillsService:
                     if vendor_row:
                         vendor_name = vendor_row["nama_supplier"]
 
+                # Phase 4 hardening (Iron Law 30 mirror): resolve name → id, reject if unresolved.
+                # Mirrors sales_invoices BUG-02 fix. Without this, bill is saved with vendor_id=NULL
+                # whenever vendor_name is provided without id — orphan that breaks AP aggregation.
+                if vendor_name and not vendor_id:
+                    resolved_id = await conn.fetchval(
+                        "SELECT id FROM suppliers WHERE tenant_id = $1 AND nama_supplier = $2 LIMIT 1",
+                        tenant_id,
+                        vendor_name,
+                    )
+                    if not resolved_id:
+                        # ILIKE fallback for case-insensitive match
+                        resolved_id = await conn.fetchval(
+                            "SELECT id FROM suppliers WHERE tenant_id = $1 AND nama_supplier ILIKE $2 LIMIT 1",
+                            tenant_id,
+                            vendor_name,
+                        )
+                    if resolved_id:
+                        vendor_id = resolved_id
+                    else:
+                        return {
+                            "success": False,
+                            "message": (
+                                f"Vendor '{vendor_name}' tidak ditemukan. "
+                                "Buat dulu di modul Vendor."
+                            ),
+                            "data": None,
+                        }
+
                 if not vendor_name:
                     return {
                         "success": False,

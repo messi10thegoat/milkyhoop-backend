@@ -1832,6 +1832,21 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     if resolved_id:
                         customer_id_str = str(resolved_id)
 
+                # Phase 4 hardening (Iron Law 30 mirror): reject unresolved customer_name.
+                # Without this guard, a name without a matching master row produces an
+                # invoice with customer_id=NULL — orphan that breaks AR aggregation by
+                # customer and silently inflates the customer_name string column.
+                # Frontend (CustomerSheet.tsx) is fixed to never POST invoice with
+                # unresolved name, but mobile/bot/API integrations may still try.
+                if body.customer_name and not customer_id_str:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Pelanggan '{body.customer_name}' tidak ditemukan. "
+                            "Buat dulu di modul Pelanggan."
+                        ),
+                    )
+
                 # Insert invoice
                 invoice_id = await conn.fetchval(
                     """
