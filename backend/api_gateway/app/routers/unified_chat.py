@@ -4005,6 +4005,7 @@ async def _confirm_direct_action(
     http_request,
     payload_overrides: dict = None,
     session_id: str = None,
+    doc_status: str = "POSTED",
 ) -> ChatMessageResponse:
     """Execute a direct action by calling the REST endpoint."""
     import httpx
@@ -4083,6 +4084,22 @@ async def _confirm_direct_action(
             text=f"Konfigurasi untuk '{action_key}' tidak ditemukan.",
             data={"success": False},
         )
+
+    # --- Simpan Draft / Posting routing ---
+    # Translate front-end doc_status into per-intent payload mutations.
+    # DRAFT keeps the document in draft state (no journal post). POSTED is the
+    # default behavior and matches the legacy single-call execution.
+    # Quote / credit_note / vendor_credit currently always create as DRAFT;
+    # POSTED for credit_note/vendor_credit triggers a follow-up /post call below.
+    needs_post_step = False
+    if doc_status == "DRAFT":
+        if action_key == "create_sales_invoice":
+            payload["auto_post"] = "false"
+        elif action_key in ("create_sales_order", "create_bill"):
+            payload["status"] = "draft"
+    elif doc_status == "POSTED":
+        if action_key in ("create_credit_note", "create_vendor_credit"):
+            needs_post_step = True
 
     # Mark as executing
     await pool.execute(
@@ -4307,6 +4324,45 @@ async def _confirm_direct_action(
         if response.status_code in (200, 201):
             result_data = response.json()
             entity_id = result_data.get("id", result_data.get("data", {}).get("id", ""))
+
+            # --- Follow-up POST step for create_credit_note / create_vendor_credit ---
+            # These endpoints only create the doc as DRAFT; posting requires a
+            # second call to /{id}/post. Triggered when doc_status == "POSTED".
+            if needs_post_step and entity_id:
+                _post_path_map = {
+                    "create_credit_note": "/api/credit-notes/{id}/post",
+                    "create_vendor_credit": "/api/vendor-credits/{id}/post",
+                }
+                _post_path = _post_path_map.get(action_key)
+                if _post_path:
+                    _post_url = base_url + _post_path.format(id=entity_id)
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as _post_client:
+                            _post_resp = await _post_client.post(
+                                _post_url,
+                                headers={
+                                    "Authorization": auth_header,
+                                    "Content-Type": "application/json",
+                                    "X-Tenant-ID": tenant_id,
+                                },
+                            )
+                        if _post_resp.status_code in (200, 201):
+                            result_data = _post_resp.json()
+                        else:
+                            logger.warning(
+                                "[Confirm] Post-step failed for %s entity %s: %s %s",
+                                action_key,
+                                entity_id,
+                                _post_resp.status_code,
+                                _post_resp.text[:200],
+                            )
+                    except Exception as _post_err:
+                        logger.warning(
+                            "[Confirm] Post-step exception for %s entity %s: %s",
+                            action_key,
+                            entity_id,
+                            _post_err,
+                        )
 
             # Phase A.3: Link uploaded document to created entity (audit trail)
             if _uploaded_document_id and entity_id:
@@ -4617,6 +4673,7 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
                 request,
                 payload_overrides=body.payload_overrides,
                 session_id=body.session_id,
+                doc_status=body.doc_status,
             )
 
         # FSM: AWAITING_CONFIRMATION -> EXECUTING
