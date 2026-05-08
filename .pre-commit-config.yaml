@@ -13,6 +13,16 @@
 #
 # ==================================================
 
+# Global exclude (applies to all hooks): frontend build artifacts
+# Reason: minified JS/static assets cause false positives + slow scans
+exclude: |
+  (?x)^(
+    frontend/static/.*|
+    frontend/workers/.*|
+    frontend/service-worker\.js|
+    frontend/icons/.*
+  )$
+
 repos:
   # Secret Detection - Gitleaks
   - repo: https://github.com/gitleaks/gitleaks
@@ -106,7 +116,10 @@ repos:
             \.env\.template|
             credentials\.env\.template|
             package-lock\.json|
-            poetry\.lock
+            poetry\.lock|
+            frontend/static/.*|
+            frontend/workers/.*|
+            frontend/service-worker\.js
           )$
 
 # CI configuration
