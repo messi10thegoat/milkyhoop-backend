@@ -531,6 +531,20 @@ class EntityResolver:
         if _config:
             _registry_names = {f.name for f in _config.fields}
             for key, value in entities.items():
+                # Iron Law 1 hardening: never trust LLM-extracted ID fields.
+                # Stage-2 LLM (Gemini Flash Lite) can hallucinate UUID-shaped
+                # values for *_id fields that by chance match real DB rows,
+                # silently routing transactions to wrong entity. IDs MUST
+                # come from the resolver path above (sources 1 / 2 / 2.5).
+                # Ticket: 2026-05-07-stage2-llm-uuid-hallucination-audit.
+                if key == "id" or key.endswith("_id") or key.endswith("_uuid"):
+                    if value:
+                        logger.warning(
+                            "[INVARIANT_GUARD] Stripped LLM-extracted ID field %r from payload (intent=%s); resolver is single source of truth",
+                            key,
+                            intent,
+                        )
+                    continue
                 if key in _registry_names and value is not None and key not in payload:
                     payload[key] = value
 
