@@ -42,17 +42,24 @@ class GeminiClient(LLMClient):
         temperature: float = 0.1,
         max_tokens: int = 4096,
         response_format: Any = None,
+        thinking_budget: Optional[int] = None,
+        **_extra: Any,
     ) -> LLMResponse:
         converted = self.convert_messages(messages)
         system_instruction = converted["system_instruction"]
         contents = converted["contents"]
 
+        gen_config: Dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        }
+        # Phase 2B-1.7: thinking budget control for gemini-2.5-flash family.
+        # thinking_budget=0 disables internal reasoning -> faster on short generation.
+        if thinking_budget is not None:
+            gen_config["thinkingConfig"] = {"thinkingBudget": int(thinking_budget)}
         payload: Dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
+            "generationConfig": gen_config,
         }
 
         if system_instruction:
@@ -86,14 +93,22 @@ class GeminiClient(LLMClient):
                 if retry_after:
                     wait = min(float(retry_after), 30.0)
                 else:
-                    wait = min(2 ** attempt * 1.5, 15.0)
+                    wait = min(2**attempt * 1.5, 15.0)
                 logger.warning(
                     "Gemini 429 rate limit (attempt %d/%d), retrying in %.1fs",
-                    attempt + 1, max_retries, wait,
+                    attempt + 1,
+                    max_retries,
+                    wait,
                 )
                 await asyncio.sleep(wait)
                 continue
 
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Gemini HTTP %d: %s",
+                    resp.status_code,
+                    resp.text[:600],
+                )
             resp.raise_for_status()
             data = resp.json()
             return self._parse_response(data, model)
@@ -109,11 +124,13 @@ class GeminiClient(LLMClient):
         declarations = []
         for tool in tools:
             params = tool.get("parameters", {"type": "object", "properties": {}})
-            declarations.append({
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": self._clean_schema(deepcopy(params)),
-            })
+            declarations.append(
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": self._clean_schema(deepcopy(params)),
+                }
+            )
         return declarations
 
     # ── Message conversion ───────────────────────────────────────────
@@ -134,7 +151,11 @@ class GeminiClient(LLMClient):
                 )
 
             if msg.role == "system":
-                system_instruction = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+                system_instruction = (
+                    msg.content
+                    if isinstance(msg.content, str)
+                    else str(msg.content or "")
+                )
                 continue
 
             if msg.role == "assistant" and msg.tool_calls:
@@ -145,7 +166,9 @@ class GeminiClient(LLMClient):
                 for tc in msg.tool_calls:
                     func = tc.get("function", tc) if isinstance(tc, dict) else tc
                     fname = func.get("name", "") if isinstance(func, dict) else ""
-                    raw_args = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
+                    raw_args = (
+                        func.get("arguments", "{}") if isinstance(func, dict) else "{}"
+                    )
                     if isinstance(raw_args, str):
                         try:
                             args = json.loads(raw_args)
@@ -153,23 +176,29 @@ class GeminiClient(LLMClient):
                             args = {}
                     else:
                         args = raw_args
-                    parts.append({
-                        "functionCall": {"name": fname, "args": args},
-                    })
+                    parts.append(
+                        {
+                            "functionCall": {"name": fname, "args": args},
+                        }
+                    )
                 gemini_contents.append({"role": "model", "parts": parts})
                 continue
 
             if msg.role == "tool":
                 # Tool result → functionResponse
-                gemini_contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": msg.name or "",
-                            "response": {"result": msg.content or ""},
-                        },
-                    }],
-                })
+                gemini_contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": msg.name or "",
+                                    "response": {"result": msg.content or ""},
+                                },
+                            }
+                        ],
+                    }
+                )
                 continue
 
             # Regular user or assistant message
@@ -194,17 +223,23 @@ class GeminiClient(LLMClient):
                         parts.append({"text": block.get("text", "")})
                     elif block.get("type") == "image_url":
                         url_data = block.get("image_url", {})
-                        url = url_data.get("url", "") if isinstance(url_data, dict) else str(url_data)
+                        url = (
+                            url_data.get("url", "")
+                            if isinstance(url_data, dict)
+                            else str(url_data)
+                        )
                         if url.startswith("data:"):
                             # data:image/png;base64,AAAA...
                             header, b64 = url.split(",", 1) if "," in url else (url, "")
                             mime = header.split(";")[0].replace("data:", "")
-                            parts.append({
-                                "inlineData": {
-                                    "mimeType": mime,
-                                    "data": b64,
-                                },
-                            })
+                            parts.append(
+                                {
+                                    "inlineData": {
+                                        "mimeType": mime,
+                                        "data": b64,
+                                    },
+                                }
+                            )
                         else:
                             parts.append({"text": f"[image: {url}]"})
                 else:
@@ -283,11 +318,13 @@ class GeminiClient(LLMClient):
                 text_parts.append(part["text"])
             elif "functionCall" in part:
                 fc = part["functionCall"]
-                tool_calls.append(LLMToolCall(
-                    id=f"call_{uuid.uuid4().hex[:24]}",
-                    function_name=fc.get("name", ""),
-                    arguments=fc.get("args", {}),
-                ))
+                tool_calls.append(
+                    LLMToolCall(
+                        id=f"call_{uuid.uuid4().hex[:24]}",
+                        function_name=fc.get("name", ""),
+                        arguments=fc.get("args", {}),
+                    )
+                )
 
         usage_meta = data.get("usageMetadata", {})
         usage = {

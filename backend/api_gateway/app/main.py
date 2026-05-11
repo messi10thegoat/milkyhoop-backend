@@ -138,6 +138,7 @@ from .routers import payment_requests
 from .routers import chat_history
 from .routers import chat_usage
 from .routers import unified_chat
+from .routers import userguide_doc
 from .routers import document_intake
 from .routers import efaktur
 from .routers import units
@@ -706,6 +707,7 @@ app.include_router(
 app.include_router(chat_history.router, prefix="/api/v3/chat", tags=["chat-history"])
 app.include_router(chat_usage.router, prefix="/api/v3/chat", tags=["chat-usage"])
 app.include_router(unified_chat.router, prefix="/api/v3/chat", tags=["unified-chat"])
+app.include_router(userguide_doc.router, prefix="/api/v3/chat", tags=["userguide-doc"])
 app.include_router(
     document_intake.router, prefix="/api/document-intake", tags=["document-intake"]
 )

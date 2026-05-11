@@ -1127,7 +1127,7 @@ class BillsService:
                     params.extend([bill_id, tenant_id])
                     query = f"""
                         UPDATE bills
-                        SET {', '.join(updates)}
+                        SET {", ".join(updates)}
                         WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
                     """
                     await conn.execute(query, *params)
@@ -1188,49 +1188,102 @@ class BillsService:
     # =========================================================================
     async def delete_bill(self, tenant_id: str, bill_id: UUID) -> Dict[str, Any]:
         """
-        Delete a bill. Only allowed if no payments have been made.
+        Hard-delete a draft bill. Only allowed if doc_status='draft' AND
+        no payments/allocations/dependent records exist.
 
-        Returns:
-            {success: bool, message: str}
+        Uses derive_doc_status() (status_helpers) as authoritative source —
+        the legacy `status` column defaults to 'unpaid' and is unreliable
+        for draft detection. Per Iron Law, status_v2 is the lifecycle SoT.
         """
         async with self.pool.acquire() as conn:
-            # Check if bill exists and is unpaid
-            bill = await conn.fetchrow(
-                """
-                SELECT id, amount_paid, status, status_v2
-                FROM bills
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bill_id,
-                tenant_id,
-            )
+            async with conn.transaction():
+                # Defensive RLS context (pool monkey-patch already sets this,
+                # but explicit set is safe and idempotent).
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
 
-            if not bill:
-                return {"success": False, "message": "Bill not found"}
+                bill = await conn.fetchrow(
+                    """
+                    SELECT id, amount_paid, status, status_v2,
+                           accounting_status, operational_status
+                    FROM bills
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    bill_id,
+                    tenant_id,
+                )
 
-            # Check voided status
-            if bill["status"] == "void":
-                return {"success": False, "message": "Cannot delete voided bill"}
+                if not bill:
+                    return {"success": False, "message": "Bill not found"}
 
-            # Check status_v2 (only draft can be deleted)
-            if bill.get("status_v2") and bill["status_v2"] != "draft":
-                return {
-                    "success": False,
-                    "message": f"Cannot delete bill with status '{bill['status_v2']}'. Only draft bills can be deleted. Use void instead.",
-                }
+                # Use authoritative derive_doc_status helper instead of
+                # brittle direct status_v2 check. Handles legacy `status`
+                # column ('void') and status_v2 desync gracefully.
+                doc_status = derive_doc_status(dict(bill))
 
-            if bill["amount_paid"] > 0:
-                return {
-                    "success": False,
-                    "message": "Cannot delete bill with payments. Void the bill instead.",
-                }
+                if doc_status == "void":
+                    return {
+                        "success": False,
+                        "message": "Cannot delete voided bill",
+                    }
+                if doc_status != "draft":
+                    return {
+                        "success": False,
+                        "message": (
+                            f"Cannot delete bill with status '{doc_status}'. "
+                            "Only draft bills can be deleted. Use void instead."
+                        ),
+                    }
 
-            # Delete bill (items and attachments cascade)
-            await conn.execute(
-                "DELETE FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tenant_id
-            )
+                if (bill["amount_paid"] or 0) > 0:
+                    return {
+                        "success": False,
+                        "message": "Cannot delete bill with payments. Void the bill instead.",
+                    }
 
-            return {"success": True, "message": "Bill deleted successfully"}
+                # Pre-flight: non-cascade FK dependencies. Drafts SHOULD
+                # not have any of these, but guard so DELETE returns a
+                # clear 400 instead of leaking a 500 to the frontend.
+                dep_checks = [
+                    ("bill_payment_allocations", "pembayaran tagihan"),
+                    ("vendor_deposit_applications", "aplikasi deposit vendor"),
+                    ("fixed_assets", "aset tetap"),
+                    ("asset_maintenance", "pemeliharaan aset"),
+                    ("production_subcontracts", "subkontrak produksi"),
+                ]
+                for table, label in dep_checks:
+                    exists = await conn.fetchval(
+                        f"SELECT 1 FROM {table} WHERE bill_id = $1 LIMIT 1",
+                        bill_id,
+                    )
+                    if exists:
+                        return {
+                            "success": False,
+                            "message": (
+                                f"Tidak dapat menghapus faktur draft: masih ada "
+                                f"referensi {label}. Lepas referensi terlebih dahulu."
+                            ),
+                        }
+
+                # Delete bill — bill_items + bill_attachments cascade.
+                try:
+                    await conn.execute(
+                        "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
+                        bill_id,
+                        tenant_id,
+                    )
+                except asyncpg.ForeignKeyViolationError as fk_err:
+                    return {
+                        "success": False,
+                        "message": (
+                            "Faktur draft tidak dapat dihapus karena masih "
+                            f"memiliki referensi terkait: {fk_err.detail or str(fk_err)}"
+                        ),
+                    }
+
+                return {"success": True, "message": "Bill deleted successfully"}
 
     # =========================================================================
     # RECORD PAYMENT
@@ -3841,7 +3894,7 @@ class BillsService:
 
                 query = f"""
                     UPDATE bills
-                    SET {', '.join(updates)}
+                    SET {", ".join(updates)}
                     WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
                 """
                 await conn.execute(query, *params)

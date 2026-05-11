@@ -1913,7 +1913,7 @@ TUTORIAL_TOOLS: List[Dict[str, Any]] = [
 # Combined list: all read tools + action tools
 
 # ─── Phase 2A: Tool Domains ──────────────────────────────────────────────────
-from enum import Enum
+from enum import Enum  # noqa: E402
 
 
 class ToolDomain(str, Enum):
@@ -2044,7 +2044,7 @@ TOOL_DOMAINS: dict = {
 }
 
 
-def get_tools_for_domains(domains: set) -> list:
+def get_tools_for_domains(domains: set, *, userguide_enabled: bool = False) -> list:
     """Return tool definitions filtered by active domains.
 
     Args:
@@ -2068,8 +2068,55 @@ def get_tools_for_domains(domains: set) -> list:
         if tool_domains & domains:  # intersection
             result.append(tool)
             seen.add(name)
+    # Phase 2B-1: append userguide tools when feature flag enabled for tenant
+    if userguide_enabled:
+        for tool in USERGUIDE_TOOLS:
+            if tool["name"] not in seen:
+                result.append(tool)
+                seen.add(tool["name"])
     return result
 
+
+# ─── Userguide Tools (Phase 2B-1, feature-flagged off by default) ─────────
+USERGUIDE_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "search_userguide",
+        "description": (
+            "Search MilkyHoop user documentation untuk menjawab pertanyaan "
+            "user tentang cara pakai aplikasi, troubleshooting, atau konsep "
+            "akuntansi/operasional. Gunakan tool ini SEBELUM menjawab dari "
+            "general knowledge untuk pertanyaan operasional MilkyHoop. "
+            "Return chunks dengan citation metadata + fallback_tier (1-4)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query (Indonesian or English)",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+                "tier_preference": {
+                    "type": "string",
+                    "enum": ["plain", "bridged", "deep", "auto"],
+                    "default": "auto",
+                    "description": (
+                        "auto = classify automatically. plain = simple operational. "
+                        "bridged = with accounting context. deep = technical."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+]
+
+USERGUIDE_TOOL_NAMES = {t["name"] for t in USERGUIDE_TOOLS}
 
 ALL_TOOLS: List[Dict[str, Any]] = (
     READ_TOOLS + ACTION_TOOLS + [QUERY_TOOL] + SESSION_TOOLS + TUTORIAL_TOOLS
@@ -2101,8 +2148,14 @@ TUTORIAL_TOOL_NAMES = {
     "dismiss_tutorial",
 }
 
-# Set of all valid tool names
-ALL_TOOL_NAMES = {t["name"] for t in ALL_TOOLS}
+# Set of all valid tool names (includes feature-flagged userguide tools so
+# executor recognises them when registry hands them out at runtime).
+ALL_TOOL_NAMES = {t["name"] for t in ALL_TOOLS} | USERGUIDE_TOOL_NAMES
+
+
+def is_userguide_tool(tool_name: str) -> bool:
+    """Check if tool is the userguide RAG search tool."""
+    return tool_name in USERGUIDE_TOOL_NAMES
 
 
 def get_tools() -> List[Dict[str, Any]]:
@@ -2148,3 +2201,24 @@ def get_action_type_enum(action_type: str) -> int | None:
 def is_direct_action_tool(tool_name: str) -> bool:
     """Check if tool is a direct action tool (handled internally, not gRPC)."""
     return tool_name == "propose_direct_action"
+
+
+async def is_userguide_rag_enabled(pool, tenant_id: str) -> bool:
+    """
+    Phase 2B-1: lookup tenant_config.userguide_rag_enabled for the given tenant.
+
+    Default false for any tenant without a row. Used by orchestrator (when wiring
+    happens in Phase 2C) to decide whether to register `search_userguide` and
+    inject the tutorial-mode system prompt section.
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT userguide_rag_enabled FROM tenant_config WHERE tenant_id = $1",
+                tenant_id,
+            )
+            if row is None:
+                return False
+            return bool(row["userguide_rag_enabled"])
+    except Exception:
+        return False

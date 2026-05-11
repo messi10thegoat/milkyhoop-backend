@@ -392,7 +392,7 @@ def _build_file_context(file_metas: List[dict]) -> str:
     attachments = []
     for fm in file_metas:
         size_kb = fm["size"] / 1024
-        size_str = f"{size_kb/1024:.1f}MB" if size_kb >= 1024 else f"{size_kb:.0f}KB"
+        size_str = f"{size_kb / 1024:.1f}MB" if size_kb >= 1024 else f"{size_kb:.0f}KB"
         ext_label = fm["extension"].upper().lstrip(".")
         # Build opaque file reference (hash only, no server path)
         file_ref = f"chat_upload:{fm.get('file_hash', '')}{fm['extension']}"
@@ -2548,7 +2548,7 @@ async def send_message_with_files(
                         _img_bytes = _buf.getvalue()
                         _mime = "image/jpeg"
                         logger.info(
-                            f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start)*1000:.0f}ms since start"
+                            f"[DocSimple] Image resized to {_img_pil.size}, {len(_img_bytes)} bytes in {(_t_mod.perf_counter() - _t_pipeline_start) * 1000:.0f}ms since start"
                         )
                     except Exception as _resize_err:
                         logger.warning(
@@ -2678,7 +2678,7 @@ Aturan:
                     _ocr_data = _ocr_json.loads(_ocr_text)
                     _ocr_elapsed = _t_mod.perf_counter() - _t_start
                     logger.info(
-                        f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed*1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
+                        f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed * 1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
                     )
 
                     # -- Smart Document Matching (bridge to Financial Intelligence) --
@@ -3310,7 +3310,9 @@ Aturan:
                             _table_lines.append(
                                 f"| Pajak | Rp {_tax:,.0f} |".replace(",", ".")
                             )
-                        _table_lines.append(f"| Confidence | {_confidence*100:.0f}% |")
+                        _table_lines.append(
+                            f"| Confidence | {_confidence * 100:.0f}% |"
+                        )
 
                         _preview = {
                             "pending_action_id": _pending_id,
@@ -3367,7 +3369,7 @@ Aturan:
                             _rc_header.append(
                                 {
                                     "label": "Confidence OCR",
-                                    "value": f"{_confidence*100:.0f}%",
+                                    "value": f"{_confidence * 100:.0f}%",
                                 }
                             )
 
@@ -3385,7 +3387,7 @@ Aturan:
                         # Add smart match info to review card
                         if _match_result and _match_result.best_match:
                             _bm = _match_result.best_match
-                            _conf_pct = f"{_bm.confidence*100:.0f}%"
+                            _conf_pct = f"{_bm.confidence * 100:.0f}%"
                             _match_label = (
                                 "high"
                                 if _bm.confidence >= 0.85
@@ -4076,6 +4078,38 @@ async def _confirm_direct_action(
     )
     if payload_overrides:
         payload.update(payload_overrides)
+
+    # ── FIX_PHONE_COERCE (2026-05-09) ──
+    # Defensive: phone fields may be int (LLM JSON loss-of-leading-zero).
+    # Pydantic schemas declare Optional[str] → 422. Coerce + try recover from OCR.
+    try:
+        from ..services.unified_agent.tool_executor import _coerce_phone_fields as _cpf
+
+        _ocr_text = None
+        if session_id:
+            try:
+                _ocr_row = await pool.fetchrow(
+                    "SELECT document_context FROM chat_session_state WHERE session_id = $1::uuid",
+                    str(session_id),
+                )
+                if _ocr_row and _ocr_row["document_context"]:
+                    _dc = _ocr_row["document_context"]
+                    if isinstance(_dc, str):
+                        _dc = json.loads(_dc)
+                    if isinstance(_dc, dict) and _dc.get("source") == "intent_ocr":
+                        _ocr_text = _dc.get("ocr_text")
+            except Exception as _e:
+                logger.debug("[FIX_PHONE_COERCE/confirm] OCR fetch skipped: %s", _e)
+        payload = _cpf(payload, _ocr_text)
+        logger.warning(
+            "[FIX_PHONE_COERCE/confirm] action=%s phone=%s phone2=%s",
+            action_key,
+            payload.get("phone"),
+            payload.get("phone2"),
+        )
+    except Exception as _cpf_err:
+        logger.warning("[FIX_PHONE_COERCE/confirm] failed: %s", _cpf_err)
+
     config = get_direct_action(action_key)
 
     if not config:

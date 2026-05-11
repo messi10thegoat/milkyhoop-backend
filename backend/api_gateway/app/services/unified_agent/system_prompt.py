@@ -434,6 +434,13 @@ INTENT_TO_SEGMENTS = {
 }
 
 
+# Backwards-compat aliases. Pre-segmented callers reference these:
+#   STATIC_PROMPT  -> the FULL prompt fallback (union of all segments)
+#   PROMPT_VERSION -> string surfaced via get_prompt_version()
+STATIC_PROMPT = "\n\n".join(INTENT_TO_SEGMENTS["FULL"])
+PROMPT_VERSION = "v4.2.0"
+
+
 def _infer_intent(user_text: str) -> str:
     """Simple heuristic intent classifier.
 
@@ -541,8 +548,26 @@ def _infer_intent(user_text: str) -> str:
     if any(w in text for w in chart_words):
         return "CHART"
 
-    # Tutorial
-    tutorial_words = ["tutorial", "panduan", "pelajari", "cara pakai"]
+    # Tutorial — Phase 2B-1.6: expanded patterns to catch natural ID how/why/what queries.
+    # Substring match: "cara " catches "cara bikin/hapus/edit" etc; "kok " catches "kok faktur..."
+    # MUST run BEFORE the action check below (e.g. "cara bikin X" should route TUTORIAL not ACTION).
+    tutorial_words = [
+        "tutorial",
+        "panduan",
+        "pelajari",
+        "cara pakai",
+        "cara ",
+        "gimana",
+        "bagaimana",
+        "kok ",
+        "kenapa",
+        "apa itu",
+        "apa beda",
+        "bedanya",
+        "bedakan",
+        "bisakah",
+        "bolehkah",
+    ]
     if any(w in text for w in tutorial_words):
         return "TUTORIAL"
 
@@ -573,14 +598,29 @@ def _infer_intent(user_text: str) -> str:
 
     # Manufacturing domain keywords → SIMPLE_READ (not CHITCHAT)
     manufacturing_keywords = [
-        "bom", "bill of materials", "resep produksi",
-        "work order", "perintah produksi", "order produksi",
-        "work center", "stasiun kerja",
-        "material issue", "bahan keluar", "bahan baku",
-        "fg receipt", "barang jadi", "hasil produksi",
-        "produksi", "manufaktur", "manufacturing",
-        "issue material", "report output", "release wo",
-        "jadwal produksi", "biaya produksi", "cost analysis",
+        "bom",
+        "bill of materials",
+        "resep produksi",
+        "work order",
+        "perintah produksi",
+        "order produksi",
+        "work center",
+        "stasiun kerja",
+        "material issue",
+        "bahan keluar",
+        "bahan baku",
+        "fg receipt",
+        "barang jadi",
+        "hasil produksi",
+        "produksi",
+        "manufaktur",
+        "manufacturing",
+        "issue material",
+        "report output",
+        "release wo",
+        "jadwal produksi",
+        "biaya produksi",
+        "cost analysis",
     ]
     if any(kw in text for kw in manufacturing_keywords):
         return "SIMPLE_READ"
@@ -645,6 +685,61 @@ def build_segmented_prompt(intent: str) -> str:
     return "\n\n".join(segments)
 
 
+USERGUIDE_TUTORIAL_OVERRIDE = """
+[OVERRIDE — TUTORIAL MODE ACTIVE]
+User is asking a HOW / WHY / WHAT question about MilkyHoop, NOT requesting data
+or an action. Your FIRST action MUST be `search_userguide(query=...)`. Do NOT
+call any other tool until you have retrieval results.
+
+CITATION FORMAT — MANDATORY when retrieval returns chunks with fallback_tier 3 or 4:
+After your answer, you MUST end with at least one citation line in this EXACT
+markdown form (no other format is acceptable):
+
+    Sumber: [Judul Dokumen](docs:doc_id)
+
+Where `doc_id` comes from each chunk's `doc_id` field and `Judul Dokumen` from
+`title`. Concrete example:
+
+    Sumber: [Cara Bikin Faktur Penjualan Baru](docs:faktur-penjualan.how-to.bikin-faktur-baru)
+
+Setiap chunk di tool result punya field "citation" siap pakai (sudah
+ter-format [Title](docs:doc_id)). Salin langsung dari sana — JANGAN
+mengarang doc_id atau pakai .md path.
+
+Multiple sources → list each on its own line. For Tier 2 (similarity < 0.65)
+or Tier 1 (zero chunks), do NOT cite; instead prepend disclaimer
+"⚠️ Saya tidak menemukan jawaban pasti di dokumentasi. Berdasarkan pengetahuan
+umum: ...".
+
+If the user later asks to actually DO an action (e.g. "ya, bikin sekarang"),
+clarify scope first — but for THIS turn, treat the message as informational.
+"""
+
+
+USERGUIDE_TUTORIAL_PROMPT = """
+## Mode Tutorial / Bantuan Operasional
+
+Untuk pertanyaan tentang cara pakai MilkyHoop, troubleshooting fitur,
+atau konsep operasional, GUNAKAN tool `search_userguide` SEBELUM jawab
+dari pengetahuan umum.
+
+Setelah dapat hasil retrieval, ikuti policy fallback berdasarkan
+field `fallback_tier`:
+
+- Tier 4 (similarity ≥ 0.85): jawab langsung dengan citation `[Judul](docs:doc_id)`. Tidak perlu hedge.
+- Tier 3 (0.65–0.85): jawab dengan citation + soft hedge ("Untuk detail lebih lengkap, lihat [link]").
+- Tier 2 (<0.65 tapi chunks ada): WAJIB disclaimer "⚠️ Saya tidak menemukan jawaban pasti di dokumentasi. Berdasarkan pengetahuan umum: ..."
+- Tier 1 (0 chunks): "Saya tidak menemukan info ini di dokumentasi MilkyHoop. Mau saya coba jawab dari pengetahuan umum (mungkin tidak akurat untuk MilkyHoop spesifik), atau hubungi support?"
+
+Jika `permission_gated=true`: bilang "Saya menemukan jawaban di dokumen
+tentang **{blocked_doc_titles[0]}**, tapi fitur ini butuh akses
+**{module}.{action}**. Hubungi owner untuk minta izin."
+
+WAJIB cite minimum 1 source kalau retrieval ada hit. Multi-source =
+numbered references [1], [2] dengan footer list.
+"""
+
+
 def _build_dynamic_suffix(tenant_name: str, today_str: str) -> str:
     """Build per-turn dynamic context. This part is NOT cached by OpenAI."""
     # Date math for query parameter hints
@@ -652,6 +747,7 @@ def _build_dynamic_suffix(tenant_name: str, today_str: str) -> str:
     year_start = f"{today_str[:4]}-01-01"
     # yesterday
     from datetime import datetime, timedelta
+
     try:
         _today_dt = datetime.strptime(today_str, "%Y-%m-%d")
         yesterday_str = (_today_dt - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -685,6 +781,7 @@ def build_system_messages(
     today: str | None = None,
     user_text: str = "",
     intent: str | None = None,
+    userguide_enabled: bool = False,
 ) -> List[Dict[str, str]]:
     """
     Build system prompt as 2 messages for OpenAI prompt caching.
@@ -713,6 +810,16 @@ def build_system_messages(
     # Add soft intent bias to dynamic suffix (skip for CHITCHAT — no tools)
     if user_text and intent != "CHITCHAT":
         dynamic += get_intent_bias(user_text)
+
+    # Phase 2B-1: tutorial-mode block only when feature flag enabled per tenant.
+    if userguide_enabled and intent != "CHITCHAT":
+        dynamic += "\n" + USERGUIDE_TUTORIAL_PROMPT
+
+    # Phase 2B-1.6: when intent==TUTORIAL and RAG enabled, PREPEND a strong
+    # override at the very top of dynamic so the LLM cannot miss it under the
+    # weight of ACTION/READ guidance still present in static_content.
+    if userguide_enabled and intent == "TUTORIAL":
+        dynamic = USERGUIDE_TUTORIAL_OVERRIDE + "\n" + dynamic
 
     return [
         {"role": "system", "content": static_content},

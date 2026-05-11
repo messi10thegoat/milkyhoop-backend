@@ -15,11 +15,72 @@ import hashlib
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from decimal import Decimal
 from itertools import combinations
 
 import httpx
+
+
+# ── PHONE COERCION (2026-05-09) ──────────────────────────────────────────
+# LLM JSON sometimes returns phone as int (e.g. 8135478652) — leading zero
+# lost, sometimes precision lost too. Pydantic schemas expect Optional[str]
+# (max_length=50). Coerce known phone-like keys to string and try to recover
+# leading zero / full digits from OCR text if available.
+_PHONE_KEYS = (
+    "phone",
+    "phone2",
+    "mobile_phone",
+    "telepon",
+    "telepon_perusahaan",
+    "telp",
+    "hp",
+    "no_hp",
+    "no_telp",
+    "whatsapp",
+    "wa",
+)
+_PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
+
+
+def _coerce_phone_fields(payload: dict, ocr_text: Optional[str] = None) -> dict:
+    """Coerce phone-like keys in payload to string, recover leading zero from OCR."""
+    if not isinstance(payload, dict):
+        return payload
+    for key in list(payload.keys()):
+        if key not in _PHONE_KEYS:
+            continue
+        v = payload[key]
+        if v is None or isinstance(v, str):
+            continue
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            digits = str(int(v))
+            recovered = digits
+            # Try to recover leading zero / full digits from OCR text
+            if ocr_text:
+                for m in _PHONE_RE.findall(ocr_text):
+                    cleaned = re.sub(r"[^\d+]", "", m)
+                    cleaned_digits = cleaned.lstrip("+")
+                    if cleaned_digits.endswith(digits) or digits in cleaned_digits:
+                        recovered = cleaned
+                        break
+            else:
+                # No OCR — assume Indonesian phone needs leading 0 if missing
+                if not recovered.startswith("0") and not recovered.startswith("+"):
+                    recovered = "0" + recovered
+            payload[key] = recovered
+            try:
+                logger.warning(
+                    "[FIX_PHONE_COERCE] key=%s int->%s (ocr_match=%s)",
+                    key,
+                    recovered,
+                    recovered != digits,
+                )
+            except Exception:
+                pass
+    return payload
 
 
 def _to_amount(value) -> "Decimal":
@@ -467,6 +528,8 @@ class ToolExecutor:
                 return await self._execute_get_vendor_bills(params)
             elif is_tutorial_tool(tool_name):
                 return await self._execute_tutorial_tool(tool_name, params)
+            elif tool_name == "search_userguide":
+                return await self._execute_search_userguide(params)
             else:
                 return await self._execute_read(tool_name, params)
         except httpx.TimeoutException:
@@ -778,6 +841,14 @@ class ToolExecutor:
         """
         from .direct_action_registry import DIRECT_ACTIONS
 
+        # Coerce phone-like fields first (FIX_PHONE_COERCE 2026-05-09).
+        try:
+            payload = _coerce_phone_fields(
+                payload, getattr(self, "_last_ocr_text", None)
+            )
+        except Exception as _pc_err:
+            logger.warning("[FIX_PHONE_COERCE] coerce failed: %s", _pc_err)
+
         config = DIRECT_ACTIONS.get(action_key)
         if not config or not config.fields:
             return payload
@@ -826,6 +897,109 @@ class ToolExecutor:
 
         return payload
 
+    async def _execute_search_userguide(self, params: dict) -> dict:
+        """
+        Phase 2B-1 — invoke userguide RAG retrieval.
+
+        Resolves caller's effective permissions via PolicyEngine, then calls
+        services.userguide_search.search() with SQL-level permission filter.
+        Owner role bypasses the permission filter.
+
+        Returns the LLM-friendly dict shape per BRAINSTORM "Return Format".
+        """
+        from .db_utils import get_session_db_pool  # noqa: E402
+        from ..userguide_search import search as _ug_search  # noqa: E402
+
+        query = (params.get("query") or "").strip()
+        if not query:
+            return _error("BAD_REQUEST", "query kosong.")
+
+        max_results = params.get("max_results")
+        tier_pref = params.get("tier_preference") or "auto"
+        if tier_pref == "auto":
+            tier_pref = None
+
+        tenant_id = self.context.tenant_id
+        user_id = self.context.user_id
+
+        try:
+            pool = await get_session_db_pool()
+        except Exception as e:
+            logger.exception("[search_userguide] pool init failed")
+            return _error("INTERNAL_ERROR", f"db pool: {str(e)[:120]}")
+
+        # Resolve effective permissions via PolicyEngine.
+        is_owner = False
+        allowed_modules: list[str] = []
+        actions_for_module: dict[str, list[str]] = {}
+        try:
+            from ..policy_engine_client import get_policy_engine  # noqa: E402
+
+            pe = get_policy_engine()
+            eff = await pe.get_effective_permissions(user_id, tenant_id)
+            if eff.get("role_code") == "OWNER":
+                is_owner = True
+            else:
+                eff_perms = eff.get("effective_permissions", {}) or {}
+                for mod, info in eff_perms.items():
+                    acts = list((info or {}).get("actions") or [])
+                    if acts:
+                        allowed_modules.append(mod)
+                        actions_for_module[mod] = acts
+        except Exception:
+            logger.warning(
+                "[search_userguide] PolicyEngine resolve failed, falling back to closed",
+                exc_info=True,
+            )
+            # Fail-closed: treat as no access (informational chunks only).
+            is_owner = False
+
+        try:
+            result = await _ug_search(
+                query,
+                pool=pool,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                user_allowed_modules=allowed_modules,
+                user_actions_for_module=actions_for_module,
+                is_owner=is_owner,
+                max_results=max_results,
+                tier_preference=tier_pref,
+            )
+        except Exception as e:
+            logger.exception("[search_userguide] search failed")
+            return _error("INTERNAL_ERROR", f"search: {str(e)[:160]}")
+
+        # Phase 2B-1.9: inject pre-rendered citation into tool result.
+        response_dict = result.to_dict()
+        try:
+            chunks = response_dict.get("chunks") or []
+            tier = response_dict.get("fallback_tier")
+            if chunks and tier in (3, 4):
+                top = chunks[0]
+                top_title = top.get("doc_title") or top.get("title") or ""
+                top_doc_id = top.get("doc_id") or ""
+                if top_title and top_doc_id:
+                    response_dict["citation_format"] = "[Title](docs:doc_id)"
+                    response_dict[
+                        "citation_example"
+                    ] = f"[{top_title}](docs:{top_doc_id})"
+                    response_dict["citation_required"] = True
+                for c in chunks:
+                    t = c.get("doc_title") or c.get("title") or ""
+                    d = c.get("doc_id") or ""
+                    if t and d:
+                        c["citation"] = f"[{t}](docs:{d})"
+            elif chunks and tier in (1, 2):
+                response_dict["citation_required"] = False
+        except Exception:
+            logger.exception("[search_userguide] citation injection failed (non-fatal)")
+
+        return {
+            "success": True,
+            **response_dict,
+        }
+
     async def _execute_propose_direct(self, params: dict) -> dict:
         """Execute a direct action proposal - validate, store pending, return preview."""
         import uuid  # noqa: E402
@@ -855,6 +1029,16 @@ class ToolExecutor:
 
         # === JOURNAL PREVIEW ===
         # === GENERIC NORMALIZATION (replaces all manual if-blocks) ===
+        # Pre-fetch OCR text for phone leading-zero recovery (FIX_PHONE_COERCE).
+        self._last_ocr_text = None
+        try:
+            if self.session_manager and self.session_id:
+                _st = await self.session_manager.get_state(self.session_id)
+                _dc = getattr(_st, "document_context", None) or {}
+                if _dc.get("source") == "intent_ocr" and _dc.get("ocr_text"):
+                    self._last_ocr_text = _dc.get("ocr_text")
+        except Exception as _ocr_err:
+            logger.debug("[FIX_PHONE_COERCE] OCR fetch skipped: %s", _ocr_err)
         payload = self._normalize_payload(action_key, payload)
 
         # === ENRICHMENT (date defaults, field translation, CoA→bank lookup) ===
@@ -862,6 +1046,34 @@ class ToolExecutor:
             action_key.replace("create_", "CREATE_").replace("void_", "VOID_").upper()
         )
         payload = await self._enrich_payload(_enrich_action_type, payload)
+
+        # FIX_AQUA_PERLINE_HINT 2026-05-09: pop per-line hint sentinel here
+        # (BEFORE price-ask short-circuit so it propagates if user resumes
+        # after providing prices). Stash on self for review_card builder.
+        self._perline_hint_msg = payload.pop("_perline_hint", None)
+
+        # ── FIX_AQUA_PRICE_ASK 2026-05-09 ─────────────────────────────────
+        # Short-circuit: if enrichment detected line items with price=0
+        # (master purchase_price/sales_price not set, user didn't override),
+        # do NOT proceed to propose_direct. Return a sentinel response that
+        # orchestrator interprets as "ask user for missing prices first".
+        # Orchestrator will save partial payload + emit clarification text.
+        _missing_prices = payload.pop("_needs_price_clarification", None)
+        if _missing_prices:
+            logger.warning(
+                "[FIX_AQUA_PRICE_ASK] action=%s missing_prices=%s",
+                action_key,
+                [(m["idx"], m["name"]) for m in _missing_prices],
+            )
+            return {
+                "success": True,
+                "message_type": "AWAITING_ITEM_PRICE",
+                "data": {
+                    "action_key": action_key,
+                    "payload": payload,  # already enriched, sentinel removed
+                    "missing_prices": _missing_prices,
+                },
+            }
 
         # === POST-NORMALIZATION: domain-specific ID resolution ===
         # Auto-resolve vendor_id from bill_id when LLM sends non-UUID vendor_id
@@ -1159,6 +1371,14 @@ class ToolExecutor:
         _detection_reason = (
             "Terdeteksi dari: " + ", ".join(_det_parts) if _det_parts else ""
         )
+
+        # FIX_AQUA_PERLINE_HINT 2026-05-09: prepend hint banner to card
+        # narrative if user mentioned per-line keywords. Helps user discover
+        # Edit-form path for complex per-line config.
+        _hint_msg = getattr(self, "_perline_hint_msg", None)
+        if _hint_msg:
+            confirmation_table = "💡 " + _hint_msg + "\n\n" + (confirmation_table or "")
+            self._perline_hint_msg = None  # consume
 
         response_data = {
             "success": True,
@@ -2972,10 +3192,81 @@ class ToolExecutor:
                 data = resp.json()
                 # Handle wrapped response: {"data": {...}} or flat {...}
                 if isinstance(data, dict):
-                    return normalize_api_response_or_dict(data)
+                    normalized = normalize_api_response_or_dict(data)
+                    # FIX_AQUA_UNWRAP 2026-05-09: detail endpoints return
+                    # {"success":true,"data":{...}}. normalize() above only
+                    # unwraps when "data" is a LIST. For dict-shaped detail
+                    # responses we unwrap here so callers always see the
+                    # entity body directly. Guarded by `success` key to
+                    # avoid false-positive on flat payloads that happen to
+                    # contain a "data" dict field.
+                    if (
+                        isinstance(normalized, dict)
+                        and "success" in normalized
+                        and isinstance(normalized.get("data"), dict)
+                    ):
+                        return normalized["data"]
+                    return normalized
         except Exception as e:
             logger.warning(f"Entity lookup failed for {path}: {e}")
         return None
+
+    @staticmethod
+    def _check_missing_item_prices(
+        payload: Dict[str, Any], action_key: str
+    ) -> List[Dict[str, Any]]:
+        """FIX_AQUA_PRICE_ASK 2026-05-09 — Iron Law 16/19 guard.
+
+        After enrichment, detect items[] entries that landed at price=0 because
+        the item master has no purchase/sales price set. Returning a list of
+        missing-price items triggers a multi-turn ask-fill flow in orchestrator
+        BEFORE propose_direct, so user is asked for the actual price instead of
+        silently posting a 0-amount line (corrupts WAC + AP/AR per Law 16, or
+        fails Pydantic gt=0 on Bill V2 = bad UX).
+
+        Field naming differs by intent:
+          - sales_invoice / sales_order / quote / credit_note → unit_price
+          - bill (purchase_invoice V2)                        → price
+        """
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return []
+
+        if action_key in ("create_bill", "create_purchase_invoice"):
+            price_field = "price"
+            qty_field = "qty"
+            name_field = "product_name"
+            price_label = "harga beli"
+        else:
+            price_field = "unit_price"
+            qty_field = "quantity"
+            name_field = "description"
+            price_label = "harga jual"
+
+        missing: List[Dict[str, Any]] = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            try:
+                _p = float(item.get(price_field) or 0)
+            except (TypeError, ValueError):
+                _p = 0.0
+            if _p > 0:
+                continue
+            try:
+                _q = int(float(item.get(qty_field) or 1))
+            except (TypeError, ValueError):
+                _q = 1
+            missing.append(
+                {
+                    "idx": idx,
+                    "name": str(item.get(name_field) or "Item").strip() or "Item",
+                    "qty": _q,
+                    "price_field": price_field,
+                    "price_label": price_label,
+                }
+            )
+        return missing
 
     async def _enrich_payload(
         self, action_type: str, payload: Dict[str, Any]
@@ -3103,9 +3394,18 @@ class ToolExecutor:
     # --- Shared enrichment helpers ---
 
     async def _enrich_items(
-        self, payload: Dict[str, Any], client: httpx.AsyncClient
+        self,
+        payload: Dict[str, Any],
+        client: httpx.AsyncClient,
+        price_keys: tuple = ("sales_price", "harga_jual", "selling_price"),
     ) -> Dict[str, Any]:
-        """Shared: enrich item descriptions from item master data."""
+        """Shared: enrich item descriptions + unit_price from item master data.
+
+        price_keys controls which DB column(s) to pull for unit_price backfill.
+        Default = sales domain (sales_price/harga_jual/selling_price).
+        Purchase callers (PO, bills) MUST pass price_keys=("purchase_price",
+        "harga_beli") so cost (not selling) is pulled for AP-side documents.
+        """
         items = payload.get("items", [])
         if not items or not isinstance(items, list):
             return payload
@@ -3181,12 +3481,18 @@ class ToolExecutor:
                                     or name_hint
                                 )
                                 item["description"] = rname
+                                # FIX_AQUA_PRICE 2026-05-09: parameterized via
+                                # price_keys (sales: sales_price/harga_jual/...,
+                                # purchase: purchase_price/harga_beli). Iterates
+                                # in priority order, returns first truthy value.
                                 if not item.get("unit_price"):
-                                    item["unit_price"] = (
-                                        resolved.get("selling_price")
-                                        or resolved.get("sales_price")
-                                        or 0
-                                    )
+                                    _price = 0
+                                    for _pk in price_keys:
+                                        _v = resolved.get(_pk)
+                                        if _v:
+                                            _price = _v
+                                            break
+                                    item["unit_price"] = _price
                                 logger.info(
                                     f"BUG-item-slot: Resolved item_id={rid} from name={name_hint}"
                                 )
@@ -3199,14 +3505,36 @@ class ToolExecutor:
                         item["description"] = None
             if not item_id:
                 continue
-            # Only fetch if we need description
-            if "description" not in item:
+            # FIX_AQUA_PRICE 2026-05-09: always fetch detail when description
+            # missing OR unit_price still 0/missing. Previously gated on
+            # description-only which skipped backfill when BUG-item-slot
+            # already set description but price came back null/zero.
+            _need_desc = "description" not in item or not item.get("description")
+            _need_price = not item.get("unit_price")  # truthy check (0 is falsy)
+            logger.warning(
+                "[FIX_AQUA_PRICE_DBG] item_id=%s need_desc=%s need_price=%s current_price=%r",
+                item_id,
+                _need_desc,
+                _need_price,
+                item.get("unit_price"),
+            )
+            if _need_desc or _need_price:
                 detail = await self._fetch_entity(client, f"/api/items/{item_id}")
+                # FIX_AQUA_UNWRAP defensive belt-and-suspenders (envelope
+                # unwrap also fixed at-source in _fetch_entity 2026-05-09).
+                if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
+                    detail = detail["data"]
                 if detail:
-                    item["description"] = detail.get("name", "Item")
-                    # Backfill unit_price ONLY if LLM didn't provide (Law 1)
-                    if "unit_price" not in item:
-                        item["unit_price"] = detail.get("selling_price", 0)
+                    if _need_desc:
+                        item["description"] = detail.get("name", "Item")
+                    if _need_price:
+                        _price = 0
+                        for _pk in price_keys:
+                            _v = detail.get(_pk)
+                            if _v:
+                                _price = _v
+                                break
+                        item["unit_price"] = _price
 
         return payload
 
@@ -3271,9 +3599,20 @@ class ToolExecutor:
             payload["invoice_date"] = today
             payload.pop("due_date", None)  # force recompute since base date changed
 
+        # FIX_AQUA_DUEDATE 2026-05-09: drop LLM-injected due_date unless user
+        # explicitly mentioned "jatuh tempo"/"due date". Stage-2 LLM tends to
+        # hallucinate due_date=today when user only specifies invoice_date.
+        # The intent of the conversational form is: due_date is DERIVED from
+        # invoice_date + customer.payment_terms_days, not LLM-extracted.
+        _ut = (getattr(self, "user_text", "") or "").lower()
+        _user_specified_due = bool(
+            re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
+        )
+        if not _user_specified_due and payload.get("due_date"):
+            payload.pop("due_date", None)
+
         # Default due_date: lookup customer.payment_terms_days. Falls back to 30
         # (industry NET-30) when customer isn't yet resolved or column is null.
-        # Ticket: 2026-05-07-default-due-date-from-customer-payment-terms.
         _terms_days = 30
         _early_cid = payload.get("customer_id")
         if _early_cid and ("due_date" not in payload or not payload.get("due_date")):
@@ -3328,6 +3667,26 @@ class ToolExecutor:
                         logger.info(
                             f"BUG-02: Resolved customer_id={payload['customer_id']} from name={cust_name}"
                         )
+                        # FIX_AQUA_DUEDATE 2026-05-09: customer just resolved —
+                        # re-fetch payment_terms_days + recompute due_date so
+                        # it derives from the now-known customer rather than
+                        # earlier NET-30 fallback.
+                        if not _user_specified_due:
+                            _terms2 = 30
+                            try:
+                                _cust2 = await self._fetch_entity(
+                                    client,
+                                    f"/api/customers/{payload['customer_id']}",
+                                )
+                                if (
+                                    _cust2
+                                    and _cust2.get("payment_terms_days") is not None
+                                ):
+                                    _terms2 = int(_cust2["payment_terms_days"])
+                            except Exception:
+                                pass
+                            payload.pop("due_date", None)
+                            self._add_due_date(payload, days=_terms2)
 
             # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
             _raw_items = payload.get("items")
@@ -3374,6 +3733,80 @@ class ToolExecutor:
                     except (ValueError, TypeError):
                         pass
 
+            # FIX_AQUA_DISCOUNT_REGEX 2026-05-09: parse discount_percent from
+            # user_text. Mirrors tax_rate pattern.
+            try:
+                _cur_disc = float(payload.get("discount_percent") or 0)
+            except (ValueError, TypeError):
+                _cur_disc = 0.0
+            if _cur_disc == 0.0 and getattr(self, "user_text", None):
+                _md = re.search(
+                    r"diskon\s*(\d+(?:[.,]\d+)?)\s*(?:%|persen)",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _md:
+                    try:
+                        payload["discount_percent"] = float(
+                            _md.group(1).replace(",", ".")
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+            # FIX_AQUA_DISCOUNT_AMOUNT_REGEX 2026-05-09: parse discount_amount
+            # (Rp fixed) — alternative to discount_percent.
+            # Patterns: "diskon Rp 50.000", "potongan 50000", "diskon rp50rb"
+            try:
+                _cur_disc_amt = float(payload.get("discount_amount") or 0)
+            except (ValueError, TypeError):
+                _cur_disc_amt = 0.0
+            if _cur_disc_amt == 0.0 and getattr(self, "user_text", None):
+                _ut_lc = self.user_text.lower()
+                _mda = re.search(
+                    r"(?:diskon|potongan)\s+rp\s*(\d[\d.,]*)\s*(ribu|rb|juta|jt|k)?(?!\s*%)",
+                    _ut_lc,
+                )
+                if _mda:
+                    _raw_amt = _mda.group(1).replace(".", "").replace(",", "")
+                    _suf = _mda.group(2)
+                    try:
+                        _amt_v = float(_raw_amt)
+                        if _suf in ("ribu", "rb", "k"):
+                            _amt_v *= 1000
+                        elif _suf in ("juta", "jt"):
+                            _amt_v *= 1_000_000
+                        if _amt_v > 0:
+                            payload["discount_amount"] = _amt_v
+                    except (ValueError, TypeError):
+                        pass
+
+            # FIX_AQUA_REFNO_REGEX 2026-05-09: parse ref_no (PO customer/external)
+            # Patterns: "PO 12345", "PO-12345", "ref ABC-001", "referensi #X-1"
+            if not payload.get("ref_no") and getattr(self, "user_text", None):
+                _mr = re.search(
+                    r"(?:\b(?:po|p\.o\.|purchase\s+order|ref(?:erensi)?)\s*[:\#\-]?\s*)([A-Za-z0-9][\w\-\/\.]{2,30})",
+                    self.user_text,
+                    re.IGNORECASE,
+                )
+                if _mr:
+                    _ref = _mr.group(1).strip(" -:#")
+                    # Filter out common false-positives (numbers that look like dates/qty)
+                    if _ref and not _ref.isdigit():
+                        payload["ref_no"] = _ref
+
+            # FIX_AQUA_NOTES_REGEX 2026-05-09: extract notes from user_text
+            # when keyword present. Stage 2 LLM rarely populates "notes" field.
+            if not payload.get("notes") and getattr(self, "user_text", None):
+                _mn = re.search(
+                    r"(?:catatan|notes?|memo|ket(?:erangan)?)\s*[:\-]\s*(.+?)(?:$|\.(?:\s|$))",
+                    self.user_text,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if _mn:
+                    _note_text = _mn.group(1).strip()
+                    if _note_text and len(_note_text) <= 500:
+                        payload["notes"] = _note_text
+
             # Backfill item_id from top-level into items[0]
             items = payload.get("items", [])
             if items and isinstance(items, list):
@@ -3399,6 +3832,38 @@ class ToolExecutor:
                 "date",
             ):
                 payload.pop(_k, None)
+
+        # FIX_AQUA_PRICE_ASK: detect 0-price line items so orchestrator can
+        # ask user for prices BEFORE propose_direct (sentinel popped before REST).
+        _missing = self._check_missing_item_prices(payload, "create_sales_invoice")
+        if _missing:
+            payload["_needs_price_clarification"] = _missing
+
+        # FIX_AQUA_PERLINE_HINT 2026-05-09: Stage 2 LLM uses flat schema —
+        # per-line discount/tax/batch_no/exp_date/bonus_qty are NOT extractable
+        # via chat. If user_text contains per-line indicator keywords, attach
+        # hint sentinel so orchestrator prepends "tap Edit untuk per-item"
+        # banner to card narrative.
+        _ut = (getattr(self, "user_text", "") or "").lower()
+        _perline_keywords = (
+            "diskon item",
+            "diskon per item",
+            "diskon baris",
+            "pajak per item",
+            "pajak baris",
+            "batch",
+            "lot",
+            "kadaluarsa",
+            "kedaluwarsa",
+            "exp ",
+            "expired",
+            "bonus",
+        )
+        if any(k in _ut for k in _perline_keywords):
+            payload["_perline_hint"] = (
+                "Untuk diskon/pajak/batch/exp/bonus per item, silakan tap "
+                "**Edit** di card untuk set per-baris."
+            )
 
         return payload
 
@@ -3622,15 +4087,51 @@ class ToolExecutor:
         else:
             payload["issue_date"] = _id
 
-        # Defer due_date computation to use issue_date (not invoice_date)
+        # FIX_AQUA_DUEDATE 2026-05-09 (port from _enrich_sales_invoice): drop
+        # LLM-injected due_date unless user explicitly mentioned "jatuh tempo".
+        # Stage-2 LLM tends to hallucinate due_date=today.
+        _ut = (getattr(self, "user_text", "") or "").lower()
+        _user_specified_due = bool(
+            re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
+        )
+        if not _user_specified_due and payload.get("due_date"):
+            payload.pop("due_date", None)
+
+        # Default due_date: lookup vendor.payment_terms_days. Falls back to 30
+        # (industry NET-30) when vendor isn't yet resolved or column is null.
+        # Mirrors customer-side payment terms behavior on sales invoice.
+        _bill_terms_days = 30
+        _early_vid = payload.get("vendor_id")
+        # Skip non-UUID vendor_id (LLM gave name, will be moved later)
+        if (
+            _early_vid
+            and UUID_PATTERN.match(str(_early_vid))
+            and ("due_date" not in payload or not payload.get("due_date"))
+        ):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as _bv_client:
+                    _vendor = await self._fetch_entity(
+                        _bv_client, f"/api/vendors/{_early_vid}"
+                    )
+                    if _vendor and _vendor.get("payment_terms_days") is not None:
+                        _bill_terms_days = int(_vendor["payment_terms_days"])
+            except Exception as _bv_err:
+                logger.debug(
+                    "[enrich_purchase_invoice] vendor payment_terms_days lookup failed: %s",
+                    _bv_err,
+                )
+
+        # Compute due_date if not present
         if "due_date" not in payload or not payload.get("due_date"):
             try:
                 _base = datetime.strptime(payload["issue_date"], "%Y-%m-%d")
-                payload["due_date"] = (_base + timedelta(days=30)).strftime("%Y-%m-%d")
+                payload["due_date"] = (
+                    _base + timedelta(days=_bill_terms_days)
+                ).strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime(
-                    "%Y-%m-%d"
-                )
+                payload["due_date"] = (
+                    datetime.now() + timedelta(days=_bill_terms_days)
+                ).strftime("%Y-%m-%d")
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Guard: if vendor_id is not a UUID (LLM gave name), move to vendor_name
@@ -3676,6 +4177,33 @@ class ToolExecutor:
                         logger.info(
                             f"_enrich_purchase_invoice: Resolved vendor_id={payload['vendor_id']} from name={vname}"
                         )
+                        # FIX_AQUA_DUEDATE 2026-05-09: vendor just resolved —
+                        # re-fetch payment_terms_days + recompute due_date so
+                        # it derives from the now-known vendor rather than
+                        # earlier NET-30 fallback.
+                        if not _user_specified_due:
+                            _terms2 = 30
+                            try:
+                                _vendor2 = await self._fetch_entity(
+                                    client,
+                                    f"/api/vendors/{payload['vendor_id']}",
+                                )
+                                if (
+                                    _vendor2
+                                    and _vendor2.get("payment_terms_days") is not None
+                                ):
+                                    _terms2 = int(_vendor2["payment_terms_days"])
+                            except Exception:
+                                pass
+                            try:
+                                _base2 = datetime.strptime(
+                                    payload["issue_date"], "%Y-%m-%d"
+                                )
+                                payload["due_date"] = (
+                                    _base2 + timedelta(days=_terms2)
+                                ).strftime("%Y-%m-%d")
+                            except (ValueError, TypeError):
+                                pass
 
             # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
             _raw_items = payload.get("items")
@@ -3722,6 +4250,18 @@ class ToolExecutor:
                     except (ValueError, TypeError):
                         pass
 
+            # FIX_AQUA_NOTES_REGEX 2026-05-09: extract notes from user_text.
+            if not payload.get("notes") and getattr(self, "user_text", None):
+                _mn = re.search(
+                    r"(?:catatan|notes?|memo|ket(?:erangan)?)\s*[:\-]\s*(.+?)(?:$|\.(?:\s|$))",
+                    self.user_text,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if _mn:
+                    _note_text = _mn.group(1).strip()
+                    if _note_text and len(_note_text) <= 500:
+                        payload["notes"] = _note_text
+
             # Backfill item_id from top-level into items[0]
             items = payload.get("items", [])
             if items and isinstance(items, list):
@@ -3740,20 +4280,40 @@ class ToolExecutor:
                         continue
                     item_id = item.get("item_id") or item.get("product_id")
 
-                    # Lookup item name if needed
-                    if (
-                        item_id
-                        and "product_name" not in item
-                        and "description" not in item
-                    ):
+                    # FIX_AQUA_PRICE 2026-05-09 (port to bills/purchase domain):
+                    # always fetch detail when name OR price still missing/0.
+                    # Previous gate combined both checks → if LLM set product_name
+                    # but unit_price=0, price stayed 0. Truthiness check (0 falsy).
+                    _bill_need_name = not item.get("product_name") and not item.get(
+                        "description"
+                    )
+                    _bill_need_price = not item.get("price") and not item.get(
+                        "unit_price"
+                    )
+                    if item_id and (_bill_need_name or _bill_need_price):
                         detail = await self._fetch_entity(
                             client, f"/api/items/{item_id}"
                         )
+                        # Defensive unwrap (also fixed at-source in _fetch_entity)
+                        if isinstance(detail, dict) and isinstance(
+                            detail.get("data"), dict
+                        ):
+                            detail = detail["data"]
                         if detail:
-                            item["product_name"] = detail.get("name", "Item")
-                            if "unit_price" not in item and "price" not in item:
-                                item["price"] = detail.get(
-                                    "purchase_price", detail.get("selling_price", 0)
+                            if _bill_need_name:
+                                item["product_name"] = detail.get("name", "Item")
+                            if _bill_need_price:
+                                # FIX_AQUA_CHAIN_STRICT 2026-05-09: purchase
+                                # domain ONLY — never fall back to sales_price.
+                                # Sales price ≠ purchase price; falling through
+                                # would inflate persediaan + corrupt WAC.
+                                # Iron Law 16 (Pure Ledger integrity).
+                                # Returns 0 if master purchase_price/harga_beli
+                                # not set — caller MUST handle 0 via L3 ask flow.
+                                item["price"] = (
+                                    detail.get("purchase_price")
+                                    or detail.get("harga_beli")
+                                    or 0
                                 )
 
                     # Translate generic field names → bills/v2 schema
@@ -3811,6 +4371,33 @@ class ToolExecutor:
             ):
                 payload.pop(_k, None)
 
+        # FIX_AQUA_PRICE_ASK: detect 0-price line items.
+        _missing = self._check_missing_item_prices(payload, "create_bill")
+        if _missing:
+            payload["_needs_price_clarification"] = _missing
+
+        # FIX_AQUA_PERLINE_HINT 2026-05-09: hint user about per-line config.
+        _ut = (getattr(self, "user_text", "") or "").lower()
+        _perline_keywords = (
+            "diskon item",
+            "diskon per item",
+            "diskon baris",
+            "pajak per item",
+            "pajak baris",
+            "batch",
+            "lot",
+            "kadaluarsa",
+            "kedaluwarsa",
+            "exp ",
+            "expired",
+            "bonus",
+        )
+        if any(k in _ut for k in _perline_keywords):
+            payload["_perline_hint"] = (
+                "Untuk diskon/pajak/batch/exp/bonus per item, silakan tap "
+                "**Edit** di card untuk set per-baris."
+            )
+
         return payload
 
     async def _enrich_purchase_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3833,7 +4420,11 @@ class ToolExecutor:
                 if entity:
                     payload["vendor_name"] = entity.get("name", "")
 
-            payload = await self._enrich_items(payload, client)
+            payload = await self._enrich_items(
+                payload,
+                client,
+                price_keys=("purchase_price", "harga_beli"),
+            )  # FIX_AQUA_PRICE 2026-05-09: PO uses cost domain
 
         return payload
 
@@ -4147,6 +4738,11 @@ class ToolExecutor:
 
             payload = await self._enrich_items(payload, client)
 
+        # FIX_AQUA_PRICE_ASK: detect 0-price line items.
+        _missing = self._check_missing_item_prices(payload, "create_credit_note")
+        if _missing:
+            payload["_needs_price_clarification"] = _missing
+
         return payload
 
     async def _enrich_receive_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -4262,7 +4858,7 @@ class ToolExecutor:
 
         _perf_t2 = time.perf_counter()
         logger.info(
-            f"[ENRICH] rcv stage0={(_perf_t1-_perf_t0)*1000:.0f}ms stage1_parallel={(_perf_t2-_perf_t1)*1000:.0f}ms total={(_perf_t2-_perf_t0)*1000:.0f}ms tasks={len(stage1_tasks)}"
+            f"[ENRICH] rcv stage0={(_perf_t1 - _perf_t0) * 1000:.0f}ms stage1_parallel={(_perf_t2 - _perf_t1) * 1000:.0f}ms total={(_perf_t2 - _perf_t0) * 1000:.0f}ms tasks={len(stage1_tasks)}"
         )
         return payload
 
@@ -4440,7 +5036,7 @@ class ToolExecutor:
 
         _perf_t2 = time.perf_counter()
         logger.info(
-            f"[ENRICH] pay stage1_parallel={(_perf_t1-_perf_t0)*1000:.0f}ms stage2_bills={(_perf_t2-_perf_t1)*1000:.0f}ms total={(_perf_t2-_perf_t0)*1000:.0f}ms tasks={len(stage1_tasks)}"
+            f"[ENRICH] pay stage1_parallel={(_perf_t1 - _perf_t0) * 1000:.0f}ms stage2_bills={(_perf_t2 - _perf_t1) * 1000:.0f}ms total={(_perf_t2 - _perf_t0) * 1000:.0f}ms tasks={len(stage1_tasks)}"
         )
         return payload
 

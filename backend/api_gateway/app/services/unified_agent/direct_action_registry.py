@@ -13,6 +13,7 @@ enforce all Iron Laws (Law 4 double-entry, Law 6 source traceability, Law 20 has
 chaining, Law 22 sequence integrity, Law 23 transaction atomicity).
 The `creates_journal` flag serves as documentation and code-review signal.
 """
+
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -669,7 +670,15 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
-                description="Array of {item_id, description, quantity, unit_price}",
+                description=(
+                    "Array of items. Each item dapat berisi: "
+                    "item_id, description (nama barang/jasa), quantity, unit, "
+                    "unit_price, discount_percent (per-line), discount_amount "
+                    "(per-line), tax_rate (per-line override), tax_code, "
+                    "batch_no, exp_date (YYYY-MM-DD). "
+                    "Per-line fields hanya diisi kalau user EKSPLISIT sebut "
+                    "untuk item itu (mis. 'item A diskon 10%, item B diskon 20%')."
+                ),
             ),
             FieldSpec(
                 name="tax_rate", label="Pajak (%)", field_type="percent", default="0"
@@ -679,6 +688,18 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 label="Diskon (%)",
                 field_type="percent",
                 default="0",
+            ),
+            FieldSpec(
+                name="discount_amount",
+                label="Diskon (Rp)",
+                field_type="number",
+                default="0",
+                description="Diskon invoice-level dalam Rp (alternatif ke discount_percent). Kalau user bilang 'diskon Rp 50.000' atau 'potongan 50000' set di sini.",
+            ),
+            FieldSpec(
+                name="ref_no",
+                label="No. Referensi",
+                description="Nomor referensi eksternal (PO customer, e.g. 'PO-12345'). Kalau user sebut 'PO X' atau 'ref X' set di sini.",
             ),
             FieldSpec(name="notes", label="Catatan"),
             FieldSpec(name="auto_post", label="Auto Post", default="true", hidden=True),
@@ -804,10 +825,38 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
-                description="Array of {product_id, product_name, qty, price, unit}",
+                description=(
+                    "Array of items. Each item dapat berisi: "
+                    "product_id, product_name (nama barang), qty, unit, price, "
+                    "discount_percent (per-line), tax_rate (per-line override), "
+                    "tax_code_id, batch_no, exp_date (YYYY-MM format), "
+                    "bonus_qty (qty bonus/free, tidak masuk total). "
+                    "Per-line fields hanya diisi kalau user EKSPLISIT sebut."
+                ),
             ),
             FieldSpec(
                 name="tax_rate", label="Pajak (%)", field_type="percent", default="0"
+            ),
+            FieldSpec(
+                name="invoice_discount_percent",
+                label="Diskon Faktur (%)",
+                field_type="percent",
+                default="0",
+                description="Diskon invoice-level (%). Bills V2 punya field invoice_discount.",
+            ),
+            FieldSpec(
+                name="invoice_discount_amount",
+                label="Diskon Faktur (Rp)",
+                field_type="number",
+                default="0",
+                description="Diskon invoice-level dalam Rp (alternatif ke percent).",
+            ),
+            FieldSpec(
+                name="cash_discount_percent",
+                label="Diskon Tunai (%)",
+                field_type="percent",
+                default="0",
+                description="Diskon tunai (%) untuk pembayaran cepat.",
             ),
             FieldSpec(name="notes", label="Catatan"),
             FieldSpec(name="status", label="Status", default="posted", hidden=True),

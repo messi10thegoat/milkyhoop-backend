@@ -29,9 +29,14 @@ from .system_prompt import build_system_messages, get_intent_bias, _infer_intent
 from .intent_classifier import (  # noqa: E402
     RouteResult,
 )  # classify_and_route removed (Final Cleanup)  # noqa: E402
-from .tool_registry import get_tools, get_tools_for_domains  # noqa: E402
+from .tool_registry import get_tools, get_tools_for_domains, is_userguide_rag_enabled  # noqa: E402
 from .tool_executor import ToolExecutor, TenantContext, get_stage_label  # noqa: E402
 from .tool_registry import is_tutorial_tool  # noqa: E402
+from .citation_rewriter import (  # noqa: E402
+    rewrite_citations,
+    extract_userguide_chunks,
+    ensure_citation_footer,
+)  # noqa: E402  # Phase 2B-1.8 / 2B-2.0
 from .model_router import ModelRouter  # noqa: E402
 from .guard_arbiter import GuardArbiter  # noqa: E402
 from .correlation import TurnContext  # noqa: E402
@@ -1323,7 +1328,7 @@ class UnifiedAgent:
                         return AgentResponse(
                             message_type="TEXT",
                             content="Maaf, saya tidak yakin yang mana. Pilih salah satu:\n"
-                            + "\n".join(f"{i+1}. {n}" for i, n in enumerate(_names)),
+                            + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(_names)),
                             iterations=1,
                             model_used="pipeline",
                             total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -2471,6 +2476,78 @@ class UnifiedAgent:
                 "category": "write",
             },
         )
+
+        # ── FIX_AQUA_PRICE_ASK 2026-05-09 ─────────────────────────────────
+        # Handle short-circuit: line items with price=0 (master not set).
+        # Save partial enriched payload + missing list to session state, emit
+        # TEXT asking user for first missing price. Resume handler in Phase 0
+        # will parse number reply and merge.
+        if propose_result.get("message_type") == "AWAITING_ITEM_PRICE":
+            _ap_data = propose_result.get("data", {})
+            _ap_payload = _ap_data.get("payload", {}) or {}
+            _ap_missing = _ap_data.get("missing_prices", []) or []
+            _ap_action_key = _ap_data.get("action_key", extraction.intent)
+
+            if (
+                tool_executor
+                and tool_executor.session_manager
+                and tool_executor.session_id
+            ):
+                try:
+                    # Embed sentinel inside pending_payload — popped on resume
+                    _saved = dict(_ap_payload)
+                    _saved["_awaiting_item_prices"] = _ap_missing
+                    await tool_executor.session_manager.update_state(
+                        tool_executor.session_id,
+                        pending_payload=_saved,
+                        pending_intent=_ap_action_key,
+                    )
+                except Exception as _ap_state_err:
+                    logger.warning(
+                        "[FIX_AQUA_PRICE_ASK] save state failed: %s", _ap_state_err
+                    )
+
+            # Build natural ask text (Bahasa) — ask first missing only
+            _first = _ap_missing[0] if _ap_missing else None
+            if _first:
+                _qty_disp = _first.get("qty", 1)
+                _name_disp = _first.get("name", "Item")
+                _label = _first.get("price_label", "harga")
+                _remaining_count = len(_ap_missing) - 1
+                _suffix = (
+                    f" (masih ada {_remaining_count} item lagi setelah ini)"
+                    if _remaining_count > 0
+                    else ""
+                )
+                _ask_text = (
+                    f"**{_name_disp}** ({_qty_disp} pcs) — {_label} per pcs belum "
+                    f"diset di data master. Berapa {_label} per pcs?{_suffix}\n\n"
+                    f"_Contoh balasan: `80000` atau `Rp 80.000` atau `80 ribu`._"
+                )
+            else:
+                _ask_text = "Berapa harga per pcs?"
+
+            await emit(
+                "THINKING_DONE",
+                {
+                    "summary": "Butuh harga per item",
+                    "total_ms": int((_time.time() - start_time) * 1000),
+                },
+            )
+
+            return AgentResponse(
+                message_type="TEXT",
+                content=_ask_text,
+                iterations=1,
+                model_used="pipeline+price_ask",
+                total_latency_ms=int((_time.time() - start_time) * 1000),
+                thinking_stages=[
+                    "Menganalisis pesan",
+                    "Mencari data master",
+                    "Meminta harga yang belum diset",
+                ],
+            )
+        # ── /FIX_AQUA_PRICE_ASK ────────────────────────────────────────────
 
         # Return in existing format
         if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
@@ -5780,6 +5857,176 @@ class UnifiedAgent:
             and tool_executor
             and tool_executor.session_id
         ):
+            # ── FIX_AQUA_PRICE_ASK 2026-05-09: resume handler ──────────────
+            # Highest-priority Phase 0 check: if session has pending payload
+            # with `_awaiting_item_prices` sentinel, treat current user_text
+            # as a price reply. Parse number, merge to items[idx], advance.
+            try:
+                _ap_resume_state = (
+                    await tool_executor.session_manager.get_state(
+                        tool_executor.session_id
+                    )
+                    if tool_executor.session_manager
+                    else None
+                )
+                _ap_pending = getattr(_ap_resume_state, "pending_payload", None) or {}
+                _ap_pi = getattr(_ap_resume_state, "pending_intent", "") or ""
+                _ap_missing_list = (
+                    _ap_pending.get("_awaiting_item_prices") if _ap_pending else None
+                )
+                if _ap_missing_list and _ap_pi:
+                    import re as _ap_re
+
+                    # Cancel keywords → clear sentinel, fall through to normal flow
+                    _cancel_words = ["batal", "cancel", "gajadi", "ga jadi", "lupakan"]
+                    if any(w in user_text.lower() for w in _cancel_words):
+                        try:
+                            _clear = {
+                                k: v
+                                for k, v in _ap_pending.items()
+                                if k != "_awaiting_item_prices"
+                            }
+                            await tool_executor.session_manager.update_state(
+                                tool_executor.session_id,
+                                pending_payload=_clear,
+                            )
+                        except Exception:
+                            pass
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content="Ok, dibatalkan. Mau lanjut yang lain?",
+                            iterations=1,
+                            model_used="pipeline+price_ask_cancel",
+                        )
+
+                    # Parse first numeric token. Strip "Rp", thousand separators
+                    # (. or ,) and accept "ribu"/"rb"/"juta"/"jt" multipliers.
+                    _txt = user_text.strip().lower()
+                    _multiplier = 1
+                    if _ap_re.search(r"\b(juta|jt)\b", _txt):
+                        _multiplier = 1_000_000
+                    elif _ap_re.search(r"\b(ribu|rb|k)\b", _txt):
+                        _multiplier = 1_000
+                    # extract leading number — accept 80, 80000, 80.000, 80,000, 80.5
+                    _m = _ap_re.search(r"(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)", _txt)
+                    _parsed_price = 0.0
+                    if _m:
+                        _raw = _m.group(1)
+                        # If multiplier applied, decimal "." or "," is fractional
+                        if _multiplier > 1:
+                            _normalized = _raw.replace(",", ".")
+                            try:
+                                _parsed_price = float(_normalized) * _multiplier
+                            except ValueError:
+                                _parsed_price = 0.0
+                        else:
+                            # Strip thousand separators (heuristic: if more than
+                            # one separator OR last group is 3 digits, treat as
+                            # thousand sep; else treat as decimal)
+                            _digits = _ap_re.sub(r"[.,]", "", _raw)
+                            try:
+                                _parsed_price = float(_digits)
+                            except ValueError:
+                                _parsed_price = 0.0
+
+                    if _parsed_price <= 0:
+                        # Reject — ask again with example
+                        _first_again = _ap_missing_list[0]
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=(
+                                f"Mohon kirim angka harga yang valid untuk "
+                                f"**{_first_again.get('name', 'Item')}**.\n\n"
+                                f"Contoh: `80000`, `Rp 80.000`, atau `80 ribu`."
+                            ),
+                            iterations=1,
+                            model_used="pipeline+price_ask_retry",
+                        )
+
+                    # Merge price into items[idx][price_field]
+                    _first = _ap_missing_list[0]
+                    _idx = int(_first.get("idx", 0))
+                    _pf = _first.get("price_field", "unit_price")
+                    _items_arr = _ap_pending.get("items", []) or []
+                    if 0 <= _idx < len(_items_arr) and isinstance(
+                        _items_arr[_idx], dict
+                    ):
+                        _items_arr[_idx][_pf] = _parsed_price
+                        # Also coerce to int if originally int (Bills V2 'price' is float, sales 'unit_price' is int)
+                        if _pf == "unit_price":
+                            try:
+                                _items_arr[_idx][_pf] = int(_parsed_price)
+                            except (TypeError, ValueError):
+                                pass
+                        _ap_pending["items"] = _items_arr
+                        logger.warning(
+                            "[FIX_AQUA_PRICE_ASK] merged price=%s for idx=%s field=%s",
+                            _parsed_price,
+                            _idx,
+                            _pf,
+                        )
+
+                    # Pop processed missing item
+                    _remaining = _ap_missing_list[1:]
+                    if _remaining:
+                        # Update sentinel + ask next
+                        _ap_pending["_awaiting_item_prices"] = _remaining
+                        await tool_executor.session_manager.update_state(
+                            tool_executor.session_id,
+                            pending_payload=_ap_pending,
+                            pending_intent=_ap_pi,
+                        )
+                        _next = _remaining[0]
+                        _next_text = (
+                            f"✅ Harga **{_first.get('name', 'Item')}** disimpan: "
+                            f"Rp {int(_parsed_price):,}".replace(",", ".")
+                            + f"\n\n**{_next.get('name', 'Item')}** "
+                            + f"({_next.get('qty', 1)} pcs) — "
+                            + f"{_next.get('price_label', 'harga')} per pcs?"
+                        )
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=_next_text,
+                            iterations=1,
+                            model_used="pipeline+price_ask",
+                        )
+
+                    # All prices filled — clear sentinel, re-trigger propose
+                    _ap_pending.pop("_awaiting_item_prices", None)
+                    await tool_executor.session_manager.update_state(
+                        tool_executor.session_id,
+                        pending_payload=_ap_pending,
+                        pending_intent=_ap_pi,
+                    )
+                    # Re-call propose_direct with completed payload
+                    _re_result = await tool_executor._execute_propose_direct(
+                        {"action_key": _ap_pi, "payload": _ap_pending}
+                    )
+                    if _re_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
+                        _re_data = _re_result.get("data", {})
+                        return AgentResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            content=_re_result.get("content", ""),
+                            pending_action_id=_re_data.get("pending_action_id", ""),
+                            preview=_re_data,
+                            expires_at=_re_data.get("expires_at", ""),
+                            iterations=1,
+                            model_used="pipeline+price_ask_complete",
+                        )
+                    # Re-propose returned non-preview (rare) — fall through to text
+                    return AgentResponse(
+                        message_type="TEXT",
+                        content=_re_result.get("content")
+                        or "Gagal menyiapkan konfirmasi. Silakan coba ulang.",
+                        iterations=1,
+                        model_used="pipeline+price_ask_fallback",
+                    )
+            except Exception as _ap_resume_err:
+                logger.warning(
+                    "[FIX_AQUA_PRICE_ASK] resume handler error: %s", _ap_resume_err
+                )
+            # ── /FIX_AQUA_PRICE_ASK resume ─────────────────────────────────
+
             try:
                 from .workflow_engine import WorkflowEngine
                 from .db_utils import get_session_db_pool as _wf_pool_p0
@@ -6770,7 +7017,33 @@ class UnifiedAgent:
                 if _code_entity_name and _code_name_field:
                     if not isinstance(extraction.entities, dict):
                         extraction.entities = {}
-                    if not extraction.entities.get(_code_name_field):
+                    # FIX_AQUA_DOCNUM_BLACKLIST 2026-05-09: skip merge for
+                    # auto-generated document number fields on CREATE intents.
+                    # These fields are backend-assigned (PB-xxxx / INV-xxxx /
+                    # CN-xxxx / etc.) — classify_crud_intent's entity_name is
+                    # the free-text remainder of user message, polluting the
+                    # field with prose like "dari noneng, 100 pcs jaket...".
+                    # Stage 2 LLM extracts proper fields (customer_name,
+                    # vendor_name, items) anyway.
+                    _DOC_NUM_BLACKLIST_ON_CREATE = {
+                        "invoice_number",
+                        "bill_number",
+                        "credit_note_number",
+                        "vendor_credit_number",
+                        "quote_number",
+                        "transfer_number",
+                        "deposit_number",
+                        "work_order_number",
+                        "bom_code",
+                    }
+                    _is_create = (extraction.intent or "").startswith("create_")
+                    if _is_create and _code_name_field in _DOC_NUM_BLACKLIST_ON_CREATE:
+                        logger.warning(
+                            "[FIX_AQUA_DOCNUM_BLACKLIST] skipped %s='%s' (auto-generated on create)",
+                            _code_name_field,
+                            (_code_entity_name or "")[:60],
+                        )
+                    elif not extraction.entities.get(_code_name_field):
                         extraction.entities[_code_name_field] = _code_entity_name
 
             # 6. DE-ESCALATION via arbiter helper
@@ -7793,6 +8066,20 @@ class UnifiedAgent:
                 )
         # ═══ END LLM ROUTER PRIMARY PATH ═══
 
+        # Phase 2B-1.5: resolve userguide RAG flag for this tenant (cheap async lookup).
+        userguide_enabled = False
+        try:
+            _ug_pool = db_pool
+            if _ug_pool is None:
+                from .db_utils import get_session_db_pool as _ug_get_pool
+
+                _ug_pool = await _ug_get_pool()
+            userguide_enabled = await is_userguide_rag_enabled(
+                _ug_pool, context.tenant_id
+            )
+        except Exception:
+            userguide_enabled = False
+
         # Build messages — segmented system prompt (Phase 3A)
         # Segments loaded based on intent: CHITCHAT=~500tok, SIMPLE_READ=~2.5K, etc.
         system_msgs = build_system_messages(
@@ -7800,6 +8087,7 @@ class UnifiedAgent:
             today=date.today().isoformat(),
             user_text=user_text,
             intent=_intent,
+            userguide_enabled=userguide_enabled,
         )
 
         messages: List[LLMMessage] = [
@@ -8074,7 +8362,24 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
-            tools = get_tools_for_domains(_active_domains)
+            tools = get_tools_for_domains(
+                _active_domains, userguide_enabled=userguide_enabled
+            )
+
+            # Phase 2B-1.6: lean TUTORIAL path — when RAG flag on AND intent==TUTORIAL,
+            # expose ONLY `search_userguide` to the LLM. This collapses the tool prompt
+            # from ~9K tokens to ~300 tokens and forces a single-pass retrieval flow.
+            # Latency: tool-fanout LLM call drops dramatically.
+            if userguide_enabled and _intent == "TUTORIAL":
+                from .tool_registry import USERGUIDE_TOOLS as _UG_TOOLS
+
+                tools = list(_UG_TOOLS)
+                _active_domains = {"USERGUIDE_ONLY"}
+                logger.warning(
+                    "[Phase2B-1.6] TUTORIAL lean path active: tools=%d (search_userguide only)",
+                    len(tools),
+                )
+
             logger.warning(
                 "[Phase2] domains=%d tools=%d active=%s",
                 len(_active_domains),
@@ -8094,6 +8399,29 @@ class UnifiedAgent:
             pass
 
         client, current_model = self.router.get_client_and_model(complexity)
+
+        # Phase 2B-1.7: TUTORIAL latency optimization — switch agent loop to
+        # gemini-2.5-flash with thinkingBudget=0. Benchmarked ~1.3s vs gpt-4o-mini ~3.8s
+        # on short single-iteration generations. Only triggered when RAG flag is on AND
+        # intent is TUTORIAL — does not touch ACTION / READ paths.
+        _agent_loop_extra_kwargs: Dict[str, Any] = {}
+        try:
+            if (
+                userguide_enabled
+                and _intent == "TUTORIAL"
+                and "gemini" in self.router.clients
+            ):
+                client = self.router.clients["gemini"]
+                current_model = "gemini-2.5-flash"
+                _agent_loop_extra_kwargs["thinking_budget"] = 0
+                logger.warning(
+                    "[Phase2B-1.7] TUTORIAL fast-path: switched agent loop to %s (thinking_budget=0)",
+                    current_model,
+                )
+        except Exception:
+            logger.exception(
+                "[Phase2B-1.7] TUTORIAL fast-path setup failed; falling back to default model"
+            )
 
         accumulated_usage = {
             "prompt_tokens": 0,
@@ -8140,6 +8468,7 @@ class UnifiedAgent:
                     model=current_model,
                     temperature=TEMPERATURE_DEFAULT,
                     max_tokens=model_choice.max_tokens,
+                    **_agent_loop_extra_kwargs,
                 )
             except Exception:
                 logger.exception("LLM API call failed")
@@ -8166,12 +8495,34 @@ class UnifiedAgent:
                 for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     accumulated_usage[k] += llm_response.usage.get(k, 0)
 
+            # Phase 2B-1.7 debug: log raw LLM response shape for tutorial path
+            try:
+                if userguide_enabled and _intent == "TUTORIAL":
+                    _content_preview = (llm_response.content or "")[:200]
+                    logger.warning(
+                        "[Phase2B-1.7-DBG] iter=%d finish=%s n_tool=%d content_len=%d preview=%r raw=%s",
+                        iteration,
+                        llm_response.finish_reason,
+                        len(llm_response.tool_calls or []),
+                        len(llm_response.content or ""),
+                        _content_preview,
+                        str(llm_response.raw_message)[:400]
+                        if llm_response.raw_message
+                        else "None",
+                    )
+            except Exception:
+                pass
+
             # Case 1: LLM returns text (no tool calls) → final answer
             # ECM: Log shadow stats
             if _ecm.entity_stack:
                 logger.warning("[ECM_SHADOW] stats=%s", _ecm.get_stats())
 
-            if llm_response.finish_reason == "stop" or not llm_response.tool_calls:
+            # Phase 2B-1.7: Gemini sets finish_reason="stop" even when emitting a
+            # functionCall part (unlike OpenAI which uses "tool_calls"). Treat the
+            # presence of tool_calls as authoritative: if any tool call is present,
+            # do NOT take the text-final branch.
+            if not llm_response.tool_calls:
                 # ── NUDGE: If ACTION intent, LLM has data but didn't call propose_direct_action ──
                 _tool_names_used = {tc.get("name", "") for tc in tool_calls_log}
                 _has_data_tools = bool(
@@ -8343,6 +8694,49 @@ class UnifiedAgent:
 
                 content = llm_response.content or ""
 
+                # Phase 2B-1.8: rewrite Gemini .md citation links to docs: scheme
+                # so the frontend drawer (Phase 2B-2) can resolve them. Only applies
+                # when TUTORIAL intent + userguide_enabled + search_userguide ran.
+                try:
+                    if userguide_enabled and _intent == "TUTORIAL" and content:
+                        _ug_chunks = extract_userguide_chunks(tool_calls_log)
+                        if _ug_chunks:
+                            _orig_content = content
+                            content = rewrite_citations(content, _ug_chunks)
+                            if content != _orig_content:
+                                logger.info(
+                                    "[Phase2B-1.8] citation_rewriter applied: %d chunks, delta=%d",
+                                    len(_ug_chunks),
+                                    len(content) - len(_orig_content),
+                                )
+                            # Phase 2B-2.0: deterministic citation footer fallback.
+                            # Gemini 2.5 Flash sometimes ignores citation_required
+                            # for long step-by-step responses despite the tool
+                            # result carrying pre-rendered [Title](docs:doc_id)
+                            # examples (Phase 2B-1.9). Append a single footer
+                            # using the top chunk when no docs: link is present.
+                            _top_sim = 0.0
+                            try:
+                                _top_sim = float(
+                                    _ug_chunks[0].get("similarity", 0.0) or 0.0
+                                )
+                            except (TypeError, ValueError):
+                                _top_sim = 0.0
+                            _pre_footer = content
+                            content = ensure_citation_footer(
+                                content, _ug_chunks, _top_sim
+                            )
+                            if content != _pre_footer:
+                                logger.info(
+                                    "[Phase2B-2.0] citation_footer appended: top_sim=%.3f doc_id=%s",
+                                    _top_sim,
+                                    _ug_chunks[0].get("doc_id"),
+                                )
+                except Exception:
+                    logger.exception(
+                        "[Phase2B-1.8] citation rewrite failed; keeping original"
+                    )
+
                 # --- SSE: Emit THINKING_DONE ---
                 _last_tool = tool_calls_log[-1]["name"] if tool_calls_log else ""
                 await emit(
@@ -8411,13 +8805,35 @@ class UnifiedAgent:
 
             # Case 2: LLM wants to call tools
             # Append assistant message (with raw tool_calls for provider threading)
+            # Phase 2B-1.7: synthesize OpenAI-shape tool_calls from LLMResponse if the
+            # raw_message lacks them (Gemini path). Without this, the next-turn payload
+            # contains a `tool` message whose preceding assistant has no functionCall part,
+            # which Gemini rejects with HTTP 400.
+            _synth_tool_calls = (
+                llm_response.raw_message.get("tool_calls")
+                if (
+                    llm_response.raw_message
+                    and isinstance(llm_response.raw_message, dict)
+                )
+                else None
+            )
+            if not _synth_tool_calls and llm_response.tool_calls:
+                _synth_tool_calls = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function_name,
+                            "arguments": json.dumps(tc.arguments or {}),
+                        },
+                    }
+                    for tc in llm_response.tool_calls
+                ]
             messages.append(
                 LLMMessage(
                     role="assistant",
                     content=llm_response.content,
-                    tool_calls=llm_response.raw_message.get("tool_calls")
-                    if llm_response.raw_message
-                    else None,
+                    tool_calls=_synth_tool_calls,
                 )
             )
 
@@ -8630,6 +9046,7 @@ class UnifiedAgent:
                         LLMMessage(
                             role="tool",
                             tool_call_id=tc.id,
+                            name=tc.function_name,  # Phase 2B-1.7: Gemini requires function_response.name
                             content=json.dumps(result, default=str),
                         )
                     )
@@ -8678,6 +9095,7 @@ class UnifiedAgent:
                             LLMMessage(
                                 role="tool",
                                 tool_call_id=tool_id,
+                                name=tool_name,  # Phase 2B-1.7: Gemini compat
                                 content=json.dumps(result),
                             )
                         )
@@ -8915,6 +9333,7 @@ class UnifiedAgent:
                     LLMMessage(
                         role="tool",
                         tool_call_id=tool_id,
+                        name=tool_name,  # Phase 2B-1.7: Gemini compat
                         content=json.dumps(result, default=str),
                     )
                 )
@@ -8928,7 +9347,17 @@ class UnifiedAgent:
                 logger.warning(
                     f"[MODEL] Upgraded to SELF_CORRECT at iteration {iteration + 1}"
                 )
-            client, current_model = self.router.get_client_and_model(complexity)
+            # Phase 2B-1.7: keep TUTORIAL fast-path on Gemini for the answer-formatting
+            # iteration too. Otherwise we fall back to OpenAI mid-loop and lose the speedup.
+            if (
+                userguide_enabled
+                and _intent == "TUTORIAL"
+                and "gemini" in self.router.clients
+            ):
+                client = self.router.clients["gemini"]
+                current_model = "gemini-2.5-flash"
+            else:
+                client, current_model = self.router.get_client_and_model(complexity)
 
             # Continue loop — LLM sees tool results, decides next step
 
