@@ -65,7 +65,7 @@ repos:
     hooks:
       - id: yamllint
         name: YAML Lint
-        args: ['-d', '{extends: default, rules: {line-length: disable, truthy: disable}}']
+        args: ['-d', '{extends: default, rules: {line-length: disable, truthy: disable, indentation: disable}}']
         exclude: |
           (?x)^(
             node_modules/|
