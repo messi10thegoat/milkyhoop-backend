@@ -5556,27 +5556,35 @@ class UnifiedAgent:
             )
             return None
 
-        # Guardrail 1: Anti-loop (same intent 3+ times in last 6 user turns)
+        # Guardrail 1: Anti-loop (require 3 CONSECUTIVE identical priors, excluding current)
+        # FIX_AQUA_ANTILOOP 2026-05-11: Old logic counted ANY-3-of-last-6 user turns matching
+        # current text -> false-positive on dogfood patterns where same probe phrase appears
+        # non-consecutively across a session. New logic: only fire when the 3 user turns
+        # immediately before current are ALL identical to current (true repeat-loop signal).
         if conversation_history:
             try:
                 _user_msgs = [
                     m for m in conversation_history[-12:] if m.get("role") == "user"
                 ]
-                if len(_user_msgs) >= 3:
-                    # Count same intent in router memory not available — use text heuristic
-                    _same = 0
-                    for _m in _user_msgs[-6:]:
-                        if (
-                            _m.get("content", "").strip().lower()
-                            == user_text.strip().lower()
-                        ):
-                            _same += 1
-                    if _same >= 3:
-                        logger.warning(
-                            "[LLM_ROUTER_FALLBACK] anti-loop: same text %dx -> fallback",
-                            _same,
-                        )
-                        return None
+                _norm = user_text.strip().lower()
+                # Exclude current message if conversation_history already includes it as the tail
+                if (
+                    _user_msgs
+                    and _user_msgs[-1].get("content", "").strip().lower() == _norm
+                ):
+                    _priors = [
+                        _m.get("content", "").strip().lower() for _m in _user_msgs[:-1]
+                    ]
+                else:
+                    _priors = [
+                        _m.get("content", "").strip().lower() for _m in _user_msgs
+                    ]
+                _last3 = _priors[-3:]
+                if len(_last3) == 3 and all(p == _norm for p in _last3):
+                    logger.warning(
+                        "[LLM_ROUTER_FALLBACK] anti-loop: 3 consecutive identical priors -> fallback",
+                    )
+                    return None
             except Exception:
                 pass
 

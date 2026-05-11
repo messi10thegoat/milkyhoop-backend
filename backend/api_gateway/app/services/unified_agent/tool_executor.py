@@ -3511,13 +3511,6 @@ class ToolExecutor:
             # already set description but price came back null/zero.
             _need_desc = "description" not in item or not item.get("description")
             _need_price = not item.get("unit_price")  # truthy check (0 is falsy)
-            logger.warning(
-                "[FIX_AQUA_PRICE_DBG] item_id=%s need_desc=%s need_price=%s current_price=%r",
-                item_id,
-                _need_desc,
-                _need_price,
-                item.get("unit_price"),
-            )
             if _need_desc or _need_price:
                 detail = await self._fetch_entity(client, f"/api/items/{item_id}")
                 # FIX_AQUA_UNWRAP defensive belt-and-suspenders (envelope
