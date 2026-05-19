@@ -895,6 +895,30 @@ class ToolExecutor:
                 if mapped:
                     payload[field_name] = mapped
 
+        # FIX_AQUA_PERCENT_NORMALIZE 2026-05-11: defensive rescale for percent fields emitted as fraction.
+        # Stage 2 LLM sometimes emits 0.11 instead of 11 despite prompt rule. Rescale 0<v<1 -> v*100.
+        # Trade-off: rare sub-1% rates (e.g., 0.5%) would be wrongly upscaled. In Indonesian SME accounting,
+        # this case is exceedingly rare (PPN 11%, PPh integer rates, diskon biasanya integer).
+        # Log warning so we can detect false-positives in telemetry.
+        try:
+            for _fs in config.fields:
+                if getattr(_fs, "field_type", None) == "percent":
+                    _v = payload.get(_fs.name)
+                    if isinstance(_v, bool):
+                        continue
+                    if isinstance(_v, (int, float)) and 0 < _v < 1:
+                        _old = _v
+                        payload[_fs.name] = _v * 100
+                        logger.warning(
+                            "[FIX_AQUA_PERCENT_NORMALIZE] action=%s field=%s rescaled %s -> %s",
+                            action_key,
+                            _fs.name,
+                            _old,
+                            payload[_fs.name],
+                        )
+        except Exception as _e:
+            logger.debug("[FIX_AQUA_PERCENT_NORMALIZE] skip: %s", _e)
+
         return payload
 
     async def _execute_search_userguide(self, params: dict) -> dict:
@@ -3257,6 +3281,7 @@ class ToolExecutor:
                 _q = int(float(item.get(qty_field) or 1))
             except (TypeError, ValueError):
                 _q = 1
+            _fc_list = item.get("_fuzzy_candidates") if isinstance(item, dict) else None
             missing.append(
                 {
                     "idx": idx,
@@ -3264,6 +3289,11 @@ class ToolExecutor:
                     "qty": _q,
                     "price_field": price_field,
                     "price_label": price_label,
+                    # FIX_AQUA_ITEM_RESOLVE 2026-05-19: surface fuzzy candidates
+                    # so price-ask renderer can show "Mirip dengan: ..." hint.
+                    "fuzzy_candidates": (
+                        list(_fc_list) if isinstance(_fc_list, list) else []
+                    ),
                 }
             )
         return missing
@@ -3458,6 +3488,49 @@ class ToolExecutor:
                                 item["item_id"] = None
                                 item["description"] = None
                             # Else preserve free-text description (e.g. "jasa konsultasi")
+                            # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B):
+                            # Per-token fallback to surface fuzzy candidates.
+                            # Bot will preserve item_id=None + description=name_hint
+                            # but stash candidate names for the price-ask UX to display.
+                            else:
+                                _fc: list = []
+                                _seen_ids: set = set()
+                                for _tok in [
+                                    t for t in name_hint.split() if len(t) >= 3
+                                ][:3]:
+                                    _tr = await self._fetch_entity(
+                                        client,
+                                        f"/api/items?search={_tok}&limit=5&status=active",
+                                    )
+                                    _trows = (
+                                        _tr
+                                        if isinstance(_tr, list)
+                                        else (_tr.get("items", []) if _tr else [])
+                                    )
+                                    for _r in _trows:
+                                        _rid = _r.get("id") or _r.get("item_id")
+                                        _rname = (
+                                            _r.get("name")
+                                            or _r.get("nama_produk")
+                                            or ""
+                                        ).strip()
+                                        if _rid and _rid not in _seen_ids and _rname:
+                                            _seen_ids.add(_rid)
+                                            _fc.append(_rname)
+                                        if len(_fc) >= 5:
+                                            break
+                                    if len(_fc) >= 5:
+                                        break
+                                if _fc:
+                                    # Layer A guard: ensure description preserved as
+                                    # the user's literal phrase (never null) so review
+                                    # cards + price prompts show "kaos polos" not "Item".
+                                    item["description"] = name_hint
+                                    item["item_id"] = None
+                                    item["_fuzzy_candidates"] = _fc
+                                    logger.info(
+                                        f"FIX_AQUA_ITEM_RESOLVE: ambiguous item='{name_hint}' fuzzy={_fc}"
+                                    )
                         if results:
                             exact = next(
                                 (
@@ -3775,9 +3848,12 @@ class ToolExecutor:
 
             # FIX_AQUA_REFNO_REGEX 2026-05-09: parse ref_no (PO customer/external)
             # Patterns: "PO 12345", "PO-12345", "ref ABC-001", "referensi #X-1"
+            # FIX_AQUA_REFNO_TIGHTEN 2026-05-19: add right-side \b + require
+            # captured token contains at least one digit (avoid "po" matching
+            # inside "kaos polos" -> "los")
             if not payload.get("ref_no") and getattr(self, "user_text", None):
                 _mr = re.search(
-                    r"(?:\b(?:po|p\.o\.|purchase\s+order|ref(?:erensi)?)\s*[:\#\-]?\s*)([A-Za-z0-9][\w\-\/\.]{2,30})",
+                    r"(?:\b(?:po|p\.o\.|purchase\s+order|ref(?:erensi)?)\b\s*[:\#\-]?\s*)((?=[\w\-\/\.]*\d)[A-Za-z0-9][\w\-\/\.]{2,30})",
                     self.user_text,
                     re.IGNORECASE,
                 )

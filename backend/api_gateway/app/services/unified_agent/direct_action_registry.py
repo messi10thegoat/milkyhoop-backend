@@ -57,9 +57,16 @@ class ImpactRule:
             return None
 
         formatted_value = f"Rp {numeric:,}".replace(",", ".")
+        # FIX_AQUA_PERCENT_DISPLAY 2026-05-13: expose {formatted_percent} for percent templates
+        try:
+            _pct_num = float(value) if value is not None else 0.0
+        except (ValueError, TypeError):
+            _pct_num = 0.0
+        formatted_percent = f"{_pct_num:g}"
         return self.message_template.format(
             value=value,
             formatted_value=formatted_value,
+            formatted_percent=formatted_percent,
         )
 
 
@@ -643,7 +650,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ImpactRule(
                 field="tax_rate",
                 condition="nonzero",
-                message_template="PPN {formatted_value}% akan dibukukan ke PPN Keluaran.",
+                message_template="PPN {formatted_percent}% akan dibukukan ke PPN Keluaran.",
             ),
         ],
         fields=[
@@ -731,7 +738,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ImpactRule(
                 field="tax_rate",
                 condition="nonzero",
-                message_template="Pajak {formatted_value}% akan diterapkan per item.",
+                message_template="Pajak {formatted_percent}% akan diterapkan per item.",
             ),
         ],
         fields=[
@@ -803,7 +810,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ImpactRule(
                 field="tax_rate",
                 condition="nonzero",
-                message_template="PPN {formatted_value}% akan dibukukan ke PPN Masukan.",
+                message_template="PPN {formatted_percent}% akan dibukukan ke PPN Masukan.",
             ),
         ],
         fields=[
@@ -2475,7 +2482,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ImpactRule(
                 field="tax_rate",
                 condition="nonzero",
-                message_template="Pajak {formatted_value}% akan diterapkan per item.",
+                message_template="Pajak {formatted_percent}% akan diterapkan per item.",
             ),
         ],
         fields=[
@@ -4951,7 +4958,14 @@ def build_confirmation_table(
             continue
         if value is not None and str(value).strip():
             display_value = str(value)
-            if f.field_type == "number":
+            # FIX_AQUA_PERCENT_DISPLAY 2026-05-13: render percent fields with % suffix
+            if f.field_type == "percent":
+                try:
+                    num_val = float(value)
+                    display_value = f"{num_val:g}%"
+                except (ValueError, TypeError):
+                    display_value = f"{value}%"
+            elif f.field_type == "number":
                 try:
                     num_val = float(value)
                     display_value = f"Rp {int(num_val):,}".replace(",", ".")
@@ -5105,8 +5119,18 @@ def build_review_card_payload(
                 }
             )
         # Compute discount from discount_percent (or raw discount)
-        discount_pct = float(payload.get("discount_percent", 0) or 0)
-        raw_discount = float(payload.get("discount", 0) or 0)
+        # FIX_AQUA_DISCOUNT_AMOUNT_APPLY 2026-05-19: consume discount_amount (invoice) / invoice_discount_amount (bill) Rp fixed
+        discount_pct = float(
+            payload.get("discount_percent", payload.get("invoice_discount_percent", 0))
+            or 0
+        )
+        raw_discount = float(
+            payload.get(
+                "discount_amount",
+                payload.get("invoice_discount_amount", payload.get("discount", 0)),
+            )
+            or 0
+        )
         discount = (subtotal * discount_pct / 100.0) if discount_pct else raw_discount
 
         after_discount = subtotal - discount

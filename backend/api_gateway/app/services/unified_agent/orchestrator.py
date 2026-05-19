@@ -1161,6 +1161,212 @@ class UnifiedAgent:
                 # ── CANDIDATE PICKING: resolve user's choice from saved candidates ──
                 _wf_candidates = _active_crud_wf.data.get("candidates", [])
                 _wf_phase = _active_crud_wf.data.get("phase", "")
+                # FIX_AQUA_PRICE_ASK_GUARD 2026-05-13: resume awaiting_item_prices
+                if _wf_phase == "awaiting_item_prices":
+                    import re as _ap_re
+
+                    _ap_missing_saved = (
+                        _active_crud_wf.data.get("missing_prices", []) or []
+                    )
+                    _ap_payload_saved = dict(
+                        _active_crud_wf.data.get("payload", {}) or {}
+                    )
+                    _ap_action_saved = (
+                        _active_crud_wf.data.get("action_key")
+                        or _active_crud_wf.data.get("intent")
+                        or "create_sales_invoice"
+                    )
+                    # Parse numeric from user text. Accepts "80000", "Rp 80.000", "80 ribu", "80rb", "80k".
+                    _ap_txt = (user_text or "").strip().lower()
+                    _ap_num = None
+                    _m_ribu = _ap_re.search(
+                        r"(\d+(?:[\.,]\d+)?)\s*(ribu|rb|k)\b", _ap_txt
+                    )
+                    if _m_ribu:
+                        try:
+                            _ap_num = int(
+                                float(_m_ribu.group(1).replace(",", ".")) * 1000
+                            )
+                        except Exception:
+                            _ap_num = None
+                    if _ap_num is None:
+                        _m_jt = _ap_re.search(
+                            r"(\d+(?:[\.,]\d+)?)\s*(juta|jt|m)\b", _ap_txt
+                        )
+                        if _m_jt:
+                            try:
+                                _ap_num = int(
+                                    float(_m_jt.group(1).replace(",", ".")) * 1_000_000
+                                )
+                            except Exception:
+                                _ap_num = None
+                    if _ap_num is None:
+                        # plain digits, allow rp prefix and dot/comma thousand separators
+                        _digits = _ap_re.sub(r"[^0-9]", "", _ap_txt)
+                        if _digits:
+                            try:
+                                _ap_num = int(_digits)
+                            except Exception:
+                                _ap_num = None
+                    if _ap_num and _ap_num > 0:
+                        logger.warning(
+                            "[FIX_AQUA_PRICE_ASK_GUARD] resume: parsed price=%s from text='%s' missing=%s",
+                            _ap_num,
+                            _ap_txt[:80],
+                            [(m.get("idx"), m.get("name")) for m in _ap_missing_saved],
+                        )
+                        _items_resume = list(_ap_payload_saved.get("items") or [])
+                        # Apply price to all missing indices (typically one)
+                        for _m in _ap_missing_saved:
+                            _idx = _m.get("idx")
+                            if isinstance(_idx, int) and 0 <= _idx < len(_items_resume):
+                                _items_resume[_idx] = dict(_items_resume[_idx])
+                                _items_resume[_idx]["unit_price"] = _ap_num
+                        _ap_payload_saved["items"] = _items_resume
+                        # Cancel workflow before re-proposing (handler will recreate if still missing)
+                        try:
+                            await _wf_engine.cancel(
+                                tool_executor.session_id, "crud_form"
+                            )
+                        except Exception:
+                            pass
+                        # Re-invoke propose with the patched payload
+                        _propose_data_resume = (
+                            await tool_executor._execute_propose_direct(
+                                {
+                                    "action_key": _ap_action_saved,
+                                    "payload": _ap_payload_saved,
+                                }
+                            )
+                        )
+                        # If still missing (e.g., multi-item case), recreate workflow + re-ask
+                        if (
+                            _propose_data_resume.get("message_type")
+                            == "AWAITING_ITEM_PRICE"
+                        ):
+                            _ap2 = _propose_data_resume.get("data", {})
+                            _ap2_missing = _ap2.get("missing_prices", [])
+                            _ap2_payload = _ap2.get("payload", {})
+                            try:
+                                if tool_executor.session_manager:
+                                    await tool_executor.session_manager.update_state(
+                                        tool_executor.session_id,
+                                        pending_payload={
+                                            k: v
+                                            for k, v in _ap2_payload.items()
+                                            if v is not None
+                                        },
+                                        pending_intent=_ap_action_saved,
+                                    )
+                                await _wf_engine.process(
+                                    tool_executor.session_id,
+                                    "crud_form",
+                                    user_data={
+                                        "action_key": _ap_action_saved,
+                                        "intent": _ap_action_saved,
+                                        "payload": _ap2_payload,
+                                        "phase": "awaiting_item_prices",
+                                        "missing_prices": _ap2_missing,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            _ap2_lines = []
+                            for _mm in _ap2_missing:
+                                _nmm = _mm.get("name") or "item"
+                                _qtm = _mm.get("qty") or _mm.get("quantity") or ""
+                                _qsm = f" ({_qtm} pcs)" if _qtm else ""
+                                # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
+                                _fcm = _mm.get("fuzzy_candidates") or []
+                                _hintm = ""
+                                if _fcm:
+                                    _opts = ", ".join(
+                                        f"{_i+1}) {_c}"
+                                        for _i, _c in enumerate(_fcm[:5])
+                                    )
+                                    _hintm = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
+                                _ap2_lines.append(
+                                    f"**{_nmm}**{_qsm} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hintm}"
+                                )
+                            return AgentResponse(
+                                message_type="TEXT",
+                                content="\n\n".join(_ap2_lines)
+                                if _ap2_lines
+                                else "Harga jual item belum diset.",
+                                iterations=1,
+                                tool_calls_made=[],
+                                model_used="pipeline",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
+                                thinking_stages=["Resume harga item"],
+                            )
+                        if (
+                            _propose_data_resume.get("message_type")
+                            == "DIRECT_ACTION_PREVIEW"
+                        ):
+                            _direct_data_r = _propose_data_resume.get("data", {})
+                            # Persist for Edit flow
+                            try:
+                                if tool_executor.session_manager:
+                                    await tool_executor.session_manager.update_state(
+                                        tool_executor.session_id,
+                                        pending_payload={
+                                            k: v
+                                            for k, v in _ap_payload_saved.items()
+                                            if v is not None
+                                        },
+                                        pending_intent=_ap_action_saved,
+                                    )
+                            except Exception:
+                                pass
+                            try:
+                                from .session_manager import StateUpdateHooks
+
+                                await StateUpdateHooks.after_propose(
+                                    tool_executor.session_manager,
+                                    tool_executor.session_id,
+                                    _ap_action_saved.upper(),
+                                    _ap_payload_saved,
+                                    {
+                                        "pending_action_id": _direct_data_r.get(
+                                            "pending_action_id"
+                                        )
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            return AgentResponse(
+                                message_type="DIRECT_ACTION_PREVIEW",
+                                content=_propose_data_resume.get("content", "")
+                                or _direct_data_r.get("message", "")
+                                or _direct_data_r.get("preview_text", ""),
+                                pending_action_id=_direct_data_r.get(
+                                    "pending_action_id", ""
+                                ),
+                                preview=_direct_data_r,
+                                expires_at=_direct_data_r.get("expires_at", ""),
+                                iterations=1,
+                                tool_calls_made=[],
+                                model_used="pipeline",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
+                                thinking_stages=[
+                                    "Resume harga item",
+                                    "Data siap dikonfirmasi",
+                                ],
+                            )
+                        # Fallback: unexpected — fall through
+                        logger.warning(
+                            "[FIX_AQUA_PRICE_ASK_GUARD] resume: unexpected propose result type=%s",
+                            _propose_data_resume.get("message_type"),
+                        )
+                    else:
+                        logger.warning(
+                            "[FIX_AQUA_PRICE_ASK_GUARD] resume: could not parse price from '%s', falling through",
+                            _ap_txt[:80],
+                        )
                 if _wf_candidates and _wf_phase == "picking_candidate":
                     _user_lower = user_text.strip().lower()
                     _matched_candidate = None
@@ -1328,7 +1534,7 @@ class UnifiedAgent:
                         return AgentResponse(
                             message_type="TEXT",
                             content="Maaf, saya tidak yakin yang mana. Pilih salah satu:\n"
-                            + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(_names)),
+                            + "\n".join(f"{i+1}. {n}" for i, n in enumerate(_names)),
                             iterations=1,
                             model_used="pipeline",
                             total_latency_ms=int((_time.time() - start_time) * 1000),
@@ -1554,6 +1760,117 @@ class UnifiedAgent:
                                 "action_key": _wf_action_key,
                                 "payload": _final_payload,
                             }
+                        )
+
+                    # FIX_AQUA_PRICE_ASK_RETURN 2026-05-13
+                    if _propose_data.get("message_type") == "AWAITING_ITEM_PRICE":
+                        _ap_data = _propose_data.get("data", {})
+                        _ap_missing = _ap_data.get("missing_prices", [])
+                        _ap_payload = _ap_data.get("payload", {})
+                        _ap_action = _ap_data.get("action_key", _wf_action_key)
+                        # Persist partial payload + sentinel so user's price reply resumes flow
+                        if (
+                            tool_executor
+                            and tool_executor.session_manager
+                            and tool_executor.session_id
+                        ):
+                            try:
+                                _save_ap = {
+                                    k: v
+                                    for k, v in _ap_payload.items()
+                                    if v is not None
+                                }
+                                await tool_executor.session_manager.update_state(
+                                    tool_executor.session_id,
+                                    pending_payload=_save_ap,
+                                    pending_intent=_ap_action,
+                                )
+                            except Exception as _ap_err:
+                                logger.warning(
+                                    "[FIX_AQUA_PRICE_ASK_RETURN] state save failed: %s",
+                                    _ap_err,
+                                )
+                        # FIX_AQUA_PRICE_ASK_GUARD 2026-05-13: update workflow phase
+                        if _wf_engine and tool_executor and tool_executor.session_id:
+                            try:
+                                await _wf_engine.process(
+                                    tool_executor.session_id,
+                                    "crud_form",
+                                    user_data={
+                                        "action_key": _ap_action,
+                                        "intent": _ap_action,
+                                        "payload": _ap_payload,
+                                        "phase": "awaiting_item_prices",
+                                        "missing_prices": _ap_missing,
+                                    },
+                                )
+                                try:
+                                    from .db_utils import (
+                                        get_session_db_pool as _ap_pool3,
+                                    )
+
+                                    _pool_ap3 = await _ap_pool3()
+                                    async with _pool_ap3.acquire(
+                                        timeout=5.0
+                                    ) as _conn_ap3:
+                                        await _conn_ap3.execute(
+                                            "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
+                                            tool_executor.session_id,
+                                            "crud_form",
+                                            "awaiting_item_prices",
+                                            __import__("json").dumps(_ap_missing),
+                                        )
+                                except Exception as _force_err2:
+                                    logger.warning(
+                                        "[FIX_AQUA_PRICE_ASK_GUARD] force-active failed (cs1): %s",
+                                        _force_err2,
+                                    )
+                                logger.warning(
+                                    "[FIX_AQUA_PRICE_ASK_GUARD] crud_form updated phase=awaiting_item_prices (callsite1)"
+                                )
+                            except Exception as _wf_err_ap2:
+                                logger.warning(
+                                    "[FIX_AQUA_PRICE_ASK_GUARD] workflow update failed: %s",
+                                    _wf_err_ap2,
+                                )
+                        _ap_lines = []
+                        for _m in _ap_missing:
+                            _nm = _m.get("name") or "item"
+                            _qty = _m.get("qty") or _m.get("quantity") or ""
+                            _qty_str = f" ({_qty} pcs)" if _qty else ""
+                            # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
+                            _fc = _m.get("fuzzy_candidates") or []
+                            _hint = ""
+                            if _fc:
+                                _opts = ", ".join(
+                                    f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5])
+                                )
+                                _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
+                            _ap_lines.append(
+                                f"**{_nm}**{_qty_str} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
+                            )
+                        _ap_text = (
+                            "\n\n".join(_ap_lines)
+                            if _ap_lines
+                            else (
+                                "Harga jual item belum diset. Mohon sebutkan harga per pcs."
+                            )
+                        )
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Butuh harga item",
+                                "total_ms": int((_time.time() - start_time) * 1000),
+                            },
+                        )
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=_ap_text,
+                            iterations=1,
+                            tool_calls_made=[],
+                            model_used="pipeline",
+                            total_latency_ms=int((_time.time() - start_time) * 1000),
+                            thinking_stages=["Menganalisis pesan", "Butuh harga item"],
                         )
 
                     if _propose_data.get("message_type") == "DIRECT_ACTION_PREVIEW":
@@ -2477,77 +2794,118 @@ class UnifiedAgent:
             },
         )
 
-        # ── FIX_AQUA_PRICE_ASK 2026-05-09 ─────────────────────────────────
-        # Handle short-circuit: line items with price=0 (master not set).
-        # Save partial enriched payload + missing list to session state, emit
-        # TEXT asking user for first missing price. Resume handler in Phase 0
-        # will parse number reply and merge.
+        # FIX_AQUA_PRICE_ASK_RETURN 2026-05-13
         if propose_result.get("message_type") == "AWAITING_ITEM_PRICE":
             _ap_data = propose_result.get("data", {})
-            _ap_payload = _ap_data.get("payload", {}) or {}
-            _ap_missing = _ap_data.get("missing_prices", []) or []
-            _ap_action_key = _ap_data.get("action_key", extraction.intent)
-
+            _ap_missing = _ap_data.get("missing_prices", [])
+            _ap_payload = _ap_data.get("payload", {})
+            _ap_action = _ap_data.get("action_key", extraction.intent)
             if (
                 tool_executor
                 and tool_executor.session_manager
                 and tool_executor.session_id
             ):
                 try:
-                    # Embed sentinel inside pending_payload — popped on resume
-                    _saved = dict(_ap_payload)
-                    _saved["_awaiting_item_prices"] = _ap_missing
+                    _save_ap = {k: v for k, v in _ap_payload.items() if v is not None}
                     await tool_executor.session_manager.update_state(
                         tool_executor.session_id,
-                        pending_payload=_saved,
-                        pending_intent=_ap_action_key,
+                        pending_payload=_save_ap,
+                        pending_intent=_ap_action,
                     )
-                except Exception as _ap_state_err:
+                except Exception as _ap_err:
                     logger.warning(
-                        "[FIX_AQUA_PRICE_ASK] save state failed: %s", _ap_state_err
+                        "[FIX_AQUA_PRICE_ASK_RETURN] state save failed: %s", _ap_err
                     )
+            # FIX_AQUA_PRICE_ASK_GUARD 2026-05-13: create crud_form workflow so next
+            # turn (user's price reply) is recognized as resume, not fresh transaction.
+            if tool_executor and tool_executor.session_id:
+                try:
+                    _wf_eng_ap = None
+                    if hasattr(self, "workflow_engine") and self.workflow_engine:
+                        _wf_eng_ap = self.workflow_engine
+                    else:
+                        from .workflow_engine import WorkflowEngine
+                        from .db_utils import get_session_db_pool as _ap_pool
 
-            # Build natural ask text (Bahasa) — ask first missing only
-            _first = _ap_missing[0] if _ap_missing else None
-            if _first:
-                _qty_disp = _first.get("qty", 1)
-                _name_disp = _first.get("name", "Item")
-                _label = _first.get("price_label", "harga")
-                _remaining_count = len(_ap_missing) - 1
-                _suffix = (
-                    f" (masih ada {_remaining_count} item lagi setelah ini)"
-                    if _remaining_count > 0
-                    else ""
-                )
-                _ask_text = (
-                    f"**{_name_disp}** ({_qty_disp} pcs) — {_label} per pcs belum "
-                    f"diset di data master. Berapa {_label} per pcs?{_suffix}\n\n"
-                    f"_Contoh balasan: `80000` atau `Rp 80.000` atau `80 ribu`._"
-                )
-            else:
-                _ask_text = "Berapa harga per pcs?"
+                        _wf_eng_ap = WorkflowEngine(
+                            await _ap_pool(),
+                            context.tenant_id,
+                            getattr(context, "user_id", ""),
+                            getattr(context, "auth_token", ""),
+                        )
+                    await _wf_eng_ap.process(
+                        tool_executor.session_id,
+                        "crud_form",
+                        user_data={
+                            "action_key": _ap_action,
+                            "intent": _ap_action,
+                            "payload": _save_ap if "_save_ap" in dir() else _ap_payload,
+                            "phase": "awaiting_item_prices",
+                            "missing_prices": _ap_missing,
+                        },
+                    )
+                    # Force workflow row to 'active' so resume handler at next turn picks it up.
+                    # process() can auto-mark completed; we need it staying active for the price-reply.
+                    try:
+                        from .db_utils import get_session_db_pool as _ap_pool2
 
+                        _pool_ap = await _ap_pool2()
+                        async with _pool_ap.acquire(timeout=5.0) as _conn_ap:
+                            await _conn_ap.execute(
+                                "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
+                                tool_executor.session_id,
+                                "crud_form",
+                                "awaiting_item_prices",
+                                __import__("json").dumps(_ap_missing),
+                            )
+                    except Exception as _force_err:
+                        logger.warning(
+                            "[FIX_AQUA_PRICE_ASK_GUARD] force-active failed: %s",
+                            _force_err,
+                        )
+                    logger.warning(
+                        "[FIX_AQUA_PRICE_ASK_GUARD] crud_form workflow created phase=awaiting_item_prices missing=%s",
+                        [(m.get("idx"), m.get("name")) for m in _ap_missing],
+                    )
+                except Exception as _wf_err_ap:
+                    logger.warning(
+                        "[FIX_AQUA_PRICE_ASK_GUARD] workflow create failed: %s",
+                        _wf_err_ap,
+                    )
+            _ap_lines = []
+            for _m in _ap_missing:
+                _nm = _m.get("name") or "item"
+                _qty = _m.get("qty") or _m.get("quantity") or ""
+                _qty_str = f" ({_qty} pcs)" if _qty else ""
+                # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
+                _fc = _m.get("fuzzy_candidates") or []
+                _hint = ""
+                if _fc:
+                    _opts = ", ".join(f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5]))
+                    _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
+                _ap_lines.append(
+                    f"**{_nm}**{_qty_str} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
+                )
+            _ap_text = (
+                "\n\n".join(_ap_lines)
+                if _ap_lines
+                else ("Harga jual item belum diset. Mohon sebutkan harga per pcs.")
+            )
             await emit(
                 "THINKING_DONE",
                 {
-                    "summary": "Butuh harga per item",
+                    "summary": "Butuh harga item",
                     "total_ms": int((_time.time() - start_time) * 1000),
                 },
             )
-
             return AgentResponse(
                 message_type="TEXT",
-                content=_ask_text,
+                content=_ap_text,
                 iterations=1,
-                model_used="pipeline+price_ask",
+                model_used="pipeline",
                 total_latency_ms=int((_time.time() - start_time) * 1000),
-                thinking_stages=[
-                    "Menganalisis pesan",
-                    "Mencari data master",
-                    "Meminta harga yang belum diset",
-                ],
+                thinking_stages=["Menganalisis pesan", "Butuh harga item"],
             )
-        # ── /FIX_AQUA_PRICE_ASK ────────────────────────────────────────────
 
         # Return in existing format
         if propose_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
@@ -5556,35 +5914,27 @@ class UnifiedAgent:
             )
             return None
 
-        # Guardrail 1: Anti-loop (require 3 CONSECUTIVE identical priors, excluding current)
-        # FIX_AQUA_ANTILOOP 2026-05-11: Old logic counted ANY-3-of-last-6 user turns matching
-        # current text -> false-positive on dogfood patterns where same probe phrase appears
-        # non-consecutively across a session. New logic: only fire when the 3 user turns
-        # immediately before current are ALL identical to current (true repeat-loop signal).
+        # Guardrail 1: Anti-loop (same intent 3+ times in last 6 user turns)
         if conversation_history:
             try:
                 _user_msgs = [
                     m for m in conversation_history[-12:] if m.get("role") == "user"
                 ]
-                _norm = user_text.strip().lower()
-                # Exclude current message if conversation_history already includes it as the tail
-                if (
-                    _user_msgs
-                    and _user_msgs[-1].get("content", "").strip().lower() == _norm
-                ):
-                    _priors = [
-                        _m.get("content", "").strip().lower() for _m in _user_msgs[:-1]
-                    ]
-                else:
-                    _priors = [
-                        _m.get("content", "").strip().lower() for _m in _user_msgs
-                    ]
-                _last3 = _priors[-3:]
-                if len(_last3) == 3 and all(p == _norm for p in _last3):
-                    logger.warning(
-                        "[LLM_ROUTER_FALLBACK] anti-loop: 3 consecutive identical priors -> fallback",
-                    )
-                    return None
+                if len(_user_msgs) >= 3:
+                    # Count same intent in router memory not available — use text heuristic
+                    _same = 0
+                    for _m in _user_msgs[-6:]:
+                        if (
+                            _m.get("content", "").strip().lower()
+                            == user_text.strip().lower()
+                        ):
+                            _same += 1
+                    if _same >= 3:
+                        logger.warning(
+                            "[LLM_ROUTER_FALLBACK] anti-loop: same text %dx -> fallback",
+                            _same,
+                        )
+                        return None
             except Exception:
                 pass
 
@@ -5865,176 +6215,6 @@ class UnifiedAgent:
             and tool_executor
             and tool_executor.session_id
         ):
-            # ── FIX_AQUA_PRICE_ASK 2026-05-09: resume handler ──────────────
-            # Highest-priority Phase 0 check: if session has pending payload
-            # with `_awaiting_item_prices` sentinel, treat current user_text
-            # as a price reply. Parse number, merge to items[idx], advance.
-            try:
-                _ap_resume_state = (
-                    await tool_executor.session_manager.get_state(
-                        tool_executor.session_id
-                    )
-                    if tool_executor.session_manager
-                    else None
-                )
-                _ap_pending = getattr(_ap_resume_state, "pending_payload", None) or {}
-                _ap_pi = getattr(_ap_resume_state, "pending_intent", "") or ""
-                _ap_missing_list = (
-                    _ap_pending.get("_awaiting_item_prices") if _ap_pending else None
-                )
-                if _ap_missing_list and _ap_pi:
-                    import re as _ap_re
-
-                    # Cancel keywords → clear sentinel, fall through to normal flow
-                    _cancel_words = ["batal", "cancel", "gajadi", "ga jadi", "lupakan"]
-                    if any(w in user_text.lower() for w in _cancel_words):
-                        try:
-                            _clear = {
-                                k: v
-                                for k, v in _ap_pending.items()
-                                if k != "_awaiting_item_prices"
-                            }
-                            await tool_executor.session_manager.update_state(
-                                tool_executor.session_id,
-                                pending_payload=_clear,
-                            )
-                        except Exception:
-                            pass
-                        return AgentResponse(
-                            message_type="TEXT",
-                            content="Ok, dibatalkan. Mau lanjut yang lain?",
-                            iterations=1,
-                            model_used="pipeline+price_ask_cancel",
-                        )
-
-                    # Parse first numeric token. Strip "Rp", thousand separators
-                    # (. or ,) and accept "ribu"/"rb"/"juta"/"jt" multipliers.
-                    _txt = user_text.strip().lower()
-                    _multiplier = 1
-                    if _ap_re.search(r"\b(juta|jt)\b", _txt):
-                        _multiplier = 1_000_000
-                    elif _ap_re.search(r"\b(ribu|rb|k)\b", _txt):
-                        _multiplier = 1_000
-                    # extract leading number — accept 80, 80000, 80.000, 80,000, 80.5
-                    _m = _ap_re.search(r"(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)", _txt)
-                    _parsed_price = 0.0
-                    if _m:
-                        _raw = _m.group(1)
-                        # If multiplier applied, decimal "." or "," is fractional
-                        if _multiplier > 1:
-                            _normalized = _raw.replace(",", ".")
-                            try:
-                                _parsed_price = float(_normalized) * _multiplier
-                            except ValueError:
-                                _parsed_price = 0.0
-                        else:
-                            # Strip thousand separators (heuristic: if more than
-                            # one separator OR last group is 3 digits, treat as
-                            # thousand sep; else treat as decimal)
-                            _digits = _ap_re.sub(r"[.,]", "", _raw)
-                            try:
-                                _parsed_price = float(_digits)
-                            except ValueError:
-                                _parsed_price = 0.0
-
-                    if _parsed_price <= 0:
-                        # Reject — ask again with example
-                        _first_again = _ap_missing_list[0]
-                        return AgentResponse(
-                            message_type="TEXT",
-                            content=(
-                                f"Mohon kirim angka harga yang valid untuk "
-                                f"**{_first_again.get('name', 'Item')}**.\n\n"
-                                f"Contoh: `80000`, `Rp 80.000`, atau `80 ribu`."
-                            ),
-                            iterations=1,
-                            model_used="pipeline+price_ask_retry",
-                        )
-
-                    # Merge price into items[idx][price_field]
-                    _first = _ap_missing_list[0]
-                    _idx = int(_first.get("idx", 0))
-                    _pf = _first.get("price_field", "unit_price")
-                    _items_arr = _ap_pending.get("items", []) or []
-                    if 0 <= _idx < len(_items_arr) and isinstance(
-                        _items_arr[_idx], dict
-                    ):
-                        _items_arr[_idx][_pf] = _parsed_price
-                        # Also coerce to int if originally int (Bills V2 'price' is float, sales 'unit_price' is int)
-                        if _pf == "unit_price":
-                            try:
-                                _items_arr[_idx][_pf] = int(_parsed_price)
-                            except (TypeError, ValueError):
-                                pass
-                        _ap_pending["items"] = _items_arr
-                        logger.warning(
-                            "[FIX_AQUA_PRICE_ASK] merged price=%s for idx=%s field=%s",
-                            _parsed_price,
-                            _idx,
-                            _pf,
-                        )
-
-                    # Pop processed missing item
-                    _remaining = _ap_missing_list[1:]
-                    if _remaining:
-                        # Update sentinel + ask next
-                        _ap_pending["_awaiting_item_prices"] = _remaining
-                        await tool_executor.session_manager.update_state(
-                            tool_executor.session_id,
-                            pending_payload=_ap_pending,
-                            pending_intent=_ap_pi,
-                        )
-                        _next = _remaining[0]
-                        _next_text = (
-                            f"✅ Harga **{_first.get('name', 'Item')}** disimpan: "
-                            f"Rp {int(_parsed_price):,}".replace(",", ".")
-                            + f"\n\n**{_next.get('name', 'Item')}** "
-                            + f"({_next.get('qty', 1)} pcs) — "
-                            + f"{_next.get('price_label', 'harga')} per pcs?"
-                        )
-                        return AgentResponse(
-                            message_type="TEXT",
-                            content=_next_text,
-                            iterations=1,
-                            model_used="pipeline+price_ask",
-                        )
-
-                    # All prices filled — clear sentinel, re-trigger propose
-                    _ap_pending.pop("_awaiting_item_prices", None)
-                    await tool_executor.session_manager.update_state(
-                        tool_executor.session_id,
-                        pending_payload=_ap_pending,
-                        pending_intent=_ap_pi,
-                    )
-                    # Re-call propose_direct with completed payload
-                    _re_result = await tool_executor._execute_propose_direct(
-                        {"action_key": _ap_pi, "payload": _ap_pending}
-                    )
-                    if _re_result.get("message_type") == "DIRECT_ACTION_PREVIEW":
-                        _re_data = _re_result.get("data", {})
-                        return AgentResponse(
-                            message_type="DIRECT_ACTION_PREVIEW",
-                            content=_re_result.get("content", ""),
-                            pending_action_id=_re_data.get("pending_action_id", ""),
-                            preview=_re_data,
-                            expires_at=_re_data.get("expires_at", ""),
-                            iterations=1,
-                            model_used="pipeline+price_ask_complete",
-                        )
-                    # Re-propose returned non-preview (rare) — fall through to text
-                    return AgentResponse(
-                        message_type="TEXT",
-                        content=_re_result.get("content")
-                        or "Gagal menyiapkan konfirmasi. Silakan coba ulang.",
-                        iterations=1,
-                        model_used="pipeline+price_ask_fallback",
-                    )
-            except Exception as _ap_resume_err:
-                logger.warning(
-                    "[FIX_AQUA_PRICE_ASK] resume handler error: %s", _ap_resume_err
-                )
-            # ── /FIX_AQUA_PRICE_ASK resume ─────────────────────────────────
-
             try:
                 from .workflow_engine import WorkflowEngine
                 from .db_utils import get_session_db_pool as _wf_pool_p0
@@ -7025,33 +7205,7 @@ class UnifiedAgent:
                 if _code_entity_name and _code_name_field:
                     if not isinstance(extraction.entities, dict):
                         extraction.entities = {}
-                    # FIX_AQUA_DOCNUM_BLACKLIST 2026-05-09: skip merge for
-                    # auto-generated document number fields on CREATE intents.
-                    # These fields are backend-assigned (PB-xxxx / INV-xxxx /
-                    # CN-xxxx / etc.) — classify_crud_intent's entity_name is
-                    # the free-text remainder of user message, polluting the
-                    # field with prose like "dari noneng, 100 pcs jaket...".
-                    # Stage 2 LLM extracts proper fields (customer_name,
-                    # vendor_name, items) anyway.
-                    _DOC_NUM_BLACKLIST_ON_CREATE = {
-                        "invoice_number",
-                        "bill_number",
-                        "credit_note_number",
-                        "vendor_credit_number",
-                        "quote_number",
-                        "transfer_number",
-                        "deposit_number",
-                        "work_order_number",
-                        "bom_code",
-                    }
-                    _is_create = (extraction.intent or "").startswith("create_")
-                    if _is_create and _code_name_field in _DOC_NUM_BLACKLIST_ON_CREATE:
-                        logger.warning(
-                            "[FIX_AQUA_DOCNUM_BLACKLIST] skipped %s='%s' (auto-generated on create)",
-                            _code_name_field,
-                            (_code_entity_name or "")[:60],
-                        )
-                    elif not extraction.entities.get(_code_name_field):
+                    if not extraction.entities.get(_code_name_field):
                         extraction.entities[_code_name_field] = _code_entity_name
 
             # 6. DE-ESCALATION via arbiter helper
@@ -7747,8 +7901,36 @@ class UnifiedAgent:
                     )
 
                     _name_fields = {"customer_name", "vendor_name", "item_name"}
+                    # FIX_AQUA_DOCNUM_BLACKLIST 2026-05-13-extend
+                    # On CREATE intents, doc numbers are auto-generated by the
+                    # backend. The code classifier sometimes mis-extracts the
+                    # user's free-form text into invoice_number/bill_number/etc.
+                    # Never merge these from the code classifier on CREATE.
+                    _docnum_blacklist = {
+                        "invoice_number",
+                        "bill_number",
+                        "document_number",
+                        "quote_number",
+                        "sales_order_number",
+                        "credit_note_number",
+                        "vendor_credit_number",
+                        "no_faktur",
+                        "no_tagihan",
+                        "nomor",
+                    }
+                    _is_create_intent = isinstance(
+                        getattr(_llm_extraction, "intent", None), str
+                    ) and _llm_extraction.intent.startswith("create_")
                     for _ek, _ev in extraction.entities.items():
                         if _ek not in _llm_extraction.entities and _ev:
+                            if _is_create_intent and _ek in _docnum_blacklist:
+                                logger.warning(
+                                    "[FIX_AQUA_DOCNUM_BLACKLIST] skipped merge %s=%r intent=%s (auto-generated on CREATE)",
+                                    _ek,
+                                    str(_ev)[:80],
+                                    _llm_extraction.intent,
+                                )
+                                continue
                             if _ek in _name_fields and not _bug1_pnm_merge(
                                 user_text or "", str(_ev)
                             ):
@@ -9015,11 +9197,19 @@ class UnifiedAgent:
                     except Exception:
                         pass
 
-                    # For tutorial tools, store full result as data (it contains step info at top level)
+                    # For tutorial tools, store full result as data (it contains step info at top level).
+                    # search_userguide also stores full result (chunks live at top level, not under "data"),
+                    # so Layer 2 (rewrite_citations) + Layer 4 (ensure_citation_footer) can extract chunks
+                    # via extract_userguide_chunks. Without this, _ug_chunks=[] and both layers silently no-op,
+                    # which is the Phase 2D smoke-test Layer-4 under-firing bug.
                     _par_log_data = (
                         result
                         if (
-                            is_tutorial_tool(tc.function_name) and result.get("success")
+                            (
+                                is_tutorial_tool(tc.function_name)
+                                or tc.function_name == "search_userguide"
+                            )
+                            and result.get("success")
                         )
                         else result.get("data")
                     )
@@ -9197,10 +9387,15 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
-                # For tutorial tools, store full result as data (it contains step info at top level)
+                # For tutorial tools, store full result as data (it contains step info at top level).
+                # search_userguide also stores full result — chunks live at top level, citation pipeline
+                # (Layer 2 rewriter + Layer 4 footer fallback) extracts them via extract_userguide_chunks.
                 _log_data = (
                     result
-                    if (is_tutorial_tool(tool_name) and result.get("success"))
+                    if (
+                        (is_tutorial_tool(tool_name) or tool_name == "search_userguide")
+                        and result.get("success")
+                    )
                     else result.get("data")
                 )
                 tool_calls_log.append(

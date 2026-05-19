@@ -114,7 +114,8 @@ class EntityResolver:
                     continue
                 if res is None:
                     continue
-                if res.confidence >= 0.8 and len(res.candidates) <= 1:
+                # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: single low-sim fuzzy must NOT auto-pick
+                if res.confidence >= 0.85 and len(res.candidates) <= 1:
                     result.resolved[res.entity_type] = res
                 elif len(res.candidates) > 1:
                     result.resolved[res.entity_type] = res
@@ -123,6 +124,18 @@ class EntityResolver:
                     )
                     result.clarifications.append(
                         f"Saya temukan {len(res.candidates)} {res.entity_type}: {candidates_str}. Yang mana?"
+                    )
+                    result.needs_clarification = True
+                elif (
+                    res.candidates
+                    and len(res.candidates) == 1
+                    and 0.5 <= res.confidence < 0.85
+                ):
+                    # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: single fuzzy guess — ask before posting
+                    result.resolved[res.entity_type] = res
+                    only_name = res.candidates[0]["name"]
+                    result.clarifications.append(
+                        f"{res.entity_type.capitalize()} '{res.entity_name}' tidak ditemukan persis. Maksud Anda *{only_name}*? (atau buat baru)"
                     )
                     result.needs_clarification = True
                 elif res.confidence < 0.5:
@@ -735,7 +748,8 @@ class EntityResolver:
     # Individual Entity Resolvers
 
     async def _resolve_customer(self, name_fragment: str) -> Optional[ResolvedEntity]:
-        """customers.id = VARCHAR, column = nama (Bahasa!)"""
+        """customers.id = VARCHAR, column = nama (Bahasa!)
+        FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: thread actual pg_trgm sim; no blanket 1.0."""
         try:
             rows = await self.db.fetch(
                 """SELECT id, nama, telepon, email
@@ -747,17 +761,21 @@ class EntityResolver:
                 self.tenant_id,
                 f"%{name_fragment}%",
             )
+            match_kind = "substring" if rows else None
             if not rows:
+                # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: raised 0.15 -> 0.5
                 rows = await self.db.fetch(
                     """SELECT id, nama, telepon, email,
                               similarity(nama, $2) AS sim
                        FROM customers
                        WHERE tenant_id = $1 AND is_active = true
-                         AND similarity(nama, $2) > 0.15
+                         AND similarity(nama, $2) > 0.5
                        ORDER BY sim DESC LIMIT 5""",
                     self.tenant_id,
                     name_fragment,
                 )
+                if rows:
+                    match_kind = "fuzzy"
             if not rows:
                 return ResolvedEntity(
                     entity_type="customer",
@@ -767,7 +785,14 @@ class EntityResolver:
                 )
             candidates = [{"id": str(r["id"]), "name": r["nama"]} for r in rows]
             best = candidates[0]
-            confidence = 1.0 if len(candidates) == 1 else 0.7
+            # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: decouple confidence from candidate count
+            if match_kind == "fuzzy":
+                try:
+                    confidence = float(rows[0]["sim"])
+                except Exception:
+                    confidence = 0.5
+            else:
+                confidence = 0.9  # substring ILIKE match
             for c in candidates:
                 if c["name"].lower().strip() == name_fragment.lower().strip():
                     best = c
@@ -785,6 +810,7 @@ class EntityResolver:
             return None
 
     async def _resolve_vendor(self, name_fragment: str) -> Optional[ResolvedEntity]:
+        """FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: thread actual pg_trgm sim; no blanket 1.0."""
         try:
             rows = await self.db.fetch(
                 """SELECT id, name FROM vendors
@@ -793,17 +819,21 @@ class EntityResolver:
                 self.tenant_id,
                 f"%{name_fragment}%",
             )
+            match_kind = "substring" if rows else None
             if not rows:
+                # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: raised 0.15 -> 0.5
                 rows = await self.db.fetch(
                     """SELECT id, name,
                               similarity(name, $2) AS sim
                        FROM vendors
                        WHERE tenant_id = $1 AND is_active = true
-                         AND similarity(name, $2) > 0.15
+                         AND similarity(name, $2) > 0.5
                        ORDER BY sim DESC LIMIT 5""",
                     self.tenant_id,
                     name_fragment,
                 )
+                if rows:
+                    match_kind = "fuzzy"
             if not rows:
                 return ResolvedEntity(
                     entity_type="vendor",
@@ -813,7 +843,14 @@ class EntityResolver:
                 )
             candidates = [{"id": str(r["id"]), "name": r["name"]} for r in rows]
             best = candidates[0]
-            confidence = 1.0 if len(candidates) == 1 else 0.7
+            # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: decouple confidence from candidate count
+            if match_kind == "fuzzy":
+                try:
+                    confidence = float(rows[0]["sim"])
+                except Exception:
+                    confidence = 0.5
+            else:
+                confidence = 0.9
             for c in candidates:
                 if c["name"].lower().strip() == name_fragment.lower().strip():
                     best = c
@@ -860,17 +897,22 @@ class EntityResolver:
                 )
 
             # Step 3: Fuzzy match via pg_trgm (handles typos like "obyat" -> "obat")
+            # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: substring is tracked as kind "substring"
+            match_kind = "substring" if rows else None
             if not rows:
+                # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: raised 0.15 -> 0.5
                 rows = await self.db.fetch(
                     """SELECT id, nama_produk, sales_price_amount, purchase_price_amount, item_type,
                               similarity(nama_produk, $2) AS sim
                        FROM products
                        WHERE tenant_id = $1 AND status = 'active'
-                         AND similarity(nama_produk, $2) > 0.15
+                         AND similarity(nama_produk, $2) > 0.5
                        ORDER BY sim DESC LIMIT 5""",
                     self.tenant_id,
                     name_fragment.strip(),
                 )
+                if rows:
+                    match_kind = "fuzzy"
             if not rows:
                 return ResolvedEntity(
                     entity_type="item",
@@ -880,7 +922,14 @@ class EntityResolver:
                 )
             candidates = [{"id": str(r["id"]), "name": r["nama_produk"]} for r in rows]
             best = candidates[0]
-            confidence = 1.0 if len(candidates) == 1 else 0.7
+            # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: decouple confidence from candidate count
+            if match_kind == "fuzzy":
+                try:
+                    confidence = float(rows[0]["sim"])
+                except Exception:
+                    confidence = 0.5
+            else:
+                confidence = 0.9
             for c in candidates:
                 if c["name"].lower().strip() == name_fragment.lower().strip():
                     best = c

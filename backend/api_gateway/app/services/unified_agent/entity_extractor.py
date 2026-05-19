@@ -2139,6 +2139,9 @@ def build_intent_prompt(intent: str, collected: dict) -> str:
         "- HANYA extract apa yang user EKSPLISIT sebutkan.",
         "- Field yang tidak disebut = null.",
         '- Angka: "5 juta" = 5000000, "500 ribu" = 500000, "15rb" = 15000.',
+        # FIX_AQUA_PERCENT_PROMPT 2026-05-11
+        '- Persen: nilai "11%" atau "11 persen" = 11 (integer 0-100), BUKAN 0.11. Selalu emit angka persen utuh.',
+        '- Diskon "5%" = 5 (BUKAN 0.05). Pajak "11%" = 11 (BUKAN 0.11).',
     ]
 
     # BUG-item-slot fix (2026-05-07): constrain items[].description to barang/jasa
