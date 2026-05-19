@@ -14,7 +14,7 @@ import re
 import hashlib
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import date as _date_cls, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from decimal import Decimal
 from itertools import combinations
@@ -118,6 +118,120 @@ def _user_gave_absolute_date(user_text: str) -> bool:
         return bool(_ABSOLUTE_DATE_RE.search(user_text))
     except Exception:
         return False
+
+
+# FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative-date phrases
+
+
+def _parse_relative_date_phrase(phrase: str, base):
+    """Parse Indonesian relative-date phrase. Return computed date or None."""
+    if not phrase:
+        return None
+    p = phrase.lower().strip()
+    base_d = base.date() if hasattr(base, "date") else base
+    if p in ("hari ini", "sekarang", "today", "tanggal hari ini", "tanggal sekarang"):
+        return base_d
+    if p in ("besok", "esok", "esok hari", "besok hari"):
+        return base_d + timedelta(days=1)
+    if p == "lusa":
+        return base_d + timedelta(days=2)
+    if p == "kemarin":
+        return base_d - timedelta(days=1)
+    if p in ("minggu depan", "pekan depan", "minggu besok"):
+        return base_d + timedelta(days=7)
+    if p in ("bulan depan", "bulan besok"):
+        return base_d + timedelta(days=30)
+    if p in ("akhir minggu", "akhir pekan"):
+        delta = (6 - base_d.weekday()) % 7
+        return base_d + timedelta(days=delta)
+    if p in ("akhir bulan",):
+        if base_d.month == 12:
+            nxt = base_d.replace(year=base_d.year + 1, month=1, day=1)
+        else:
+            nxt = base_d.replace(month=base_d.month + 1, day=1)
+        return nxt - timedelta(days=1)
+    m = re.search(r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari", p)
+    if m:
+        return base_d + timedelta(days=int(m.group(1)))
+    m = re.search(r"(\d+)\s+hari\s+(?:yang\s+)?lalu", p)
+    if m:
+        return base_d - timedelta(days=int(m.group(1)))
+    m = re.search(
+        r"(?:dalam\s+)?(\d+)\s+hari(?:\s+(?:lagi|ke\s+depan|kedepan|mendatang))?", p
+    )
+    if m:
+        return base_d + timedelta(days=int(m.group(1)))
+    m = re.search(r"(\d+)\s+minggu\s+(?:yang\s+)?lalu", p)
+    if m:
+        return base_d - timedelta(weeks=int(m.group(1)))
+    m = re.search(r"(?:dalam\s+)?(\d+)\s+minggu(?:\s+(?:lagi|ke\s+depan|kedepan))?", p)
+    if m:
+        return base_d + timedelta(weeks=int(m.group(1)))
+    m = re.search(r"(?:dalam\s+)?(\d+)\s+bulan(?:\s+(?:lagi|ke\s+depan|kedepan))?", p)
+    if m:
+        return base_d + timedelta(days=30 * int(m.group(1)))
+    return None
+
+
+def _apply_relative_dates(
+    payload: Dict[str, Any],
+    user_text: str,
+    invoice_date_key: str = "invoice_date",
+) -> Dict[str, Any]:
+    """Post-process payload to override invoice_date / due_date when user_text
+    contains Indonesian relative-date phrases. FIX_AQUA_RELATIVE_DATE 2026-05-19.
+    """
+    if not user_text:
+        return payload
+    txt = user_text.lower()
+    today = _date_cls.today()
+
+    inv_match = re.search(
+        r"(?:per\s+)?tanggal\s+(hari\s+ini|sekarang|besok|lusa|kemarin|esok(?:\s+hari)?)",
+        txt,
+    )
+    if inv_match:
+        start = inv_match.start()
+        prefix = txt[max(0, start - 15) : start]
+        if "tempo" not in prefix:
+            computed = _parse_relative_date_phrase(inv_match.group(1), today)
+            if computed:
+                payload[invoice_date_key] = computed.isoformat()
+                logger.info(
+                    "[FIX_AQUA_RELATIVE_DATE] %s=%s from phrase=%s",
+                    invoice_date_key,
+                    computed,
+                    inv_match.group(1),
+                )
+
+    try:
+        inv_base = datetime.strptime(
+            payload.get(invoice_date_key) or today.isoformat(), "%Y-%m-%d"
+        ).date()
+    except (ValueError, TypeError):
+        inv_base = today
+
+    due_match = re.search(
+        r"(?:jatuh\s+)?tempo\s+([^,\.\n]+?)"
+        r"(?=,|\.|$|catatan|pajak|diskon|item|dengan|untuk|harga|qty|kuantitas|jumlah)",
+        txt,
+    )
+    if due_match:
+        phrase = due_match.group(1).strip()
+        if re.match(r"^\d+\s+hari\b", phrase):
+            base_for_due = inv_base
+        else:
+            base_for_due = today
+        computed = _parse_relative_date_phrase(phrase, base_for_due)
+        if computed:
+            payload["due_date"] = computed.isoformat()
+            logger.info(
+                "[FIX_AQUA_RELATIVE_DATE] due_date=%s from phrase=%s base=%s",
+                computed,
+                phrase,
+                base_for_due,
+            )
+    return payload
 
 
 def _safe_get_name(entity: dict, entity_type: str) -> str:
@@ -3934,6 +4048,13 @@ class ToolExecutor:
                 "**Edit** di card untuk set per-baris."
             )
 
+        # FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative dates from user_text
+        _apply_relative_dates(
+            payload,
+            getattr(self, "user_text", "") or "",
+            invoice_date_key="invoice_date",
+        )
+
         return payload
 
     async def _enrich_sales_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -4466,6 +4587,11 @@ class ToolExecutor:
                 "Untuk diskon/pajak/batch/exp/bonus per item, silakan tap "
                 "**Edit** di card untuk set per-baris."
             )
+
+        # FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative dates from user_text
+        _apply_relative_dates(
+            payload, getattr(self, "user_text", "") or "", invoice_date_key="issue_date"
+        )
 
         return payload
 
