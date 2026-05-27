@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from milkyhoop_protos import action_planner_pb2, action_planner_pb2_grpc
 
@@ -27,9 +27,9 @@ ACTION_PLANNER_HOST = os.getenv("ACTION_PLANNER_GRPC_HOST", "action_planner")
 ACTION_PLANNER_PORT = int(os.getenv("ACTION_PLANNER_GRPC_PORT", "5090"))
 
 GRPC_CHANNEL_OPTIONS = [
-    ("grpc.keepalive_time_ms", 10000),
-    ("grpc.keepalive_timeout_ms", 5000),
-    ("grpc.keepalive_permit_without_calls", True),
+    ("grpc.keepalive_time_ms", 60000),
+    ("grpc.keepalive_timeout_ms", 20000),
+    ("grpc.keepalive_permit_without_calls", False),
     ("grpc.http2.max_pings_without_data", 0),
 ]
 
@@ -109,17 +109,25 @@ class ActionPlannerClient:
             }
         except grpc.aio.AioRpcError as e:
             logger.error(f"ClassifyIntent gRPC error: {e.code()} - {e.details()}")
-            return {"intent": "UNCLEAR", "action_type": "", "confidence": 0.0, "reason": f"gRPC error: {e.code()}"}
+            return {
+                "intent": "UNCLEAR",
+                "action_type": "",
+                "confidence": 0.0,
+                "reason": f"gRPC error: {e.code()}",
+            }
         except Exception as e:
             logger.error(f"ClassifyIntent error: {e}")
-            return {"intent": "UNCLEAR", "action_type": "", "confidence": 0.0, "reason": str(e)}
+            return {
+                "intent": "UNCLEAR",
+                "action_type": "",
+                "confidence": 0.0,
+                "reason": str(e),
+            }
 
     # =========================================================
     # GENERATE RESPONSE
     # =========================================================
-    async def generate_response(
-        self, text: str, context: str = ""
-    ) -> Optional[str]:
+    async def generate_response(self, text: str, context: str = "") -> Optional[str]:
         """
         Generate a natural conversational response via ActionPlanner service.
 

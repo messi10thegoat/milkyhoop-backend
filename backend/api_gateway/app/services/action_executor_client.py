@@ -17,7 +17,11 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from milkyhoop_protos import action_executor_pb2, action_executor_pb2_grpc, action_plan_pb2
+from milkyhoop_protos import (
+    action_executor_pb2,
+    action_executor_pb2_grpc,
+    action_plan_pb2,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +30,9 @@ ACTION_EXECUTOR_HOST = os.getenv("ACTION_EXECUTOR_GRPC_HOST", "action_executor")
 ACTION_EXECUTOR_PORT = int(os.getenv("ACTION_EXECUTOR_GRPC_PORT", "5092"))
 
 GRPC_CHANNEL_OPTIONS = [
-    ("grpc.keepalive_time_ms", 10000),
-    ("grpc.keepalive_timeout_ms", 5000),
-    ("grpc.keepalive_permit_without_calls", True),
+    ("grpc.keepalive_time_ms", 60000),
+    ("grpc.keepalive_timeout_ms", 20000),
+    ("grpc.keepalive_permit_without_calls", False),
     ("grpc.http2.max_pings_without_data", 0),
 ]
 
@@ -111,7 +115,9 @@ class ActionExecutorClient:
             action_id=action_type,
             action_type=action_type_enum,
             category=category_enum,
-            draft_payload_json=json.dumps(draft_payload) if isinstance(draft_payload, dict) else str(draft_payload),
+            draft_payload_json=json.dumps(draft_payload)
+            if isinstance(draft_payload, dict)
+            else str(draft_payload),
             assumptions=assumptions or [],
             requires_confirmation=True,
             idempotency_key=idempotency_key or "",
@@ -132,20 +138,24 @@ class ActionExecutorClient:
             if resp.preview:
                 journal_entries = []
                 for j in resp.preview.journal_entries:
-                    journal_entries.append({
-                        "account_code": j.account_code,
-                        "account_name": j.account_name,
-                        "debit": j.debit,
-                        "credit": j.credit,
-                        "description": j.description,
-                    })
+                    journal_entries.append(
+                        {
+                            "account_code": j.account_code,
+                            "account_name": j.account_name,
+                            "debit": j.debit,
+                            "credit": j.credit,
+                            "description": j.description,
+                        }
+                    )
                 entities = []
                 for e in resp.preview.entities:
-                    entities.append({
-                        "entity_type": e.entity_type,
-                        "operation": e.operation,
-                        "summary": e.summary,
-                    })
+                    entities.append(
+                        {
+                            "entity_type": e.entity_type,
+                            "operation": e.operation,
+                            "summary": e.summary,
+                        }
+                    )
                 preview = {
                     "summary": resp.preview.summary,
                     "journal_entries": journal_entries,
@@ -158,6 +168,7 @@ class ActionExecutorClient:
             expires_at_str = ""
             if resp.expires_at and resp.expires_at.seconds > 0:
                 from datetime import datetime, timezone
+
                 expires_at_str = datetime.fromtimestamp(
                     resp.expires_at.seconds, tz=timezone.utc
                 ).isoformat()
@@ -234,6 +245,7 @@ class ActionExecutorClient:
                 completed_at = ""
                 if resp.result.completed_at and resp.result.completed_at.seconds > 0:
                     from datetime import datetime, timezone
+
                     completed_at = datetime.fromtimestamp(
                         resp.result.completed_at.seconds, tz=timezone.utc
                     ).isoformat()
@@ -249,7 +261,14 @@ class ActionExecutorClient:
                 }
 
             # Map proto enum to string
-            status_map = {0: "PENDING", 1: "EXECUTING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "EXPIRED"}
+            status_map = {
+                0: "PENDING",
+                1: "EXECUTING",
+                2: "COMPLETED",
+                3: "FAILED",
+                4: "CANCELLED",
+                5: "EXPIRED",
+            }
 
             return {
                 "success": resp.success,
@@ -302,7 +321,14 @@ class ActionExecutorClient:
                 ),
                 timeout=self.timeout,
             )
-            status_map = {0: "PENDING", 1: "EXECUTING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "EXPIRED"}
+            status_map = {
+                0: "PENDING",
+                1: "EXECUTING",
+                2: "COMPLETED",
+                3: "FAILED",
+                4: "CANCELLED",
+                5: "EXPIRED",
+            }
             return {
                 "success": resp.success,
                 "status": status_map.get(resp.status, "UNKNOWN"),
@@ -310,7 +336,11 @@ class ActionExecutorClient:
             }
         except grpc.aio.AioRpcError as e:
             logger.error(f"CancelAction gRPC error: {e.code()} - {e.details()}")
-            return {"success": False, "status": "FAILED", "message": f"Service error: {e.code()}"}
+            return {
+                "success": False,
+                "status": "FAILED",
+                "message": f"Service error: {e.code()}",
+            }
         except Exception as e:
             logger.error(f"CancelAction error: {e}")
             return {"success": False, "status": "FAILED", "message": str(e)}
@@ -336,7 +366,14 @@ class ActionExecutorClient:
                 ),
                 timeout=self.timeout,
             )
-            status_map = {0: "PENDING", 1: "EXECUTING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "EXPIRED"}
+            status_map = {
+                0: "PENDING",
+                1: "EXECUTING",
+                2: "COMPLETED",
+                3: "FAILED",
+                4: "CANCELLED",
+                5: "EXPIRED",
+            }
             return {
                 "action_id": resp.action_id,
                 "status": status_map.get(resp.status, "UNKNOWN"),
@@ -344,10 +381,18 @@ class ActionExecutorClient:
             }
         except grpc.aio.AioRpcError as e:
             logger.error(f"GetActionStatus gRPC error: {e.code()} - {e.details()}")
-            return {"action_id": action_id, "status": "UNKNOWN", "error_message": f"Service error: {e.code()}"}
+            return {
+                "action_id": action_id,
+                "status": "UNKNOWN",
+                "error_message": f"Service error: {e.code()}",
+            }
         except Exception as e:
             logger.error(f"GetActionStatus error: {e}")
-            return {"action_id": action_id, "status": "UNKNOWN", "error_message": str(e)}
+            return {
+                "action_id": action_id,
+                "status": "UNKNOWN",
+                "error_message": str(e),
+            }
 
     # =========================================================
     # HEALTH CHECK
@@ -356,6 +401,7 @@ class ActionExecutorClient:
         await self.ensure_connected()
         try:
             from google.protobuf import empty_pb2
+
             resp = await self.stub.HealthCheck(
                 empty_pb2.Empty(),
                 timeout=5.0,
@@ -370,18 +416,37 @@ class ActionExecutorClient:
 # =========================================================
 def _map_action_type(action_type: str) -> int:
     mapping = {
-        "CREATE_CUSTOMER": 0, "UPDATE_CUSTOMER": 1, "CREATE_VENDOR": 2, "CREATE_PRODUCT": 3,
-        "CREATE_SALES_INVOICE": 10, "CREATE_PURCHASE_INVOICE": 11, "CREATE_EXPENSE": 12, "CREATE_CREDIT_NOTE": 13,
+        "CREATE_CUSTOMER": 0,
+        "UPDATE_CUSTOMER": 1,
+        "CREATE_VENDOR": 2,
+        "CREATE_PRODUCT": 3,
+        "CREATE_SALES_INVOICE": 10,
+        "CREATE_PURCHASE_INVOICE": 11,
+        "CREATE_EXPENSE": 12,
+        "CREATE_CREDIT_NOTE": 13,
         "CREATE_PURCHASE_ORDER": 14,
-        "RECEIVE_PAYMENT": 20, "MAKE_PAYMENT": 21, "BANK_TRANSFER": 22,
-        "POST_GENERAL_JOURNAL": 30, "REVERSE_JOURNAL": 31, "CLOSE_PERIOD": 32, "REOPEN_PERIOD": 33,
-        "GET_BALANCE": 40, "GET_TRIAL_BALANCE": 41, "GET_AR_AGING": 42,
+        "RECEIVE_PAYMENT": 20,
+        "MAKE_PAYMENT": 21,
+        "BANK_TRANSFER": 22,
+        "POST_GENERAL_JOURNAL": 30,
+        "REVERSE_JOURNAL": 31,
+        "CLOSE_PERIOD": 32,
+        "REOPEN_PERIOD": 33,
+        "GET_BALANCE": 40,
+        "GET_TRIAL_BALANCE": 41,
+        "GET_AR_AGING": 42,
     }
     return mapping.get(action_type, 0)
 
 
 def _map_category(category: str) -> int:
-    mapping = {"MASTER_DATA": 0, "DOCUMENT": 1, "PAYMENT": 2, "ACCOUNTING": 3, "READ": 4}
+    mapping = {
+        "MASTER_DATA": 0,
+        "DOCUMENT": 1,
+        "PAYMENT": 2,
+        "ACCOUNTING": 3,
+        "READ": 4,
+    }
     return mapping.get(category, 1)
 
 

@@ -14,6 +14,7 @@ x-security-defaults:
 services:
   postgres:
     image: pgvector/pgvector:pg14
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
     restart: always
     security_opt:
     - no-new-privileges:true
@@ -214,7 +215,7 @@ services:
       resources:
         limits:
           cpus: '2.0'
-          memory: 1G
+          memory: 2G
         reservations:
           cpus: '0.5'
           memory: 256M

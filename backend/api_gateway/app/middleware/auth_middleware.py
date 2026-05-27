@@ -23,6 +23,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.public_paths = {
             "/healthz",
             "/health",
+            "/health/pool-stats",
             "/ready",
             "/version",
             "/metrics",

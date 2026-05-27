@@ -12,9 +12,13 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from milkyhoop_protos import action_validator_pb2, action_validator_pb2_grpc, action_plan_pb2
+from milkyhoop_protos import (
+    action_validator_pb2,
+    action_validator_pb2_grpc,
+    action_plan_pb2,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +27,9 @@ ACTION_VALIDATOR_HOST = os.getenv("ACTION_VALIDATOR_GRPC_HOST", "action_validato
 ACTION_VALIDATOR_PORT = int(os.getenv("ACTION_VALIDATOR_GRPC_PORT", "5091"))
 
 GRPC_CHANNEL_OPTIONS = [
-    ("grpc.keepalive_time_ms", 10000),
-    ("grpc.keepalive_timeout_ms", 5000),
-    ("grpc.keepalive_permit_without_calls", True),
+    ("grpc.keepalive_time_ms", 60000),
+    ("grpc.keepalive_timeout_ms", 20000),
+    ("grpc.keepalive_permit_without_calls", False),
     ("grpc.http2.max_pings_without_data", 0),
 ]
 
@@ -108,7 +112,9 @@ class ActionValidatorClient:
             action_id=action_id or action_type,
             action_type=action_type_enum,
             category=category_enum,
-            draft_payload_json=json.dumps(draft_payload) if isinstance(draft_payload, dict) else str(draft_payload),
+            draft_payload_json=json.dumps(draft_payload)
+            if isinstance(draft_payload, dict)
+            else str(draft_payload),
             requires_confirmation=True,
             idempotency_key=idempotency_key or "",
             confidence=confidence,
@@ -126,25 +132,29 @@ class ActionValidatorClient:
 
             errors = []
             for e in resp.errors:
-                errors.append({
-                    "layer": e.layer,
-                    "code": e.code,
-                    "message": e.message,
-                    "blocking": e.blocking,
-                    "field": e.field,
-                })
+                errors.append(
+                    {
+                        "layer": e.layer,
+                        "code": e.code,
+                        "message": e.message,
+                        "blocking": e.blocking,
+                        "field": e.field,
+                    }
+                )
 
             dry_run = None
             if resp.dry_run_result:
                 journal_entries = []
                 for j in resp.dry_run_result.journal_entries:
-                    journal_entries.append({
-                        "account_code": j.account_code,
-                        "account_name": j.account_name,
-                        "debit": j.debit,
-                        "credit": j.credit,
-                        "description": j.description,
-                    })
+                    journal_entries.append(
+                        {
+                            "account_code": j.account_code,
+                            "account_name": j.account_name,
+                            "debit": j.debit,
+                            "credit": j.credit,
+                            "description": j.description,
+                        }
+                    )
                 dry_run = {
                     "journal_entries": journal_entries,
                     "total_debit": resp.dry_run_result.total_debit,
@@ -166,7 +176,15 @@ class ActionValidatorClient:
             logger.error(f"ValidateAction gRPC error: {e.code()} - {e.details()}")
             return {
                 "valid": False,
-                "errors": [{"layer": "SYSTEM", "code": "GRPC_ERROR", "message": f"Validation service error: {e.code()}", "blocking": True, "field": ""}],
+                "errors": [
+                    {
+                        "layer": "SYSTEM",
+                        "code": "GRPC_ERROR",
+                        "message": f"Validation service error: {e.code()}",
+                        "blocking": True,
+                        "field": "",
+                    }
+                ],
                 "dry_run": None,
                 "requires_confirmation": False,
                 "confirmation_message": "",
@@ -176,7 +194,15 @@ class ActionValidatorClient:
             logger.error(f"ValidateAction error: {e}")
             return {
                 "valid": False,
-                "errors": [{"layer": "SYSTEM", "code": "INTERNAL_ERROR", "message": str(e), "blocking": True, "field": ""}],
+                "errors": [
+                    {
+                        "layer": "SYSTEM",
+                        "code": "INTERNAL_ERROR",
+                        "message": str(e),
+                        "blocking": True,
+                        "field": "",
+                    }
+                ],
                 "dry_run": None,
                 "requires_confirmation": False,
                 "confirmation_message": "",
@@ -222,13 +248,15 @@ class ActionValidatorClient:
 
             journal_entries = []
             for j in resp.dry_run_result.journal_entries:
-                journal_entries.append({
-                    "account_code": j.account_code,
-                    "account_name": j.account_name,
-                    "debit": j.debit,
-                    "credit": j.credit,
-                    "description": j.description,
-                })
+                journal_entries.append(
+                    {
+                        "account_code": j.account_code,
+                        "account_name": j.account_name,
+                        "debit": j.debit,
+                        "credit": j.credit,
+                        "description": j.description,
+                    }
+                )
 
             return {
                 "journal_entries": journal_entries,
@@ -252,6 +280,7 @@ class ActionValidatorClient:
         await self.ensure_connected()
         try:
             from google.protobuf import empty_pb2
+
             resp = await self.stub.HealthCheck(
                 empty_pb2.Empty(),
                 timeout=5.0,

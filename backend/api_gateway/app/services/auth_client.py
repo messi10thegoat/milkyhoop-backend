@@ -16,9 +16,9 @@ GRPC_TLS_CERT_PATH = os.getenv("GRPC_TLS_CERT_PATH", "/etc/ssl/certs/grpc-ca.crt
 def _get_grpc_channel_options():
     """Get gRPC channel options for keepalive"""
     return [
-        ("grpc.keepalive_time_ms", 10000),
-        ("grpc.keepalive_timeout_ms", 5000),
-        ("grpc.keepalive_permit_without_calls", True),
+        ("grpc.keepalive_time_ms", 60000),
+        ("grpc.keepalive_timeout_ms", 20000),
+        ("grpc.keepalive_permit_without_calls", False),
         ("grpc.http2.max_pings_without_data", 0),
     ]
 
