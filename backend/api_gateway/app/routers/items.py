@@ -139,6 +139,13 @@ async def list_items(
     status: Optional[str] = Query(
         None, description="Filter by status: active, inactive"
     ),
+    sort_by: Optional[str] = Query(
+        "created_at",
+        description="Sort column: created_at, name, sku, sales_price, purchase_price, current_stock",
+    ),
+    sort_order: Optional[str] = Query(
+        "desc", description="Sort direction: asc or desc"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -268,8 +275,20 @@ async def list_items(
         count_query = "SELECT COUNT(*) FROM products p " + " ".join(count_parts[1:])
         total = await conn.fetchval(count_query, *params)
 
-        # Add ordering and pagination
-        query_parts.append("ORDER BY p.created_at DESC")
+        # Add ordering and pagination (whitelisted, prevents SQL injection)
+        SORT_COLUMN_WHITELIST = {
+            "created_at": "p.created_at",
+            "updated_at": "p.updated_at",
+            "name": "p.nama_produk",
+            "sku": "p.item_code",
+            "sales_price": "p.sales_price",
+            "purchase_price": "p.purchase_price",
+            "current_stock": "COALESCE(per.jumlah, 0)",
+        }
+        sort_col = SORT_COLUMN_WHITELIST.get((sort_by or "").lower(), "p.created_at")
+        sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
+        # Tiebreaker p.id DESC for stable pagination
+        query_parts.append(f"ORDER BY {sort_col} {sort_dir}, p.id DESC")
         query_parts.append(f"LIMIT ${param_idx} OFFSET ${param_idx + 1}")
         params.extend([limit, offset])
 
