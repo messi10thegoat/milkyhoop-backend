@@ -151,6 +151,7 @@ from .middleware.rate_limit_middleware import RateLimitMiddleware
 from .middleware.rbac_middleware import RBACMiddleware
 from .middleware.security_headers_middleware import SecurityHeadersMiddleware
 from .middleware.cache_control import CacheControlMiddleware
+from .middleware.etag import ETagMiddleware
 from .middleware.account_lockout_middleware import AccountLockoutMiddleware
 from .middleware.request_id_middleware import RequestIDMiddleware
 from .middleware.waf_middleware import WAFMiddleware
@@ -277,6 +278,13 @@ patch_asyncpg_pool()
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CacheControlMiddleware)
+# ETag added AFTER CacheControl. Starlette add_middleware prepends to
+# user_middleware, so later-added becomes OUTERMOST. Outermost wraps
+# innermost, so on the RESPONSE path the innermost handler returns first
+# and the outermost middleware processes the response LAST. Therefore
+# ETag (added last here) runs AFTER CacheControl on the response and sees
+# the Cache-Control header already set, which it preserves on 304.
+app.add_middleware(ETagMiddleware)
 
 # 2. Request ID Tracking (for audit trail)
 app.add_middleware(RequestIDMiddleware)
