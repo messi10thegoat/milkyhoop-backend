@@ -162,6 +162,10 @@ class PolicyEngineClient:
         )
 
         try:
+            # FIX (deadlock): release the connection BEFORE calling
+            # self.get_visibility(), which acquires another connection from the
+            # same pool. Holding one while waiting for another exhausts the
+            # max-size=5 pool under concurrent load → permanent deadlock.
             async with self.pool.acquire() as conn:
                 role_row = await conn.fetchrow(
                     """
@@ -177,23 +181,23 @@ class PolicyEngineClient:
                     tenant_id,
                 )
 
-                if role_row:
-                    context.business_role_id = str(role_row["id"])
-                    context.business_role_code = role_row["code"]
-                    context.approval_limit = role_row["approval_limit"]
-                    context.visibility_levels = await self.get_visibility(
-                        context.business_role_id
-                    )
-                else:
-                    default_visibility = {
-                        "ADMIN": ["L1", "L2", "L3", "L4", "L5"],
-                        "OWNER": ["L1", "L2", "L3", "L4", "L5"],
-                        "USER": ["L1", "L2", "L3"],
-                        "FREE": ["L1", "L2"],
-                    }
-                    context.visibility_levels = default_visibility.get(
-                        subscription_role, ["L1"]
-                    )
+            if role_row:
+                context.business_role_id = str(role_row["id"])
+                context.business_role_code = role_row["code"]
+                context.approval_limit = role_row["approval_limit"]
+                context.visibility_levels = await self.get_visibility(
+                    context.business_role_id
+                )
+            else:
+                default_visibility = {
+                    "ADMIN": ["L1", "L2", "L3", "L4", "L5"],
+                    "OWNER": ["L1", "L2", "L3", "L4", "L5"],
+                    "USER": ["L1", "L2", "L3"],
+                    "FREE": ["L1", "L2"],
+                }
+                context.visibility_levels = default_visibility.get(
+                    subscription_role, ["L1"]
+                )
 
         except Exception as e:
             logger.error(f"Error fetching user context: {e}")
