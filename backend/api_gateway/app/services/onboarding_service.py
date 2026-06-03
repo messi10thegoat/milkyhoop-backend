@@ -133,6 +133,33 @@ async def create_tenant_and_user(
             )
             logger.info(f"CoA seeded: {coa_count} accounts for tenant {tenant_id}")
 
+            # 4. Assign OWNER role to the new account owner.
+            # Resolve the shared system OWNER role dynamically (do NOT hardcode UUID).
+            # Without this row the new owner has no role -> empty sidebar + 403s.
+            owner_role_id = await conn.fetchval(
+                "SELECT id FROM roles WHERE code = 'OWNER' AND tenant_id = '__SYSTEM__'"
+            )
+            if not owner_role_id:
+                raise RuntimeError(
+                    "Onboarding failed: system OWNER role not found "
+                    "(roles.code='OWNER', tenant_id='__SYSTEM__')"
+                )
+            await conn.execute(
+                """
+                INSERT INTO user_tenant_roles (
+                    user_id, tenant_id, role_id, is_primary, status
+                ) VALUES (
+                    $1::uuid, $2, $3, true, 'ACTIVE'
+                )
+                ON CONFLICT (user_id, tenant_id, role_id) DO NOTHING
+                """,
+                user_id, tenant_id, owner_role_id
+            )
+            logger.info(
+                f"OWNER role assigned: user={user_id[:8]}... tenant={tenant_id} "
+                f"role_id={owner_role_id}"
+            )
+
     # 5. Generate tokens locally (same as QR login flow)
     from .auth_instance import auth_client
     token_response = await auth_client._generate_tokens_locally(
