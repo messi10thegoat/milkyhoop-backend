@@ -7,6 +7,7 @@ This module defines request and response models for the /api/sales-invoices endp
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
+from decimal import Decimal
 
 
 # =============================================================================
@@ -28,7 +29,7 @@ class InvoiceItemCreate(BaseModel):
     item_id: Optional[str] = None
     item_code: Optional[str] = Field(None, max_length=50)
     description: str = Field(..., min_length=1, max_length=255)
-    quantity: float = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: int = Field(..., ge=0)
     discount_percent: float = Field(0, ge=0, le=100)

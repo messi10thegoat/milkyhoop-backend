@@ -2661,7 +2661,7 @@ class BillsService:
                         }
 
                     try:
-                        qty = int(item["qty"])
+                        qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
                         price = int(item["price"])
                     except (ValueError, TypeError):
                         return {
@@ -3749,7 +3749,7 @@ class BillsService:
 
                     # Insert new items
                     for idx, item in enumerate(items, start=1):
-                        qty = int(item["qty"])
+                        qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
                         price = int(item["price"])
                         discount_pct = Decimal(str(item.get("discount_percent", 0)))
                         item_calc = BillCalculator.calculate_item_total(

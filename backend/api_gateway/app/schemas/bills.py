@@ -329,7 +329,7 @@ class BillItemRequestV2(BaseModel):
         None, max_length=100, description="Product code from supplier"
     )
     product_name: str = Field(..., min_length=1, description="Product name for display")
-    qty: int = Field(..., gt=0, description="Quantity (must be > 0)")
+    qty: Decimal = Field(..., gt=0, description="Quantity (must be > 0)")
     unit: Optional[str] = Field(None, max_length=20, description="Unit of measure")
     price: float = Field(..., gt=0, description="Unit price in Rupiah (2 decimal)")
     discount_percent: Decimal = Field(
@@ -341,11 +341,13 @@ class BillItemRequestV2(BaseModel):
     exp_date: Optional[str] = Field(
         None, pattern=r"^\d{4}-\d{2}$", description="Expiry date (YYYY-MM)"
     )
-    bonus_qty: int = Field(
-        0, ge=0, description="Free/bonus quantity (not in calculation)"
+    bonus_qty: Decimal = Field(
+        Decimal("0"), ge=0, description="Free/bonus quantity (not in calculation)"
     )
     tax_code_id: Optional[UUID] = Field(None, description="Per-item tax code UUID")
-    tax_rate: Optional[float] = Field(None, ge=0, le=100, description="Per-item tax rate %")
+    tax_rate: Optional[float] = Field(
+        None, ge=0, le=100, description="Per-item tax rate %"
+    )
 
     @field_validator("exp_date")
     @classmethod
@@ -384,7 +386,9 @@ class CreateBillRequestV2(BaseModel):
     issue_date: Optional[date] = Field(None, description="Bill date (default: today)")
     due_date: date = Field(..., description="Payment due date")
     tax_rate: float = Field(0, ge=0, le=100, description="Tax rate percentage")
-    tax_code_id: Optional[UUID] = Field(None, description="Tax code UUID from tax_codes table")
+    tax_code_id: Optional[UUID] = Field(
+        None, description="Tax code UUID from tax_codes table"
+    )
     tax_inclusive: bool = Field(False, description="True if prices include tax")
     invoice_discount_percent: Decimal = Field(Decimal("0"), ge=0, le=100)
     invoice_discount_amount: float = Field(0, ge=0)
@@ -464,7 +468,7 @@ class BillItemResponseV2(BaseModel):
     total: float
     batch_no: Optional[str] = None
     exp_date: Optional[str] = None
-    bonus_qty: int
+    bonus_qty: float
 
 
 class CreateBillResponseV2(BaseModel):

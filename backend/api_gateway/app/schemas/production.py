@@ -36,12 +36,12 @@ class ProductionMaterialDetail(BaseModel):
     product_sku: Optional[str]
     planned_quantity: Decimal
     unit: Optional[str]
-    planned_cost: int
+    planned_cost: float
     issued_quantity: Decimal
-    actual_cost: int
+    actual_cost: float
     returned_quantity: Decimal
     variance_quantity: Decimal
-    variance_cost: int
+    variance_cost: float
     batch_id: Optional[str]
     batch_number: Optional[str]
     issued_date: Optional[date]
@@ -74,14 +74,14 @@ class ProductionLaborDetail(BaseModel):
     operation_id: Optional[str]
     operation_name: str
     planned_hours: Decimal
-    planned_cost: int
+    planned_cost: float
     actual_hours: Decimal
-    actual_cost: int
+    actual_cost: float
     worker_id: Optional[str]
     worker_name: Optional[str]
     start_time: Optional[datetime]
     end_time: Optional[datetime]
-    hourly_rate: int
+    hourly_rate: float
     notes: Optional[str]
     created_at: datetime
 
@@ -112,8 +112,8 @@ class ProductionCompletionDetail(BaseModel):
     scrap_quantity: Decimal
     quality_status: str
     inspection_notes: Optional[str]
-    unit_cost: int
-    total_cost: int
+    unit_cost: float
+    total_cost: float
     warehouse_id: Optional[str]
     batch_id: Optional[str]
     batch_number: Optional[str]
@@ -209,13 +209,13 @@ class ProductionOrderDetail(BaseModel):
     warehouse_name: Optional[str]
     sales_order_id: Optional[str]
     customer_id: Optional[str]
-    planned_material_cost: int
-    planned_labor_cost: int
-    planned_overhead_cost: int
-    actual_material_cost: int
-    actual_labor_cost: int
-    actual_overhead_cost: int
-    variance_amount: int
+    planned_material_cost: float
+    planned_labor_cost: float
+    planned_overhead_cost: float
+    actual_material_cost: float
+    actual_labor_cost: float
+    actual_overhead_cost: float
+    variance_amount: float
     status: str
     priority: int
     material_issue_journal_id: Optional[str]
@@ -245,9 +245,9 @@ class CostAnalysisItem(BaseModel):
     """Cost analysis item"""
 
     category: str  # material, labor, overhead
-    planned: int
-    actual: int
-    variance: int
+    planned: float
+    actual: float
+    variance: float
     variance_percent: Decimal
 
 
@@ -274,10 +274,10 @@ class CostAnalysisResponse(BaseModel):
     planned_quantity: Decimal
     completed_quantity: Decimal
     analysis: List[CostAnalysisItem]
-    total_planned: int
-    total_actual: int
-    total_variance: int
-    unit_cost: int
+    total_planned: float
+    total_actual: float
+    total_variance: float
+    unit_cost: float
     subcontract_cost: float = 0.0
     total_cost: float = 0.0
     subcontracts: List[SubcontractItem] = []
