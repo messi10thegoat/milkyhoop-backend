@@ -290,6 +290,9 @@ class InvoiceResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
+    created_payment_id: Optional[
+        str
+    ] = None  # receive_payments.id for newly recorded payment (attach bukti)
 
 
 # =============================================================================

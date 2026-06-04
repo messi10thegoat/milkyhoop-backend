@@ -565,10 +565,15 @@ async def get_invoice(request: Request, invoice_id: UUID):
                        rp.payment_date, rp.payment_method,
                        rp.bank_account_id, rp.reference_number AS reference,
                        rp.notes, rp.journal_id, rp.created_at, rp.status,
-                       ba.account_name AS bank_account_name
+                       rp.posted_at,
+                       ba.account_name AS bank_account_name,
+                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
+                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
                 FROM receive_payment_allocations rpa
                 JOIN receive_payments rp ON rp.id = rpa.payment_id
                 LEFT JOIN bank_accounts ba ON ba.id = rp.bank_account_id
+                LEFT JOIN "User" u_created ON u_created.id = rp.created_by::text
+                LEFT JOIN "User" u_posted ON u_posted.id = rp.posted_by::text
                 WHERE rpa.invoice_id = $1
                   AND rp.tenant_id = $2
                   AND rp.status = 'posted'
@@ -709,6 +714,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             if p.get("created_at")
                             else None,
                             "status": p.get("status"),
+                            "created_by_name": p.get("created_by_name"),
+                            "posted_at": p["posted_at"].isoformat()
+                            if p.get("posted_at")
+                            else None,
+                            "posted_by_name": p.get("posted_by_name"),
                         }
                         for p in payments
                     ],
@@ -2762,6 +2772,7 @@ async def record_payment(
                 result_payload = {
                     "success": True,
                     "message": "Payment recorded successfully",
+                    "created_payment_id": str(rp_id),
                     "data": {
                         "status": "posted",
                         "id": str(rp_id),
