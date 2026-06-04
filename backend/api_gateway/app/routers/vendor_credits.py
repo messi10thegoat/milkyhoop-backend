@@ -42,17 +42,47 @@ from ..schemas.vendor_credits import (
     VendorCreditListResponse,
     VendorCreditSummaryResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.resolve_account import resolve_account_id  # noqa: F401  (read-side helpers may still use)
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Connection pool
+# Fase D2.2: required role mappings for vendor_credits posting path.
+# - AP_TRADE: settled by the credit (Dr AP reduces liability).
+# - VAT_INPUT: PKP-gated reversal (Cr VAT_INPUT reduces PPN Masukan asset).
+# - COGS_PURCHASE_RETURN: contra-COGS for returned goods (Cr 5-10300).
+#   Physical inventory layer decrement is handled separately by
+#   record_inventory_outbound() — journal credit is the COGS reversal side,
+#   NOT a second persediaan debit/credit (which would double-count).
+VENDOR_CREDIT_REQUIRED_ROLES = [
+    AccountRole.AP_TRADE,
+    AccountRole.VAT_INPUT,
+    AccountRole.COGS_PURCHASE_RETURN,
+]
 
-# Account codes
-AP_ACCOUNT = "2-10100"  # Hutang Usaha
-PURCHASE_RETURN_ACCOUNT = "1-10600"  # Persediaan
-TAX_RECEIVABLE_ACCOUNT = "1-10700"  # PPN Masukan
+# One-time precondition check flag.
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool):
+    """Run role-mapping precondition once per process for vendor_credits.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "vendor_credits", VENDOR_CREDIT_REQUIRED_ROLES
+    )
+    _precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -95,10 +125,11 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
         SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        JOIN account_roles ar ON ar.account_id = jl.account_id
+                              AND ar.tenant_id = je.tenant_id
         WHERE je.tenant_id = $1
           AND je.status = 'POSTED'
-          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
+          AND ar.role_key = 'AP_TRADE'  -- Fase D2.2: role-based read filter
           AND (
               (je.source_type = 'BILL' AND je.source_id = $2::uuid)
               OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
@@ -911,6 +942,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -941,12 +973,13 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     f"VENDOR_CREDIT:{vendor_credit_id}",
                 )
 
-                # Law 27: Resolve account IDs
-                ap_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], AP_ACCOUNT
+                # Law 27 + Fase D2.2: Resolve account IDs via role resolver
+                # (precondition gate already validated mapping exists for all tenants).
+                ap_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.AP_TRADE
                 )
-                purchase_return_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], PURCHASE_RETURN_ACCOUNT
+                purchase_return_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.COGS_PURCHASE_RETURN
                 )
 
                 if not ap_account_id or not purchase_return_account_id:
@@ -1024,7 +1057,11 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                 )
                 line_number += 1
 
-                # Cr. Purchase Returns (subtotal)
+                # Cr. COGS Purchase Return (subtotal) — contra-COGS reversal.
+                # Physical Persediaan layer decrement happens separately via
+                # record_inventory_outbound() below. Crediting Persediaan here
+                # too would double-count (latent pre-D2.2 bug, fixed by this
+                # role swap from INVENTORY_MERCHANDISE -> COGS_PURCHASE_RETURN).
                 await conn.execute(
                     """
                     INSERT INTO journal_lines (
@@ -1036,32 +1073,47 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     line_number,
                     purchase_return_account_id,
                     subtotal,
-                    f"Persediaan - {vc['credit_number']}",
+                    f"Retur Pembelian - {vc['credit_number']}",
                 )
                 line_number += 1
 
-                # Cr. VAT Receivable (if tax) - Law 27
+                # Cr. VAT Input reversal (PKP-conditional) — Fase D2.2.
+                # PPN Masukan is asset; vendor credit reduces it via credit side.
+                # Non-PKP tenants skip VAT line entirely. PKP tenant with
+                # tax_amount > 0 but VAT_INPUT unresolvable -> 422 (Law 4
+                # consistency, no silent skip).
                 tax_jl_id = None
                 if tax_amount > 0:
-                    tax_account_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], TAX_RECEIVABLE_ACCOUNT
+                    tax_account_id = await resolve_account_id_by_role_if_pkp(
+                        conn, ctx["tenant_id"], AccountRole.VAT_INPUT
                     )
-
-                    if tax_account_id:
-                        tax_jl_id = uuid_module.uuid4()
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                        """,
-                            tax_jl_id,
-                            journal_id,
-                            line_number,
-                            tax_account_id,
-                            tax_amount,
-                            f"PPN Retur - {vc['credit_number']}",
+                    if tax_account_id is None:
+                        # Tenant is non-PKP. Submitting a vendor credit with
+                        # tax_amount > 0 against a non-PKP tenant is invalid
+                        # (no PPN Masukan original to reverse). Reject loudly.
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Tenant non-PKP tidak dapat memposting kredit "
+                                "vendor dengan PPN > 0. Atur tax_amount = 0 "
+                                "atau aktifkan status PKP terlebih dahulu."
+                            ),
                         )
+
+                    tax_jl_id = uuid_module.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                    """,
+                        tax_jl_id,
+                        journal_id,
+                        line_number,
+                        tax_account_id,
+                        tax_amount,
+                        f"PPN Retur - {vc['credit_number']}",
+                    )
 
                 # Law 20: Post after all lines
                 await conn.execute(
@@ -1203,6 +1255,7 @@ async def apply_vendor_credit(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1411,6 +1464,7 @@ async def receive_refund(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1513,9 +1567,9 @@ async def receive_refund(
                     or f"RR-{vc['credit_number']}"
                 )
 
-                # Law 27: Resolve AP account
-                ap_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], AP_ACCOUNT
+                # Law 27 + Fase D2.2: Resolve AP via role.
+                ap_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.AP_TRADE
                 )
 
                 # Law 20: Create journal as DRAFT (Law 25: no float())
@@ -1641,6 +1695,7 @@ async def void_vendor_credit(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
